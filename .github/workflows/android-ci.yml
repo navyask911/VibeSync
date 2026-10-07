@@ -1,4 +1,5 @@
 name: VibeSync Android CI
+# Hardened release gate: build must pass before artifacts are published
 
 on:
   push:
