@@ -176,21 +176,7 @@ class ContactRepository(
                 }.awaitAll()
             }
 
-            // Resilient fallback: Firestore lookup for registered users matching candidates
-            try {
-                val firestoreUsers = fetchFirestoreUsersForCandidates(candidateSet)
-                for (p in firestoreUsers) {
-                    val p10 = normalize10Digit(p.phoneNumber)
-                    if (p10.length == 10) {
-                        matchedProfilesMap[p10] = p
-                    }
-                    if (p.id.isNotBlank()) {
-                        matchedProfilesMap[p.id] = p
-                    }
-                }
-            } catch (e: Exception) {
-                Log.d(TAG, "Notice fetching Firestore registered users: ${e.message}")
-            }
+            // No Firebase database fallback: contact discovery is Supabase RPC-only.
 
             // 3. Compare 10-digit suffix with phone contact list & map to registeredVibeContacts
             val registeredVibeContacts = mutableListOf<PhoneContact>()
@@ -255,7 +241,7 @@ class ContactRepository(
                         isOnVibeSync = isOnVibeSync,
                         photoUrl = resolvedContact.photoUrl,
                         statusTagline = resolvedContact.statusTagline,
-                        syncedToFirestore = true,
+                        syncedToFirestore = false,
                         updatedAt = now
                     )
                 )
@@ -286,63 +272,27 @@ class ContactRepository(
      * Executes PostgREST bulk lookup against Supabase 'profiles' table for a chunk of up to 100 numbers.
      */
     private suspend fun fetchSupabaseProfilesForChunk(chunk: List<String>): List<ProfileEntity> = withContext(Dispatchers.IO) {
-        val list = mutableListOf<ProfileEntity>()
-        if (chunk.isEmpty()) return@withContext list
-
+        if (chunk.isEmpty()) return@withContext emptyList()
         try {
-            val supabaseUrl = SupabaseClientManager.SUPABASE_URL
-            val supabaseKey = SupabaseClientManager.SUPABASE_ANON_KEY
-
-            val encodedInList = chunk.joinToString(",") { "%22${it.replace("+", "%2B")}%22" }
-            val rawDigitsList = chunk.map { it.filter { c -> c.isDigit() } }.filter { it.isNotBlank() }.distinct().joinToString(",")
-            val endpoint = "$supabaseUrl/rest/v1/profiles?select=id,name,phone_number,clean_phone,phone_number_e164,avatar_url,avatar_emoji,city,is_verified,bio&or=(phone_number.in.($encodedInList),clean_phone.in.($rawDigitsList),phone_number_e164.in.($encodedInList))&limit=300"
-
-            val request = Request.Builder()
-                .url(endpoint)
-                .header("apikey", supabaseKey)
-                .header("Authorization", "Bearer $supabaseKey")
-                .header("Content-Type", "application/json")
-                .get()
-                .build()
-
-            SupabaseClientManager.httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val bodyStr = response.body?.string() ?: "[]"
-                    val jsonArray = JSONArray(bodyStr)
-                    for (i in 0 until jsonArray.length()) {
-                        val obj = jsonArray.getJSONObject(i)
-                        val id = obj.optString("id", "")
-                        val name = obj.optString("name", "VibeSync Member")
-                        val phone = obj.optString("phone_number", obj.optString("clean_phone", obj.optString("phone_number_e164", "")))
-                        val avatarUrl = obj.optString("avatar_url", "")
-                        val avatarEmoji = obj.optString("avatar_emoji", "✨")
-                        val city = obj.optString("city", "")
-                        val bio = obj.optString("bio", "")
-
-                        if (id.isNotBlank()) {
-                            list.add(
-                                ProfileEntity(
-                                    id = id,
-                                    name = name,
-                                    age = 24,
-                                    phoneNumber = phone,
-                                    avatarUrl = avatarUrl,
-                                    avatarEmoji = avatarEmoji,
-                                    city = city,
-                                    bio = bio,
-                                    isVerified = obj.optBoolean("is_verified", true)
-                                )
-                            )
-                        }
-                    }
-                }
+            val hashes = chunk.distinct().take(50)
+                .map { com.example.util.PhonebookHasher.hashPhoneNumberToHex(it) }
+                .filter { it.length == 64 }
+            if (hashes.isEmpty()) return@withContext emptyList()
+            SupabaseClientManager.matchContactsRpc(hashes).map { match ->
+                ProfileEntity(
+                    id = match.id,
+                    name = match.name,
+                    phoneNumber = "",
+                    avatarUrl = match.photoUrl.orEmpty(),
+                    avatarEmoji = match.avatarEmoji,
+                    isVerified = true
+                )
             }
         } catch (e: Exception) {
-            Log.d(TAG, "Notice querying Supabase profiles chunk: ${e.message}")
+            Log.d(TAG, "Private contact RPC notice: ${e.message}")
+            emptyList()
         }
-        list
     }
-
     /**
      * Queries Firestore users matching candidate variations as resilient fallback.
      */
