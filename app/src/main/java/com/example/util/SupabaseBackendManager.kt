@@ -631,6 +631,30 @@ object SupabaseBackendManager {
         }
     }
     /**
+     * Mark one encrypted message read through the authenticated Supabase session.
+     */
+    suspend fun markMessageRead(messageId: String): Boolean = withContext(Dispatchers.IO) {
+        if (messageId.isBlank()) return@withContext false
+        try {
+            val encoded = java.net.URLEncoder.encode(messageId, "UTF-8")
+            val body = JSONObject().put("is_read", true).toString()
+                .toRequestBody("application/json".toMediaType())
+            val accessToken = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
+            val request = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/chat_messages?or=(id.eq.$encoded,message_id.eq.$encoded)")
+                .header("apikey", SUPABASE_ANON_KEY)
+                .header("Authorization", "Bearer $accessToken")
+                .header("Content-Type", "application/json")
+                .header("Prefer", "return=minimal")
+                .patch(body)
+                .build()
+            httpClient.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            Log.w(TAG, "markMessageRead error: ${e.message}")
+            false
+        }
+    }
+    /**
      * Executes delivery ACK back to Supabase:
      * UPDATE public.chat_messages SET is_delivered = true WHERE id = :messageId
      * Broadcasts real-time update to turn single tick into double grey ticks on sender's device.
