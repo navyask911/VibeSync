@@ -130,6 +130,9 @@ grant select,insert,update,delete on public.device_tokens to authenticated;
 -- --------------------------------------------------------------------------
 alter table public.phone_sync add column if not exists auth_user_id uuid references auth.users(id) on delete cascade;
 create index if not exists idx_phone_sync_auth_user on public.phone_sync(auth_user_id);
+create or replace function public.protect_phone_sync_owner() returns trigger language plpgsql security invoker set search_path=pg_catalog,public as $ begin if auth.role()='authenticated' then new.auth_user_id:=auth.uid(); end if; return new; end; $;
+drop trigger if exists trg_phone_sync_owner on public.phone_sync;
+create trigger trg_phone_sync_owner before insert or update on public.phone_sync for each row execute function public.protect_phone_sync_owner();
 alter table public.phone_sync enable row level security;
 drop policy if exists "phone_sync_all" on public.phone_sync;
 drop policy if exists "phone_sync_insert_own" on public.phone_sync;
