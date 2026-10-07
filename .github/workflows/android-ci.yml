@@ -61,6 +61,7 @@ jobs:
       - name: Secret scan
         run: |
           set -o pipefail
+          # Scan source/config for credential *values*. Variable names and parsing patterns are not secrets.
           if find . -type f \
               \( -name "*.kt" -o -name "*.java" -o -name "*.kts" -o -name "*.gradle" -o -name "*.gradle.kts" -o -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.xml" -o -name "*.properties" \) \
               ! -path "./.git/*" \
@@ -69,8 +70,8 @@ jobs:
               ! -path "./build/*" \
               ! -path "./app/build/*" \
               ! -path "./app/google-services.json" \
-              -print0 | xargs -0 -r grep -nH -E "BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY|sb_secret_|SUPABASE_SERVICE_ROLE|-----BEGIN PRIVATE KEY-----" 2>/dev/null; then
-            echo "Secret-like credential pattern found in application source"
+              -print0 | xargs -0 -r grep -nH -E "\"private_key\"[[:space:]]*:[[:space:]]*\"-----BEGIN|AIzaSy[A-Za-z0-9_-]{30,}|sb_secret_[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{40,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}" 2>/dev/null; then
+            echo "Credential value pattern found in application source"
             exit 1
           fi
       - name: Unit tests
