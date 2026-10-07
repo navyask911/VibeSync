@@ -271,4 +271,111 @@ revoke all on function public.purge_delivered_messages() from authenticated;
 select cron.unschedule(jobid) from cron.job where jobname = 'vibesync-purge-delivered-messages';
 select cron.schedule('vibesync-purge-delivered-messages','*/15 * * * *','select public.purge_delivered_messages();');
 
+-- --------------------------------------------------------------------------
+-- Privileged chat RPCs: client never supplies/updates recipient auth UUID.
+-- --------------------------------------------------------------------------
+drop function if exists public.send_encrypted_message(text,text,text,text,text,text,integer);
+create or replace function public.send_encrypted_message(
+  p_message_id text,
+  p_match_id text,
+  p_recipient_profile_id text,
+  p_ciphertext text,
+  p_media_type text default 'TEXT',
+  p_media_url text default '',
+  p_voice_duration_seconds integer default 0
+)
+returns text
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  recipient_auth_id uuid;
+  result_message_id text;
+begin
+  if (select auth.uid()) is null then raise exception 'authentication required'; end if;
+  if coalesce(p_message_id,'') = '' or coalesce(p_match_id,'') = '' then raise exception 'message and match identifiers are required'; end if;
+  if coalesce(p_ciphertext,'') = '' or left(p_ciphertext,9) <> 'TINK_ENC:' then raise exception 'Tink ciphertext required'; end if;
+  if coalesce(p_recipient_profile_id,'') = '' then raise exception 'recipient profile is required'; end if;
+  select p.auth_user_id into recipient_auth_id
+  from public.profiles p
+  where p.id = p_recipient_profile_id
+    and coalesce(p.is_deleted,false) = false
+    and p.auth_user_id is not null
+  limit 1;
+  if recipient_auth_id is null then raise exception 'recipient profile not available'; end if;
+  if recipient_auth_id = (select auth.uid()) then raise exception 'self messaging is not allowed'; end if;
+  insert into public.chat_messages(
+    message_id, match_id, sender_user_id, receiver_user_id,
+    sender_id, receiver_id, ciphertext, is_encrypted,
+    is_delivered, is_read, media_type, media_url,
+    voice_duration_seconds, timestamp, idempotency_key, dispatch_status
+  ) values (
+    p_message_id, p_match_id, (select auth.uid()), recipient_auth_id,
+    (select coalesce(p.id,'' ) from public.profiles p where p.auth_user_id=(select auth.uid()) limit 1),
+    p_recipient_profile_id, p_ciphertext, true,
+    false, false, coalesce(nullif(p_media_type,''),'TEXT'), coalesce(p_media_url,''),
+    greatest(coalesce(p_voice_duration_seconds,0),0), (extract(epoch from now())*1000)::bigint,
+    p_message_id, 'PENDING'
+  )
+  on conflict (sender_user_id,idempotency_key)
+  do update set ciphertext=excluded.ciphertext
+  returning message_id into result_message_id;
+  return coalesce(result_message_id,p_message_id);
+end;
+$$;
+revoke all on function public.send_encrypted_message(text,text,text,text,text,text,integer) from public;
+revoke all on function public.send_encrypted_message(text,text,text,text,text,text,integer) from anon;
+revoke all on function public.send_encrypted_message(text,text,text,text,text,text,integer) from authenticated;
+grant execute on function public.send_encrypted_message(text,text,text,text,text,text,integer) to authenticated;
+
+drop function if exists public.ack_message_delivery(text);
+create or replace function public.ack_message_delivery(p_message_id text)
+returns boolean
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare updated_count integer;
+begin
+  if (select auth.uid()) is null then raise exception 'authentication required'; end if;
+  update public.chat_messages
+     set is_delivered=true,
+         delivered_at=coalesce(delivered_at, now()),
+         dispatch_status='DELIVERED'
+   where (message_id=p_message_id or id::text=p_message_id)
+     and receiver_user_id=(select auth.uid());
+  get diagnostics updated_count = row_count;
+  return updated_count > 0;
+end;
+$$;
+revoke all on function public.ack_message_delivery(text) from public;
+revoke all on function public.ack_message_delivery(text) from anon;
+revoke all on function public.ack_message_delivery(text) from authenticated;
+grant execute on function public.ack_message_delivery(text) to authenticated;
+
+drop function if exists public.ack_message_read(text);
+create or replace function public.ack_message_read(p_message_id text)
+returns boolean
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare updated_count integer;
+begin
+  if (select auth.uid()) is null then raise exception 'authentication required'; end if;
+  update public.chat_messages
+     set is_read=true,
+         read_at=coalesce(read_at, now())
+   where (message_id=p_message_id or id::text=p_message_id)
+     and receiver_user_id=(select auth.uid());
+  get diagnostics updated_count = row_count;
+  return updated_count > 0;
+end;
+$$;
+revoke all on function public.ack_message_read(text) from public;
+revoke all on function public.ack_message_read(text) from anon;
+revoke all on function public.ack_message_read(text) from authenticated;
+grant execute on function public.ack_message_read(text) to authenticated;
+
 commit;
