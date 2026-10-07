@@ -1990,44 +1990,52 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // OTP & Authentication Flow (Secure Mobile Standard - Universal Instant Verification)
+    // OTP & Authentication Flow
+    // Production authentication authority: Supabase Auth.
+    // Truecaller/direct authentication is retained only as a DEBUG test hook.
     fun requestMobileOtp(mobile: String): String {
         val cleanPhone = mobile.trim()
         _activeMobile.value = cleanPhone
-        // Universal easy OTP code for seamless instant login on both phones
-        val randomOtp = "434391"
-        _simulatedMobileOtp.value = randomOtp
-
-        // Mobile number OTP Push Notification & Heads-up System Alert
-        try {
-            com.example.util.AppNotificationManager.showOtpNotification(
-                context = getApplication<Application>(),
-                mobileNumber = cleanPhone,
-                otpCode = randomOtp
-            )
-        } catch (e: Exception) {
-            android.util.Log.w("DatingViewModel", "Failed to dispatch OTP notification: ${e.message}")
-        }
+        if (cleanPhone.isBlank()) return ""
 
         viewModelScope.launch {
-            _toastMessage.emit("Verification code sent to $cleanPhone: $randomOtp 💬")
+            val result = com.example.util.SupabaseAuthManager.sendPhoneOtp(
+                context = getApplication<Application>(),
+                phone = cleanPhone
+            )
+            result.onSuccess {
+                _toastMessage.emit("Verification code sent to $cleanPhone")
+            }.onFailure { error ->
+                _toastMessage.emit(
+                    "Unable to send verification code: ${error.message ?: "Please try again"}"
+                )
+            }
         }
-        return randomOtp
+
+        // Never return or display an OTP secret from the application.
+        _simulatedMobileOtp.value = null
+        return ""
     }
 
     fun verifyPhoneDirect(phone: String): Boolean {
-        val effectivePhone = phone.trim().ifBlank { "+91 99723 96133" }
+        if (!com.example.BuildConfig.DEBUG) {
+            viewModelScope.launch {
+                _toastMessage.emit("Direct test authentication is disabled in the production build.")
+            }
+            return false
+        }
+
+        val effectivePhone = phone.trim()
+        if (effectivePhone.isBlank()) return false
         _activeMobile.value = effectivePhone
         com.example.util.UserSessionManager.saveVerifiedSession(getApplication(), effectivePhone)
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                android.util.Log.i("TruecallerAuthFlow", "[TRUECALLER VERIFY] Starting account lookup for phone=$effectivePhone")
+                android.util.Log.i("TruecallerAuthFlow", "[DEBUG TEST] Direct Truecaller-style verification.")
                 val isRestored = kotlinx.coroutines.withTimeoutOrNull(4000L) {
                     repository.recoverOrRestoreAccountByPhone(effectivePhone)
                 } ?: false
-
-                android.util.Log.i("TruecallerAuthFlow", "[TRUECALLER VERIFY] Outcome isRestored=$isRestored for phone=$effectivePhone")
 
                 try {
                     repository.syncFrontLoginDetailsToBackend(
@@ -2039,119 +2047,29 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 } catch (e: Exception) {
                     android.util.Log.w("TruecallerAuthFlow", "Post-login sync notice: ${e.message}")
                 }
+
                 _isMpinUnlocked.value = true
                 _showFaceVerification.value = false
-
-                // Directly transition AuthState to AUTHENTICATED
                 _authState.value = AuthState.AUTHENTICATED
 
                 val prefs = repository.userPreferences.first()
-                android.util.Log.i("TruecallerAuthFlow", "[LOGIN SUCCESS] Preferences updated: userName=${prefs?.userName}, isLoggedIn=${prefs?.isLoggedIn}, isMobileVerified=${prefs?.isMobileVerified}, isProfileCompleted=${prefs?.isProfileCompleted}")
-
-                if (isRestored && prefs?.isProfileCompleted == true) {
-                    if (prefs.isGoogleCloudBackupEnabled != true) {
-                        _showPostRegistrationBackupDialog.value = true
-                    }
+                if (isRestored && prefs?.isProfileCompleted == true && prefs.isGoogleCloudBackupEnabled != true) {
+                    _showPostRegistrationBackupDialog.value = true
                 }
             } catch (e: Exception) {
-                android.util.Log.e("TruecallerAuthFlow", "Error in verifyPhoneDirect: ${e.message}", e)
-                _authState.value = AuthState.AUTHENTICATED
+                android.util.Log.e("TruecallerAuthFlow", "Debug direct authentication failed: ${e.message}", e)
             }
         }
         return true
     }
 
+    @Deprecated("Use SupabaseAuthManager.verifyPhoneOtp from the OTP screen.")
     fun verifyMobileOtp(enteredOtp: String, phone: String = ""): Boolean {
-        val expected = _simulatedMobileOtp.value
-        val cleanOtp = enteredOtp.trim()
-        val effectivePhone = if (phone.isNotBlank()) phone.trim() else _activeMobile.value.trim().ifBlank { "+91 99723 96133" }
-        _activeMobile.value = effectivePhone
-
-        val isMatch = !expected.isNullOrBlank() && cleanOtp == expected.trim()
-        val isKnownMockOtp = cleanOtp in listOf("434391", "803871", "123456", "000000", "111111", "654321", "999999")
-        val isValid = isMatch || isKnownMockOtp || (cleanOtp.length == 6)
-
-        android.util.Log.i(
-            "FirebaseAuthFlow",
-            "[OTP VERIFY ATTEMPT] phone=$effectivePhone, enteredOtp=$cleanOtp, expectedOtp=$expected, isValid=$isValid"
+        android.util.Log.d(
+            "SupabaseAuthFlow",
+            "Legacy synchronous OTP helper is disabled; use SupabaseAuthManager."
         )
-
-        if (isValid) {
-            com.example.util.UserSessionManager.clearStaleAuthSessions(getApplication())
-
-            viewModelScope.launch(Dispatchers.IO) {
-                try {
-                    android.util.Log.i("FirebaseAuthFlow", "[ACCOUNT RESTORE] Starting account lookup for phone=$effectivePhone")
-                    // VibeSync lookup: if account exists in local DB or Cloud Firestore / Supabase, restore it directly!
-                    val isRestored = kotlinx.coroutines.withTimeoutOrNull(3000L) {
-                        repository.recoverOrRestoreAccountByPhone(effectivePhone)
-                    } ?: false
-
-                    android.util.Log.i("FirebaseAuthFlow", "[ACCOUNT RESTORE] Outcome isRestored=$isRestored for phone=$effectivePhone")
-
-                    try {
-                        repository.syncFrontLoginDetailsToBackend(
-                            phone = effectivePhone,
-                            email = "",
-                            context = getApplication<Application>()
-                        )
-                        repository.startAllSyncsAfterLogin()
-                    } catch (e: Exception) {
-                        android.util.Log.w("FirebaseAuthFlow", "Post-login sync notice: ${e.message}")
-                    }
-                    _isMpinUnlocked.value = true
-                    _showFaceVerification.value = false
-
-                    val prefs = repository.userPreferences.first()
-                    android.util.Log.i("FirebaseAuthFlow", "[LOGIN SUCCESS] Preferences updated: userName=${prefs?.userName}, isLoggedIn=${prefs?.isLoggedIn}, isMobileVerified=${prefs?.isMobileVerified}, isProfileCompleted=${prefs?.isProfileCompleted}")
-
-                    if (isRestored && prefs?.isProfileCompleted == true) {
-                        // Check and wake up Google Drive chat backup settings on login
-                        if (prefs.isGoogleCloudBackupEnabled != true) {
-                            _showPostRegistrationBackupDialog.value = true
-                        } else {
-                            val days = when (prefs.backupFrequency) {
-                                "DAILY" -> 1
-                                "WEEKLY" -> 7
-                                "BI_WEEKLY" -> 15
-                                else -> 1
-                            }
-                            com.example.util.backup.BackupScheduler.scheduleBackup(
-                                context = getApplication<Application>(),
-                                intervalDays = days,
-                                wifiOnly = prefs.backupOverWifiOnly
-                            )
-                        }
-                        _toastMessage.emit("Welcome back, ${prefs.userName.ifBlank { "User" }}! ✨")
-                    } else {
-                        _toastMessage.emit("Phone verified! Welcome to VibeSync ✨")
-                    }
-                } catch (e: Exception) {
-                    android.util.Log.e("FirebaseAuthFlow", "[LOGIN FALLBACK] Exception during login process: ${e.message}", e)
-                    // Emergency fallback: guarantee user enters onboarding immediately without UI freeze
-                    val bioHash = kotlinx.coroutines.withContext(Dispatchers.Default) {
-                        getDeterministicPythonBiometricHash()
-                    }
-                    repository.updateAuthStatus(
-                        isLoggedIn = true,
-                        mobileNumber = effectivePhone,
-                        isMobileVerified = true,
-                        isFaceVerified = true,
-                        googleEmail = "",
-                        biometricHash = bioHash
-                    )
-                    _isMpinUnlocked.value = true
-                    _showFaceVerification.value = false
-                    android.util.Log.i("FirebaseAuthFlow", "[LOGIN FALLBACK COMPLETE] Force updated auth status to isLoggedIn=true")
-                }
-            }
-        } else {
-            android.util.Log.w("FirebaseAuthFlow", "[OTP VERIFY FAILED] Invalid code $cleanOtp for phone $effectivePhone")
-            viewModelScope.launch {
-                _toastMessage.emit("Invalid verification code. Please check and retry.")
-            }
-        }
-        return isValid
+        return false
     }
 
     /**
