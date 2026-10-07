@@ -21,21 +21,27 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
         super.onNewToken(token)
-        Log.i(TAG, "⚡ FCM onNewToken refreshed: $token")
+        Log.i(TAG, "FCM token refreshed.")
         AppNotificationManager.updateCachedFcmToken(token)
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val db = com.example.data.database.DatingDatabase.getDatabase(applicationContext)
-                val prefs = db.userPreferencesDao().getPreferencesSync()
-                val userId = if (!prefs?.verifiedMobileNumber.isNullOrBlank()) {
-                    prefs.verifiedMobileNumber.trim().replace(" ", "")
-                } else if (!prefs?.googleEmail.isNullOrBlank()) {
-                    prefs.googleEmail.trim()
-                } else {
-                    "user_${prefs?.id ?: 1}"
+                val userId = com.example.util.SupabaseAuthManager
+                    .getCachedSession(applicationContext)
+                    ?.user
+                    ?.id
+                    .orEmpty()
+
+                if (userId.isBlank()) {
+                    Log.d(TAG, "FCM token refreshed before Supabase authentication; registration deferred.")
+                    return@launch
                 }
-                com.example.util.FirebaseBackendSyncManager.registerDeviceFcmToken(userId, token)
+
+                com.example.util.SupabaseClientManager.upsertDeviceFcmToken(
+                    context = applicationContext,
+                    userId = userId,
+                    token = token
+                )
             } catch (e: Exception) {
                 Log.d(TAG, "Notice saving refreshed FCM token: ${e.message}")
             }
