@@ -366,7 +366,7 @@ object SupabaseClientManager {
         try {
             val safeLimit = limit.coerceIn(1, 50)
             val request = buildRequest(
-                endpoint = "profiles?select=id,name,phone_number,clean_phone,phone_hash,phone_number_e164,email,age,gender,city,country,country_flag,place,avatar_emoji,avatar_url,occupation,qualification,bio,marital_status,account_status,is_verified,is_deleted,updated_at&order=updated_at.desc&limit=$safeLimit",
+                endpoint = "profiles?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key&order=updated_at.desc&limit=$safeLimit",
                 method = "GET"
             )
 
@@ -854,33 +854,25 @@ object SupabaseClientManager {
     suspend fun syncPhoneHashToSyncTable(userId: String, rawPhone: String): Boolean = withContext(Dispatchers.IO) {
         if (userId.isBlank() || rawPhone.isBlank()) return@withContext false
         val hex64 = PhonebookHasher.hashPhoneNumberToHex(rawPhone)
-        if (hex64.isBlank() || hex64.length != 64) return@withContext false
-
+        if (hex64.length != 64) return@withContext false
         try {
-            // In PostgreSQL / PostgREST, BYTEA strings can be formatted as \x<hex_chars>
             val json = JSONObject().apply {
                 put("user_id", userId)
                 put("phone_hash", "\\x$hex64")
             }
-
             val request = buildRequest(
                 endpoint = "phone_sync",
                 method = "POST",
                 bodyJson = json.toString(),
                 preferHeader = "resolution=merge-duplicates"
             )
-
             httpClient.newCall(request).execute().use { response ->
                 val success = response.isSuccessful
-                if (success) {
-                    Log.i(TAG, "⚡ Synced user $userId to 'phone_sync' BYTEA table (64-hex SHA-256)")
-                } else {
-                    Log.d(TAG, "phone_sync table insert HTTP ${response.code}: ${response.body?.string()?.take(100)}")
-                }
+                if (!success) Log.w(TAG, "phone_sync insert rejected HTTP ${response.code}")
                 success
             }
         } catch (e: Throwable) {
-            Log.d(TAG, "phone_sync table notice: ${e.message}")
+            Log.w(TAG, "phone_sync insert notice: ${e.message}")
             false
         }
     }
