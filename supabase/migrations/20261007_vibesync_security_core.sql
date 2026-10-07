@@ -172,6 +172,9 @@ grant execute on function public.match_contacts(text[]) to authenticated;
 -- --------------------------------------------------------------------------
 -- Chat transport rows: encrypted payload only + authenticated identities
 -- --------------------------------------------------------------------------
+alter table public.chat_messages alter column sender_phone drop not null;
+alter table public.chat_messages alter column receiver_phone drop not null;
+alter table public.chat_messages alter column message_text drop not null;
 alter table public.chat_messages add column if not exists message_id text;
 alter table public.chat_messages add column if not exists match_id text;
 alter table public.chat_messages add column if not exists sender_id text;
@@ -220,6 +223,7 @@ begin
     if coalesce(new.ciphertext,'') = '' and coalesce(new.text,'') <> '' then new.ciphertext := new.text; end if;
     new.text := null;
     new.message := null;
+    new.message_text := null;
     new.sender_phone := null;
     new.receiver_phone := null;
     if new.sender_user_id is null then new.sender_user_id := auth.uid(); end if;
