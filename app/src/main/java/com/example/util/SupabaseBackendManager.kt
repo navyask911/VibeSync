@@ -667,52 +667,33 @@ object SupabaseBackendManager {
     ): Boolean = withContext(Dispatchers.IO) {
         if (messageId.isBlank()) return@withContext false
         try {
-            val patchJson = JSONObject().apply {
-                put("is_delivered", true)
-            }
-            val body = patchJson.toString().toRequestBody("application/json".toMediaType())
-
-            val endpoints = listOf(
-                "$SUPABASE_URL/rest/v1/chat_messages?id=eq.$messageId",
-                "$SUPABASE_URL/rest/v1/chat_messages?message_id=eq.$messageId",
-                "$SUPABASE_URL/rest/v1/messages?id=eq.$messageId"
-            )
-
-            var success = false
-            for (endpoint in endpoints) {
-                try {
-                    val request = Request.Builder()
-                        .url(endpoint)
-                        .header("apikey", SUPABASE_ANON_KEY)
-                        .header("Authorization", "Bearer $SUPABASE_ANON_KEY")
-                        .header("Content-Type", "application/json")
-                        .patch(body)
-                        .build()
-
-                    httpClient.newCall(request).execute().use { response ->
-                        if (response.isSuccessful) success = true
-                        Log.d(TAG, "markMessageDelivered PATCH ($endpoint) status: ${response.code}")
+            val accessToken = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
+            val body = JSONObject().apply { put("p_message_id", messageId) }
+                .toString().toRequestBody("application/json".toMediaType())
+            val request = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/rpc/ack_message_delivery")
+                .header("apikey", SUPABASE_ANON_KEY)
+                .header("Authorization", "Bearer $accessToken")
+                .header("Content-Type", "application/json")
+                .post(body)
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                val success = response.isSuccessful
+                if (success) {
+                    val updateBc = JSONObject().apply {
+                        put("id", messageId)
+                        put("message_id", messageId)
+                        put("is_delivered", true)
+                        put("type", "UPDATE")
                     }
-                    if (success) break
-                } catch (e: Exception) {
-                    Log.w(TAG, "Notice executing delivery ACK on $endpoint: ${e.message}")
+                    broadcastUpdateStatus(updateBc)
+                } else {
+                    Log.w(TAG, "Delivery ACK RPC failed HTTP ${response.code}")
                 }
+                success
             }
-
-            // Realtime WebSocket broadcast of delivery ACK
-            val updateBc = JSONObject().apply {
-                put("id", messageId)
-                put("message_id", messageId)
-                put("is_delivered", true)
-                put("type", "UPDATE")
-                if (!senderPhone.isNullOrBlank()) put("sender_phone", senderPhone)
-                if (!receiverPhone.isNullOrBlank()) put("receiver_phone", receiverPhone)
-            }
-            broadcastUpdateStatus(updateBc)
-
-            success
         } catch (e: Exception) {
-            Log.e(TAG, "Error executing delivery ACK for $messageId: ${e.message}", e)
+            Log.w(TAG, "Delivery ACK RPC error: ${e.message}")
             false
         }
     }
