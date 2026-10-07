@@ -808,24 +808,7 @@ object SupabaseClientManager {
             Log.w(TAG, "match_contacts RPC notice: ${e.message}, executing fallback query.")
         }
 
-        // Fallback: Query profiles table using selective indexed hashes
-        try {
-            val profiles = fetchProfilesByHashes(validHashes)
-            for (p in profiles) {
-                results.add(
-                    MatchedSupabaseContact(
-                        id = p.id,
-                        name = p.name,
-                        photoUrl = p.avatarUrl.ifBlank { null },
-                        avatarEmoji = p.avatarEmoji.ifBlank { "✨" },
-                        phoneHash = p.phoneNumber.ifBlank { p.id }
-                    )
-                )
-            }
-        } catch (e: Throwable) {
-            Log.w(TAG, "Fallback match notice: ${e.message}")
-        }
-
+        // No direct profile-table fallback: privacy requires the RPC boundary.
         return@withContext results
     }
 }
