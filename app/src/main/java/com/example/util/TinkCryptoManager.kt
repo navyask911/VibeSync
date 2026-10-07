@@ -95,10 +95,14 @@ object TinkCryptoManager {
      * Generates deterministic sorted associatedData context info for sender and receiver.
      */
     fun getAssociatedData(senderPhone: String, receiverPhone: String): ByteArray {
-        val normSender = PhonebookHasher.normalizeToE164(senderPhone)
-        val normReceiver = PhonebookHasher.normalizeToE164(receiverPhone)
-        val sorted = listOf(normSender, normReceiver).sorted()
-        return "${sorted[0]}:${sorted[1]}".toByteArray(Charsets.UTF_8)
+        // Bind encryption to stable VibeSync profile identities, not raw phone numbers.
+        // This keeps phone numbers out of the message transport/database while making the
+        // authenticated sender/recipient identities part of the AEAD context.
+        val sender = senderPhone.trim().lowercase()
+        val receiver = receiverPhone.trim().lowercase()
+        require(sender.isNotBlank() && receiver.isNotBlank()) { "message identities required" }
+        val sorted = listOf(sender, receiver).sorted()
+        return ("VibeSync:v1:" + sorted[0] + ":" + sorted[1]).toByteArray(Charsets.UTF_8)
     }
 
     /**
