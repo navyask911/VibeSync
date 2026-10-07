@@ -22,6 +22,9 @@ import com.example.data.model.SwipeEntity
 import com.example.data.model.UserPreferencesEntity
 import com.example.util.AppNotificationManager
 import com.example.util.DeviceSimAndIpCountryHelper
+import kotlinx.coroutines.tasks.await
+import com.example.util.ZeroCostE2eeMessagingManager
+import com.google.firebase.firestore.FirebaseFirestore
 import com.example.util.FirebaseBackendSyncManager
 import com.example.util.SystemHealthDiagnosticsManager
 import com.example.util.backup.BackupScheduler
