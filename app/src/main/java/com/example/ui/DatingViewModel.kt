@@ -252,25 +252,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
 
-        // Verbose FirebaseAuth AuthStateListener to trace and debug all auth changes in real-time
-        try {
-            com.google.firebase.auth.FirebaseAuth.getInstance().addAuthStateListener { auth ->
-                val user = auth.currentUser
-                if (user != null) {
-                    android.util.Log.i(
-                        "FirebaseAuthListener",
-                        "[AUTH STATE CHANGED] User Signed In: uid=${user.uid}, email=${user.email}, phone=${user.phoneNumber}, isAnonymous=${user.isAnonymous}, providers=${user.providerData.map { it.providerId }}"
-                    )
-                } else {
-                    android.util.Log.i(
-                        "FirebaseAuthListener",
-                        "[AUTH STATE CHANGED] User Signed Out / No Active Firebase Session"
-                    )
-                }
-            }
-        } catch (e: Exception) {
-            android.util.Log.w("FirebaseAuthListener", "Error registering AuthStateListener: ${e.message}")
-        }
+        // Supabase Auth session is the authoritative identity state.
+        // Avoid a second Firebase Auth state machine; Firebase is FCM-only.
 
         // Initialize Supabase Realtime WebSocket for two-way chat synchronization and delivery/read receipts
         try {
