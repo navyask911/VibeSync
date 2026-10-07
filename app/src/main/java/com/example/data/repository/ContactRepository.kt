@@ -278,6 +278,7 @@ class ContactRepository(
                 ProfileEntity(
                     id = match.id,
                     name = match.name,
+                    age = 24,
                     phoneNumber = "",
                     avatarUrl = match.photoUrl.orEmpty(),
                     avatarEmoji = match.avatarEmoji,
