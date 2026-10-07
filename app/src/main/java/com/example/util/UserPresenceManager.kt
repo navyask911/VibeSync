@@ -116,7 +116,7 @@ class UserPresenceManager private constructor() {
                 delay(15_000L)
             }
         }
-        updateLocalHeartbeat(currentUserId, appInForeground)
+        scope.launch { updateLocalHeartbeat(currentUserId, appInForeground) }
     }
 
     private fun setupNetworkMonitoring(context: Context) {
