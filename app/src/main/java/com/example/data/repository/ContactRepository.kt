@@ -184,8 +184,8 @@ class ContactRepository(
 
             for (contact in deviceContacts) {
                 val tenDigit = normalize10Digit(contact.phoneNumber)
-                val matchedProfile = matchedProfilesMap[tenDigit]
-                    ?: matchedProfilesMap[contact.phoneNumber]
+                val lookupHash = PhonebookHasher.hashPhoneNumberToHex(contact.phoneNumber)
+                val matchedProfile = matchedProfilesMap[lookupHash]
                     ?: matchedProfilesMap[contact.id]
 
                 val isOnVibeSync = matchedProfile != null
@@ -198,7 +198,7 @@ class ContactRepository(
                     photoUrl = matchedProfile?.avatarUrl?.ifBlank { "" } ?: contact.photoUrl,
                     statusTagline = matchedProfile?.bio?.ifBlank { "" } ?: contact.statusTagline,
                     vibeSyncUser = matchedProfile ?: contact.vibeSyncUser,
-                    phoneHash = tenDigit
+                    phoneHash = lookupHash
                 )
 
                 allResolvedContacts.add(resolvedContact)
