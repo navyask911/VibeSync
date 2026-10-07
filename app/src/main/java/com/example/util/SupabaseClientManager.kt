@@ -881,4 +881,66 @@ object SupabaseClientManager {
         // No direct profile-table fallback: privacy requires the RPC boundary.
         return@withContext results
     }
+    suspend fun blockUserRemote(profileId: String, reason: String = "USER_BLOCK"): Boolean = withContext(Dispatchers.IO) {
+        val token = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
+        try {
+            val body = JSONObject().apply {
+                put("p_blocked_profile_id", profileId)
+                put("p_reason", reason.take(120))
+            }.toString()
+            val request = buildRequest("rpc/block_user", "POST", body)
+            httpClient.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Remote block notice: " + e.message)
+            false
+        }
+    }
+
+    suspend fun unblockUserRemote(profileId: String): Boolean = withContext(Dispatchers.IO) {
+        val token = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
+        try {
+            val body = JSONObject().apply { put("p_blocked_profile_id", profileId) }.toString()
+            val request = buildRequest("rpc/unblock_user", "POST", body)
+            httpClient.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Remote unblock notice: " + e.message)
+            false
+        }
+    }
+
+    suspend fun submitSafetyReportRemote(profileId: String, reason: String, details: String = ""): String? = withContext(Dispatchers.IO) {
+        val token = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext null
+        try {
+            val body = JSONObject().apply {
+                put("p_reported_profile_id", profileId)
+                put("p_reason", reason.take(120))
+                put("p_details", details.take(4000))
+            }.toString()
+            val request = buildRequest("rpc/submit_safety_report", "POST", body)
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                response.body?.string()?.trim()?.trim('"')?.takeIf { it.isNotBlank() }
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Remote safety report notice: " + e.message)
+            null
+        }
+    }
+
+    suspend fun staffModerateProfile(profileId: String, action: String, reason: String = ""): Boolean = withContext(Dispatchers.IO) {
+        val token = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
+        if (!isPlatformStaff()) return@withContext false
+        try {
+            val body = JSONObject().apply {
+                put("p_profile_id", profileId)
+                put("p_action", action)
+                put("p_reason", reason.take(500))
+            }.toString()
+            val request = buildRequest("rpc/staff_set_profile_moderation", "POST", body)
+            httpClient.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Staff moderation notice: " + e.message)
+            false
+        }
+    }
 }
