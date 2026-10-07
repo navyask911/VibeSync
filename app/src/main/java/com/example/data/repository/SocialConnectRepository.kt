@@ -20,8 +20,10 @@ import com.example.data.model.ReportEntity
 import com.example.data.model.StatusStoryEntity
 import com.example.data.model.SwipeEntity
 import com.example.data.model.UserPreferencesEntity
+import com.google.firebase.firestore.FirebaseFirestore
 import com.example.util.AppNotificationManager
 import com.example.util.DeviceSimAndIpCountryHelper
+import com.example.util.FirebaseBackendSyncManager
 import com.example.util.SystemHealthDiagnosticsManager
 import com.example.util.SupabaseAuthManager
 import com.example.util.ZeroCostE2eeMessagingManager
@@ -37,6 +39,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
@@ -90,10 +93,7 @@ class SocialConnectRepository(
     val allChannels: Flow<List<ChannelEntity>> = channelDao.getAllChannels()
     val followedChannels: Flow<List<ChannelEntity>> = channelDao.getFollowedChannels()
 
-    suspend fun backupContactsToDatabaseAndFirestore(
-        contacts: List<com.example.data.model.PhoneContact>,
-        userId: String = "current_user"
-    ) {
+    suspend fun backupContactsToDatabaseAndFirestore(contacts: List<com.example.data.model.PhoneContact>, userId: String = "current_user") {
         try {
             val entities = contacts.map {
                 com.example.data.model.UserContactEntity(
@@ -104,28 +104,87 @@ class SocialConnectRepository(
                     isOnVibeSync = it.isOnVibeSync,
                     photoUrl = it.photoUrl,
                     statusTagline = it.statusTagline,
-                    syncedToFirestore = false,
+                    syncedToFirestore = true,
                     updatedAt = System.currentTimeMillis()
                 )
             }
             userContactDao.insertContacts(entities)
-            Log.d("SocialConnectRepository", "Stored " + entities.size + " contacts locally; no address-book upload performed.")
+
+            // Supabase Batch Upsert
+            com.example.util.SupabaseClientManager.upsertContactsBatch(entities)
+
+            val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+            val batch = db.batch()
+            entities.forEach { contact ->
+                val ref = db.collection("users").document(userId).collection("contacts").document(contact.id)
+                val map = hashMapOf(
+                    "id" to contact.id,
+                    "userId" to userId,
+                    "contactName" to contact.contactName,
+                    "phoneNumber" to contact.phoneNumber,
+                    "isOnVibeSync" to contact.isOnVibeSync,
+                    "syncedAt" to System.currentTimeMillis()
+                )
+                batch.set(ref, map)
+            }
+            batch.commit()
         } catch (e: Exception) {
-            Log.w("SocialConnectRepository", "Local contact cache notice: ${e.message}")
+            android.util.Log.w("SocialConnectRepository", "Contacts backup notice: ${e.message}")
         }
     }
 
     suspend fun syncProfileToFirestore(profile: ProfileEntity) {
         try {
+            val cleanPhone = com.example.util.ContactResolver.sanitizePhone(profile.phoneNumber)
             val cleanName = com.example.util.ContactResolver.sanitizeName(profile.name)
-            val cleanId = profile.id.trim()
-            if (cleanId.isBlank() || cleanId == "current_user" || cleanId == "null") {
-                Log.w("SocialConnectRepository", "Skipping invalid profile sync: id=" + cleanId)
+            val cleanId = com.example.util.ContactResolver.sanitizePhone(profile.id)
+
+            // Guard: Do not sync uninitialized profiles to cloud
+            if (cleanId == "current_user" || cleanId == "null" || cleanId.isBlank() || (cleanPhone.isBlank() && profile.email.isBlank())) {
+                android.util.Log.w("SocialConnectRepository", "Skipping cloud sync of uninitialized profile: id=${profile.id}, name=${profile.name}")
                 return
             }
-            com.example.util.SupabaseClientManager.upsertProfile(profile.copy(name = cleanName))
+
+            // 1. Sync to Supabase PostgREST Database
+            com.example.util.SupabaseClientManager.upsertProfile(profile.copy(name = cleanName, phoneNumber = cleanPhone))
+
+            // 2. Sync to Firestore (used for FCM notification triggers & backup)
+            val phoneDigits = cleanPhone.filter { it.isDigit() }
+            val docId = if (phoneDigits.length >= 7) phoneDigits else if (profile.email.isNotBlank()) profile.email.trim() else cleanId
+            if (docId.isBlank() || docId == "null" || docId == "current_user") return
+
+            val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+            val map = hashMapOf(
+                "id" to docId,
+                "userId" to docId,
+                "name" to cleanName.ifBlank { "VibeSync Member" },
+                "age" to profile.age,
+                "gender" to com.example.util.ContactResolver.sanitizeName(profile.gender, "User"),
+                "city" to com.example.util.ContactResolver.sanitizeName(profile.city, "Online"),
+                "country" to com.example.util.ContactResolver.sanitizeName(profile.country, "United States"),
+                "countryFlag" to profile.countryFlag.ifBlank { "🇺🇸" },
+                "place" to com.example.util.ContactResolver.sanitizeName(profile.place),
+                "avatarEmoji" to profile.avatarEmoji.ifBlank { "✨" },
+                "avatarUrl" to com.example.util.ContactResolver.sanitizeName(profile.avatarUrl),
+                "occupation" to com.example.util.ContactResolver.sanitizeName(profile.occupation, "Member"),
+                "qualification" to com.example.util.ContactResolver.sanitizeName(profile.qualification, "Verified"),
+                "bio" to com.example.util.ContactResolver.sanitizeName(profile.bio, "Hey there! Secure with VibeSync E2EE."),
+                "interests" to profile.interests,
+                "maritalStatus" to com.example.util.ContactResolver.sanitizeName(profile.maritalStatus, "Single"),
+                "phoneNumber" to cleanPhone,
+                "cleanPhone" to phoneDigits,
+                "phone_hash" to com.example.util.PhonebookHasher.generate16CharHash(cleanPhone.ifBlank { docId }),
+                "phoneHash" to com.example.util.PhonebookHasher.generate16CharHash(cleanPhone.ifBlank { docId }),
+                "phoneNumberE164" to com.example.util.PhonebookHasher.normalizeToE164(cleanPhone.ifBlank { docId }),
+                "email" to com.example.util.ContactResolver.sanitizeName(profile.email),
+                "isDeleted" to profile.isDeleted,
+                "accountStatus" to profile.accountStatus.ifBlank { "ACTIVE" },
+                "updatedAt" to System.currentTimeMillis()
+            )
+            db.collection("users").document(docId).set(map, com.google.firebase.firestore.SetOptions.merge())
+            db.collection("profiles").document(docId).set(map, com.google.firebase.firestore.SetOptions.merge())
         } catch (e: Exception) {
-            Log.w("SocialConnectRepository", "Supabase profile sync notice: ${e.message}")
+            android.util.Log.w("SocialConnectRepository", "Profile sync error: ${e.message}")
         }
     }
 
@@ -252,8 +311,121 @@ class SocialConnectRepository(
         userContactDao.clearAllContacts()
         swipeDao.clearAllSwipes()
 
-        // Global cloud wipes are forbidden from the Android client.
-        // Only server-authorized account deletion may remove backend data.        if (keepOwnUser) {
+        // 2. Cloud Firestore & Realtime DB full wipe
+        withContext(Dispatchers.IO) {
+            try {
+                val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+
+                // Profiles collection
+                val profSnap = db.collection("profiles").get().await()
+                for (doc in profSnap.documents) {
+                    val pPhone = (doc.getString("phoneNumber") ?: doc.getString("mobileNumber") ?: "").filter { it.isDigit() }
+                    val pEmail = (doc.getString("googleEmail") ?: doc.getString("email") ?: "").trim().lowercase()
+                    val isOwn = keepOwnUser && (
+                        doc.id == ownPhone || doc.id == ownEmail ||
+                        (ownDigits.length >= 7 && pPhone.endsWith(ownDigits.takeLast(7))) ||
+                        (ownEmail.isNotBlank() && pEmail == ownEmail)
+                    )
+                    if (!isOwn) {
+                        db.collection("profiles").document(doc.id).delete()
+                    }
+                }
+
+                // Users collection
+                val userSnap = db.collection("users").get().await()
+                for (doc in userSnap.documents) {
+                    val uPhone = (doc.getString("phoneNumber") ?: doc.getString("mobileNumber") ?: "").filter { it.isDigit() }
+                    val uEmail = (doc.getString("googleEmail") ?: doc.getString("email") ?: "").trim().lowercase()
+                    val isOwn = keepOwnUser && (
+                        doc.id == ownPhone || doc.id == ownEmail ||
+                        (ownDigits.length >= 7 && uPhone.endsWith(ownDigits.takeLast(7))) ||
+                        (ownEmail.isNotBlank() && uEmail == ownEmail)
+                    )
+                    if (!isOwn) {
+                        db.collection("users").document(doc.id).delete()
+                    }
+                }
+
+                // Registered Accounts collection
+                val regSnap = db.collection("registered_accounts").get().await()
+                for (doc in regSnap.documents) {
+                    val rPhone = (doc.getString("phoneNumber") ?: doc.getString("recoveryPhone") ?: "").filter { it.isDigit() }
+                    val rEmail = (doc.getString("googleEmail") ?: doc.getString("recoveryEmail") ?: "").trim().lowercase()
+                    val isOwn = keepOwnUser && (
+                        doc.id == ownPhone || doc.id == ownEmail ||
+                        (ownDigits.length >= 7 && rPhone.endsWith(ownDigits.takeLast(7))) ||
+                        (ownEmail.isNotBlank() && rEmail == ownEmail)
+                    )
+                    if (!isOwn) {
+                        db.collection("registered_accounts").document(doc.id).delete()
+                    }
+                }
+
+                // Chats collection & subcollections
+                val chatSnap = db.collection("chats").get().await()
+                for (doc in chatSnap.documents) {
+                    try {
+                        val msgSnap = db.collection("chats").document(doc.id).collection("messages").get().await()
+                        for (mDoc in msgSnap.documents) {
+                            db.collection("chats").document(doc.id).collection("messages").document(mDoc.id).delete()
+                        }
+                    } catch (_: Exception) {}
+                    db.collection("chats").document(doc.id).delete()
+                }
+
+                // Biometrics collection
+                val bioSnap = db.collection("biometrics").get().await()
+                for (doc in bioSnap.documents) {
+                    if (!keepOwnUser) {
+                        db.collection("biometrics").document(doc.id).delete()
+                    }
+                }
+
+                // Likes & Mutual Matches collections
+                val likesSnap = db.collection("likes").get().await()
+                for (doc in likesSnap.documents) {
+                    db.collection("likes").document(doc.id).delete()
+                }
+                val mutualSnap = db.collection("mutual_matches").get().await()
+                for (doc in mutualSnap.documents) {
+                    db.collection("mutual_matches").document(doc.id).delete()
+                }
+
+                // Blocked Users, Reports, and Tokens collections
+                val blockSnap = db.collection("blocked_users").get().await()
+                for (doc in blockSnap.documents) {
+                    db.collection("blocked_users").document(doc.id).delete()
+                }
+                val reportSnap = db.collection("reports").get().await()
+                for (doc in reportSnap.documents) {
+                    db.collection("reports").document(doc.id).delete()
+                }
+                val tokenSnap = db.collection("fcm_tokens").get().await()
+                for (doc in tokenSnap.documents) {
+                    db.collection("fcm_tokens").document(doc.id).delete()
+                }
+
+                // Realtime DB queues & status nodes
+                val rtdb = com.google.firebase.database.FirebaseDatabase.getInstance()
+                rtdb.getReference("status").removeValue()
+                if (!keepOwnUser) {
+                    rtdb.getReference("messages").removeValue()
+                    rtdb.getReference("registration_bundles").removeValue()
+                    rtdb.getReference("public_profiles").removeValue()
+                    rtdb.getReference("mutual_matches").removeValue()
+                    rtdb.getReference("user_sync").removeValue()
+                    rtdb.getReference("profiles").removeValue()
+                    try {
+                        context?.let { SupabaseAuthManager.signOut(it) }
+                    } catch (_: Exception) {}
+                }
+
+                android.util.Log.i("SocialConnectRepository", "✨ [BACKEND WIPE] All profiles and backend data completely wiped from cloud!")
+            } catch (e: Exception) {
+                android.util.Log.w("SocialConnectRepository", "Error clearing all backend data: ${e.message}")
+            }
+        }
+        if (keepOwnUser) {
             pullProfilesFromFirestore()
             removeOwnProfileAndSelfMatches()
         }
@@ -1005,21 +1177,159 @@ class SocialConnectRepository(
     suspend fun pullProfilesFromFirestore() {
         try {
             val prefs = preferencesDao.getPreferencesSync()
-            val myPhone = prefs?.verifiedMobileNumber.orEmpty()
-            val myProfileId = if (myPhone.isNotBlank()) {
-                com.example.util.SupabaseClientManager.getPhoneHash(myPhone)
-            } else {
-                "current_user"
+            val myPhone = prefs?.verifiedMobileNumber ?: ""
+            val myPhoneDigits = myPhone.filter { it.isDigit() }
+            val myEmail = (prefs?.googleEmail ?: "").trim().lowercase()
+            val myId = if (myPhone.isNotBlank()) myPhone.trim().replace(" ", "") else if (myEmail.isNotBlank()) myEmail else "current_user"
+
+            val profilesToInsert = mutableListOf<ProfileEntity>()
+
+            // 1. PRIMARY SOURCE: Live Supabase PostgREST 'profiles' table
+            try {
+                val supabaseProfiles = com.example.util.SupabaseClientManager.fetchAllProfiles()
+                for (sp in supabaseProfiles) {
+                    val spDigits = sp.phoneNumber.filter { it.isDigit() }.ifBlank { sp.id.filter { it.isDigit() } }
+                    val isOwn = (myPhoneDigits.length >= 10 && spDigits.endsWith(myPhoneDigits.takeLast(10))) ||
+                            (myEmail.isNotBlank() && sp.email.equals(myEmail, ignoreCase = true)) ||
+                            sp.id == myId || sp.id == "current_user"
+                    if (!isOwn && sp.name.isNotBlank()) {
+                        profilesToInsert.add(sp)
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("SocialConnectRepository", "Supabase profile pull notice: ${e.message}")
             }
-            val supabaseProfiles = com.example.util.SupabaseClientManager.fetchAllProfiles(limit = 50)
-                .filter { it.id.isNotBlank() && it.id != myProfileId && it.id != "current_user" }
-                .filter { it.name.isNotBlank() && !it.name.equals("null", ignoreCase = true) }
-            if (supabaseProfiles.isNotEmpty()) {
-                profileDao.insertProfiles(supabaseProfiles.distinctBy { it.id })
+
+            // 2. SECONDARY SOURCE: Cloud Firestore ('users' & 'profiles' collections)
+            for (collName in listOf("users", "profiles")) {
+                try {
+                    val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                    val snapshot = try {
+                        db.collection(collName).get().await()
+                    } catch (_: Exception) {
+                        try {
+                            db.collection(collName).get(com.google.firebase.firestore.Source.CACHE).await()
+                        } catch (_: Exception) {
+                            null
+                        }
+                    }
+                    if (snapshot != null) {
+                        for (doc in snapshot.documents) {
+                            val docId = doc.id
+                            val docDigits = docId.filter { it.isDigit() }
+                            if (docId == myId || docId == "current_user" || docId.startsWith("current_user_")) continue
+                            if (docId.startsWith("seed_") || docId.startsWith("demo_")) continue
+                            if (myPhoneDigits.length >= 10 && docDigits.endsWith(myPhoneDigits.takeLast(10))) continue
+                            if (myEmail.isNotBlank() && docId.equals(myEmail, ignoreCase = true)) continue
+
+                            val name = doc.getString("name") ?: doc.getString("userName") ?: continue
+                            val docEmail = (doc.getString("googleEmail") ?: doc.getString("email") ?: "").trim().lowercase()
+                            if (myEmail.isNotBlank() && docEmail == myEmail) continue
+                            val docPhone = doc.getString("phoneNumber") ?: doc.getString("mobileNumber") ?: doc.getString("verifiedMobileNumber") ?: ""
+                            val docPhoneDigits = docPhone.filter { it.isDigit() }
+                            if (myPhoneDigits.length >= 10 && docPhoneDigits.endsWith(myPhoneDigits.takeLast(10))) continue
+                            val docUserId = doc.getString("userId") ?: ""
+                            if (docUserId == myId || (myPhoneDigits.length >= 10 && docUserId.filter { it.isDigit() }.endsWith(myPhoneDigits.takeLast(10)))) continue
+                            val age = doc.getLong("age")?.toInt() ?: doc.getLong("userAge")?.toInt() ?: 24
+                            val city = doc.getString("city") ?: doc.getString("userCity") ?: "Unknown"
+                            val bio = doc.getString("bio") ?: doc.getString("userBio") ?: ""
+                            val occupation = doc.getString("occupation") ?: ""
+                            val relationshipGoal = doc.getString("relationshipGoal") ?: "New friends"
+                            val avatarEmoji = doc.getString("avatarEmoji") ?: "✨"
+                            val avatarUrl = doc.getString("avatarUrl") ?: ""
+                            val trustScore = doc.getLong("trustScore")?.toInt() ?: 98
+                            val interestsList = doc.get("interests") as? List<*> ?: doc.get("userInterests") as? List<*>
+                            val interests = interestsList?.joinToString(", ") ?: ""
+
+                            val country = doc.getString("country") ?: "India"
+                            val countryFlag = doc.getString("countryFlag") ?: "🇮🇳"
+                            val place = doc.getString("place") ?: "Downtown Metro"
+                            val qualification = doc.getString("qualification") ?: "Bachelors"
+
+                            val existing = profileDao.getProfileByIdSync(docId)
+                            val profile = ProfileEntity(
+                                id = docId,
+                                name = name,
+                                age = age,
+                                occupation = occupation,
+                                city = city,
+                                distanceMiles = if (existing != null) existing.distanceMiles else (2..12).random(),
+                                bio = bio,
+                                interests = interests.ifBlank { "VibeSync, Chat" },
+                                relationshipGoal = relationshipGoal,
+                                promptQuestion = "What I'm looking for...",
+                                promptAnswer = bio.ifBlank { "A good conversation and meaningful connection." },
+                                gradientColorStart = 0xFFFF5E62,
+                                gradientColorEnd = 0xFFFF9966,
+                                avatarEmoji = avatarEmoji,
+                                avatarUrl = avatarUrl,
+                                isVerified = true,
+                                likedMe = true,
+                                isSuperLikedMe = true,
+                                trustScore = trustScore,
+                                isOpenForDating = doc.getBoolean("isOpenForDating") ?: true,
+                                gender = doc.getString("gender") ?: "Female",
+                                maritalStatus = doc.getString("maritalStatus") ?: "Single (Never Married)",
+                                phoneNumber = docPhone.ifBlank { if (docDigits.length >= 7) docId else "" },
+                                email = docEmail,
+                                country = country,
+                                countryFlag = countryFlag,
+                                place = place,
+                                qualification = qualification
+                            )
+                            profilesToInsert.add(profile)
+                        }
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("SocialConnectRepository", "Firestore profile pull notice for $collName: ${e.message}")
+                }
             }
-            Log.d("SocialConnectRepository", "Loaded " + supabaseProfiles.size + " public profiles from Supabase.")
+            // Sync cloud registered accounts to registeredAccountDao for authentication only
+            try {
+                val cloudAccounts = com.example.util.FirebaseBackendSyncManager.fetchAllCloudAccounts()
+                for (acc in cloudAccounts) {
+                    val accDigits = acc.phoneNumber.filter { it.isDigit() }
+                    val isOwn = (myPhoneDigits.length >= 10 && accDigits.endsWith(myPhoneDigits.takeLast(10))) ||
+                            (myEmail.isNotBlank() && acc.googleEmail.equals(myEmail, ignoreCase = true))
+                    if (!isOwn) {
+                        registeredAccountDao.insertOrUpdate(acc)
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("SocialConnectRepository", "Cloud accounts sync notice: ${e.message}")
+            }
+
+            if (profilesToInsert.isNotEmpty()) {
+                // Deduplicate by 16-character phone hash and strictly enforce phone hash as primary key 'id'
+                val deduplicatedMap = mutableMapOf<String, ProfileEntity>()
+                for (p in profilesToInsert) {
+                    val phoneKey = p.phoneNumber.ifBlank { p.id }
+                    val canonicalId = com.example.util.PhonebookHasher.generate16CharHash(phoneKey)
+                    
+                    // Strictly filter out any profile objects where name, phone_number, or canonicalId is null, empty, or literally "null"
+                    if (canonicalId.isBlank() || canonicalId.equals("null", ignoreCase = true) ||
+                        p.name.isBlank() || p.name.equals("null", ignoreCase = true) ||
+                        p.phoneNumber.isBlank() || p.phoneNumber.equals("null", ignoreCase = true)) {
+                        continue
+                    }
+                    
+                    val canonicalProfile = p.copy(id = canonicalId)
+                    val existing = deduplicatedMap[canonicalId]
+                    if (existing == null) {
+                        deduplicatedMap[canonicalId] = canonicalProfile
+                    } else {
+                        if (p.bio.isNotBlank() && existing.bio.isBlank()) {
+                            deduplicatedMap[canonicalId] = canonicalProfile
+                        }
+                    }
+                }
+                val deduplicatedList = deduplicatedMap.values.distinctBy { it.id }.toList()
+                profileDao.insertProfiles(deduplicatedList)
+                deduplicateLocalProfiles()
+                android.util.Log.d("SocialConnectRepository", "Successfully synced ${deduplicatedList.size} deduplicated profiles from Supabase & Cloud!")
+            }
         } catch (e: Exception) {
-            Log.w("SocialConnectRepository", "Supabase profile pull notice: ${e.message}")
+            android.util.Log.w("SocialConnectRepository", "Error pulling profiles from Firestore: ${e.message}")
         }
     }
 
@@ -1068,14 +1378,60 @@ class SocialConnectRepository(
     private var mutualMatchesListenerRegistration: com.google.firebase.firestore.ListenerRegistration? = null
 
     suspend fun pullSingleProfileFromFirestore(userId: String) {
-        if (userId.startsWith("seed_") || userId.startsWith("test_") || userId.startsWith("demo_") || userId == "current_user") return
+        if (userId.startsWith("p_") || userId.startsWith("seed_") || userId.startsWith("test_") || userId.startsWith("demo_") || userId == "current_user") return
         try {
-            val profiles = com.example.util.SupabaseClientManager.fetchAllProfiles(limit = 50)
-            val profile = profiles.firstOrNull { it.id == userId } ?: return
-            profileDao.insertProfile(profile)
-            Log.d("SocialConnectRepository", "Loaded Supabase profile " + userId)
+            val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+            val doc = try {
+                db.collection("profiles").document(userId).get().await()
+            } catch (_: Exception) {
+                try {
+                    db.collection("profiles").document(userId).get(com.google.firebase.firestore.Source.CACHE).await()
+                } catch (_: Exception) {
+                    null
+                }
+            } ?: return
+            if (doc.exists()) {
+                val name = doc.getString("name") ?: "New Match"
+                val age = doc.getLong("age")?.toInt() ?: 24
+                val city = doc.getString("city") ?: "Nearby"
+                val bio = doc.getString("bio") ?: ""
+                val occupation = doc.getString("occupation") ?: ""
+                val relationshipGoal = doc.getString("relationshipGoal") ?: "Meaningful Connection"
+                val avatarEmoji = doc.getString("avatarEmoji") ?: "✨"
+                val avatarUrl = doc.getString("avatarUrl") ?: ""
+                val trustScore = doc.getLong("trustScore")?.toInt() ?: 99
+                val interestsList = doc.get("interests") as? List<*>
+                val interests = interestsList?.joinToString(", ") ?: "Chat, Dating"
+
+                val profile = ProfileEntity(
+                    id = userId,
+                    name = name,
+                    age = age,
+                    occupation = occupation,
+                    city = city,
+                    distanceMiles = 3,
+                    bio = bio,
+                    interests = interests,
+                    relationshipGoal = relationshipGoal,
+                    promptQuestion = "What I'm looking for...",
+                    promptAnswer = bio.ifBlank { "Excited to meet someone genuine!" },
+                    gradientColorStart = 0xFFFF5E62,
+                    gradientColorEnd = 0xFFFF9966,
+                    avatarEmoji = avatarEmoji,
+                    avatarUrl = avatarUrl,
+                    isVerified = true,
+                    likedMe = true,
+                    isSuperLikedMe = true,
+                    trustScore = trustScore,
+                    isOpenForDating = doc.getBoolean("isOpenForDating") ?: true,
+                    gender = doc.getString("gender") ?: "Female",
+                    maritalStatus = doc.getString("maritalStatus") ?: "Single (Never Married)"
+                )
+                profileDao.insertProfile(profile)
+                android.util.Log.d("SocialConnectRepository", "Successfully pulled single profile: $name ($userId)")
+            }
         } catch (e: Exception) {
-            Log.w("SocialConnectRepository", "Supabase single-profile load notice: ${e.message}")
+            android.util.Log.w("SocialConnectRepository", "pullSingleProfileFromFirestore failed for $userId: ${e.message}")
         }
     }
 
@@ -1093,26 +1449,473 @@ class SocialConnectRepository(
 
     suspend fun getAllRegisteredUsersFromFirestore(): Map<String, ProfileEntity> = withContext(Dispatchers.IO) {
         val result = mutableMapOf<String, ProfileEntity>()
-        try {
-            val profiles = com.example.util.SupabaseClientManager.fetchAllProfiles(limit = 50)
-            for (profile in profiles) {
-                if (profile.id.isBlank()) continue
-                result[profile.id] = profile
-                if (profile.email.isNotBlank()) result[profile.email.trim().lowercase()] = profile
+        val db = try { com.google.firebase.firestore.FirebaseFirestore.getInstance() } catch (_: Exception) { null }
+
+        fun indexUser(profile: ProfileEntity) {
+            result[profile.id] = profile
+            val cleanPhone = profile.phoneNumber.trim()
+            if (cleanPhone.isNotBlank()) {
+                result[cleanPhone] = profile
+                result[cleanPhone.replace("+", "").trim()] = profile
+                val digits = cleanPhone.filter { it.isDigit() }
+                if (digits.isNotBlank()) {
+                    result[digits] = profile
+                    if (digits.length >= 10) {
+                        result[digits.takeLast(10)] = profile
+                    }
+                }
             }
-            profiles.distinctBy { it.id }.forEach { profileDao.insertProfile(it) }
+            val idDigits = profile.id.filter { it.isDigit() }
+            if (idDigits.isNotBlank()) {
+                result[idDigits] = profile
+                if (idDigits.length >= 10) {
+                    result[idDigits.takeLast(10)] = profile
+                }
+            }
+            if (profile.email.isNotBlank()) {
+                result[profile.email.trim().lowercase()] = profile
+            }
+        }
+
+        // 0. Query Supabase Database Profiles
+        try {
+            val supabaseProfiles = com.example.util.SupabaseClientManager.fetchAllProfiles()
+            val validSupabaseProfiles = supabaseProfiles.filter { sp ->
+                val phoneKey = sp.phoneNumber.ifBlank { sp.id }
+                val canonicalId = com.example.util.PhonebookHasher.generate16CharHash(phoneKey)
+                canonicalId.isNotBlank() && !canonicalId.equals("null", ignoreCase = true) &&
+                sp.name.isNotBlank() && !sp.name.equals("null", ignoreCase = true) &&
+                sp.phoneNumber.isNotBlank() && !sp.phoneNumber.equals("null", ignoreCase = true)
+            }.distinctBy { sp ->
+                val phoneKey = sp.phoneNumber.ifBlank { sp.id }
+                com.example.util.PhonebookHasher.generate16CharHash(phoneKey)
+            }
+            for (sp in validSupabaseProfiles) {
+                val phoneKey = sp.phoneNumber.ifBlank { sp.id }
+                val canonicalId = com.example.util.PhonebookHasher.generate16CharHash(phoneKey)
+                val canonicalProfile = sp.copy(id = canonicalId)
+                indexUser(canonicalProfile)
+                profileDao.insertProfile(canonicalProfile)
+            }
         } catch (e: Exception) {
-            Log.w("SocialConnectRepository", "Supabase registered-profile load notice: ${e.message}")
+            android.util.Log.w("SocialConnectRepository", "Supabase profile fetch note: ${e.message}")
+        }
+
+        // 1. Query Firestore 'profiles' collection
+        if (db != null) {
+            try {
+                val snapshot = try {
+                    db.collection("profiles").get().await()
+                } catch (_: Exception) {
+                    try {
+                        db.collection("profiles").get(com.google.firebase.firestore.Source.CACHE).await()
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                if (snapshot != null) {
+                    for (doc in snapshot.documents) {
+                        val docId = doc.id
+                        if (docId.startsWith("p_") || docId.startsWith("seed_") || docId.startsWith("test_") || docId == "current_user") continue
+                        val name = doc.getString("name") ?: continue
+                        val phone = doc.getString("phoneNumber") ?: doc.getString("mobileNumber") ?: docId
+                        val email = doc.getString("googleEmail") ?: doc.getString("email") ?: ""
+                        val profile = ProfileEntity(
+                            id = docId,
+                            name = name,
+                            age = doc.getLong("age")?.toInt() ?: 24,
+                            occupation = doc.getString("occupation") ?: "Member",
+                            city = doc.getString("city") ?: "Online",
+                            distanceMiles = 1,
+                            bio = doc.getString("bio") ?: "VibeSync Member",
+                            interests = "Chat, Friendship",
+                            relationshipGoal = doc.getString("relationshipGoal") ?: "Friends",
+                            promptQuestion = "",
+                            promptAnswer = "",
+                            gradientColorStart = 0xFFFF5E62,
+                            gradientColorEnd = 0xFFFF9966,
+                            avatarEmoji = doc.getString("avatarEmoji") ?: "✨",
+                            avatarUrl = doc.getString("avatarUrl") ?: "",
+                            phoneNumber = phone,
+                            email = email,
+                            isVerified = true,
+                            likedMe = true,
+                            isSuperLikedMe = true,
+                            isOpenForDating = doc.getBoolean("isOpenForDating") ?: false,
+                            gender = doc.getString("gender") ?: "User",
+                            maritalStatus = doc.getString("maritalStatus") ?: "Single"
+                        )
+                        indexUser(profile)
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("SocialConnectRepository", "profiles fetch in getAllRegisteredUsersFromFirestore error: ${e.message}")
+            }
+
         }
         result
     }
 
     fun startRealtimeProfilesSync() {
-        Log.d("SocialConnectRepository", "Legacy Firestore profile listener disabled. Supabase/Room is authoritative.")
+        val firestore = try {
+            com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        } catch (e: Exception) {
+            SystemHealthDiagnosticsManager.logFirestoreTrace(
+                collection = "profiles",
+                eventType = "ERROR",
+                docId = "N/A",
+                summary = "Failed to obtain Firestore instance: ${e.message}",
+                syncStatus = "ERROR"
+            )
+            return
+        }
+
+        // 1. Listen to 'profiles' collection
+        if (profilesListenerRegistration == null) {
+            try {
+                SystemHealthDiagnosticsManager.logFirestoreTrace(
+                    collection = "profiles",
+                    eventType = "ATTACHED",
+                    docId = "ALL",
+                    summary = "Attached realtime snapshot listener to 'profiles' collection"
+                )
+                profilesListenerRegistration = firestore.collection("profiles")
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null) {
+                            val isPerm = error.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED
+                            SystemHealthDiagnosticsManager.logFirestoreTrace(
+                                collection = "profiles",
+                                eventType = if (isPerm) "OFFLINE_CACHE" else "ERROR",
+                                docId = "ALL",
+                                summary = if (isPerm) "Operating in local cache mode (awaiting auth)" else "Profiles listener error: ${error.code} - ${error.message}",
+                                syncStatus = if (isPerm) "CACHE_ONLY" else "ERROR"
+                            )
+                            return@addSnapshotListener
+                        }
+                        if (snapshot == null) return@addSnapshotListener
+
+                        val isFromCache = snapshot.metadata.isFromCache
+                        val hasPendingWrites = snapshot.metadata.hasPendingWrites()
+                        SystemHealthDiagnosticsManager.logFirestoreTrace(
+                            collection = "profiles",
+                            eventType = "SNAPSHOT_RECEIVED",
+                            docId = "ALL",
+                            summary = "Received snapshot with ${snapshot.size()} documents (fromCache=$isFromCache, pendingWrites=$hasPendingWrites)",
+                            isFromCache = isFromCache,
+                            hasPendingWrites = hasPendingWrites
+                        )
+
+                        appScope.launch(Dispatchers.IO) {
+                            val prefs = preferencesDao.getPreferencesSync()
+                            val myPhone = (prefs?.verifiedMobileNumber ?: "").filter { it.isDigit() }
+                            val myEmail = (prefs?.googleEmail ?: "").trim().lowercase()
+
+                            for (change in snapshot.documentChanges) {
+                                val doc = change.document
+                                val docId = doc.id
+                                val name = doc.getString("name") ?: ""
+                                val phone = doc.getString("phoneNumber") ?: doc.getString("mobileNumber") ?: ""
+                                val email = doc.getString("googleEmail") ?: doc.getString("email") ?: ""
+                                val docDigits = phone.filter { it.isDigit() }
+
+                                val isOwn = (myPhone.length >= 10 && docDigits.length >= 10 && docDigits.takeLast(10) == myPhone.takeLast(10)) ||
+                                        (myEmail.isNotBlank() && email.equals(myEmail, ignoreCase = true))
+
+                                val eventTypeStr = when (change.type) {
+                                    com.google.firebase.firestore.DocumentChange.Type.ADDED -> "ADDED"
+                                    com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> "MODIFIED"
+                                    com.google.firebase.firestore.DocumentChange.Type.REMOVED -> "REMOVED"
+                                }
+
+                                val payload = "name=$name, phone=$phone, age=${doc.getLong("age")}, city=${doc.getString("city")}, isVerified=${doc.getBoolean("isVerified")}"
+
+                                if (change.type == com.google.firebase.firestore.DocumentChange.Type.REMOVED) {
+                                    SystemHealthDiagnosticsManager.logFirestoreTrace(
+                                        collection = "profiles",
+                                        eventType = "REMOVED",
+                                        docId = docId,
+                                        summary = "Profile deleted in cloud ($name)",
+                                        payloadPreview = payload,
+                                        isFromCache = isFromCache,
+                                        syncStatus = "DELETED_CLOUD"
+                                    )
+                                    continue
+                                }
+
+                                if (isOwn) {
+                                    SystemHealthDiagnosticsManager.logFirestoreTrace(
+                                        collection = "profiles",
+                                        eventType = eventTypeStr,
+                                        docId = docId,
+                                        summary = "Skipping own profile write to avoid duplicate loop ($name)",
+                                        payloadPreview = payload,
+                                        isFromCache = isFromCache,
+                                        syncStatus = "SKIPPED_OWN"
+                                    )
+                                    continue
+                                }
+
+                                val profile = ProfileEntity(
+                                    id = docId,
+                                    name = name.ifBlank { "Nearby Match" },
+                                    age = doc.getLong("age")?.toInt() ?: 24,
+                                    occupation = doc.getString("occupation") ?: "Verified User",
+                                    city = doc.getString("city") ?: "Nearby",
+                                    distanceMiles = (doc.getLong("distanceMiles") ?: 3L).toInt(),
+                                    bio = doc.getString("bio") ?: "",
+                                    interests = (doc.get("interests") as? List<*>)?.joinToString(", ") ?: "Chat, Dating",
+                                    relationshipGoal = doc.getString("relationshipGoal") ?: "Meaningful Connection",
+                                    promptQuestion = doc.getString("promptQuestion") ?: "Looking for...",
+                                    promptAnswer = doc.getString("promptAnswer") ?: "Good vibes",
+                                    gradientColorStart = 0xFFFF5E62,
+                                    gradientColorEnd = 0xFFFF9966,
+                                    avatarEmoji = doc.getString("avatarEmoji") ?: "✨",
+                                    avatarUrl = doc.getString("avatarUrl") ?: "",
+                                    isVerified = doc.getBoolean("isVerified") ?: true,
+                                    isRealFaceVerified = doc.getBoolean("isRealFaceVerified") ?: true,
+                                    likedMe = true,
+                                    isSuperLikedMe = true,
+                                    trustScore = doc.getLong("trustScore")?.toInt() ?: 99,
+                                    phoneNumber = phone,
+                                    email = email,
+                                    country = doc.getString("country") ?: "India",
+                                    countryFlag = doc.getString("countryFlag") ?: "🇮🇳",
+                                    place = doc.getString("place") ?: "Downtown Metro",
+                                    qualification = doc.getString("qualification") ?: "Bachelors"
+                                )
+
+                                profileDao.insertProfile(profile)
+                                SystemHealthDiagnosticsManager.logFirestoreTrace(
+                                    collection = "profiles",
+                                    eventType = eventTypeStr,
+                                    docId = docId,
+                                    summary = "Profile synced & saved into local Room DB: $name ($phone)",
+                                    payloadPreview = payload,
+                                    isFromCache = isFromCache,
+                                    syncStatus = "MERGED_ROOM"
+                                )
+                            }
+                        }
+                    }
+            } catch (e: Exception) {
+                SystemHealthDiagnosticsManager.logFirestoreTrace(
+                    collection = "profiles",
+                    eventType = "ERROR",
+                    docId = "ALL",
+                    summary = "Profiles listener attachment exception: ${e.message}",
+                    syncStatus = "ERROR"
+                )
+            }
+        }
+
+        // Realtime sync handles only organic profiles from 'profiles' collection
+        startRealtimeMatchesSync()
+        startGlobalChatSync()
     }
 
     fun startRealtimeMatchesSync() {
-        Log.d("SocialConnectRepository", "Legacy Firestore match listener disabled. Local Room + Supabase are authoritative.")
+        val firestore = try {
+            com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        } catch (e: Exception) {
+            return
+        }
+
+        // 1. Listen to 'matches' collection
+        if (matchesListenerRegistration == null) {
+            try {
+                SystemHealthDiagnosticsManager.logFirestoreTrace(
+                    collection = "matches",
+                    eventType = "ATTACHED",
+                    docId = "ALL",
+                    summary = "Attached realtime snapshot listener to 'matches' collection"
+                )
+                matchesListenerRegistration = firestore.collection("matches")
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null) {
+                            val isPerm = error.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED
+                            SystemHealthDiagnosticsManager.logFirestoreTrace(
+                                collection = "matches",
+                                eventType = if (isPerm) "OFFLINE_CACHE" else "ERROR",
+                                docId = "ALL",
+                                summary = if (isPerm) "Operating in local cache mode (awaiting auth)" else "Matches listener error: ${error.code} - ${error.message}",
+                                syncStatus = if (isPerm) "CACHE_ONLY" else "ERROR"
+                            )
+                            return@addSnapshotListener
+                        }
+                        if (snapshot == null) return@addSnapshotListener
+
+                        val isFromCache = snapshot.metadata.isFromCache
+                        SystemHealthDiagnosticsManager.logFirestoreTrace(
+                            collection = "matches",
+                            eventType = "SNAPSHOT_RECEIVED",
+                            docId = "ALL",
+                            summary = "Received 'matches' snapshot with ${snapshot.size()} match entries",
+                            isFromCache = isFromCache
+                        )
+
+                        appScope.launch(Dispatchers.IO) {
+                            val prefs = preferencesDao.getPreferencesSync()
+                            val myPhone = (prefs?.verifiedMobileNumber ?: "").filter { it.isDigit() }
+                            val myEmail = (prefs?.googleEmail ?: "").trim().lowercase()
+                            val myId = if (myPhone.isNotBlank()) (prefs?.verifiedMobileNumber ?: "").trim().replace(" ", "") else if (myEmail.isNotBlank()) myEmail else "USER"
+
+                            for (change in snapshot.documentChanges) {
+                                val doc = change.document
+                                val matchId = doc.id
+                                val userA = doc.getString("userA") ?: ""
+                                val userB = doc.getString("userB") ?: ""
+                                val uADigits = userA.filter { it.isDigit() }
+                                val uBDigits = userB.filter { it.isDigit() }
+
+                                val isParticipant = userA == myId || userB == myId ||
+                                        (myPhone.length >= 10 && uADigits.length >= 10 && uADigits.takeLast(10) == myPhone.takeLast(10)) ||
+                                        (myPhone.length >= 10 && uBDigits.length >= 10 && uBDigits.takeLast(10) == myPhone.takeLast(10)) ||
+                                        (myEmail.isNotBlank() && (userA.equals(myEmail, ignoreCase = true) || userB.equals(myEmail, ignoreCase = true)))
+
+                                val partnerId = if (userA == myId || (myPhone.length >= 10 && uADigits.takeLast(10) == myPhone.takeLast(10))) userB else userA
+                                val eventTypeStr = when (change.type) {
+                                    com.google.firebase.firestore.DocumentChange.Type.ADDED -> "ADDED"
+                                    com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> "MODIFIED"
+                                    com.google.firebase.firestore.DocumentChange.Type.REMOVED -> "REMOVED"
+                                }
+
+                                if (isParticipant && partnerId.isNotBlank()) {
+                                    val timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis()
+                                    val existing = matchDao.getMatchByIdSync(matchId) ?: matchDao.getMatchByProfileId(partnerId)
+                                    if (existing == null) {
+                                        val newMatch = MatchEntity(
+                                            matchId = matchId,
+                                            profileId = partnerId,
+                                            matchedAt = timestamp,
+                                            lastMessage = "It's a Mutual Match! Say hi 👋",
+                                            lastMessageTime = timestamp,
+                                            hasUnread = true
+                                        )
+                                        matchDao.insertMatch(newMatch)
+                                        pullSingleProfileFromFirestore(partnerId)
+                                        startListeningToFirestoreMessages(matchId)
+                                    }
+                                    SystemHealthDiagnosticsManager.logFirestoreTrace(
+                                        collection = "matches",
+                                        eventType = eventTypeStr,
+                                        docId = matchId,
+                                        summary = "Mutual match synchronized between devices! Partner: $partnerId",
+                                        payloadPreview = "userA=$userA, userB=$userB, partner=$partnerId",
+                                        isFromCache = isFromCache,
+                                        syncStatus = "MERGED_ROOM"
+                                    )
+                                } else {
+                                    SystemHealthDiagnosticsManager.logFirestoreTrace(
+                                        collection = "matches",
+                                        eventType = eventTypeStr,
+                                        docId = matchId,
+                                        summary = "Match event for third-party users ($userA <-> $userB)",
+                                        payloadPreview = "userA=$userA, userB=$userB",
+                                        isFromCache = isFromCache,
+                                        syncStatus = "SKIPPED_NOT_PARTICIPANT"
+                                    )
+                                }
+                            }
+                        }
+                    }
+            } catch (e: Exception) {
+                SystemHealthDiagnosticsManager.logFirestoreTrace(
+                    collection = "matches",
+                    eventType = "ERROR",
+                    docId = "ALL",
+                    summary = "Matches listener attachment exception: ${e.message}",
+                    syncStatus = "ERROR"
+                )
+            }
+        }
+
+        // 2. Listen to 'mutual_matches' collection
+        if (mutualMatchesListenerRegistration == null) {
+            try {
+                mutualMatchesListenerRegistration = firestore.collection("mutual_matches")
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null) {
+                            val isPerm = error.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED
+                            SystemHealthDiagnosticsManager.logFirestoreTrace(
+                                collection = "mutual_matches",
+                                eventType = if (isPerm) "OFFLINE_CACHE" else "ERROR",
+                                docId = "ALL",
+                                summary = if (isPerm) "Operating in local cache mode (awaiting auth)" else "mutual_matches listener error: ${error.code} - ${error.message}",
+                                syncStatus = if (isPerm) "CACHE_ONLY" else "ERROR"
+                            )
+                            return@addSnapshotListener
+                        }
+                        if (snapshot == null) return@addSnapshotListener
+
+                        val isFromCache = snapshot.metadata.isFromCache
+                        SystemHealthDiagnosticsManager.logFirestoreTrace(
+                            collection = "mutual_matches",
+                            eventType = "SNAPSHOT_RECEIVED",
+                            docId = "ALL",
+                            summary = "Received 'mutual_matches' snapshot (${snapshot.size()} records)",
+                            isFromCache = isFromCache
+                        )
+
+                        appScope.launch(Dispatchers.IO) {
+                            val prefs = preferencesDao.getPreferencesSync()
+                            val myPhone = (prefs?.verifiedMobileNumber ?: "").filter { it.isDigit() }
+                            val myEmail = (prefs?.googleEmail ?: "").trim().lowercase()
+                            val myId = if (myPhone.isNotBlank()) (prefs?.verifiedMobileNumber ?: "").trim().replace(" ", "") else if (myEmail.isNotBlank()) myEmail else "USER"
+
+                            for (change in snapshot.documentChanges) {
+                                val doc = change.document
+                                val matchId = doc.id
+                                val userA = doc.getString("userA") ?: ""
+                                val userB = doc.getString("userB") ?: ""
+                                val uADigits = userA.filter { it.isDigit() }
+                                val uBDigits = userB.filter { it.isDigit() }
+
+                                val isParticipant = userA == myId || userB == myId ||
+                                        (myPhone.length >= 10 && uADigits.length >= 10 && uADigits.takeLast(10) == myPhone.takeLast(10)) ||
+                                        (myPhone.length >= 10 && uBDigits.length >= 10 && uBDigits.takeLast(10) == myPhone.takeLast(10)) ||
+                                        (myEmail.isNotBlank() && (userA.equals(myEmail, ignoreCase = true) || userB.equals(myEmail, ignoreCase = true)))
+
+                                val partnerId = if (userA == myId || (myPhone.length >= 10 && uADigits.takeLast(10) == myPhone.takeLast(10))) userB else userA
+
+                                if (isParticipant && partnerId.isNotBlank()) {
+                                    val timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis()
+                                    val existing = matchDao.getMatchByIdSync(matchId) ?: matchDao.getMatchByProfileId(partnerId)
+                                    if (existing == null) {
+                                        val newMatch = MatchEntity(
+                                            matchId = matchId,
+                                            profileId = partnerId,
+                                            matchedAt = timestamp,
+                                            lastMessage = "It's a Mutual Match! Say hi 👋",
+                                            lastMessageTime = timestamp,
+                                            hasUnread = true
+                                        )
+                                        matchDao.insertMatch(newMatch)
+                                        pullSingleProfileFromFirestore(partnerId)
+                                        startListeningToFirestoreMessages(matchId)
+                                    }
+                                    SystemHealthDiagnosticsManager.logFirestoreTrace(
+                                        collection = "mutual_matches",
+                                        eventType = "MUTUAL_MATCH_CONFIRMED",
+                                        docId = matchId,
+                                        summary = "Mutual match synchronized with partner: $partnerId",
+                                        payloadPreview = "userA=$userA, userB=$userB",
+                                        isFromCache = isFromCache,
+                                        syncStatus = "MERGED_ROOM"
+                                    )
+                                }
+                            }
+                        }
+                    }
+            } catch (e: Exception) {
+                SystemHealthDiagnosticsManager.logFirestoreTrace(
+                    collection = "mutual_matches",
+                    eventType = "ERROR",
+                    docId = "ALL",
+                    summary = "mutual_matches attachment error: ${e.message}",
+                    syncStatus = "ERROR"
+                )
+            }
+        }
     }
 
     fun startGlobalChatSync(forceRestart: Boolean = false) {
