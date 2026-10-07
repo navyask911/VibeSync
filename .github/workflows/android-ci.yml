@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - vibesync-production
+      - vibesync-hardening-2026-10-07
     paths:
       - "app/**"
       - "gradle/**"
@@ -58,14 +59,15 @@ jobs:
 
       - name: Secret scan
         run: |
-          FILES="$(find . -type f \
-            ! -path "./.git/*" \
-            ! -path "./source-archive/*" \
-            ! -path "./.github/*" \
-            ! -path "./build/*" \
-            ! -path "./app/build/*" -print0)"
-          if printf '%s' "$FILES" | xargs -0 grep -nH "BEGIN PRIVATE KEY" 2>/dev/null; then
-            echo "Private key material found in application source"
+          set -o pipefail
+          if find . -type f \
+              ! -path "./.git/*" \
+              ! -path "./source-archive/*" \
+              ! -path "./.github/*" \
+              ! -path "./build/*" \
+              ! -path "./app/build/*" \
+              -print0 | xargs -0 -r grep -nH -E "BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY|sb_secret_|service_role|SUPABASE_SERVICE_ROLE|AIzaSy[a-zA-Z0-9_-]{20,}" 2>/dev/null; then
+            echo "Secret-like credential pattern found in application source"
             exit 1
           fi
 
