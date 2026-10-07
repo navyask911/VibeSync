@@ -155,7 +155,8 @@ fun DatingAppRoot(
 
     val showAdminPortal by viewModel.showAdminPortal.collectAsStateWithLifecycle()
     val isAdminLoggedIn by viewModel.isAdminLoggedIn.collectAsStateWithLifecycle()
-    val allAdminProfiles by viewModel.allProfilesForAdmin.collectAsStateWithLifecycle()
+    val adminLoginInProgress by viewModel.adminLoginInProgress.collectAsStateWithLifecycle()
+    val adminLoginError by viewModel.adminLoginError.collectAsStateWithLifecycle()    val allAdminProfiles by viewModel.allProfilesForAdmin.collectAsStateWithLifecycle()
     val supabaseDiagnostic by viewModel.supabaseDiagnostic.collectAsStateWithLifecycle()
     val simulatedOtp by viewModel.simulatedMobileOtp.collectAsStateWithLifecycle()
     val showFaceVerification by viewModel.showFaceVerification.collectAsStateWithLifecycle()
@@ -411,7 +412,9 @@ fun DatingAppRoot(
             isAdminLoggedIn = isAdminLoggedIn,
             onLoginAdmin = { u, p -> viewModel.loginAdmin(u, p) },
             onLogoutAdmin = { viewModel.logoutAdmin() },
-            currentAdminUsername = preferences?.adminUsername ?: "creator",
+            currentAdminUsername = preferences?.adminUsername ?: "platform staff",
+            adminLoginInProgress = adminLoginInProgress,
+            adminLoginError = adminLoginError,
             onUpdateAdminCredentials = { u, p -> viewModel.updateAdminCredentials(u, p) },
             roles = adminRoles,
             employees = adminEmployees,
