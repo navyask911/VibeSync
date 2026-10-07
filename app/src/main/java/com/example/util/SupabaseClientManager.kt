@@ -862,6 +862,50 @@ object SupabaseClientManager {
         return@withContext fetchProfilesByHashes(computedHashes)
     }
 
+
+    /**
+     * Registers the current device FCM token in Supabase.
+     *
+     * Firebase remains notification transport only. The application backend
+     * owns the token registry so it can select the correct device without
+     * depending on Firestore/Realtime Database.
+     */
+    suspend fun upsertDeviceFcmToken(
+        context: android.content.Context,
+        userId: String,
+        token: String,
+        platform: String = "android"
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (userId.isBlank() || token.isBlank()) return@withContext false
+
+        try {
+            val json = JSONObject().apply {
+                put("user_id", userId)
+                put("fcm_token", token)
+                put("platform", platform)
+                put("updated_at", System.currentTimeMillis())
+            }
+
+            val request = buildRequest(
+                endpoint = "device_tokens",
+                method = "POST",
+                bodyJson = json.toString(),
+                preferHeader = "resolution=merge-duplicates"
+            )
+
+            httpClient.newCall(request).execute().use { response ->
+                val success = response.isSuccessful
+                if (!success) {
+                    Log.w(TAG, "device_tokens upsert failed (HTTP ${response.code}): ${response.body?.string()?.take(250)}")
+                }
+                success
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "device token Supabase sync notice: ${e.message}")
+            false
+        }
+    }
+
     /**
      * Matched contact record returned by Zero-Knowledge RPC / lookup.
      */
