@@ -8,7 +8,7 @@ VibeSync is an Android social and business platform built around local-first sto
 ## System boundaries
 - Android client: Kotlin, Jetpack Compose, Room, Android Keystore, Google Tink.
 - Supabase: authoritative application database, authentication, controlled RPC/Edge Functions, and application-side realtime where required.
-- Firebase: Firebase Cloud Messaging (FCM) delivery only. Firestore, Realtime Database, Firebase Storage, and Firebase Authentication are not authoritative VibeSync services.
+- Firebase: existing Firebase project may be used as a legacy compatibility/read source and for Firebase Cloud Messaging (FCM) delivery. New authoritative application writes remain in Supabase. Firestore/Realtime Database/Storage/Auth are not authoritative for new VibeSync state. A migration worker may read legacy Firebase data only when explicitly enabled and within the existing no-cost operational boundary.
 - Object storage: Cloudflare R2 or another configured object store for large media. Database rows contain references and metadata, not media binaries.
 - AI: Gemini access belongs behind a server-side/Edge Function boundary. Secrets must never ship in the APK.
 
