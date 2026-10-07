@@ -143,6 +143,7 @@ revoke all on public.phone_sync from authenticated;
 grant insert,delete on public.phone_sync to authenticated;
 
 -- Match RPC: authenticated only, hardened search_path, minimal return surface.
+drop function if exists public.match_contacts(text[]);
 create or replace function public.match_contacts(hashes text[])
 returns table (id text, name text, profile_photo_url text, avatar_emoji text)
 language plpgsql
