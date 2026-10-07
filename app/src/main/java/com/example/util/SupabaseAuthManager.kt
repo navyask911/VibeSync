@@ -32,6 +32,7 @@ object SupabaseAuthManager {
 
     private val mediaType = "application/json; charset=utf-8".toMediaType()
     private val random = SecureRandom()
+    @Volatile private var cachedSession: Session? = null
 
     data class AuthenticatedUser(
         val id: String,
@@ -107,6 +108,7 @@ object SupabaseAuthManager {
             }
         }
         prefs(context).edit().putString(SESSION_KEY, encryptForStorage(context, root.toString())).apply()
+        cachedSession = session
     }
 
     private fun parseSession(root: JSONObject): Session? {
@@ -129,10 +131,13 @@ object SupabaseAuthManager {
     }
 
     fun getCachedSession(context: Context): Session? {
+        cachedSession?.let { return it }
         val blob = prefs(context).getString(SESSION_KEY, null) ?: return null
         val json = decryptFromStorage(context, blob) ?: return null
-        return parseSession(JSONObject(json))
+        return parseSession(JSONObject(json))?.also { cachedSession = it }
     }
+
+    fun getCachedAccessToken(): String? = cachedSession?.accessToken?.takeIf { it.isNotBlank() }
 
     fun getCachedAccessToken(context: Context): String? =
         getCachedSession(context)?.accessToken?.takeIf { it.isNotBlank() }
@@ -295,6 +300,7 @@ object SupabaseAuthManager {
 
     fun signOut(context: Context) {
         prefs(context).edit().remove(SESSION_KEY).apply()
+        cachedSession = null
     }
 
     fun hasValidSession(context: Context): Boolean {
