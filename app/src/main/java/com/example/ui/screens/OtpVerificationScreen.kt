@@ -218,9 +218,9 @@ fun OtpVerificationScreen(
         ) {
             // Option 1: Firebase Phone Auth Card
             OtpOptionSelectionCard(
-                title = "1. Firebase SMS OTP",
-                subtitle = "Automatic SMS dispatch via Firebase Phone Auth",
-                tagText = "Firebase Auth",
+                title = "1. Secure SMS OTP",
+                subtitle = "One-time code sent through the configured VibeSync/Supabase Auth provider",
+                tagText = "SECURE OTP",
                 tagColor = Color(0xFFF57C00),
                 isSelected = selectedMode == OtpOptionMode.FIREBASE_PHONE,
                 onClick = { selectedMode = OtpOptionMode.FIREBASE_PHONE },
@@ -230,7 +230,7 @@ fun OtpVerificationScreen(
             // Option 2: TEXT OTP Sent by User (Saves OTP Cost)
             OtpOptionSelectionCard(
                 title = "2. TEXT OTP Sent by User",
-                subtitle = "Send a text from device SIM • Saves OTP gateway cost 💰",
+                subtitle = "Disabled until a server-side verification gateway is connected",
                 tagText = "COST SAVER",
                 tagColor = LikeGreen,
                 isSelected = selectedMode == OtpOptionMode.USER_TEXT_SMS,
@@ -259,7 +259,7 @@ fun OtpVerificationScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(
-                                text = "Firebase SMS Code",
+                                text = "Secure SMS Code",
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                             )
 
@@ -305,7 +305,7 @@ fun OtpVerificationScreen(
                             ),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .testTag("input_firebase_otp_code")
+                                .testTag("input_secure_otp_code")
                         )
 
                         otpErrorMessage?.let { err ->
@@ -333,17 +333,22 @@ fun OtpVerificationScreen(
                                 coroutineScope.launch {
                                     try {
                                         // 3. Wrap OTP validation logic with strict 3-second timeout: withTimeoutOrNull(3000L)
-                                        val verificationResult = kotlinx.coroutines.withTimeoutOrNull(3000L) {
-                                            val expected = simulatedOtpCode
+                                        val verificationResult = kotlinx.coroutines.withTimeoutOrNull(15000L) {
                                             val clean = enteredOtpCode.trim()
-                                            val isMatch = !expected.isNullOrBlank() && clean == expected.trim()
-                                            val isKnownMockOtp = clean in listOf("434391", "803871", "123456", "000000", "111111", "654321", "999999")
-                                            val isValid = isMatch || isKnownMockOtp || (clean.length == 6)
-                                            isValid
+
+                                            if (com.example.BuildConfig.DEBUG && !simulatedOtpCode.isNullOrBlank()) {
+                                                clean == simulatedOtpCode.trim()
+                                            } else {
+                                                com.example.util.SupabaseAuthManager.verifyPhoneOtp(
+                                                    context = context,
+                                                    phone = phoneNumber,
+                                                    token = clean
+                                                ).isSuccess
+                                            }
                                         }
 
                                         if (verificationResult == true) {
-                                            onVerificationSuccess(phoneNumber, "Verified OTP")
+                                            onVerificationSuccess(phoneNumber, "Supabase Verified OTP")
                                         } else if (verificationResult == false) {
                                             isSubmitting = false
                                             otpErrorMessage = "Incorrect verification code. Please enter the exact 6-digit code received."
@@ -372,7 +377,7 @@ fun OtpVerificationScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(50.dp)
-                                .testTag("btn_verify_firebase_otp")
+                                .testTag("btn_verify_secure_otp")
                         ) {
                             if (isSubmitting) {
                                 Row(
@@ -546,7 +551,7 @@ fun OtpVerificationScreen(
                             Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "1-Tap Send Text OTP (From SIM)",
+                                text = "Test SMS Flow — Disabled for Authentication",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp
                             )
@@ -560,7 +565,7 @@ fun OtpVerificationScreen(
                                 isSubmitting = true
                                 com.example.util.UserSessionManager.clearStaleAuthSessions(context)
                                 coroutineScope.launch {
-                                    val success = kotlinx.coroutines.withTimeoutOrNull(3000L) {
+                                    val success = kotlinx.coroutines.withTimeoutOrNull(15000L) {
                                         true
                                     } ?: false
                                     if (success) {
@@ -571,7 +576,7 @@ fun OtpVerificationScreen(
                                     }
                                 }
                             },
-                            enabled = !isSubmitting,
+                            enabled = false,
                             shape = RoundedCornerShape(16.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
