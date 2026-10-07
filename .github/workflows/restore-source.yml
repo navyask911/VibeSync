@@ -1,0 +1,53 @@
+name: Restore VibeSync Source
+
+on:
+  push:
+    paths:
+      - "source-archive/vibesync-source.zip"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Preserve repository policy files
+        run: |
+          mkdir -p /tmp/vibesync-policy
+          for f in README.md LICENSE PRIVACY.md TERMS.md SECURITY.md SECURITY_BASELINE.md; do
+            cp "$f" "/tmp/vibesync-policy/$f"
+          done
+
+      - name: Restore source
+        run: |
+          rm -rf /tmp/vibesync-source
+          mkdir -p /tmp/vibesync-source
+          unzip -q source-archive/vibesync-source.zip -d /tmp/vibesync-source
+          rsync -a --delete --exclude ".git/" --exclude ".github/" --exclude "source-archive/" /tmp/vibesync-source/ ./
+          rm -rf .aistudio || true
+          rm -f script0.txt all_links.txt test.pdf test.ps || true
+          rm -f VibeSync_Investor_Proposal.html VibeSync_Investor_Proposal.pdf || true
+          rm -f scripts/*-firebase-adminsdk-*.json || true
+          rm -f firestore.rules database.rules.json app/firestore.rules || true
+          rm -f package.json package-lock.json || true
+          for f in README.md LICENSE PRIVACY.md TERMS.md SECURITY.md SECURITY_BASELINE.md; do
+            cp "/tmp/vibesync-policy/$f" "$f"
+          done
+
+      - name: Commit restored source
+        run: |
+          git config user.name "VibeSync CI"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Restore VibeSync AI Studio source"
+          git push
