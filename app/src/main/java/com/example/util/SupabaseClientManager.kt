@@ -432,6 +432,24 @@ object SupabaseClientManager {
     /**
      * Upsert chat message to public.chat_messages with standard E.164 phone normalization and delivery receipts.
      */
+    suspend fun fetchPublicIdentityKey(profileId: String): String? = withContext(Dispatchers.IO) {
+        if (profileId.isBlank()) return@withContext null
+        try {
+            val safeId = java.net.URLEncoder.encode(profileId, "UTF-8")
+            val request = buildRequest(
+                endpoint = "profiles?select=public_identity_key&id=eq.$safeId&limit=1",
+                method = "GET"
+            )
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val arr = JSONArray(response.body?.string() ?: "[]")
+                arr.optJSONObject(0)?.optSafeString("public_identity_key", "")?.ifBlank { null }
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "fetchPublicIdentityKey notice: ${e.message}")
+            null
+        }
+    }
     suspend fun upsertChatMessage(
         msg: ChatMessageEntity,
         senderIdentity: String = "",
