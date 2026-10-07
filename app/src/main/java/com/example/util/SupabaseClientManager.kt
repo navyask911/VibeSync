@@ -535,93 +535,46 @@ object SupabaseClientManager {
     ): List<ChatMessageEntity> = withContext(Dispatchers.IO) {
         val list = mutableListOf<ChatMessageEntity>()
         try {
-            val myLast10 = normalizePhone(currentUserPhone)
-            val partnerLast10 = normalizePhone(partnerPhone)
-
-            val endpoint = if (myLast10.length == 10 && partnerLast10.length == 10) {
-                "chat_messages?or=(and(sender_phone.ilike.*$partnerLast10,receiver_phone.ilike.*$myLast10),and(sender_phone.ilike.*$myLast10,receiver_phone.ilike.*$partnerLast10),match_id.eq.$matchId)&order=timestamp.asc"
-            } else {
-                "chat_messages?match_id=eq.$matchId&order=timestamp.asc"
-            }
-
-            val request = buildRequest(endpoint = endpoint, method = "GET")
-
+            val safeMatch = java.net.URLEncoder.encode(matchId, "UTF-8")
+            val request = buildRequest(
+                endpoint = "chat_messages?select=message_id,match_id,sender_id,receiver_id,ciphertext,timestamp,is_delivered,is_read,media_url,media_type,voice_duration_seconds,created_at&match_id=eq.$safeMatch&order=timestamp.asc",
+                method = "GET"
+            )
             httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val bodyStr = response.body?.string() ?: "[]"
-                    val jsonArray = JSONArray(bodyStr)
-                    for (i in 0 until jsonArray.length()) {
-                        val obj = jsonArray.getJSONObject(i)
-                        
-                        val isDeleted = obj.optBoolean("is_deleted", false) || obj.optBoolean("isDeleted", false)
-                        if (isDeleted) continue
-
-                        val msgId = obj.optSafeString("message_id", obj.optSafeString("id", ""))
-                        val rawText = sequenceOf("message_text", "text", "message", "content")
-                            .map { obj.optSafeString(it, "") }
-                            .firstOrNull { it.isNotBlank() } ?: ""
-                        val senderPhone = obj.optSafeString("sender_phone", obj.optSafeString("sender_id", ""))
-                        val rawMedia = obj.optSafeString("media_url", "")
-                        val mediaType = obj.optSafeString("media_type", "TEXT")
-
-                        val hasMedia = rawMedia.isNotBlank() || mediaType in listOf("IMAGE", "PHOTO", "VOICE", "AUDIO", "LOCATION", "AI_IMAGE", "DOCUMENT", "VIDEO")
-                        if (rawText.isBlank() && !hasMedia) continue
-                        if (rawText.equals("heartbeat", true) || rawText.equals("ping", true) || rawText.equals("pong", true) || rawText.startsWith("phx_") || rawText.startsWith("phx-")) continue
-
-                        val plainText = if (rawText.isNotBlank()) {
-                            try { HackFreeSecurityShield.decrypt(rawText) } catch (_: Exception) { rawText }
-                        } else ""
-
-                        val plainMedia = if (rawMedia.isNotBlank()) {
-                            try { HackFreeSecurityShield.decrypt(rawMedia) } catch (_: Exception) { rawMedia }
-                        } else ""
-
-                        val senderLast10 = normalizePhone(senderPhone)
-                        val isMine = (myLast10.length == 10 && senderLast10 == myLast10) || senderPhone == "USER"
-                        val senderId = if (isMine) "USER" else senderPhone
-
-                        val ts = obj.optLong("timestamp", 0L).let { rawTs ->
-                            if (rawTs > 0) rawTs
-                            else {
-                                val createdAt = obj.optSafeString("created_at", "")
-                                if (createdAt.isNotBlank()) {
-                                    try {
-                                        java.time.Instant.parse(createdAt).toEpochMilli()
-                                    } catch (_: Exception) {
-                                        System.currentTimeMillis()
-                                    }
-                                } else {
-                                    System.currentTimeMillis()
-                                }
-                            }
-                        }
-
-                        if (msgId.isNotBlank()) {
-                            list.add(
-                                ChatMessageEntity(
-                                    messageId = msgId,
-                                    matchId = obj.optSafeString("match_id", matchId),
-                                    senderId = senderId,
-                                    text = plainText.ifBlank { rawText },
-                                    timestamp = ts,
-                                    isDelivered = obj.optBoolean("is_delivered", true),
-                                    isRead = obj.optBoolean("is_read", false),
-                                    mediaUrl = plainMedia.ifBlank { rawMedia },
-                                    mediaType = mediaType,
-                                    voiceDurationSeconds = obj.optInt("voice_duration_seconds", 0),
-                                    replyToMessageId = obj.optSafeString("reply_to_message_id", "").ifBlank { null },
-                                    replyToText = obj.optSafeString("reply_to_text", "").ifBlank { null },
-                                    replyToSender = obj.optSafeString("reply_to_sender", "").ifBlank { null },
-                                    isForwarded = obj.optBoolean("is_forwarded", false),
-                                    isEncrypted = obj.optBoolean("is_encrypted", true)
-                                )
-                            )
-                        }
-                    }
+                if (!response.isSuccessful) return@withContext list
+                val arr = JSONArray(response.body?.string() ?: "[]")
+                val context = AppNotificationManager.appContext ?: MessageHandler.appContext
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val msgId = obj.optSafeString("message_id", obj.optSafeString("id", ""))
+                    val senderId = obj.optSafeString("sender_id", "")
+                    val receiverId = obj.optSafeString("receiver_id", "")
+                    val ciphertext = obj.optSafeString("ciphertext", "")
+                    if (msgId.isBlank() || senderId.isBlank() || receiverId.isBlank() || ciphertext.isBlank()) continue
+                    val decrypted = if (context != null && ciphertext.startsWith(TinkCryptoManager.TINK_PREFIX)) {
+                        TinkCryptoManager.decryptPayload(context, ciphertext, senderId, receiverId)
+                    } else ""
+                    if (decrypted.isBlank()) continue
+                    val mediaType = obj.optSafeString("media_type", "TEXT")
+                    val rawMedia = obj.optSafeString("media_url", "")
+                    val ts = obj.optLong("timestamp", 0L).takeIf { it > 0 } ?: System.currentTimeMillis()
+                    list.add(ChatMessageEntity(
+                        messageId = msgId,
+                        matchId = obj.optSafeString("match_id", matchId),
+                        senderId = senderId,
+                        text = decrypted,
+                        timestamp = ts,
+                        isDelivered = obj.optBoolean("is_delivered", false),
+                        isRead = obj.optBoolean("is_read", false),
+                        mediaUrl = rawMedia,
+                        mediaType = mediaType,
+                        voiceDurationSeconds = obj.optInt("voice_duration_seconds", 0),
+                        isEncrypted = true
+                    ))
                 }
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "E2EE messages fetch notice: ${e.message}")
+            Log.w(TAG, "Encrypted chat fetch notice: ${e.message}")
         }
         list.sortBy { it.timestamp }
         list
