@@ -389,6 +389,30 @@ object SupabaseClientManager {
     }
 
     /**
+     * Fetches one public profile by its opaque VibeSync profile ID.
+     * No phone number is queried or returned through this endpoint.
+     */
+    suspend fun fetchProfileById(profileId: String): ProfileEntity? = withContext(Dispatchers.IO) {
+        if (profileId.isBlank()) return@withContext null
+        try {
+            val encodedId = java.net.URLEncoder.encode(profileId, Charsets.UTF_8.name())
+            val request = buildRequest(
+                endpoint = "profiles?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key&id=eq.$encodedId&limit=1",
+                method = "GET"
+            )
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val body = response.body?.string().orEmpty()
+                val array = JSONArray(body)
+                if (array.length() == 0) return@withContext null
+                parseProfileEntityFromJson(array.getJSONObject(0))
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Supabase single profile fetch notice: ${e.message}")
+            null
+        }
+    }
+    /**
      * Upsert registered account credentials.
      * ENFORCES ZERO-KNOWLEDGE ENCRYPTION ON USER ACCOUNTS.
      */
@@ -654,6 +678,7 @@ object SupabaseClientManager {
             ProfileEntity(
                 id = it.id,
                 name = it.name,
+                age = 24,
                 phoneNumber = "",
                 avatarUrl = it.photoUrl.orEmpty(),
                 avatarEmoji = it.avatarEmoji,
