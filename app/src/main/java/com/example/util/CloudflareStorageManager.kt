@@ -207,14 +207,14 @@ object CloudflareStorageManager {
      * Generates an AWS Signature Version 4 presigned GET or PUT URL for Cloudflare R2
      */
     /**
-     * Client-side R2 signing is intentionally disabled.
-     * R2 secrets belong in a server-side media gateway.
+     * Presigned URL generation is server-only. Android never receives R2 signing secrets.
      */
     fun generatePresignedUrl(
         objectKey: String,
         httpMethod: String = "GET",
         expiresSeconds: Long = 3600
     ): String = ""
+
     /**
      * Uploads media file to Cloudflare R2 bucket with automated compression and zero-egress CDN URL generation
      */
@@ -229,63 +229,35 @@ object CloudflareStorageManager {
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val uniqueId = UUID.randomUUID().toString().take(8)
         val objectKey = "${category.path}/$userId/${timestamp}_$uniqueId.$fileExtension"
-        val publicUrl = "$publicCdnDomain/$objectKey"
-
         try {
-            val (payloadBytes, originalSize) = if (contentType.startsWith("image/")) {
-                val origStream = context.contentResolver.openInputStream(mediaUri)
-                val origSize = origStream?.available()?.toLong() ?: 0L
-                origStream?.close()
-
+            val originalBytes = context.contentResolver.openInputStream(mediaUri)?.use { it.readBytes() } ?: ByteArray(0)
+            val originalSize = originalBytes.size.toLong()
+            val payloadBytes = if (contentType.startsWith("image/")) {
                 val compressed = compressImage(context, mediaUri)
-                Pair(
-                    if (compressed.isNotEmpty()) compressed else (context.contentResolver.openInputStream(mediaUri)?.readBytes() ?: ByteArray(0)),
-                    origSize
-                )
-            } else {
-                val bytes = context.contentResolver.openInputStream(mediaUri)?.readBytes() ?: ByteArray(0)
-                Pair(bytes, bytes.size.toLong())
-            }
-
+                if (compressed.isNotEmpty()) compressed else originalBytes
+            } else originalBytes
             val compressedSize = payloadBytes.size.toLong()
-            val savingsPct = if (originalSize > 0 && originalSize > compressedSize) {
+            val savingsPct = if (originalSize > 0 && compressedSize < originalSize) {
                 ((originalSize - compressedSize).toFloat() / originalSize.toFloat()) * 100f
             } else 0f
-
-            Log.d(TAG, "Uploading ${category.name} to Cloudflare R2: key=$objectKey, size=$compressedSize bytes, savings=$savingsPct%")
-
-            // Never report a successful upload unless a server-authorized upload completed.
-            // Android must not hold R2 access/signing secrets.
-            return@withContext MediaUploadResult(
+            Log.d(TAG, "Prepared ${category.name} for server media gateway: $compressedSize bytes ($savingsPct% savings)")
+            MediaUploadResult(
                 isSuccess = false,
                 publicUrl = "",
                 objectKey = objectKey,
                 originalSizeBytes = originalSize,
                 compressedSizeBytes = compressedSize,
                 bandwidthSavedPercentage = savingsPct,
-                errorMessage = "R2 upload requires the server-side media gateway."
+                errorMessage = "Server-side media gateway is not configured yet."
             )
         } catch (e: Exception) {
-                    Log.w(TAG, "Direct upload exception: ${e.message}")
-                }
-            }
-
-            MediaUploadResult(
-                isSuccess = true,
-                publicUrl = publicUrl,
-                objectKey = objectKey,
-                originalSizeBytes = originalSize,
-                compressedSizeBytes = compressedSize,
-                bandwidthSavedPercentage = savingsPct
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in uploadUserMedia: ${e.message}", e)
+            Log.e(TAG, "Error preparing media upload: ${e.message}", e)
             MediaUploadResult(
                 isSuccess = false,
-                publicUrl = mediaUri.toString(),
+                publicUrl = "",
                 objectKey = objectKey,
-                originalSizeBytes = 0,
-                compressedSizeBytes = 0,
+                originalSizeBytes = 0L,
+                compressedSizeBytes = 0L,
                 bandwidthSavedPercentage = 0f,
                 errorMessage = e.message
             )
