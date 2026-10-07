@@ -697,6 +697,7 @@ object SupabaseClientManager {
             ProfileEntity(
                 id = it.id,
                 name = it.name,
+                age = 24,
                 phoneNumber = "",
                 avatarUrl = it.photoUrl.orEmpty(),
                 avatarEmoji = it.avatarEmoji,
