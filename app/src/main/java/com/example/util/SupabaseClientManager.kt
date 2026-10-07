@@ -815,10 +815,10 @@ object SupabaseClientManager {
     }
 
     /**
-     * Zero-Knowledge Remote Procedure Call (RPC): match_contacts
+     * Privacy-Preserving Contact Match RPC: match_contacts
      * Accepts an array of up to 50 hex hashes (64-char strings), decodes them into binary BYTEA
      * in Postgres, joins with profiles, and returns matched user records.
-     * Includes seamless fallback to selective profile hash queries if RPC is not yet executed on backend.
+     * No direct profile-table fallback is permitted; contact discovery remains behind the RPC boundary.
      */
     suspend fun matchContactsRpc(hexHashes: List<String>): List<MatchedSupabaseContact> = withContext(Dispatchers.IO) {
         val validHashes = hexHashes.filter { it.isNotBlank() }.distinct().take(50)
@@ -868,7 +868,7 @@ object SupabaseClientManager {
                             )
                         }
                     }
-                    Log.i(TAG, "⚡ Zero-Knowledge RPC 'match_contacts' matched ${results.size} user(s) in <2ms indexed join.")
+                    Log.i(TAG, "⚡ Privacy match RPC 'match_contacts' matched ${results.size} user(s) in <2ms indexed join.")
                     return@withContext results
                 } else {
                     Log.d(TAG, "match_contacts RPC HTTP ${response.code}, falling back to selective query.")
