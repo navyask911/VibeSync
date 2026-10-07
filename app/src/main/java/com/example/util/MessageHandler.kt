@@ -27,7 +27,8 @@ object MessageHandler {
     const val PROTOCOL_PREFIX_V2 = "V2_SIG:"
 
     // Shared session master secret across all instances
-    const val SHARED_SESSION_MASTER_SECRET = "VibeSync_Shared_E2EE_Master_Session_Key_v32"
+    @Deprecated("Legacy shared-key protocol; never use in production.")
+    const val SHARED_SESSION_MASTER_SECRET = "LEGACY_DISABLED"
 
     // Cryptographic salts and info tags for HKDF
     private val KDF_SALT = "VibeSync_HKDF_Salt_2026".toByteArray(Charsets.UTF_8)
@@ -284,7 +285,8 @@ object MessageHandler {
                 return tinkCipher
             }
         }
-        return plainText
+        Log.e(TAG, "Tink encryption unavailable; refusing plaintext message fallback.")
+        return ""
     }
 
     /**
@@ -314,15 +316,15 @@ object MessageHandler {
                     receiverPhone = receiverPhone,
                     onMismatchedKey = onMismatchedKey
                 )
-                if (tinkDecrypted.isNotBlank() && tinkDecrypted != rawPayload) {
+                if (tinkDecrypted.isNotBlank()) {
                     return tinkDecrypted
                 }
-            } else {
-                return rawPayload.removePrefix(TinkCryptoManager.TINK_PREFIX)
             }
+            Log.e(TAG, "Tink decryption failed closed.")
+            return ""
         }
 
-        // 1. If payload is raw unencrypted text or media, return directly or extract JSON text
+        // Production message text must be Tink-encrypted. Explicit media references are handled separately.
         if (!rawPayload.startsWith(PROTOCOL_PREFIX_V2) &&
             !rawPayload.startsWith("V1_ENC:") &&
             !rawPayload.startsWith("ENC:") &&
@@ -339,7 +341,25 @@ object MessageHandler {
                     }
                 } catch (_: Exception) {}
             }
+            if (rawPayload.startsWith("IMG_B64:") ||
+                rawPayload.startsWith("IMG_URL:") ||
+                rawPayload.startsWith("http://") ||
+                rawPayload.startsWith("https://")) {
+                return rawPayload
+            }
+            if (!com.example.BuildConfig.DEBUG) {
+                Log.e(TAG, "Production rejected unencrypted text payload.")
+                return ""
+            }
             return rawPayload
+        }
+
+        if (!com.example.BuildConfig.DEBUG &&
+            (rawPayload.startsWith(PROTOCOL_PREFIX_V2) ||
+             rawPayload.startsWith("V1_ENC:") ||
+             rawPayload.startsWith("ENC:"))) {
+            Log.e(TAG, "Production rejected legacy encryption envelope.")
+            return ""
         }
 
         val sessionKey = deriveSessionKeyWithKdf()
@@ -362,7 +382,8 @@ object MessageHandler {
                 // Verify signature against consistent sender ID
                 val isSignatureValid = verifySignature(consistentSender, cipherBase64, signature, signingKey)
                 if (!isSignatureValid) {
-                    Log.w(TAG, "Signature notice for sender $consistentSender, attempting decrypt with session key.")
+                    Log.e(TAG, "Legacy signature verification failed; rejecting payload.")
+                    return ""
                 }
 
                 val cipherBytes = Base64.decode(cipherBase64, Base64.NO_WRAP)
@@ -469,7 +490,7 @@ object MessageHandler {
             } catch (_: Exception) {}
         }
 
-        return rawPayload
+        return ""
     }
 
     /**
