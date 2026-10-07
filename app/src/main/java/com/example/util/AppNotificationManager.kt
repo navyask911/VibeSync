@@ -401,16 +401,17 @@ object AppNotificationManager {
     private fun syncTokenToRegistry(context: Context, tokenToSync: String) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val db = com.example.data.database.DatingDatabase.getDatabase(context)
-                val prefs = db.userPreferencesDao().getPreferencesSync()
-                val userId = if (!prefs?.verifiedMobileNumber.isNullOrBlank()) {
-                    prefs.verifiedMobileNumber.trim().replace(" ", "")
-                } else if (!prefs?.googleEmail.isNullOrBlank()) {
-                    prefs.googleEmail.trim()
-                } else {
-                    "user_${prefs?.id ?: 1}"
+                val userId = SupabaseAuthManager.getCachedSession(context)?.user?.id.orEmpty()
+                if (userId.isBlank()) {
+                    Log.d(TAG, "Skipping FCM registry sync: no authenticated Supabase user session.")
+                    return@launch
                 }
-                FirebaseBackendSyncManager.registerDeviceFcmToken(userId, tokenToSync)
+
+                SupabaseClientManager.upsertDeviceFcmToken(
+                    context = context,
+                    userId = userId,
+                    token = tokenToSync
+                )
             } catch (e: Exception) {
                 Log.d(TAG, "Device token registry notice: ${e.message}")
             }
