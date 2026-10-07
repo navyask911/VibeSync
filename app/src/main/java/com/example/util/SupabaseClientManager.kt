@@ -434,66 +434,47 @@ object SupabaseClientManager {
      */
     suspend fun upsertChatMessage(
         msg: ChatMessageEntity,
-        senderPhone: String = "",
-        receiverPhone: String = ""
+        senderIdentity: String = "",
+        receiverIdentity: String = "",
+        recipientProfileId: String = receiverIdentity
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            val normSender = PhonebookHasher.normalizeToE164(senderPhone.ifBlank { msg.senderId })
-            val normReceiver = PhonebookHasher.normalizeToE164(receiverPhone)
-
+            val recipient = recipientProfileId.ifBlank { receiverIdentity }
+            val ciphertext = msg.text.takeIf { it.startsWith(TinkCryptoManager.TINK_PREFIX) }.orEmpty()
+            if (ciphertext.isBlank() || senderIdentity.isBlank() || recipient.isBlank()) {
+                Log.e(TAG, "Refusing chat sync without Tink ciphertext and stable profile identities.")
+                return@withContext false
+            }
             val json = JSONObject().apply {
-                put("id", msg.messageId)
-                put("message_id", msg.messageId)
-                put("match_id", msg.matchId)
-                put("sender_phone", normSender)
-                put("receiver_phone", normReceiver)
-                put("sender_id", normSender.ifBlank { msg.senderId })
-                put("receiver_id", normReceiver)
-                put("text", msg.text)
-                put("message", msg.text)
-                put("timestamp", msg.timestamp)
-                put("is_delivered", msg.isDelivered)
-                put("is_read", msg.isRead)
-                put("media_url", msg.mediaUrl)
-                put("media_type", msg.mediaType)
-                put("voice_duration_seconds", msg.voiceDurationSeconds)
-                put("reply_to_message_id", msg.replyToMessageId)
-                put("reply_to_text", msg.replyToText)
-                put("reply_to_sender", msg.replyToSender)
-                put("is_forwarded", msg.isForwarded)
-                put("is_encrypted", msg.isEncrypted)
+                put("p_message_id", msg.messageId)
+                put("p_match_id", msg.matchId)
+                put("p_recipient_profile_id", recipient)
+                put("p_ciphertext", ciphertext)
+                put("p_media_type", msg.mediaType)
+                put("p_media_url", msg.mediaUrl)
+                put("p_voice_duration_seconds", msg.voiceDurationSeconds)
             }
-
-            var request = buildRequest(
-                endpoint = "chat_messages",
-                method = "POST",
-                bodyJson = json.toString(),
-                preferHeader = "resolution=merge-duplicates"
-            )
-
-            var success = false
+            val request = buildRequest("rpc/send_encrypted_message", "POST", json.toString())
             httpClient.newCall(request).execute().use { response ->
-                success = response.isSuccessful
-            }
-
-            if (!success) {
-                // Fallback to messages table
-                request = buildRequest(
-                    endpoint = "messages",
-                    method = "POST",
-                    bodyJson = json.toString(),
-                    preferHeader = "resolution=merge-duplicates"
-                )
-                httpClient.newCall(request).execute().use { resp ->
-                    success = resp.isSuccessful
+                val success = response.isSuccessful
+                if (success) {
+                    val broadcast = JSONObject().apply {
+                        put("type", "NEW_E2EE_MESSAGE")
+                        put("message_id", msg.messageId)
+                        put("match_id", msg.matchId)
+                        put("sender_id", senderIdentity)
+                        put("receiver_id", recipient)
+                        put("ciphertext", ciphertext)
+                        put("media_type", msg.mediaType)
+                    }
+                    SupabaseBackendManager.broadcastChatMessage(broadcast)
+                } else {
+                    Log.w(TAG, "Encrypted chat RPC failed HTTP ${response.code}: ${response.body?.string()?.take(200)}")
                 }
+                success
             }
-
-            // Also delegate to SupabaseBackendManager for real-time WebSocket broadcast
-            SupabaseBackendManager.broadcastChatMessage(json)
-            success
         } catch (e: Throwable) {
-            Log.w(TAG, "Chat Message Sync notice: ${e.message}")
+            Log.w(TAG, "Encrypted chat RPC notice: ${e.message}")
             false
         }
     }
