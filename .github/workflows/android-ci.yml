@@ -45,7 +45,12 @@ jobs:
           test -n "$SDKMANAGER"
           "$SDKMANAGER" --version
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+          if [ ! -f "$ANDROID_SDK_ROOT/platforms/android-35/android.jar" ] ||              [ ! -x "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt2" ]; then
+            "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          else
+            echo "Android SDK 35/build-tools 35 already installed on runner."
+          fi
 
       - name: Secret scan
         run: |
