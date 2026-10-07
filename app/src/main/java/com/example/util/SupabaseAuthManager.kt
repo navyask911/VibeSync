@@ -310,10 +310,33 @@ object SupabaseAuthManager {
                 session.expiresAtEpochSeconds > System.currentTimeMillis() / 1000L)
     }
 
-    suspend fun deleteAccount(context: Context): Boolean {
-        // Destructive Auth user deletion requires a trusted backend function.
-        // Local sign-out still always happens.
-        signOut(context)
-        return false
+    suspend fun deleteAccount(context: Context): Boolean = withContext(Dispatchers.IO) {
+        val accessToken = getCachedAccessToken(context)
+        if (accessToken.isNullOrBlank()) {
+            signOut(context)
+            return@withContext false
+        }
+        try {
+            val request = Request.Builder()
+                .url("${SupabaseClientProvider.SUPABASE_URL}/functions/v1/vibesync-delete-account")
+                .addHeader("apikey", SupabaseClientProvider.SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer $accessToken")
+                .addHeader("Content-Type", "application/json")
+                .post("{}".toRequestBody(mediaType))
+                .build()
+            SupabaseClientProvider.httpClient.newCall(request).execute().use { response ->
+                val success = response.isSuccessful
+                if (success) {
+                    signOut(context)
+                    true
+                } else {
+                    Log.w(TAG, "Server account deletion failed: HTTP ${response.code}")
+                    false
+                }
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Server account deletion exception: ${e.message}")
+            false
+        }
     }
 }
