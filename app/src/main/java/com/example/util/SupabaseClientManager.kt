@@ -202,10 +202,9 @@ object SupabaseClientManager {
             .ifBlank { obj.optSafeString("clean_phone", "") }
             .ifBlank { if (phone.isNotBlank()) PhonebookHasher.generate16CharHash(phone) else "" }
 
-        // Filter out records without an ID or Name or Phone
+        // Remote profiles intentionally do not expose phone numbers. Identity is the profile ID.
         if (rawId.isBlank() || rawId.equals("null", ignoreCase = true) ||
-            name.isBlank() || name.equals("null", ignoreCase = true) ||
-            phone.isBlank() || phone.equals("null", ignoreCase = true)) {
+            name.isBlank() || name.equals("null", ignoreCase = true)) {
             return null
         }
 
