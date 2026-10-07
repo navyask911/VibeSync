@@ -89,7 +89,7 @@ object AppNotificationManager {
     private val _inAppAlertEvents = MutableSharedFlow<AppAlertPayload>(extraBufferCapacity = 64)
     val inAppAlertEvents = _inAppAlertEvents.asSharedFlow()
 
-    private var currentFcmToken: String? = VibeSyncApplication.FIREBASE_TEST_TOKEN
+    private var currentFcmToken: String? = null
     var appContext: Context? = null
 
     // App Presence & Active Conversation State Tracking
