@@ -415,7 +415,7 @@ class SocialConnectRepository(
                     rtdb.getReference("user_sync").removeValue()
                     rtdb.getReference("profiles").removeValue()
                     try {
-                        com.example.util.FirebaseAuthHelper.signOut(context)
+                        context?.let { SupabaseAuthManager.signOut(it) }
                     } catch (_: Exception) {}
                 }
 
