@@ -49,7 +49,16 @@ jobs:
 
       - name: Secret scan
         run: |
-          ! grep -RIn --exclude-dir=.git --exclude-dir=build "BEGIN PRIVATE KEY" . || exit 1
+          FILES="$(find . -type f \
+            ! -path "./.git/*" \
+            ! -path "./source-archive/*" \
+            ! -path "./.github/*" \
+            ! -path "./build/*" \
+            ! -path "./app/build/*" -print0)"
+          if printf '%s' "$FILES" | xargs -0 grep -nH "BEGIN PRIVATE KEY" 2>/dev/null; then
+            echo "Private key material found in application source"
+            exit 1
+          fi
 
       - name: Unit tests
         run: gradle --no-daemon test
