@@ -26,7 +26,7 @@ data class UserPreferencesEntity(
     val verifiedMobileNumber: String = "",
     val googleEmail: String = "",
     val isMobileVerified: Boolean = false,
-    val isFaceVerified: Boolean = true,
+    val isFaceVerified: Boolean = false,
     val faceVerificationTimestamp: Long = 0L,
     val biometricHash: String = "",
     val biometricRegisteredTimestamp: Long = 0L,
@@ -60,11 +60,11 @@ data class UserPreferencesEntity(
     val profileWallpaperUrl: String = "",
     // Relationship Ethics & Transparency
     val breakupCount: Int = 0,
-    val friendsCount: Int = 5,
+    val friendsCount: Int = 0,
     val activeDatingMatchId: String? = null,
     // Creator / Admin Dynamic Credentials
-    val adminUsername: String = "admin",
-    val adminPassword: String = "admin777",
+    val adminUsername: String = "",
+    val adminPassword: String = "",
     // Daily Swipe Quotas (Strictly 1 Super Like, 5 Likes, 100 Friendship Requests per day)
     val dailySuperLikesSent: Int = 0,
     val dailyLikesSent: Int = 0,
@@ -74,13 +74,13 @@ data class UserPreferencesEntity(
     val dailyPhotosUploaded: Int = 0,
     val dailyVideosUploaded: Int = 0,
     val lastDailyQuotaResetTimestamp: Long = 0L,
-    val ethicsPledgeSigned: Boolean = true,
-    val communityKarma: Int = 120,
+    val ethicsPledgeSigned: Boolean = false,
+    val communityKarma: Int = 0,
     // Google Cloud & Google Drive Private Backup Settings
-    val isGoogleCloudBackupEnabled: Boolean = true,
-    val lastCloudBackupTimestamp: Long = System.currentTimeMillis(),
+    val isGoogleCloudBackupEnabled: Boolean = false,
+    val lastCloudBackupTimestamp: Long = 0L,
     val cloudBackupAccount: String = "",
-    val autoBackupDaily: Boolean = true,
+    val autoBackupDaily: Boolean = false,
     val backupFrequency: String = "DAILY", // "DAILY", "WEEKLY", "BI_WEEKLY", "OFF"
     val backupOverWifiOnly: Boolean = false,
     val isBackupSkipped: Boolean = false,
