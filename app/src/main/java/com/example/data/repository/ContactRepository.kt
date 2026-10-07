@@ -211,7 +211,7 @@ class ContactRepository(
                         id = resolvedContact.id,
                         contactName = resolvedContact.name,
                         phoneNumber = if (tenDigit.length == 10) "+91$tenDigit" else resolvedContact.phoneNumber,
-                        phoneHash = tenDigit,
+                        phoneHash = lookupHash,
                         vibeSyncUserId = vibeSyncUserId,
                         isOnVibeSync = true,
                         matchedAt = now,
@@ -274,10 +274,8 @@ class ContactRepository(
                 .filter { it.length == 64 }
             if (hashes.isEmpty()) return@withContext emptyList()
             SupabaseClientManager.matchContactsRpc(hashes).mapNotNull { match ->
-                if (match.phoneHash.length != 64) {
-                    null
-                } else {
-                    match.phoneHash to ProfileEntity(
+                if (match.phoneHash.length != 64) null else {
+                    val profile = ProfileEntity(
                         id = match.id,
                         name = match.name,
                         age = 24,
@@ -286,6 +284,7 @@ class ContactRepository(
                         avatarEmoji = match.avatarEmoji,
                         isVerified = false
                     )
+                    match.phoneHash to profile
                 }
             }
         } catch (e: Exception) {
@@ -293,6 +292,7 @@ class ContactRepository(
             emptyList()
         }
     }
+    // Contact discovery has no raw-phone Firebase fallback.
     /**
      * Queries Firestore users matching candidate variations as resilient fallback.
      */
