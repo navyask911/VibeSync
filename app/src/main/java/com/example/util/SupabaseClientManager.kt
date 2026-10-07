@@ -288,10 +288,8 @@ object SupabaseClientManager {
 
             val json = JSONObject().apply {
                 put("id", docId)
-                put("phone_number", HackFreeSecurityShield.encrypt(cleanPhoneNum))
-                put("clean_phone", hash16)
-                put("phone_hash", hash64.ifBlank { hash16 })
-                put("phone_number_e164", e164)
+                // Phone numbers are not sent through the profile REST surface.
+                // The dedicated phone_sync path stores only the privacy-preserving lookup hash.
                 put("name", HackFreeSecurityShield.encrypt(cleanNameStr.ifBlank { "VibeSync Member" }))
                 put("email", HackFreeSecurityShield.encrypt(cleanEmail))
                 put("age", profile.age)
@@ -655,8 +653,7 @@ object SupabaseClientManager {
     }
 
     /**
-     * Queries Supabase 'profiles' table directly by standard international phone numbers in 'phone_number_e164'.
-     * Constrained to chunks of 30 to prevent HTTP URL length errors.
+     * Performs private contact lookup through the authenticated match_contacts RPC.
      */
     suspend fun fetchProfilesByE164Phones(phones: List<String>): List<ProfileEntity> = withContext(Dispatchers.IO) {
         val hashes = phones.filter { it.isNotBlank() }.distinct().take(50)
@@ -677,9 +674,7 @@ object SupabaseClientManager {
 
 
     /**
-     * Performs a secure, indexed batch search of registered profile details
-     * by querying 'clean_phone' and 'phone_number_e164'.
-     * Constrained to chunks of 30 to avoid HTTP URL length errors.
+     * Performs secure contact lookup through the private matching RPC.
      */
     suspend fun fetchProfilesByHashes(hashes: List<String>): List<ProfileEntity> = withContext(Dispatchers.IO) {
         val valid = hashes.filter { it.matches(Regex("^[0-9a-fA-F]{64}$")) }.distinct().take(50)
@@ -698,8 +693,7 @@ object SupabaseClientManager {
 
 
     /**
-     * Executes parallel bulk lookup against public.profiles for chunks of 300 normalized 10-digit phone numbers.
-     * GET /rest/v1/profiles?select=id,name,phone_number,clean_phone,avatar_url,avatar_emoji,city,is_verified,bio&or=(clean_phone.in.(...),phone_number.in.(...))
+     * Executes private contact lookup against the server-side hash index.
      */
     suspend fun fetchProfilesByBatch10DigitPhones(
         phoneChunk: List<String>
