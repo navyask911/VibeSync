@@ -247,6 +247,7 @@ revoke all on public.messages from public;
 -- --------------------------------------------------------------------------
 -- Cleanup: transient delivery records can be purged without touching Room.
 -- --------------------------------------------------------------------------
+drop function if exists public.purge_delivered_messages();
 create or replace function public.purge_delivered_messages()
 returns integer
 language plpgsql
