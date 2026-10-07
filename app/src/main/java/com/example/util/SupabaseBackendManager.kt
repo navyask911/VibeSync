@@ -419,7 +419,7 @@ object SupabaseBackendManager {
             val request = Request.Builder()
                 .url("$SUPABASE_URL/rest/v1/profiles")
                 .header("apikey", SUPABASE_ANON_KEY)
-                .header("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .header("Authorization", "Bearer ${SupabaseAuthManager.getCachedAccessToken() ?: SUPABASE_ANON_KEY}")
                 .header("Content-Type", "application/json")
                 .header("Prefer", "resolution=merge-duplicates")
                 .post(body)
