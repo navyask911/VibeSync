@@ -54,6 +54,10 @@ begin
       new.is_deleted := old.is_deleted;
       new.account_status := old.account_status;
     end if;
+    new.phone_number := null;
+    new.phone_number_e164 := null;
+    new.clean_phone := null;
+    new.phone_hash := null;
   end if;
   return new;
 end;
