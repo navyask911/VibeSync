@@ -25,7 +25,6 @@ import com.example.util.AppNotificationManager
 import com.example.util.DeviceSimAndIpCountryHelper
 import com.example.util.FirebaseBackendSyncManager
 import com.example.util.SystemHealthDiagnosticsManager
-import com.example.util.ZeroCostE2eeMessagingManager
 import com.example.util.backup.BackupScheduler
 import com.example.util.backup.ChatBackupCryptoHelper
 import com.example.util.backup.ChatBackupPayload
@@ -4049,86 +4048,8 @@ class SocialConnectRepository(
             }
         }
 
-        // 1. Sync sent message via Zero-Cost Transient E2EE Delivery Queue & Firestore
-        appScope.launch(Dispatchers.IO) {
-            try {
-                val prefs = preferencesDao.getPreferencesSync()
-                val myPhone = com.example.util.ContactResolver.sanitizePhone(prefs?.verifiedMobileNumber ?: "")
-                val myEmail = com.example.util.ContactResolver.sanitizeName(prefs?.googleEmail ?: "")
-                val myId = if (myPhone.isNotBlank() && myPhone != "null") myPhone else if (myEmail.isNotBlank()) myEmail else "USER"
-                
-                val partnerPhone = com.example.util.ContactResolver.sanitizePhone(profile.phoneNumber)
-                val partnerId = com.example.util.ContactResolver.sanitizePhone(match.profileId)
-                val profileIdClean = com.example.util.ContactResolver.sanitizePhone(profile.id)
-
-                if (myPhone.isNotBlank() && myPhone != "null") {
-                    ZeroCostE2eeMessagingManager.startListeningToIncomingQueue(myPhone)
-                }
-
-                // Dispatch to Zero-Cost E2EE transient delivery queue (/messages/$phoneNumber/$pushId)
-                val targetPhone = when {
-                    partnerPhone.isNotBlank() && partnerPhone != "null" && !com.example.util.ContactResolver.isGarbledOrEncrypted(partnerPhone) && partnerPhone.any { it.isDigit() } -> partnerPhone
-                    partnerId.filter { it.isDigit() }.length >= 7 -> partnerId
-                    profileIdClean.filter { it.isDigit() }.length >= 7 -> profileIdClean
-                    else -> partnerId
-                }
-
-                if (targetPhone.isNotBlank() && targetPhone != "null" && targetPhone.any { it.isDigit() }) {
-                    ZeroCostE2eeMessagingManager.sendEncryptedMessage(
-                        senderUid = myPhone.ifBlank { myId },
-                        recipientPhoneNumber = targetPhone,
-                        textContent = text,
-                        matchId = matchId
-                    )
-                } else {
-                    android.util.Log.w("SocialConnectRepository", "Cannot dispatch E2EE message: invalid targetPhone '$targetPhone'")
-                }
-
-                // 2. Dispatch to Firestore collection to trigger Firebase Cloud Function for background FCM push notification
-                try {
-                    val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                    val targetKey = profile.publicIdentityKey.ifBlank {
-                        com.example.util.SupabaseBackendManager.fetchPublicKeyForPhone(targetPhone) ?: ""
-                    }
-                    val cipherText = if (targetKey.isNotBlank()) {
-                        com.example.util.TinkCryptoManager.encryptForRecipient(
-                            recipientPublicKeysetJson = targetKey,
-                            rawText = text,
-                            senderPhone = myPhone,
-                            receiverPhone = targetPhone
-                        )
-                    } else {
-                        text
-                    }
-                    val firestoreMsg = hashMapOf(
-                        "messageId" to clientMsgId,
-                        "matchId" to matchId,
-                        "senderId" to (myPhone.ifBlank { myId }),
-                        "senderPhone" to (myPhone.ifBlank { myId }),
-                        "receiverId" to targetPhone,
-                        "receiverPhone" to targetPhone,
-                        "text" to cipherText,
-                        "ciphertext" to cipherText,
-                        "timestamp" to userMsg.timestamp,
-                        "mediaType" to mediaType,
-                        "mediaUrl" to mediaUrl,
-                        "voiceDurationSeconds" to voiceDurationSeconds,
-                        "isEncrypted" to true,
-                        "isDelivered" to false,
-                        "isRead" to false
-                    )
-                    firestore.collection("chats")
-                        .document(matchId)
-                        .collection("messages")
-                        .document(clientMsgId)
-                        .set(firestoreMsg, com.google.firebase.firestore.SetOptions.merge())
-                } catch (fe: Exception) {
-                    android.util.Log.d("SocialConnectRepository", "Firestore chat message trigger notice: ${fe.message}")
-                }
-            } catch (e: Exception) {
-                android.util.Log.w("SocialConnectRepository", "Zero-Cost dispatch message error: ${e.message}")
-            }
-        }
+        // Firebase databases are not message stores. FCM is delivered only by the server-side push gateway.
+        // Supabase chat_messages remains authoritative; recipient ACKs are the only path to delivery ticks.
 
         startListeningToFirestoreMessages(matchId)
     }
