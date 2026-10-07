@@ -484,45 +484,41 @@ object SupabaseClientManager {
     /**
      * Executes update on public.chat_messages to mark messages as read
      */
+    suspend fun markMessageRead(messageId: String): Boolean = withContext(Dispatchers.IO) {
+        if (messageId.isBlank()) return@withContext false
+        try {
+            val body = JSONObject().apply { put("p_message_id", messageId) }.toString()
+            val request = buildRequest("rpc/ack_message_read", "POST", body)
+            httpClient.newCall(request).execute().use { response -> response.isSuccessful }
+        } catch (e: Throwable) {
+            Log.w(TAG, "markMessageRead notice: ${e.message}")
+            false
+        }
+    }
+
     suspend fun markMessagesAsRead(
         currentUserPhone: String,
         chatPartnerPhone: String,
         matchId: String? = null
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            val myLast10 = normalizePhone(currentUserPhone)
-            val partnerLast10 = normalizePhone(chatPartnerPhone)
-
-            val patchJson = JSONObject().apply {
-                put("is_read", true)
-                put("is_delivered", true)
+            if (matchId.isNullOrBlank()) return@withContext false
+            val safeMatch = java.net.URLEncoder.encode(matchId, "UTF-8")
+            val request = buildRequest(
+                endpoint = "chat_messages?select=message_id&match_id=eq.$safeMatch",
+                method = "GET"
+            )
+            val ids = mutableListOf<String>()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext false
+                val arr = JSONArray(response.body?.string() ?: "[]")
+                for (i in 0 until arr.length()) {
+                    arr.optJSONObject(i)?.optString("message_id","")?.takeIf { it.isNotBlank() }?.let(ids::add)
+                }
             }
-
-            val endpoints = mutableListOf<String>()
-            if (currentUserPhone.isNotBlank()) {
-                endpoints.add("chat_messages?receiver_id=eq.$currentUserPhone&is_read=eq.false")
-            }
-            if (myLast10.isNotBlank() && partnerLast10.isNotBlank()) {
-                endpoints.add("chat_messages?receiver_phone=ilike.*$myLast10&sender_phone=ilike.*$partnerLast10&is_read=eq.false")
-            }
-            if (!matchId.isNullOrBlank()) {
-                endpoints.add("chat_messages?match_id=eq.$matchId&is_read=eq.false")
-            }
-
-            var success = false
-            for (endpoint in endpoints.distinct()) {
-                try {
-                    val request = buildRequest(
-                        endpoint = endpoint,
-                        method = "PATCH",
-                        bodyJson = patchJson.toString()
-                    )
-                    httpClient.newCall(request).execute().use { response ->
-                        if (response.isSuccessful) success = true
-                    }
-                } catch (_: Exception) {}
-            }
-            success
+            var any = false
+            for (id in ids) if (markMessageRead(id)) any = true
+            any
         } catch (e: Throwable) {
             Log.w(TAG, "markMessagesAsRead notice: ${e.message}")
             false
