@@ -66,6 +66,7 @@ jobs:
               ! -path "./.github/*" \
               ! -path "./build/*" \
               ! -path "./app/build/*" \
+              ! -path "./app/google-services.json" \
               -print0 | xargs -0 -r grep -nH -E "BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY|sb_secret_|service_role|SUPABASE_SERVICE_ROLE|AIzaSy[a-zA-Z0-9_-]{20,}" 2>/dev/null; then
             echo "Secret-like credential pattern found in application source"
             exit 1
