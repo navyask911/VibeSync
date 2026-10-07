@@ -44,7 +44,7 @@ class ExampleUnitTest {
     assertEquals(18, prefs.minAge)
     assertEquals(99, prefs.maxAge)
     assertFalse(prefs.isLoggedIn)
-    assertTrue(prefs.isFaceVerified)
+    assertFalse(prefs.isFaceVerified)
   }
 
   @Test
