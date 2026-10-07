@@ -2382,88 +2382,19 @@ class SocialConnectRepository(
             localProfile = profileDao.getProfileByPhone(cleanDigits) ?: profileDao.getProfileByIdSync(cleanDigits)
         }
 
-        // 3. Check Supabase / Cloud Firestore with 3-second timeout if local data not found
+        // 3. Restore through privacy-preserving Supabase contact lookup only.
         if ((account?.userName.isNullOrBlank()) && (localProfile?.name.isNullOrBlank()) && cleanDigits.isNotBlank()) {
             try {
                 kotlinx.coroutines.withTimeoutOrNull(3000L) {
-                    // Try Supabase first
-                    try {
-                        val phHash = com.example.util.SupabaseClientManager.getPhoneHash(cleanDigits)
-                        val sbProfiles = com.example.util.SupabaseClientManager.fetchProfilesByHashes(listOf(phHash, cleanDigits, phone))
-                        val sbProfile = sbProfiles.firstOrNull()
-                        if (sbProfile != null && sbProfile.name.isNotBlank() &&
-                            sbProfile.name != "Registered Member" && sbProfile.name != "VibeSync User" && !sbProfile.name.startsWith("User ")) {
-                            localProfile = sbProfile
-                        }
-                    } catch (e: Exception) {
-                        android.util.Log.w("SocialConnectRepository", "Supabase profile restore note: ${e.message}")
+                    val sbProfiles = com.example.util.SupabaseClientManager.fetchProfilesByCleanPhones(listOf(cleanDigits, phone))
+                    val sbProfile = sbProfiles.firstOrNull {
+                        it.name.isNotBlank() && it.name != "Registered Member" &&
+                            it.name != "VibeSync User" && !it.name.startsWith("User ")
                     }
-
-                    // Fallback to Cloud Firestore if still not found
-                    if (localProfile == null || localProfile?.name.isNullOrBlank()) {
-                        try {
-                            val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                            val doc = try {
-                                db.collection("profiles").document(cleanDigits).get().await()
-                            } catch (_: Exception) {
-                                try {
-                                    db.collection("users").document(cleanDigits).get().await()
-                                } catch (_: Exception) { null }
-                            }
-
-                            if (doc != null && doc.exists()) {
-                                val name = doc.getString("name") ?: ""
-                                if (name.isNotBlank() && name != "Registered Member" && name != "VibeSync User" && !name.startsWith("User ")) {
-                                    val age = doc.getLong("age")?.toInt() ?: 24
-                                    val city = doc.getString("city") ?: ""
-                                    val bio = doc.getString("bio") ?: ""
-                                    val occupation = doc.getString("occupation") ?: ""
-                                    val avatarUrl = doc.getString("avatarUrl") ?: ""
-                                    val gender = doc.getString("gender") ?: "Woman"
-                                    val relationshipGoal = doc.getString("relationshipGoal") ?: "Long-term relationship"
-                                    val maritalStatus = doc.getString("maritalStatus") ?: "Single (Never Married)"
-                                    val interestsList = doc.get("interests") as? List<*>
-                                    val interests = interestsList?.joinToString(", ") ?: (doc.getString("interests") ?: "")
-
-                                    val restoredProfile = ProfileEntity(
-                                        id = cleanDigits,
-                                        name = name,
-                                        age = age,
-                                        occupation = occupation,
-                                        city = city,
-                                        distanceMiles = 0,
-                                        bio = bio,
-                                        interests = interests,
-                                        relationshipGoal = relationshipGoal,
-                                        avatarEmoji = "✨",
-                                        avatarUrl = avatarUrl,
-                                        isVerified = true,
-                                        phoneNumber = phone,
-                                        isDeleted = false,
-                                        accountStatus = "ACTIVE"
-                                    )
-                                    profileDao.insertProfile(restoredProfile)
-                                    localProfile = restoredProfile
-
-                                    val restoredAcc = RegisteredAccountEntity(
-                                        id = cleanDigits,
-                                        phoneNumber = phone,
-                                        userName = name,
-                                        userAge = age,
-                                        isDeleted = false,
-                                        accountStatus = "ACTIVE"
-                                    )
-                                    registeredAccountDao.insertOrUpdate(restoredAcc)
-                                    account = restoredAcc
-                                }
-                            }
-                        } catch (e: Exception) {
-                            android.util.Log.w("SocialConnectRepository", "Firestore profile restore note: ${e.message}")
-                        }
-                    }
+                    if (sbProfile != null) localProfile = sbProfile
                 }
             } catch (e: Exception) {
-                android.util.Log.w("SocialConnectRepository", "Profile lookup timeout/cancellation: ${e.message}")
+                android.util.Log.w("SocialConnectRepository", "Private Supabase profile restore note: ${e.message}")
             }
         }
 
