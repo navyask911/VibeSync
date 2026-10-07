@@ -455,6 +455,25 @@ object SupabaseClientManager {
             false
         }
     }
+    suspend fun isPlatformStaff(): Boolean = withContext(Dispatchers.IO) {
+        val token = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
+        try {
+            val request = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/rpc/is_platform_staff")
+                .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+                .header("Authorization", "Bearer $token")
+                .header("Content-Type", "application/json")
+                .post("{}".toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext false
+                response.body?.string()?.trim()?.equals("true", ignoreCase = true) == true
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Platform staff verification notice: ${e.message}")
+            false
+        }
+    }
     suspend fun fetchPublicIdentityKey(profileId: String): String? = withContext(Dispatchers.IO) {
         if (profileId.isBlank()) return@withContext null
         try {
