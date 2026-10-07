@@ -123,7 +123,7 @@ object SupabaseClientManager {
         val builder = Request.Builder()
             .url(url)
             .addHeader("apikey", SUPABASE_PUBLISHABLE_KEY)
-            .addHeader("Authorization", "Bearer $SUPABASE_PUBLISHABLE_KEY")
+            .addHeader("Authorization", "Bearer ${SupabaseAuthManager.getCachedAccessToken() ?: SUPABASE_PUBLISHABLE_KEY}")
             .addHeader("Content-Type", "application/json")
 
         if (preferHeader != null) {
