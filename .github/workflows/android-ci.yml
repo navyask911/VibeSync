@@ -15,6 +15,10 @@ on:
       - ".github/workflows/android-ci.yml"
   workflow_dispatch:
 
+concurrency:
+  group: vibesync-android-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
