@@ -597,53 +597,22 @@ object SupabaseClientManager {
      * Constrained to chunks of 30 to prevent HTTP URL length errors.
      */
     suspend fun fetchProfilesByE164Phones(phones: List<String>): List<ProfileEntity> = withContext(Dispatchers.IO) {
-        val list = mutableListOf<ProfileEntity>()
-        val activePhones = phones.filter { it.isNotBlank() && !it.equals("null", ignoreCase = true) }.distinct().take(30)
-        if (activePhones.isEmpty()) return@withContext list
-
-        try {
-            val phonesParam = activePhones.joinToString(",")
-            val request = buildRequest(
-                endpoint = "profiles?phone_number_e164=in.($phonesParam)&select=id,name,phone_number,clean_phone,phone_hash,phone_number_e164,email,age,gender,city,country,country_flag,place,avatar_emoji,avatar_url,occupation,qualification,bio,marital_status,account_status,is_verified,is_deleted,updated_at&limit=30",
-                method = "GET"
+        val hashes = phones.filter { it.isNotBlank() }.distinct().take(50)
+            .map { PhonebookHasher.hashPhoneNumberToHex(it) }
+            .filter { it.length == 64 }
+        if (hashes.isEmpty()) return@withContext emptyList()
+        matchContactsRpc(hashes).map {
+            ProfileEntity(
+                id = it.id,
+                name = it.name,
+                phoneNumber = "",
+                avatarUrl = it.photoUrl.orEmpty(),
+                avatarEmoji = it.avatarEmoji,
+                isVerified = true
             )
-
-            httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val bodyStr = response.body?.string() ?: "[]"
-                    val jsonArray = JSONArray(bodyStr)
-                    for (i in 0 until jsonArray.length()) {
-                        val obj = jsonArray.getJSONObject(i)
-                        val parsed = parseProfileEntityFromJson(obj)
-                        if (parsed != null) {
-                            list.add(parsed)
-                        }
-                    }
-                    if (list.isNotEmpty()) {
-                        Log.i(TAG, "⚡ Direct PostgREST phone_number_e164 matched ${list.size} profile(s).")
-                        return@withContext list
-                    }
-                }
-            }
-        } catch (e: Throwable) {
-            Log.w(TAG, "Direct phone_number_e164 PostgREST query notice: ${e.message}")
         }
-
-        // Fallback: Also check clean_phone column with the E.164 phones / hashes
-        try {
-            val hashList = activePhones.flatMap { p ->
-                listOf(p, p.filter { it.isDigit() }, PhonebookHasher.generate16CharHash(p))
-            }.distinct().take(30)
-            val fallbackMatches = fetchProfilesByHashes(hashList)
-            if (fallbackMatches.isNotEmpty()) {
-                return@withContext fallbackMatches
-            }
-        } catch (e: Throwable) {
-            Log.w(TAG, "fetchProfilesByE164Phones fallback notice: ${e.message}")
-        }
-
-        return@withContext list
     }
+
 
     /**
      * Performs a secure, indexed batch search of registered profile details
@@ -651,70 +620,20 @@ object SupabaseClientManager {
      * Constrained to chunks of 30 to avoid HTTP URL length errors.
      */
     suspend fun fetchProfilesByHashes(hashes: List<String>): List<ProfileEntity> = withContext(Dispatchers.IO) {
-        val list = mutableListOf<ProfileEntity>()
-        val activeHashes = hashes.filter { it.isNotBlank() && !it.equals("null", ignoreCase = true) }.distinct().take(30)
-        if (activeHashes.isEmpty()) return@withContext list
-
-        try {
-            val hashesParam = activeHashes.joinToString(",")
-            val request = buildRequest(
-                endpoint = "profiles?clean_phone=in.($hashesParam)&select=id,clean_phone&limit=30",
-                method = "GET"
+        val valid = hashes.filter { it.matches(Regex("^[0-9a-fA-F]{64}$")) }.distinct().take(50)
+        if (valid.isEmpty()) return@withContext emptyList()
+        matchContactsRpc(valid).map {
+            ProfileEntity(
+                id = it.id,
+                name = it.name,
+                phoneNumber = "",
+                avatarUrl = it.photoUrl.orEmpty(),
+                avatarEmoji = it.avatarEmoji,
+                isVerified = true
             )
-
-            httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val bodyStr = response.body?.string() ?: "[]"
-                    val jsonArray = JSONArray(bodyStr)
-                    for (i in 0 until jsonArray.length()) {
-                        val obj = jsonArray.getJSONObject(i)
-                        val id = obj.optString("id", "")
-                        val cleanPhone = obj.optString("clean_phone", "")
-                        if (id.isNotBlank()) {
-                            list.add(
-                                ProfileEntity(
-                                    id = id,
-                                    phoneNumber = cleanPhone,
-                                    name = "", // Resolved strictly from local phonebook
-                                    age = 24,
-                                    isVerified = true
-                                )
-                            )
-                        }
-                    }
-                    if (list.isNotEmpty()) {
-                        Log.i(TAG, "⚡ Zero-Knowledge clean_phone matched ${list.size} profile(s).")
-                        return@withContext list
-                    }
-                }
-            }
-        } catch (e: Throwable) {
-            Log.w(TAG, "Direct clean_phone PostgREST query notice: ${e.message}")
         }
-
-        // Fallback: fetch safe profiles list (limit 50) and match
-        try {
-            val allProfiles = fetchAllProfiles(50)
-            if (allProfiles.isNotEmpty()) {
-                val matched = allProfiles.filter { p ->
-                    val h16 = getPhoneHash(p.phoneNumber)
-                    val h16E164 = PhonebookHasher.generate16CharHash(p.phoneNumber)
-                    val h64 = PhonebookHasher.hashPhoneNumberToHex(p.phoneNumber)
-                    activeHashes.contains(p.id) ||
-                    activeHashes.contains(p.phoneNumber) ||
-                    activeHashes.contains(h16) ||
-                    activeHashes.contains(h16E164) ||
-                    activeHashes.contains(h64)
-                }
-                if (matched.isNotEmpty()) {
-                    return@withContext matched
-                }
-            }
-        } catch (e: Throwable) {
-            Log.w(TAG, "fetchProfilesByHashes fallback notice: ${e.message}")
-        }
-        return@withContext list
     }
+
 
     /**
      * Executes parallel bulk lookup against public.profiles for chunks of 300 normalized 10-digit phone numbers.
@@ -723,73 +642,21 @@ object SupabaseClientManager {
     suspend fun fetchProfilesByBatch10DigitPhones(
         phoneChunk: List<String>
     ): List<ProfileEntity> = withContext(Dispatchers.IO) {
-        val list = mutableListOf<ProfileEntity>()
-        val validPhones = phoneChunk.filter { it.isNotBlank() && it.length == 10 }.distinct()
-        if (validPhones.isEmpty()) return@withContext list
-
-        try {
-            val inList = validPhones.joinToString(",")
-            val endpoint = "profiles?select=id,name,phone_number,clean_phone,avatar_url,avatar_emoji,city,is_verified,bio&or=(clean_phone.in.($inList),phone_number.in.($inList))&limit=300"
-            val request = buildRequest(endpoint = endpoint, method = "GET")
-
-            httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val bodyStr = response.body?.string() ?: "[]"
-                    val jsonArray = JSONArray(bodyStr)
-                    for (i in 0 until jsonArray.length()) {
-                        val obj = jsonArray.getJSONObject(i)
-                        val id = obj.optSafeString("id", "")
-                        val name = obj.optSafeString("name", "VibeSync Member")
-                        val phone = obj.optSafeString("clean_phone", obj.optSafeString("phone_number", ""))
-                        val avatarUrl = obj.optSafeString("avatar_url", "")
-                        val avatarEmoji = obj.optSafeString("avatar_emoji", "✨")
-                        val city = obj.optSafeString("city", "")
-                        val bio = obj.optSafeString("bio", "")
-                        if (id.isNotBlank()) {
-                            list.add(
-                                ProfileEntity(
-                                    id = id,
-                                    name = name,
-                                    age = 24,
-                                    phoneNumber = phone,
-                                    avatarUrl = avatarUrl,
-                                    avatarEmoji = avatarEmoji,
-                                    city = city,
-                                    bio = bio,
-                                    isVerified = obj.optBoolean("is_verified", true)
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-        } catch (e: Throwable) {
-            Log.w(TAG, "Bulk 10-digit phone query notice: ${e.message}")
-        }
-        list
+        val hashes = phoneChunk.filter { it.length == 10 }.distinct().take(50)
+            .map { PhonebookHasher.hashPhoneNumberToHex(it) }
+        if (hashes.isEmpty()) return@withContext emptyList()
+        fetchProfilesByHashes(hashes)
     }
+
 
     /**
      * Performs indexed, selective lookup by computing matching phone hashes and querying clean_phone with strict LIMIT 50.
      */
     suspend fun fetchProfilesByCleanPhones(cleanPhones: List<String>): List<ProfileEntity> = withContext(Dispatchers.IO) {
-        val activePhones = cleanPhones.filter { it.isNotBlank() && !it.equals("null", ignoreCase = true) }.distinct().take(50)
-        if (activePhones.isEmpty()) return@withContext emptyList()
-
-        val computedHashes = activePhones.flatMap { phone ->
-            val set = mutableSetOf<String>()
-            val h16 = PhonebookHasher.generate16CharHash(phone)
-            if (h16.isNotBlank()) set.add(h16)
-            val h64 = PhonebookHasher.hashPhoneNumberToHex(phone)
-            if (h64.isNotBlank()) set.add(h64)
-            set.addAll(PhonebookHasher.getAllMatchHashes(phone))
-            if (phone.length == 16) set.add(phone)
-            set
-        }.filter { it.isNotBlank() }.distinct().take(50)
-
-        if (computedHashes.isEmpty()) return@withContext emptyList()
-
-        return@withContext fetchProfilesByHashes(computedHashes)
+        val hashes = cleanPhones.filter { it.isNotBlank() }.distinct().take(50)
+            .map { PhonebookHasher.hashPhoneNumberToHex(it) }
+        if (hashes.isEmpty()) return@withContext emptyList()
+        fetchProfilesByHashes(hashes)
     }
 
 
