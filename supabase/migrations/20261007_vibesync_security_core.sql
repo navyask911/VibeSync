@@ -384,5 +384,38 @@ revoke all on function public.ack_message_read(text) from public;
 revoke all on function public.ack_message_read(text) from anon;
 revoke all on function public.ack_message_read(text) from authenticated;
 grant execute on function public.ack_message_read(text) to authenticated;
+-- --------------------------------------------------------------------------
+-- Platform staff authorization
+-- --------------------------------------------------------------------------
+create table if not exists public.platform_staff (
+  auth_user_id uuid primary key references auth.users(id) on delete cascade,
+  role text not null check (role in ('OWNER','ADMIN','MODERATOR','SUPPORT','LEGAL_REVIEW')),
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+alter table public.platform_staff enable row level security;
+revoke all on public.platform_staff from anon;
+revoke all on public.platform_staff from authenticated;
+revoke all on public.platform_staff from public;
+
+drop function if exists public.is_platform_staff();
+create or replace function public.is_platform_staff()
+returns boolean
+language sql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+  select exists (
+    select 1 from public.platform_staff s
+    where s.auth_user_id = (select auth.uid())
+      and s.active = true
+  );
+$$;
+revoke all on function public.is_platform_staff() from public;
+revoke all on function public.is_platform_staff() from anon;
+revoke all on function public.is_platform_staff() from authenticated;
+grant execute on function public.is_platform_staff() to authenticated;
 
 commit;
