@@ -1,22 +1,30 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# VibeSync
 
-# Run and deploy your AI Studio app
+VibeSync is a proprietary Android social and business platform built around privacy-preserving contact discovery, local-first data, serverless backend services, secure messaging, and business communication tools.
 
-This contains everything you need to run your app locally.
+## Architecture
 
-View your app in AI Studio: https://ai.studio/apps/99cd27b5-02ae-49a1-8f9d-104a500c26cf
+- Kotlin + Jetpack Compose Android application.
+- Room for local-first persistence and offline UX.
+- Supabase/PostgreSQL as the authoritative application backend.
+- Object storage for large media where configured.
+- Serverless functions for privileged business logic.
+- Firebase Cloud Messaging (FCM) only for Android push notifications.
+- Google Tink for application cryptography.
+- Truecaller remains a test/development authentication integration until a production-approved authentication contract is finalized.
 
-## Run Locally
+## Privacy-first contact discovery
 
-**Prerequisites:**  [Android Studio](https://developer.android.com/studio)
+The device address book is not intended to become a permanent cloud database. Contact discovery should use privacy-preserving identifiers and minimal match results. Plain SHA-256 phone hashing must not be described as zero-knowledge cryptography.
 
+## Credentials
 
-1. Open Android Studio
-2. Select **Open** and choose the directory containing this project
-3. Allow Android Studio to fix any incompatibilities as it imports the project.
-4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)
-5. Remove this line from the app's `build.gradle.kts` file: `signingConfig = signingConfigs.getByName("debugConfig")`
-6. Run the app on an emulator or physical device
-7. If you have already published your app in AI Studio, please [request upload key reset](https://support.google.com/googleplay/android-developer/answer/9842756#zippy=%2Crequest-an-upload-key-reset) in Google Play Console.
+Never commit Android signing keys, Firebase service-account private keys, Supabase service-role/secret keys, Gemini API keys, or Cloudflare/R2 secret credentials.
+
+## Build
+
+Release artifacts are unsigned unless CI signing secrets are provided. Never commit a keystore.
+
+## Legal
+
+See LICENSE, PRIVACY.md, TERMS.md, and SECURITY.md.
