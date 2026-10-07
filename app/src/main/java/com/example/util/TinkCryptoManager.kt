@@ -171,7 +171,7 @@ object TinkCryptoManager {
             myHandle.getPrimitive(HybridDecrypt::class.java)
         } catch (e: Throwable) {
             Log.e("TinkE2EE", "Decryption failed: Cannot acquire HybridDecrypt primitive: ${e.message}", e)
-            return payload.removePrefix(TINK_PREFIX)
+            return ""
         }
 
         // Production decryption requires the same associated-data binding used at encryption time.
