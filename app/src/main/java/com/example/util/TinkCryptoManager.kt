@@ -63,26 +63,15 @@ object TinkCryptoManager {
                 .withSharedPref(context.applicationContext, KEYSET_NAME, PREF_FILE_NAME)
                 .withKeyTemplate(KeyTemplates.get("ECIES_P256_HKDF_HMAC_SHA256_AES128_GCM"))
 
-            try {
-                builder.withMasterKeyUri(MASTER_KEY_URI)
-            } catch (e: Exception) {
-                Log.w(TAG, "Android Keystore master key notice, using soft-wrapped keyset: ${e.message}")
-            }
+            builder.withMasterKeyUri(MASTER_KEY_URI)
 
             val keysetManager = builder.build()
             val handle = keysetManager.keysetHandle
             cachedKeysetHandle = handle
             handle
         } catch (e: Throwable) {
-            Log.e(TAG, "Error obtaining KeysetHandle via AndroidKeysetManager: ${e.message}", e)
-            try {
-                val fallbackHandle = KeysetHandle.generateNew(KeyTemplates.get("ECIES_P256_HKDF_HMAC_SHA256_AES128_GCM"))
-                cachedKeysetHandle = fallbackHandle
-                fallbackHandle
-            } catch (ex: Throwable) {
-                Log.e(TAG, "Error generating fallback KeysetHandle: ${ex.message}", ex)
-                null
-            }
+            Log.e(TAG, "Error obtaining Android Keystore protected Tink KeysetHandle: ${e.message}", e)
+            null
         }
     }
 
@@ -124,7 +113,10 @@ object TinkCryptoManager {
         receiverPhone: String = ""
     ): String {
         if (rawText.isBlank()) return ""
-        if (recipientPublicKeysetJson.isBlank()) return rawText
+        if (recipientPublicKeysetJson.isBlank()) {
+            Log.w(TAG, "Refusing plaintext encryption fallback: recipient public key is missing.")
+            return ""
+        }
         initTink()
 
         return try {
@@ -141,8 +133,8 @@ object TinkCryptoManager {
             val encodedCipher = Base64.encodeToString(ciphertextBytes, Base64.NO_WRAP)
             "$TINK_PREFIX$encodedCipher"
         } catch (e: Throwable) {
-            Log.e("TinkE2EE", "Tink hybrid encryption error: ${e.message}", e)
-            rawText
+            Log.e("TinkE2EE", "Tink hybrid encryption failed closed: ${e.message}", e)
+            ""
         }
     }
 
@@ -164,7 +156,7 @@ object TinkCryptoManager {
         val myHandle = getOrCreateMyKeysetHandle(context)
         if (myHandle == null) {
             Log.e("TinkE2EE", "Decryption failed: Local private KeysetHandle is null")
-            return payload.removePrefix(TINK_PREFIX)
+            return ""
         }
 
         val base64Cipher = payload.removePrefix(TINK_PREFIX)
@@ -172,7 +164,7 @@ object TinkCryptoManager {
             Base64.decode(base64Cipher, Base64.NO_WRAP)
         } catch (e: Exception) {
             Log.e("TinkE2EE", "Decryption failed: Base64 decode error: ${e.message}", e)
-            return payload.removePrefix(TINK_PREFIX)
+            return ""
         }
 
         val decryptor = try {
@@ -182,25 +174,21 @@ object TinkCryptoManager {
             return payload.removePrefix(TINK_PREFIX)
         }
 
-        // Attempt 1: Try with sorted sender/receiver associatedData context bytes
-        if (senderPhone.isNotBlank() && receiverPhone.isNotBlank()) {
-            try {
-                val contextInfo = getAssociatedData(senderPhone, receiverPhone)
-                val plainBytes = decryptor.decrypt(cipherBytes, contextInfo)
-                return String(plainBytes, Charsets.UTF_8)
-            } catch (e: Throwable) {
-                Log.d("TinkE2EE", "AssociatedData decryption attempt notice: ${e.message}, falling back to null context")
-            }
+        // Production decryption requires the same associated-data binding used at encryption time.
+        if (senderPhone.isBlank() || receiverPhone.isBlank()) {
+            Log.e("TinkE2EE", "Decryption failed closed: sender/receiver binding context is missing.")
+            onMismatchedKey?.invoke()
+            return ""
         }
 
-        // Attempt 2: Fall back to null context (for payloads encrypted without associatedData)
         return try {
-            val plainBytes = decryptor.decrypt(cipherBytes, null)
+            val contextInfo = getAssociatedData(senderPhone, receiverPhone)
+            val plainBytes = decryptor.decrypt(cipherBytes, contextInfo)
             String(plainBytes, Charsets.UTF_8)
         } catch (e: Throwable) {
-            Log.e("TinkE2EE", "Tink hybrid decryption failure (GeneralSecurityException): ${e.message}. Possible mismatched keys.", e)
+            Log.e("TinkE2EE", "Tink hybrid decryption failed closed: ${e.message}. Possible mismatched keys.", e)
             onMismatchedKey?.invoke()
-            payload.removePrefix(TINK_PREFIX)
+            ""
         }
     }
 }
