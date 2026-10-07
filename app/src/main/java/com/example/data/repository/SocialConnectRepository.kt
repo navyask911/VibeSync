@@ -1975,88 +1975,36 @@ class SocialConnectRepository(
     // Developer / Admin Controls
     suspend fun setProfileBan(profileId: String, isBanned: Boolean, note: String) {
         profileDao.updateBanStatus(profileId, isBanned, note)
-        appScope.launch(Dispatchers.IO) {
-            try {
-                val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                db.collection("profiles").document(profileId).update(
-                    mapOf("isBanned" to isBanned, "moderationNote" to note)
-                )
-                db.collection("users").document(profileId).update(
-                    mapOf("isBanned" to isBanned, "moderationNote" to note)
-                )
-            } catch (e: Exception) {
-                android.util.Log.w("SocialConnectRepository", "Firestore setProfileBan update error: ${e.message}")
-            }
+        if (isBanned) {
+            com.example.util.SupabaseClientManager.staffModerateProfile(profileId, "BAN", note)
+        } else {
+            com.example.util.SupabaseClientManager.staffModerateProfile(profileId, "UNBAN", note)
         }
     }
 
     suspend fun recordReportOnProfile(profileId: String, trustScore: Int, isFlagged: Boolean, note: String) {
         profileDao.recordReportOnProfile(profileId, trustScore, isFlagged, note)
-        appScope.launch(Dispatchers.IO) {
-            try {
-                val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                db.collection("profiles").document(profileId).update(
-                    mapOf("trustScore" to trustScore, "isFlaggedSpam" to isFlagged, "moderationNote" to note)
-                )
-            } catch (_: Exception) {}
-        }
     }
 
     suspend fun blockAndReportUser(profileId: String, matchId: String? = null, reason: String = "Harassment / Safety", details: String = "") {
-        profileDao.updateBanStatus(profileId, true, "Emergency Block ($reason): $details")
+        profileDao.updateBanStatus(profileId, true, "Emergency Block (" + reason + "): " + details)
         profileDao.updateSpamStatus(profileId, true, 0)
         val mId = matchId ?: matchDao.getMatchByProfileId(profileId)?.matchId
         if (mId != null) {
             chatMessageDao.clearMessagesForMatch(mId)
             matchDao.deleteMatch(mId)
         }
-        appScope.launch(Dispatchers.IO) {
-            try {
-                val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                db.collection("profiles").document(profileId).update(
-                    mapOf("isBanned" to true, "isFlaggedSpam" to true, "trustScore" to 0, "moderationNote" to "Emergency Block ($reason)")
-                )
-                if (mId != null) {
-                    db.collection("chats").document(mId).delete()
-                }
-            } catch (_: Exception) {}
-        }
+        com.example.util.SupabaseClientManager.blockUserRemote(profileId, reason)
+        com.example.util.SupabaseClientManager.submitSafetyReportRemote(profileId, reason, details)
     }
 
     suspend fun setProfileSpam(profileId: String, isSpam: Boolean, trustScore: Int) {
         profileDao.updateSpamStatus(profileId, isSpam, trustScore)
-        appScope.launch(Dispatchers.IO) {
-            try {
-                val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                db.collection("profiles").document(profileId).update(
-                    mapOf("isFlaggedSpam" to isSpam, "trustScore" to trustScore)
-                )
-                db.collection("users").document(profileId).update(
-                    mapOf("isFlaggedSpam" to isSpam, "trustScore" to trustScore)
-                )
-            } catch (e: Exception) {
-                android.util.Log.w("SocialConnectRepository", "Firestore setProfileSpam error: ${e.message}")
-            }
-        }
     }
 
     suspend fun setProfileVerification(profileId: String, isVerified: Boolean, isFaceVerified: Boolean) {
         profileDao.updateVerification(profileId, isVerified, isFaceVerified)
-        appScope.launch(Dispatchers.IO) {
-            try {
-                val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                db.collection("profiles").document(profileId).update(
-                    mapOf("isVerified" to isVerified, "isRealFaceVerified" to isFaceVerified)
-                )
-                db.collection("users").document(profileId).update(
-                    mapOf("isVerified" to isVerified, "isRealFaceVerified" to isFaceVerified)
-                )
-            } catch (e: Exception) {
-                android.util.Log.w("SocialConnectRepository", "Firestore setProfileVerification error: ${e.message}")
-            }
-        }
     }
-
     suspend fun deleteProfile(profileId: String) {
         val sessionUserId = context?.let { SupabaseAuthManager.getCachedSession(it)?.user?.id }.orEmpty()
         val isSelf = sessionUserId.isNotBlank() && profileId == sessionUserId
