@@ -3,7 +3,6 @@ package com.example.util
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
-import com.google.firebase.auth.FirebaseAuth
 
 object UserSessionManager {
     private const val TAG = "UserSessionManager"
