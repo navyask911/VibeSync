@@ -252,7 +252,7 @@ fun OtpVerificationScreen(
 
                 when (selectedMode) {
                     OtpOptionMode.FIREBASE_PHONE -> {
-                        // OPTION 1: FIREBASE PHONE AUTH WITH COUNTDOWN TIMER
+                        // OPTION 1: SUPABASE PHONE OTP WITH COUNTDOWN TIMER
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -538,6 +538,7 @@ fun OtpVerificationScreen(
                                     hasUserSentTextSms = true
                                 }
                             },
+                            enabled = false,
                             shape = RoundedCornerShape(16.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = LikeGreen,
