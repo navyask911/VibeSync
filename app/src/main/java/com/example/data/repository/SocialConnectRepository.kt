@@ -133,56 +133,12 @@ class SocialConnectRepository(
 
     suspend fun syncProfileToFirestore(profile: ProfileEntity) {
         try {
-            val cleanPhone = com.example.util.ContactResolver.sanitizePhone(profile.phoneNumber)
             val cleanName = com.example.util.ContactResolver.sanitizeName(profile.name)
-            val cleanId = com.example.util.ContactResolver.sanitizePhone(profile.id)
-
-            // Guard: Do not sync uninitialized profiles to cloud
-            if (cleanId == "current_user" || cleanId == "null" || cleanId.isBlank() || (cleanPhone.isBlank() && profile.email.isBlank())) {
-                android.util.Log.w("SocialConnectRepository", "Skipping cloud sync of uninitialized profile: id=${profile.id}, name=${profile.name}")
-                return
-            }
-
-            // 1. Sync to Supabase PostgREST Database
-            com.example.util.SupabaseClientManager.upsertProfile(profile.copy(name = cleanName, phoneNumber = cleanPhone))
-
-            // 2. Sync to Firestore (used for FCM notification triggers & backup)
-            val phoneDigits = cleanPhone.filter { it.isDigit() }
-            val docId = if (phoneDigits.length >= 7) phoneDigits else if (profile.email.isNotBlank()) profile.email.trim() else cleanId
-            if (docId.isBlank() || docId == "null" || docId == "current_user") return
-
-            val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-            val map = hashMapOf(
-                "id" to docId,
-                "userId" to docId,
-                "name" to cleanName.ifBlank { "VibeSync Member" },
-                "age" to profile.age,
-                "gender" to com.example.util.ContactResolver.sanitizeName(profile.gender, "User"),
-                "city" to com.example.util.ContactResolver.sanitizeName(profile.city, "Online"),
-                "country" to com.example.util.ContactResolver.sanitizeName(profile.country, "United States"),
-                "countryFlag" to profile.countryFlag.ifBlank { "🇺🇸" },
-                "place" to com.example.util.ContactResolver.sanitizeName(profile.place),
-                "avatarEmoji" to profile.avatarEmoji.ifBlank { "✨" },
-                "avatarUrl" to com.example.util.ContactResolver.sanitizeName(profile.avatarUrl),
-                "occupation" to com.example.util.ContactResolver.sanitizeName(profile.occupation, "Member"),
-                "qualification" to com.example.util.ContactResolver.sanitizeName(profile.qualification, "Verified"),
-                "bio" to com.example.util.ContactResolver.sanitizeName(profile.bio, "Hey there! Secure with VibeSync E2EE."),
-                "interests" to profile.interests,
-                "maritalStatus" to com.example.util.ContactResolver.sanitizeName(profile.maritalStatus, "Single"),
-                "phoneNumber" to cleanPhone,
-                "cleanPhone" to phoneDigits,
-                "phone_hash" to com.example.util.PhonebookHasher.generate16CharHash(cleanPhone.ifBlank { docId }),
-                "phoneHash" to com.example.util.PhonebookHasher.generate16CharHash(cleanPhone.ifBlank { docId }),
-                "phoneNumberE164" to com.example.util.PhonebookHasher.normalizeToE164(cleanPhone.ifBlank { docId }),
-                "email" to com.example.util.ContactResolver.sanitizeName(profile.email),
-                "isDeleted" to profile.isDeleted,
-                "accountStatus" to profile.accountStatus.ifBlank { "ACTIVE" },
-                "updatedAt" to System.currentTimeMillis()
-            )
-            db.collection("users").document(docId).set(map, com.google.firebase.firestore.SetOptions.merge())
-            db.collection("profiles").document(docId).set(map, com.google.firebase.firestore.SetOptions.merge())
+            val cleanId = profile.id.trim()
+            if (cleanId.isBlank() || cleanId == "current_user" || cleanId == "null") return
+            com.example.util.SupabaseClientManager.upsertProfile(profile.copy(name = cleanName))
         } catch (e: Exception) {
-            android.util.Log.w("SocialConnectRepository", "Profile sync error: ${e.message}")
+            android.util.Log.w("SocialConnectRepository", "Supabase profile sync notice: " + e.message)
         }
     }
 
@@ -257,11 +213,7 @@ class SocialConnectRepository(
         pullProfilesFromFirestore()
         startRealtimeProfilesSync()
         startGlobalChatSync()
-        val currentPrefs = preferencesDao.getPreferencesSync()
-        val phone = currentPrefs?.verifiedMobileNumber ?: ""
-        if (phone.isNotBlank()) {
-            ZeroCostE2eeMessagingManager.startListeningToIncomingQueue(phone)
-        }
+        // FCM is the notification transport. Firebase Realtime Database/Firestore listeners are not started.
         syncAndRestoreBusinessesFromCloud()
     }
 
@@ -1172,198 +1124,15 @@ class SocialConnectRepository(
         }
     }
 
-    suspend fun pullProfilesFromFirestore() {
+    suspend fun pullProfilesFromFirestore() = withContext(Dispatchers.IO) {
         try {
-            val prefs = preferencesDao.getPreferencesSync()
-            val myPhone = prefs?.verifiedMobileNumber ?: ""
-            val myPhoneDigits = myPhone.filter { it.isDigit() }
-            val myEmail = (prefs?.googleEmail ?: "").trim().lowercase()
-            val myId = if (myPhone.isNotBlank()) myPhone.trim().replace(" ", "") else if (myEmail.isNotBlank()) myEmail else "current_user"
-
-            val profilesToInsert = mutableListOf<ProfileEntity>()
-
-            // 1. PRIMARY SOURCE: Live Supabase PostgREST 'profiles' table
-            try {
-                val supabaseProfiles = com.example.util.SupabaseClientManager.fetchAllProfiles()
-                for (sp in supabaseProfiles) {
-                    val spDigits = sp.phoneNumber.filter { it.isDigit() }.ifBlank { sp.id.filter { it.isDigit() } }
-                    val isOwn = (myPhoneDigits.length >= 10 && spDigits.endsWith(myPhoneDigits.takeLast(10))) ||
-                            (myEmail.isNotBlank() && sp.email.equals(myEmail, ignoreCase = true)) ||
-                            sp.id == myId || sp.id == "current_user"
-                    if (!isOwn && sp.name.isNotBlank()) {
-                        profilesToInsert.add(sp)
-                    }
-                }
-            } catch (e: Exception) {
-                android.util.Log.w("SocialConnectRepository", "Supabase profile pull notice: ${e.message}")
-            }
-
-            // 2. SECONDARY SOURCE: Cloud Firestore ('users' & 'profiles' collections)
-            for (collName in listOf("users", "profiles")) {
-                try {
-                    val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                    val snapshot = try {
-                        db.collection(collName).get().await()
-                    } catch (_: Exception) {
-                        try {
-                            db.collection(collName).get(com.google.firebase.firestore.Source.CACHE).await()
-                        } catch (_: Exception) {
-                            null
-                        }
-                    }
-                    if (snapshot != null) {
-                        for (doc in snapshot.documents) {
-                            val docId = doc.id
-                            val docDigits = docId.filter { it.isDigit() }
-                            if (docId == myId || docId == "current_user" || docId.startsWith("current_user_")) continue
-                            if (docId.startsWith("seed_") || docId.startsWith("demo_")) continue
-                            if (myPhoneDigits.length >= 10 && docDigits.endsWith(myPhoneDigits.takeLast(10))) continue
-                            if (myEmail.isNotBlank() && docId.equals(myEmail, ignoreCase = true)) continue
-
-                            val name = doc.getString("name") ?: doc.getString("userName") ?: continue
-                            val docEmail = (doc.getString("googleEmail") ?: doc.getString("email") ?: "").trim().lowercase()
-                            if (myEmail.isNotBlank() && docEmail == myEmail) continue
-                            val docPhone = doc.getString("phoneNumber") ?: doc.getString("mobileNumber") ?: doc.getString("verifiedMobileNumber") ?: ""
-                            val docPhoneDigits = docPhone.filter { it.isDigit() }
-                            if (myPhoneDigits.length >= 10 && docPhoneDigits.endsWith(myPhoneDigits.takeLast(10))) continue
-                            val docUserId = doc.getString("userId") ?: ""
-                            if (docUserId == myId || (myPhoneDigits.length >= 10 && docUserId.filter { it.isDigit() }.endsWith(myPhoneDigits.takeLast(10)))) continue
-                            val age = doc.getLong("age")?.toInt() ?: doc.getLong("userAge")?.toInt() ?: 24
-                            val city = doc.getString("city") ?: doc.getString("userCity") ?: "Unknown"
-                            val bio = doc.getString("bio") ?: doc.getString("userBio") ?: ""
-                            val occupation = doc.getString("occupation") ?: ""
-                            val relationshipGoal = doc.getString("relationshipGoal") ?: "New friends"
-                            val avatarEmoji = doc.getString("avatarEmoji") ?: "✨"
-                            val avatarUrl = doc.getString("avatarUrl") ?: ""
-                            val trustScore = doc.getLong("trustScore")?.toInt() ?: 98
-                            val interestsList = doc.get("interests") as? List<*> ?: doc.get("userInterests") as? List<*>
-                            val interests = interestsList?.joinToString(", ") ?: ""
-
-                            val country = doc.getString("country") ?: "India"
-                            val countryFlag = doc.getString("countryFlag") ?: "🇮🇳"
-                            val place = doc.getString("place") ?: "Downtown Metro"
-                            val qualification = doc.getString("qualification") ?: "Bachelors"
-
-                            val existing = profileDao.getProfileByIdSync(docId)
-                            val profile = ProfileEntity(
-                                id = docId,
-                                name = name,
-                                age = age,
-                                occupation = occupation,
-                                city = city,
-                                distanceMiles = if (existing != null) existing.distanceMiles else (2..12).random(),
-                                bio = bio,
-                                interests = interests.ifBlank { "VibeSync, Chat" },
-                                relationshipGoal = relationshipGoal,
-                                promptQuestion = "What I'm looking for...",
-                                promptAnswer = bio.ifBlank { "A good conversation and meaningful connection." },
-                                gradientColorStart = 0xFFFF5E62,
-                                gradientColorEnd = 0xFFFF9966,
-                                avatarEmoji = avatarEmoji,
-                                avatarUrl = avatarUrl,
-                                isVerified = true,
-                                likedMe = true,
-                                isSuperLikedMe = true,
-                                trustScore = trustScore,
-                                isOpenForDating = doc.getBoolean("isOpenForDating") ?: true,
-                                gender = doc.getString("gender") ?: "Female",
-                                maritalStatus = doc.getString("maritalStatus") ?: "Single (Never Married)",
-                                phoneNumber = docPhone.ifBlank { if (docDigits.length >= 7) docId else "" },
-                                email = docEmail,
-                                country = country,
-                                countryFlag = countryFlag,
-                                place = place,
-                                qualification = qualification
-                            )
-                            profilesToInsert.add(profile)
-                        }
-                    }
-                } catch (e: Exception) {
-                    android.util.Log.w("SocialConnectRepository", "Firestore profile pull notice for $collName: ${e.message}")
-                }
-            }
-            // Sync cloud registered accounts to registeredAccountDao for authentication only
-            try {
-                val cloudAccounts = com.example.util.FirebaseBackendSyncManager.fetchAllCloudAccounts()
-                for (acc in cloudAccounts) {
-                    val accDigits = acc.phoneNumber.filter { it.isDigit() }
-                    val isOwn = (myPhoneDigits.length >= 10 && accDigits.endsWith(myPhoneDigits.takeLast(10))) ||
-                            (myEmail.isNotBlank() && acc.googleEmail.equals(myEmail, ignoreCase = true))
-                    if (!isOwn) {
-                        registeredAccountDao.insertOrUpdate(acc)
-                    }
-                }
-            } catch (e: Exception) {
-                android.util.Log.w("SocialConnectRepository", "Cloud accounts sync notice: ${e.message}")
-            }
-
-            if (profilesToInsert.isNotEmpty()) {
-                // Deduplicate by 16-character phone hash and strictly enforce phone hash as primary key 'id'
-                val deduplicatedMap = mutableMapOf<String, ProfileEntity>()
-                for (p in profilesToInsert) {
-                    val phoneKey = p.phoneNumber.ifBlank { p.id }
-                    val canonicalId = com.example.util.PhonebookHasher.generate16CharHash(phoneKey)
-                    
-                    // Strictly filter out any profile objects where name, phone_number, or canonicalId is null, empty, or literally "null"
-                    if (canonicalId.isBlank() || canonicalId.equals("null", ignoreCase = true) ||
-                        p.name.isBlank() || p.name.equals("null", ignoreCase = true) ||
-                        p.phoneNumber.isBlank() || p.phoneNumber.equals("null", ignoreCase = true)) {
-                        continue
-                    }
-                    
-                    val canonicalProfile = p.copy(id = canonicalId)
-                    val existing = deduplicatedMap[canonicalId]
-                    if (existing == null) {
-                        deduplicatedMap[canonicalId] = canonicalProfile
-                    } else {
-                        if (p.bio.isNotBlank() && existing.bio.isBlank()) {
-                            deduplicatedMap[canonicalId] = canonicalProfile
-                        }
-                    }
-                }
-                val deduplicatedList = deduplicatedMap.values.distinctBy { it.id }.toList()
-                profileDao.insertProfiles(deduplicatedList)
-                deduplicateLocalProfiles()
-                android.util.Log.d("SocialConnectRepository", "Successfully synced ${deduplicatedList.size} deduplicated profiles from Supabase & Cloud!")
-            }
+            val sessionId = context?.let { SupabaseAuthManager.getCachedSession(it)?.user?.id }.orEmpty()
+            val profiles = com.example.util.SupabaseClientManager.fetchAllProfiles(50)
+                .filter { it.id.isNotBlank() && it.name.isNotBlank() && it.id != sessionId }
+            if (profiles.isNotEmpty()) profileDao.insertProfiles(profiles.distinctBy { it.id })
+            Log.d("SocialConnectRepository", "Loaded " + profiles.size + " profiles from Supabase.")
         } catch (e: Exception) {
-            android.util.Log.w("SocialConnectRepository", "Error pulling profiles from Firestore: ${e.message}")
-        }
-    }
-
-    /**
-     * Deduplicates local profiles in Room DB, ensuring zero multiple profile generation per mobile number.
-     * Consolidates legacy duplicate rows (e.g. acc_... vs clean phone) into a single canonical row keyed by phone number.
-     */
-    suspend fun deduplicateLocalProfiles() = withContext(Dispatchers.IO) {
-        try {
-            val allProfs = profileDao.getAllProfilesSync()
-            val phoneMap = mutableMapOf<String, ProfileEntity>()
-            val idsToDelete = mutableListOf<String>()
-
-            for (prof in allProfs) {
-                val phoneDigits = prof.phoneNumber.filter { it.isDigit() }.takeLast(10)
-                if (phoneDigits.length >= 10) {
-                    val existing = phoneMap[phoneDigits]
-                    if (existing == null) {
-                        phoneMap[phoneDigits] = prof
-                    } else {
-                        // True duplicate row for the exact same 10-digit mobile number
-                        if (prof.id != existing.id) {
-                            idsToDelete.add(prof.id)
-                            if (prof.bio.length > existing.bio.length || prof.avatarUrl.isNotBlank()) {
-                                phoneMap[phoneDigits] = prof
-                            }
-                        }
-                    }
-                }
-            }
-
-            idsToDelete.distinct().forEach { obsoleteId ->
-                try { profileDao.deleteProfile(obsoleteId) } catch (_: Exception) {}
-            }
-        } catch (e: Exception) {
-            android.util.Log.w("SocialConnectRepository", "Local profile deduplication notice: ${e.message}")
+            Log.w("SocialConnectRepository", "Supabase profile pull notice: " + e.message)
         }
     }
 
