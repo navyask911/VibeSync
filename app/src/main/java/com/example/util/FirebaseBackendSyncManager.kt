@@ -56,9 +56,14 @@ object FirebaseBackendSyncManager {
     }
 
     suspend fun registerDeviceFcmToken(userId: String, token: String) {
-        // Token ownership/registry belongs to the Supabase/serverless layer.
-        // This adapter deliberately performs no Firebase database write.
-        Log.d(TAG, "FCM token refreshed for user ${userId.take(8)}...; registration delegated to serverless backend.")
+        AppNotificationManager.appContext?.let { context ->
+            val synced = SupabaseClientManager.upsertDeviceFcmToken(
+                context = context,
+                userId = userId,
+                token = token
+            )
+            Log.d(TAG, "FCM token registry sync via Supabase: $synced")
+        }
         AppNotificationManager.updateCachedFcmToken(token)
     }
 
