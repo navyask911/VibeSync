@@ -8,6 +8,7 @@ import com.example.data.model.ProfileEntity
 import com.example.data.model.UserContactEntity
 import com.example.data.model.VibeContactEntity
 import com.example.util.ContactResolver
+import com.example.util.PhonebookHasher
 import com.example.util.SupabaseClientManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
