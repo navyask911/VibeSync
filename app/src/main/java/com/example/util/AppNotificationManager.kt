@@ -350,18 +350,17 @@ object AppNotificationManager {
 
     /**
      * Retrieves or refreshes the device FCM registration token.
-     * Uses verified token to register with Cloud Firestore device registry without triggering blocking remote GCM failures on emulators.
+     * Uses a real device token when available; the token registry implementation is being migrated away from Firebase database services.
      */
     fun fetchFcmToken(context: Context? = null, onTokenReceived: ((String?) -> Unit)? = null) {
-        val token = currentFcmToken ?: VibeSyncApplication.FIREBASE_TEST_TOKEN
-        currentFcmToken = token
-        onTokenReceived?.invoke(token)
+        val cachedToken = currentFcmToken
+        onTokenReceived?.invoke(cachedToken)
 
         // Prevent FCM hard-failure exception on emulators where Play Services FCM cannot complete
         if (isEmulator()) {
             Log.d(TAG, "Running in emulator: Using valid local device token, skipping remote FCM registration.")
             if (context != null) {
-                syncTokenToRegistry(context, token)
+                cachedToken?.let { syncTokenToRegistry(context, it) }
             }
             return
         }
@@ -373,7 +372,7 @@ object AppNotificationManager {
                 val resultCode = availability.isGooglePlayServicesAvailable(context)
                 if (resultCode != com.google.android.gms.common.ConnectionResult.SUCCESS) {
                     Log.d(TAG, "Google Play Services not connected (code $resultCode); skipping FCM token request.")
-                    syncTokenToRegistry(context, token)
+                    cachedToken?.let { syncTokenToRegistry(context, it) }
                     return
                 }
             }
@@ -395,7 +394,7 @@ object AppNotificationManager {
         }
 
         if (context != null) {
-            syncTokenToRegistry(context, token)
+            currentFcmToken?.let { syncTokenToRegistry(context, it) }
         }
     }
 
@@ -418,7 +417,7 @@ object AppNotificationManager {
         }
     }
 
-    fun getCachedFcmToken(): String = currentFcmToken ?: VibeSyncApplication.FIREBASE_TEST_TOKEN
+    fun getCachedFcmToken(): String = currentFcmToken.orEmpty()
 
     fun isFcmActive(): Boolean = true
 
