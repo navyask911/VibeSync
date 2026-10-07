@@ -509,6 +509,8 @@ object SupabaseClientManager {
                         put("media_type", msg.mediaType)
                     }
                     SupabaseBackendManager.broadcastChatMessage(broadcast)
+                    // Push delivery is server-side FCM transport; failure never rolls back the message.
+                    dispatchEncryptedMessagePush(msg.messageId)
                 } else {
                     Log.w(TAG, "Encrypted chat RPC failed HTTP ${response.code}: ${response.body?.string()?.take(200)}")
                 }
