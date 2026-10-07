@@ -222,8 +222,8 @@ object SupabaseAuthManager {
                 val userObj = root.optJSONObject("user")
                 val user = AuthenticatedUser(
                     id = userObj?.optString("id", "").orEmpty(),
-                    phone = userObj?.optString("phone", "").ifBlank { normalized },
-                    email = userObj?.optString("email", "").ifBlank { null }
+                    phone = userObj?.optString("phone", "").orEmpty().ifBlank { normalized },
+                    email = userObj?.optString("email", "").orEmpty().ifBlank { null }
                 )
 
                 val expiresAt = root.optLong(
