@@ -4015,21 +4015,27 @@ class SocialConnectRepository(
             hasUnread = false
         )
 
-        // Sync via Supabase PostgREST & Realtime WebSocket
+        // Single authoritative path: Room -> Google Tink -> Supabase -> server-side FCM.
         appScope.launch(Dispatchers.IO) {
             try {
+                val senderIdentity = com.example.util.SupabaseClientManager.getPhoneHash(myPhone)
+                val recipientIdentity = targetProfileId
                 val targetKey = profile.publicIdentityKey.ifBlank {
-                    com.example.util.SupabaseBackendManager.fetchPublicKeyForPhone(targetPhone) ?: ""
+                    com.example.util.SupabaseClientManager.fetchPublicIdentityKey(recipientIdentity).orEmpty()
                 }
-                val cipherText = if (targetKey.isNotBlank()) {
-                    com.example.util.TinkCryptoManager.encryptForRecipient(
-                        recipientPublicKeysetJson = targetKey,
-                        rawText = text,
-                        senderPhone = myPhone,
-                        receiverPhone = targetPhone
-                    )
-                } else {
-                    text
+                if (targetKey.isBlank()) {
+                    android.util.Log.w("SocialConnectRepository", "Message held locally: recipient Tink public key unavailable.")
+                    return@launch
+                }
+                val cipherText = com.example.util.TinkCryptoManager.encryptForRecipient(
+                    recipientPublicKeysetJson = targetKey,
+                    rawText = text,
+                    senderPhone = senderIdentity,
+                    receiverPhone = recipientIdentity
+                )
+                if (!cipherText.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
+                    android.util.Log.e("SocialConnectRepository", "Message rejected: Tink encryption failed.")
+                    return@launch
                 }
                 val networkMsg = userMsg.copy(
                     text = cipherText,
@@ -4037,100 +4043,21 @@ class SocialConnectRepository(
                     isDelivered = false,
                     isRead = false
                 )
-                com.example.util.SupabaseClientManager.upsertChatMessage(networkMsg, myPhone, targetPhone)
-                val success = com.example.util.SupabaseBackendManager.insertChatMessage(networkMsg, myPhone, targetPhone)
-                // Single tick confirmed inserted on server (is_delivered = false, is_read = false).
-                // DO NOT optimistically mark message as delivered. Double ticks only arrive via delivery ACK!
+                val success = com.example.util.SupabaseClientManager.upsertChatMessage(
+                    msg = networkMsg,
+                    senderIdentity = senderIdentity,
+                    receiverIdentity = recipientIdentity,
+                    recipientProfileId = recipientIdentity
+                )
                 if (!success) {
-                    android.util.Log.w("SocialConnectRepository", "Notice: initial insert returned non-200 for $clientMsgId")
+                    android.util.Log.w("SocialConnectRepository", "Encrypted chat insert failed for " + clientMsgId)
                 }
             } catch (e: Exception) {
-                android.util.Log.w("SocialConnectRepository", "Supabase chat message dispatch error: ${e.message}")
+                android.util.Log.w("SocialConnectRepository", "Encrypted message dispatch error: " + e.message)
             }
         }
 
-        // 1. Sync sent message via Zero-Cost Transient E2EE Delivery Queue & Firestore
-        appScope.launch(Dispatchers.IO) {
-            try {
-                val prefs = preferencesDao.getPreferencesSync()
-                val myPhone = com.example.util.ContactResolver.sanitizePhone(prefs?.verifiedMobileNumber ?: "")
-                val myEmail = com.example.util.ContactResolver.sanitizeName(prefs?.googleEmail ?: "")
-                val myId = if (myPhone.isNotBlank() && myPhone != "null") myPhone else if (myEmail.isNotBlank()) myEmail else "USER"
-                
-                val partnerPhone = com.example.util.ContactResolver.sanitizePhone(profile.phoneNumber)
-                val partnerId = com.example.util.ContactResolver.sanitizePhone(match.profileId)
-                val profileIdClean = com.example.util.ContactResolver.sanitizePhone(profile.id)
-
-                if (myPhone.isNotBlank() && myPhone != "null") {
-                    ZeroCostE2eeMessagingManager.startListeningToIncomingQueue(myPhone)
-                }
-
-                // Dispatch to Zero-Cost E2EE transient delivery queue (/messages/$phoneNumber/$pushId)
-                val targetPhone = when {
-                    partnerPhone.isNotBlank() && partnerPhone != "null" && !com.example.util.ContactResolver.isGarbledOrEncrypted(partnerPhone) && partnerPhone.any { it.isDigit() } -> partnerPhone
-                    partnerId.filter { it.isDigit() }.length >= 7 -> partnerId
-                    profileIdClean.filter { it.isDigit() }.length >= 7 -> profileIdClean
-                    else -> partnerId
-                }
-
-                if (targetPhone.isNotBlank() && targetPhone != "null" && targetPhone.any { it.isDigit() }) {
-                    ZeroCostE2eeMessagingManager.sendEncryptedMessage(
-                        senderUid = myPhone.ifBlank { myId },
-                        recipientPhoneNumber = targetPhone,
-                        textContent = text,
-                        matchId = matchId
-                    )
-                } else {
-                    android.util.Log.w("SocialConnectRepository", "Cannot dispatch E2EE message: invalid targetPhone '$targetPhone'")
-                }
-
-                // 2. Dispatch to Firestore collection to trigger Firebase Cloud Function for background FCM push notification
-                try {
-                    val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                    val targetKey = profile.publicIdentityKey.ifBlank {
-                        com.example.util.SupabaseBackendManager.fetchPublicKeyForPhone(targetPhone) ?: ""
-                    }
-                    val cipherText = if (targetKey.isNotBlank()) {
-                        com.example.util.TinkCryptoManager.encryptForRecipient(
-                            recipientPublicKeysetJson = targetKey,
-                            rawText = text,
-                            senderPhone = myPhone,
-                            receiverPhone = targetPhone
-                        )
-                    } else {
-                        text
-                    }
-                    val firestoreMsg = hashMapOf(
-                        "messageId" to clientMsgId,
-                        "matchId" to matchId,
-                        "senderId" to (myPhone.ifBlank { myId }),
-                        "senderPhone" to (myPhone.ifBlank { myId }),
-                        "receiverId" to targetPhone,
-                        "receiverPhone" to targetPhone,
-                        "text" to cipherText,
-                        "ciphertext" to cipherText,
-                        "timestamp" to userMsg.timestamp,
-                        "mediaType" to mediaType,
-                        "mediaUrl" to mediaUrl,
-                        "voiceDurationSeconds" to voiceDurationSeconds,
-                        "isEncrypted" to true,
-                        "isDelivered" to false,
-                        "isRead" to false
-                    )
-                    firestore.collection("chats")
-                        .document(matchId)
-                        .collection("messages")
-                        .document(clientMsgId)
-                        .set(firestoreMsg, com.google.firebase.firestore.SetOptions.merge())
-                } catch (fe: Exception) {
-                    android.util.Log.d("SocialConnectRepository", "Firestore chat message trigger notice: ${fe.message}")
-                }
-            } catch (e: Exception) {
-                android.util.Log.w("SocialConnectRepository", "Zero-Cost dispatch message error: ${e.message}")
-            }
-        }
-
-        startListeningToFirestoreMessages(matchId)
+        // No Firebase database copy or listener is started. FCM is server-side notification transport.
     }
 
     suspend fun editMessage(messageId: String, newText: String): Boolean {
