@@ -567,7 +567,7 @@ object SystemHealthDiagnosticsManager {
         _activeDevices.value = discoveredDevices
         activeDevicesCount = discoveredDevices.size.coerceAtLeast(1)
 
-        val authSession = SupabaseAuthManager.getCachedSession(application)
+        val authSession = AppNotificationManager.appContext?.let { SupabaseAuthManager.getCachedSession(it) }
         val authUid = authSession?.user?.id ?: "No active Supabase session"
 
         val totalDocs = profilesCount + chatsCount + matchesCount + statusStoriesCount + activeDevicesCount
