@@ -25,6 +25,7 @@ import com.example.util.AppNotificationManager
 import com.example.util.DeviceSimAndIpCountryHelper
 import com.example.util.FirebaseBackendSyncManager
 import com.example.util.SystemHealthDiagnosticsManager
+import com.example.util.SupabaseAuthManager
 import com.example.util.ZeroCostE2eeMessagingManager
 import com.example.util.backup.BackupScheduler
 import com.example.util.backup.ChatBackupCryptoHelper
