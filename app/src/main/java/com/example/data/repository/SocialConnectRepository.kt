@@ -2058,116 +2058,22 @@ class SocialConnectRepository(
     }
 
     suspend fun deleteProfile(profileId: String) {
-        val targetDigits = profileId.filter { it.isDigit() }
-        val allLocalProfiles = profileDao.getAllProfilesSync()
-        val matchingProfiles = allLocalProfiles.filter { p ->
-            p.id == profileId ||
-            p.phoneNumber == profileId ||
-            (targetDigits.length >= 7 && p.phoneNumber.filter { it.isDigit() }.endsWith(targetDigits.takeLast(7))) ||
-            p.name.equals(profileId, ignoreCase = true) ||
-            (p.email.isNotBlank() && p.email.equals(profileId, ignoreCase = true))
-        }
-
-        val phonesToDelete = mutableSetOf<String>()
-        val idsToDelete = mutableSetOf<String>()
-        idsToDelete.add(profileId)
-
-        matchingProfiles.forEach { p ->
-            idsToDelete.add(p.id)
-            if (p.phoneNumber.isNotBlank()) {
-                phonesToDelete.add(p.phoneNumber)
-                phonesToDelete.add(p.phoneNumber.filter { it.isDigit() })
-            }
-        }
-        if (targetDigits.isNotBlank()) {
-            phonesToDelete.add(targetDigits)
-        }
-
-        // Delete from local Room database
-        idsToDelete.forEach { id ->
-            profileDao.deleteProfile(id)
-            val match = matchDao.getMatchByProfileId(id)
-            if (match != null) {
+        val sessionUserId = context?.let { SupabaseAuthManager.getCachedSession(it)?.user?.id }.orEmpty()
+        val isSelf = sessionUserId.isNotBlank() && profileId == sessionUserId
+        val matchingProfiles = profileDao.getAllProfilesSync().filter { it.id == profileId }
+        matchingProfiles.forEach { profile ->
+            profileDao.deleteProfile(profile.id)
+            matchDao.getMatchByProfileId(profile.id)?.let { match ->
                 chatMessageDao.clearMessagesForMatch(match.matchId)
                 matchDao.deleteMatch(match.matchId)
             }
         }
-        phonesToDelete.forEach { phone ->
-            profileDao.deleteProfile(phone)
-            registeredAccountDao.deleteAccountByPhone(phone)
-        }
-
-        withContext(Dispatchers.IO) {
-            try {
-                val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-
-                // Direct document deletes
-                idsToDelete.forEach { id ->
-                    try { db.collection("profiles").document(id).delete().await() } catch (_: Exception) {}
-                    try { db.collection("users").document(id).delete().await() } catch (_: Exception) {}
-                    try { db.collection("registered_accounts").document(id).delete().await() } catch (_: Exception) {}
-                }
-                phonesToDelete.forEach { phone ->
-                    try { db.collection("profiles").document(phone).delete().await() } catch (_: Exception) {}
-                    try { db.collection("profiles").document("+$phone").delete().await() } catch (_: Exception) {}
-                    try { db.collection("users").document(phone).delete().await() } catch (_: Exception) {}
-                    try { db.collection("users").document("+$phone").delete().await() } catch (_: Exception) {}
-                    try { db.collection("registered_accounts").document(phone).delete().await() } catch (_: Exception) {}
-                }
-
-                // Scan profiles, users, registered_accounts collections to wipe any lingering doc
-                val profSnap = db.collection("profiles").get().await()
-                for (doc in profSnap.documents) {
-                    val dPhone = (doc.getString("phoneNumber") ?: doc.getString("mobileNumber") ?: "").filter { it.isDigit() }
-                    val dName = doc.getString("name") ?: ""
-                    val matchPhone = targetDigits.length >= 7 && dPhone.isNotBlank() && dPhone.endsWith(targetDigits.takeLast(7))
-                    val matchName = dName.equals(profileId, ignoreCase = true)
-                    val matchId = idsToDelete.contains(doc.id) || doc.getString("id") == profileId
-
-                    if (matchId || matchPhone || matchName) {
-                        db.collection("profiles").document(doc.id).delete().await()
-                    }
-                }
-
-                val userSnap = db.collection("users").get().await()
-                for (doc in userSnap.documents) {
-                    val uPhone = (doc.getString("phoneNumber") ?: doc.getString("mobileNumber") ?: "").filter { it.isDigit() }
-                    val uName = doc.getString("name") ?: ""
-                    val matchPhone = targetDigits.length >= 7 && uPhone.isNotBlank() && uPhone.endsWith(targetDigits.takeLast(7))
-                    val matchName = uName.equals(profileId, ignoreCase = true)
-                    val matchId = idsToDelete.contains(doc.id) || doc.getString("id") == profileId
-
-                    if (matchId || matchPhone || matchName) {
-                        db.collection("users").document(doc.id).delete().await()
-                    }
-                }
-
-                val regSnap = db.collection("registered_accounts").get().await()
-                for (doc in regSnap.documents) {
-                    val rPhone = (doc.getString("phoneNumber") ?: doc.getString("recoveryPhone") ?: "").filter { it.isDigit() }
-                    val matchPhone = targetDigits.length >= 7 && rPhone.isNotBlank() && rPhone.endsWith(targetDigits.takeLast(7))
-                    val matchId = idsToDelete.contains(doc.id) || doc.getString("id") == profileId
-
-                    if (matchId || matchPhone) {
-                        db.collection("registered_accounts").document(doc.id).delete().await()
-                    }
-                }
-
-                // Delete presence in Realtime DB
-                idsToDelete.forEach { id ->
-                    com.google.firebase.database.FirebaseDatabase.getInstance().getReference("status/$id").removeValue()
-                }
-                phonesToDelete.forEach { phone ->
-                    com.google.firebase.database.FirebaseDatabase.getInstance().getReference("status/$phone").removeValue()
-                }
-
-                android.util.Log.i("SocialConnectRepository", "✅ Profile '$profileId' force deleted across all cloud & local stores!")
-            } catch (e: Exception) {
-                android.util.Log.w("SocialConnectRepository", "Firestore force deleteProfile error for '$profileId': ${e.message}")
-            }
+        if (isSelf) {
+            context?.let { SupabaseAuthManager.deleteAccount(it) }
+        } else {
+            Log.w("SocialConnectRepository", "Remote deletion of another user is restricted to the server moderation control plane.")
         }
     }
-
     suspend fun addCustomProfile(profile: ProfileEntity) {
         profileDao.insertProfile(profile)
         syncProfileToFirestore(profile)
