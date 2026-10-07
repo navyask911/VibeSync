@@ -1881,7 +1881,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 return@launch
             }
 
-            val authorized = repository.verifyPlatformStaffAccess()
+            val authorized = com.example.util.SupabaseClientManager.isPlatformStaff()
             if (authorized) {
                 _isAdminLoggedIn.value = true
                 _toastMessage.emit("Platform staff authorization verified 🛡️")
