@@ -206,57 +206,15 @@ object CloudflareStorageManager {
     /**
      * Generates an AWS Signature Version 4 presigned GET or PUT URL for Cloudflare R2
      */
+    /**
+     * Client-side R2 signing is intentionally disabled.
+     * R2 secrets belong in a server-side media gateway.
+     */
     fun generatePresignedUrl(
         objectKey: String,
         httpMethod: String = "GET",
         expiresSeconds: Long = 3600
-    ): String {
-        if (accountId == "cloudflare-account-id-placeholder" || accessKeyId == "r2-access-key-placeholder") {
-            // Placeholder fallback when credentials not populated yet
-            return "$publicCdnDomain/$objectKey"
-        }
-
-        try {
-            val host = "$accountId.r2.cloudflarestorage.com"
-            val endpoint = "https://$host/$bucketName/$objectKey"
-            val dateFormat = SimpleDateFormat("yyyyMMdd'T'HHmmss'Z'", Locale.US).apply {
-                timeZone = TimeZone.getTimeZone("UTC")
-            }
-            val dateStampFormat = SimpleDateFormat("yyyyMMdd", Locale.US).apply {
-                timeZone = TimeZone.getTimeZone("UTC")
-            }
-            val now = Date()
-            val amzDate = dateFormat.format(now)
-            val dateStamp = dateStampFormat.format(now)
-
-            val credentialScope = "$dateStamp/$region/s3/aws4_request"
-            val queryParams = StringBuilder()
-                .append("X-Amz-Algorithm=AWS4-HMAC-SHA256")
-                .append("&X-Amz-Credential=").append(Uri.encode("$accessKeyId/$credentialScope"))
-                .append("&X-Amz-Date=").append(amzDate)
-                .append("&X-Amz-Expires=").append(expiresSeconds)
-                .append("&X-Amz-SignedHeaders=host")
-                .toString()
-
-            val canonicalUri = "/$bucketName/$objectKey"
-            val canonicalQueryString = queryParams
-            val canonicalHeaders = "host:$host\n"
-            val signedHeaders = "host"
-            val payloadHash = "UNSIGNED-PAYLOAD"
-
-            val canonicalRequest = "$httpMethod\n$canonicalUri\n$canonicalQueryString\n$canonicalHeaders\n$signedHeaders\n$payloadHash"
-            val stringToSign = "AWS4-HMAC-SHA256\n$amzDate\n$credentialScope\n${sha256Hex(canonicalRequest)}"
-
-            val signingKey = getSignatureKey(secretAccessKey, dateStamp, region, "s3")
-            val signature = hmacSha256Hex(signingKey, stringToSign)
-
-            return "$endpoint?$queryParams&X-Amz-Signature=$signature"
-        } catch (e: Exception) {
-            Log.e(TAG, "Error generating presigned URL: ${e.message}", e)
-            return "$publicCdnDomain/$objectKey"
-        }
-    }
-
+    ): String = ""
     /**
      * Uploads media file to Cloudflare R2 bucket with automated compression and zero-egress CDN URL generation
      */
@@ -296,23 +254,18 @@ object CloudflareStorageManager {
 
             Log.d(TAG, "Uploading ${category.name} to Cloudflare R2: key=$objectKey, size=$compressedSize bytes, savings=$savingsPct%")
 
-            // Execute S3 / R2 upload via Retrofit / OkHttp if active credentials are present
-            if (accountId != "cloudflare-account-id-placeholder" && accessKeyId != "r2-access-key-placeholder") {
-                val mediaType = contentType.toMediaTypeOrNull()
-                val requestBody = payloadBytes.toRequestBody(mediaType)
-                val directEndpoint = "https://$accountId.r2.cloudflarestorage.com/$bucketName/$objectKey"
-
-                try {
-                    val response = retrofitClient.uploadDirect(
-                        fullUrl = directEndpoint,
-                        contentType = contentType,
-                        contentSha256 = "UNSIGNED-PAYLOAD",
-                        body = requestBody
-                    )
-                    if (!response.isSuccessful) {
-                        Log.w(TAG, "Retrofit R2 upload non-200 response: ${response.code()}")
-                    }
-                } catch (e: Exception) {
+            // Never report a successful upload unless a server-authorized upload completed.
+            // Android must not hold R2 access/signing secrets.
+            return@withContext MediaUploadResult(
+                isSuccess = false,
+                publicUrl = "",
+                objectKey = objectKey,
+                originalSizeBytes = originalSize,
+                compressedSizeBytes = compressedSize,
+                bandwidthSavedPercentage = savingsPct,
+                errorMessage = "R2 upload requires the server-side media gateway."
+            )
+        } catch (e: Exception) {
                     Log.w(TAG, "Direct upload exception: ${e.message}")
                 }
             }
