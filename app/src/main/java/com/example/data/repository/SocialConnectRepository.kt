@@ -20,12 +20,10 @@ import com.example.data.model.ReportEntity
 import com.example.data.model.StatusStoryEntity
 import com.example.data.model.SwipeEntity
 import com.example.data.model.UserPreferencesEntity
-import com.google.firebase.firestore.FirebaseFirestore
 import com.example.util.AppNotificationManager
 import com.example.util.DeviceSimAndIpCountryHelper
 import com.example.util.FirebaseBackendSyncManager
 import com.example.util.SystemHealthDiagnosticsManager
-import com.example.util.ZeroCostE2eeMessagingManager
 import com.example.util.backup.BackupScheduler
 import com.example.util.backup.ChatBackupCryptoHelper
 import com.example.util.backup.ChatBackupPayload
@@ -38,7 +36,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
@@ -245,13 +242,8 @@ class SocialConnectRepository(
         removeOwnProfileAndSelfMatches()
         seedInitialBusinessesAndChannels()
 
-        // Zero-Cost E2EE Queue listener startup
-        appScope.launch(Dispatchers.IO) {
-            val phone = currentPrefs?.verifiedMobileNumber ?: ""
-            if (phone.isNotBlank() && currentPrefs?.isLoggedIn == true) {
-                ZeroCostE2eeMessagingManager.startListeningToIncomingQueue(phone)
-            }
-        }
+        // Firebase Realtime Database/Firestore listeners are intentionally not started.
+        // FCM is the only Firebase runtime transport.
     }
 
     suspend fun startAllSyncsAfterLogin() {
