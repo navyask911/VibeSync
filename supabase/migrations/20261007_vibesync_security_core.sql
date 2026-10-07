@@ -144,6 +144,23 @@ drop policy if exists "phone_sync_delete_own" on public.phone_sync;
 drop policy if exists "phone_sync_no_client_select" on public.phone_sync;
 create policy "phone_sync_insert_own" on public.phone_sync for insert to authenticated with check (auth_user_id = (select auth.uid()));
 create policy "phone_sync_delete_own" on public.phone_sync for delete to authenticated using (auth_user_id = (select auth.uid()));
+
+create or replace function public.set_phone_sync_owner()
+returns trigger
+language plpgsql
+security invoker
+set search_path = pg_catalog, public
+as $
+begin
+  if auth.role() = 'authenticated' then
+    new.auth_user_id := auth.uid();
+  end if;
+  return new;
+end;
+$;
+drop trigger if exists trg_phone_sync_owner on public.phone_sync;
+create trigger trg_phone_sync_owner before insert or update on public.phone_sync
+for each row execute function public.set_phone_sync_owner();
 revoke all on public.phone_sync from anon;
 revoke all on public.phone_sync from public;
 revoke all on public.phone_sync from authenticated;
