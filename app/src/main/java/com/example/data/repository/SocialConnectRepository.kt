@@ -228,7 +228,7 @@ class SocialConnectRepository(
                     userInterests = "",
                     isLoggedIn = false,
                     isProfileCompleted = false,
-                    isFaceVerified = true,
+                    isFaceVerified = false,
                     isMobileVerified = false,
                     biometricHash = "",
                     verifiedMobileNumber = "",
