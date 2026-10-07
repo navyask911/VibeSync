@@ -432,6 +432,29 @@ object SupabaseClientManager {
     /**
      * Upsert chat message to public.chat_messages with standard E.164 phone normalization and delivery receipts.
      */
+    suspend fun dispatchEncryptedMessagePush(messageId: String): Boolean = withContext(Dispatchers.IO) {
+        if (messageId.isBlank()) return@withContext false
+        val token = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
+        try {
+            val body = JSONObject().apply { put("message_id", messageId) }.toString()
+            val request = Request.Builder()
+                .url("$SUPABASE_URL/functions/v1/vibesync-fcm-dispatch")
+                .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+                .header("Authorization", "Bearer $token")
+                .header("Content-Type", "application/json")
+                .post(body.toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.d(TAG, "FCM dispatch bridge HTTP ${response.code}; message remains queued for retry.")
+                }
+                response.isSuccessful
+            }
+        } catch (e: Throwable) {
+            Log.d(TAG, "FCM dispatch bridge notice: ${e.message}")
+            false
+        }
+    }
     suspend fun fetchPublicIdentityKey(profileId: String): String? = withContext(Dispatchers.IO) {
         if (profileId.isBlank()) return@withContext null
         try {
