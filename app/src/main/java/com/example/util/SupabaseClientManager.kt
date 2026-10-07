@@ -396,33 +396,23 @@ object SupabaseClientManager {
         try {
             val cleanPhone = account.phoneNumber.filter { it.isDigit() }
             val docId = if (cleanPhone.length >= 10) getPhoneHash(cleanPhone) else account.id
-
+            if (docId.isBlank() || docId == "current_user" || docId == "null") return@withContext false
             val json = JSONObject().apply {
                 put("id", docId)
-                put("phone_number", HackFreeSecurityShield.encrypt(account.phoneNumber)) // E2E Encrypted
-                put("clean_phone", getPhoneHash(cleanPhone)) // Hash only!
-                put("google_email", HackFreeSecurityShield.encrypt(account.googleEmail)) // E2E Encrypted
-                put("user_name", HackFreeSecurityShield.encrypt(account.userName)) // E2E Encrypted
                 put("user_age", account.userAge)
-                put("is_verified", account.isVerified)
-                put("account_status", account.accountStatus)
-                put("updated_at", System.currentTimeMillis())
             }
-
             val request = buildRequest(
                 endpoint = "registered_accounts",
                 method = "POST",
                 bodyJson = json.toString(),
                 preferHeader = "resolution=merge-duplicates"
             )
-
             httpClient.newCall(request).execute().use { response ->
-                val success = response.isSuccessful
-                Log.i(TAG, "E2EE Registered Account Sync: $success (HTTP ${response.code})")
-                success
+                Log.i(TAG, "Registered account minimal sync: ${response.isSuccessful} (HTTP ${response.code})")
+                response.isSuccessful
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "E2EE Registered Account sync notice: ${e.message}")
+            Log.w(TAG, "Registered account minimal sync notice: ${e.message}")
             false
         }
     }
