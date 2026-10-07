@@ -6,7 +6,6 @@ import android.net.NetworkCapabilities
 import android.os.Build
 import android.util.Log
 import com.example.data.model.ProfileEntity
-import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Source
 import kotlinx.coroutines.Dispatchers
@@ -568,8 +567,8 @@ object SystemHealthDiagnosticsManager {
         _activeDevices.value = discoveredDevices
         activeDevicesCount = discoveredDevices.size.coerceAtLeast(1)
 
-        val auth = FirebaseAuth.getInstance()
-        val authUid = auth.currentUser?.uid ?: "Active (Multi-Device Active)"
+        val authSession = SupabaseAuthManager.getCachedSession(application)
+        val authUid = authSession?.user?.id ?: "No active Supabase session"
 
         val totalDocs = profilesCount + chatsCount + matchesCount + statusStoriesCount + activeDevicesCount
         val estimatedFirestoreMb = (totalDocs * 0.004).coerceAtLeast(0.04) // ~4KB per document
