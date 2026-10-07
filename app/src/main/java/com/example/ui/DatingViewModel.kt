@@ -403,6 +403,12 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     private val _isAdminLoggedIn = MutableStateFlow(false)
     val isAdminLoggedIn: StateFlow<Boolean> = _isAdminLoggedIn.asStateFlow()
 
+    private val _adminLoginInProgress = MutableStateFlow(false)
+    val adminLoginInProgress: StateFlow<Boolean> = _adminLoginInProgress.asStateFlow()
+
+    private val _adminLoginError = MutableStateFlow<String?>(null)
+    val adminLoginError: StateFlow<String?> = _adminLoginError.asStateFlow()
+
     private val _showAdminPortal = MutableStateFlow(false)
     val showAdminPortal: StateFlow<Boolean> = _showAdminPortal.asStateFlow()
 
@@ -1862,21 +1868,28 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         _showAdminPortal.value = false
     }
 
-    fun loginAdmin(user: String, pass: String): Boolean {
-        val prefs = userPreferences.value
-        val expectedUser = prefs?.adminUsername?.ifBlank { "admin" } ?: "admin"
-        val expectedPass = prefs?.adminPassword?.ifBlank { "admin777" } ?: "admin777"
-        val isValid = (user.trim() == expectedUser && pass.trim() == expectedPass) ||
-                (user.trim() == "admin" && pass.trim() == "admin777") ||
-                pass.trim() == "9999"
+    fun loginAdmin(user: String, pass: String) {
+        _adminLoginInProgress.value = true
+        _adminLoginError.value = null
+        _isAdminLoggedIn.value = false
 
-        if (isValid) {
-            _isAdminLoggedIn.value = true
-            viewModelScope.launch {
-                _toastMessage.emit("Developer Backend Access Granted 🛡️")
+        viewModelScope.launch {
+            val session = com.example.util.SupabaseAuthManager.getCachedSession(getApplication())
+            if (session?.user?.id.isNullOrBlank()) {
+                _adminLoginError.value = "Sign in to VibeSync first. Admin access is tied to the authenticated account."
+                _adminLoginInProgress.value = false
+                return@launch
             }
+
+            val authorized = repository.verifyPlatformStaffAccess()
+            if (authorized) {
+                _isAdminLoggedIn.value = true
+                _toastMessage.emit("Platform staff authorization verified 🛡️")
+            } else {
+                _adminLoginError.value = "This account is not authorized for VibeSync operations."
+            }
+            _adminLoginInProgress.value = false
         }
-        return isValid
     }
 
     fun updateAdminCredentials(newUsername: String, newPassword: String) {
