@@ -93,6 +93,7 @@ class SocialConnectRepository(
     val allChannels: Flow<List<ChannelEntity>> = channelDao.getAllChannels()
     val followedChannels: Flow<List<ChannelEntity>> = channelDao.getFollowedChannels()
 
+    /** Compatibility name retained for callers; contacts remain local-only. */
     suspend fun backupContactsToDatabaseAndFirestore(contacts: List<com.example.data.model.PhoneContact>, userId: String = "current_user") {
         try {
             val entities = contacts.map {
@@ -104,90 +105,30 @@ class SocialConnectRepository(
                     isOnVibeSync = it.isOnVibeSync,
                     photoUrl = it.photoUrl,
                     statusTagline = it.statusTagline,
-                    syncedToFirestore = true,
+                    syncedToFirestore = false,
                     updatedAt = System.currentTimeMillis()
                 )
             }
             userContactDao.insertContacts(entities)
-
-            // Supabase Batch Upsert
+            // No cloud address-book copy. Private contact discovery runs through the hash RPC.
             com.example.util.SupabaseClientManager.upsertContactsBatch(entities)
-
-            val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-            val batch = db.batch()
-            entities.forEach { contact ->
-                val ref = db.collection("users").document(userId).collection("contacts").document(contact.id)
-                val map = hashMapOf(
-                    "id" to contact.id,
-                    "userId" to userId,
-                    "contactName" to contact.contactName,
-                    "phoneNumber" to contact.phoneNumber,
-                    "isOnVibeSync" to contact.isOnVibeSync,
-                    "syncedAt" to System.currentTimeMillis()
-                )
-                batch.set(ref, map)
-            }
-            batch.commit()
         } catch (e: Exception) {
-            android.util.Log.w("SocialConnectRepository", "Contacts backup notice: ${e.message}")
+            android.util.Log.w("SocialConnectRepository", "Local contact backup notice: " + e.message)
         }
     }
 
+    /** Compatibility name retained; Supabase is the only application profile backend. */
     suspend fun syncProfileToFirestore(profile: ProfileEntity) {
         try {
-            val cleanPhone = com.example.util.ContactResolver.sanitizePhone(profile.phoneNumber)
-            val cleanName = com.example.util.ContactResolver.sanitizeName(profile.name)
-            val cleanId = com.example.util.ContactResolver.sanitizePhone(profile.id)
-
-            // Guard: Do not sync uninitialized profiles to cloud
-            if (cleanId == "current_user" || cleanId == "null" || cleanId.isBlank() || (cleanPhone.isBlank() && profile.email.isBlank())) {
-                android.util.Log.w("SocialConnectRepository", "Skipping cloud sync of uninitialized profile: id=${profile.id}, name=${profile.name}")
-                return
-            }
-
-            // 1. Sync to Supabase PostgREST Database
-            com.example.util.SupabaseClientManager.upsertProfile(profile.copy(name = cleanName, phoneNumber = cleanPhone))
-
-            // 2. Sync to Firestore (used for FCM notification triggers & backup)
-            val phoneDigits = cleanPhone.filter { it.isDigit() }
-            val docId = if (phoneDigits.length >= 7) phoneDigits else if (profile.email.isNotBlank()) profile.email.trim() else cleanId
-            if (docId.isBlank() || docId == "null" || docId == "current_user") return
-
-            val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-            val map = hashMapOf(
-                "id" to docId,
-                "userId" to docId,
-                "name" to cleanName.ifBlank { "VibeSync Member" },
-                "age" to profile.age,
-                "gender" to com.example.util.ContactResolver.sanitizeName(profile.gender, "User"),
-                "city" to com.example.util.ContactResolver.sanitizeName(profile.city, "Online"),
-                "country" to com.example.util.ContactResolver.sanitizeName(profile.country, "United States"),
-                "countryFlag" to profile.countryFlag.ifBlank { "🇺🇸" },
-                "place" to com.example.util.ContactResolver.sanitizeName(profile.place),
-                "avatarEmoji" to profile.avatarEmoji.ifBlank { "✨" },
-                "avatarUrl" to com.example.util.ContactResolver.sanitizeName(profile.avatarUrl),
-                "occupation" to com.example.util.ContactResolver.sanitizeName(profile.occupation, "Member"),
-                "qualification" to com.example.util.ContactResolver.sanitizeName(profile.qualification, "Verified"),
-                "bio" to com.example.util.ContactResolver.sanitizeName(profile.bio, "Hey there! Secure with VibeSync E2EE."),
-                "interests" to profile.interests,
-                "maritalStatus" to com.example.util.ContactResolver.sanitizeName(profile.maritalStatus, "Single"),
-                "phoneNumber" to cleanPhone,
-                "cleanPhone" to phoneDigits,
-                "phone_hash" to com.example.util.PhonebookHasher.generate16CharHash(cleanPhone.ifBlank { docId }),
-                "phoneHash" to com.example.util.PhonebookHasher.generate16CharHash(cleanPhone.ifBlank { docId }),
-                "phoneNumberE164" to com.example.util.PhonebookHasher.normalizeToE164(cleanPhone.ifBlank { docId }),
-                "email" to com.example.util.ContactResolver.sanitizeName(profile.email),
-                "isDeleted" to profile.isDeleted,
-                "accountStatus" to profile.accountStatus.ifBlank { "ACTIVE" },
-                "updatedAt" to System.currentTimeMillis()
+            val clean = profile.copy(
+                name = com.example.util.ContactResolver.sanitizeName(profile.name),
+                phoneNumber = com.example.util.ContactResolver.sanitizePhone(profile.phoneNumber)
             )
-            db.collection("users").document(docId).set(map, com.google.firebase.firestore.SetOptions.merge())
-            db.collection("profiles").document(docId).set(map, com.google.firebase.firestore.SetOptions.merge())
+            com.example.util.SupabaseClientManager.upsertProfile(clean)
         } catch (e: Exception) {
-            android.util.Log.w("SocialConnectRepository", "Profile sync error: ${e.message}")
+            android.util.Log.w("SocialConnectRepository", "Supabase profile sync notice: " + e.message)
         }
     }
-
     val acceptedFriendships: Flow<List<FriendshipRequestEntity>> = friendshipRequestDao.getAcceptedFriendships("current_user")
     val pendingFriendRequests: Flow<List<FriendshipRequestEntity>> = friendshipRequestDao.getPendingRequestsForUser("current_user")
     val acceptedFriendsCount: Flow<Int> = friendshipRequestDao.getAcceptedFriendsCount("current_user")
