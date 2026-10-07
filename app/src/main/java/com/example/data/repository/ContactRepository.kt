@@ -159,10 +159,9 @@ class ContactRepository(
                 chunks.map { chunk ->
                     async(Dispatchers.IO) {
                         val profilesFromSupabase = fetchSupabaseProfilesForChunk(chunk)
-                        for (p in profilesFromSupabase) {
-                            val p10 = normalize10Digit(p.phoneNumber)
-                            if (p10.length == 10) {
-                                matchedProfilesMap[p10] = p
+                        for ((phoneHash, p) in profilesFromSupabase) {
+                            if (phoneHash.length == 64) {
+                                matchedProfilesMap[phoneHash] = p
                             }
                             if (p.id.isNotBlank()) {
                                 matchedProfilesMap[p.id] = p
