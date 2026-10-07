@@ -266,26 +266,30 @@ class ContactRepository(
     /**
      * Executes PostgREST bulk lookup against Supabase 'profiles' table for a chunk of up to 100 numbers.
      */
-    private suspend fun fetchSupabaseProfilesForChunk(chunk: List<String>): List<ProfileEntity> = withContext(Dispatchers.IO) {
+    private suspend fun fetchSupabaseProfilesForChunk(chunk: List<String>): List<Pair<String, ProfileEntity>> = withContext(Dispatchers.IO) {
         if (chunk.isEmpty()) return@withContext emptyList()
         try {
             val hashes = chunk.distinct().take(50)
-                .map { com.example.util.PhonebookHasher.hashPhoneNumberToHex(it) }
+                .map { PhonebookHasher.hashPhoneNumberToHex(it) }
                 .filter { it.length == 64 }
             if (hashes.isEmpty()) return@withContext emptyList()
-            SupabaseClientManager.matchContactsRpc(hashes).map { match ->
-                ProfileEntity(
-                    id = match.id,
-                    name = match.name,
-                    age = 24,
-                    phoneNumber = "",
-                    avatarUrl = match.photoUrl.orEmpty(),
-                    avatarEmoji = match.avatarEmoji,
-                    isVerified = true
-                )
+            SupabaseClientManager.matchContactsRpc(hashes).mapNotNull { match ->
+                if (match.phoneHash.length != 64) {
+                    null
+                } else {
+                    match.phoneHash to ProfileEntity(
+                        id = match.id,
+                        name = match.name,
+                        age = 24,
+                        phoneNumber = "",
+                        avatarUrl = match.photoUrl.orEmpty(),
+                        avatarEmoji = match.avatarEmoji,
+                        isVerified = false
+                    )
+                }
             }
         } catch (e: Exception) {
-            Log.d(TAG, "Private contact RPC notice: ${e.message}")
+            Log.d(TAG, "Private contact RPC notice: " + e.message)
             emptyList()
         }
     }
