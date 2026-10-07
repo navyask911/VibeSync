@@ -143,7 +143,7 @@ object SupabaseAuthManager {
         getCachedSession(context)?.accessToken?.takeIf { it.isNotBlank() }
 
     fun getAuthorizationToken(context: Context): String =
-        getCachedAccessToken(context) ?: SupabaseClientProvider.SUPABASE_ANON_KEY
+        getCachedAccessToken(context) ?: SupabaseClientManager.SUPABASE_PUBLISHABLE_KEY
 
     suspend fun sendPhoneOtp(
         context: Context,
@@ -160,13 +160,13 @@ object SupabaseAuthManager {
             }.toString()
 
             val request = Request.Builder()
-                .url("${SupabaseClientProvider.SUPABASE_URL}/auth/v1/otp")
+                .url("${SupabaseClientManager.SUPABASE_URL}/auth/v1/otp")
                 .addHeader("apikey", SupabaseClientProvider.SUPABASE_ANON_KEY)
                 .addHeader("Authorization", "Bearer ${SupabaseClientProvider.SUPABASE_ANON_KEY}")
                 .post(body.toRequestBody(mediaType))
                 .build()
 
-            SupabaseClientProvider.httpClient.newCall(request).execute().use { response ->
+            SupabaseClientManager.httpClient.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
                     Result.success(Unit)
                 } else {
