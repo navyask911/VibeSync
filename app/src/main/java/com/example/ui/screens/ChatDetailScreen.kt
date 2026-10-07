@@ -337,7 +337,7 @@ fun ChatDetailScreen(
                 pipelineProgress = 0.12f
                 delay(700)
                 
-                pipelineStepText = "Sealing payload with Signal AES-256 session key..."
+                pipelineStepText = "Sealing payload with Google Tink protected message key..."
                 pipelineProgress = 0.38f
                 delay(600)
                 
@@ -2361,7 +2361,7 @@ fun ChatDetailScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        text = "Your conversation with ${profile.name} is fully protected with Signal's open-source double ratchet protocol.",
+                        text = "Your conversation with ${profile.name} is fully protected with Google Tink hybrid encryption.",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -2434,7 +2434,7 @@ fun ChatDetailScreen(
                                     } else if (fingerprintVerificationStatus == "VERIFYING") {
                                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = VibeSyncTeal)
                                         Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Running Signal 3DH Handshake comparison...", fontSize = 11.sp, color = Color.Gray)
+                                        Text("Verifying Google Tink key binding...", fontSize = 11.sp, color = Color.Gray)
                                     } else {
                                         Button(
                                             onClick = {
@@ -2463,9 +2463,9 @@ fun ChatDetailScreen(
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 val steps = listOf(
-                                    "1. X3DH Protocol" to "Performs Triple Diffie-Hellman dynamic key exchange for mutually agreed session keys.",
-                                    "2. Double Ratchet" to "Constantly updates session keys for every message sent so past messages stay safe.",
-                                    "3. AES-GCM 256-bit" to "Encrypts message content & media attachment payloads at rest & in-flight."
+                                    "1. Google Tink Hybrid Encryption" to "Uses the recipient public key and authenticated context to protect the message payload.",
+                                    "2. Authenticated Encryption" to "Binds sender/receiver context to the encrypted payload and rejects mismatches.",
+                                    "3. AES-GCM Payload Protection" to "Tink provides authenticated encryption for supported private messages."
                                 )
                                 steps.forEach { (title, desc) ->
                                     Column {
@@ -2590,7 +2590,7 @@ fun ChatDetailScreen(
                             Text("🔒 1. Contact & Location Masking", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
                             Text("Your mobile number, GPS address, and personal handles remain 100% hidden until both parties explicitly upgrade connection level.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
-                            Text("🔑 2. Signal 256-bit E2EE Protocol", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+                            Text("🔑 2. Google Tink E2EE Protection", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
                             Text("All chats and voice memos are zero-knowledge end-to-end encrypted.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
                             Text("🛡️ 3. Anti-Harassment & Anti-Spam Guard", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
@@ -3064,7 +3064,7 @@ fun ChatDetailScreen(
                         Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text("🛡️ Active Safety Actions:", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Color(0xFFD32F2F))
                             Text("✓ 1-Tap Permanent Block (Profile purged from decks)", fontSize = 10.5.sp)
-                            Text("✓ Revoke Signal 256-bit E2EE encryption keys", fontSize = 10.5.sp)
+                            Text("✓ Revoke or rotate VibeSync Tink encryption keys", fontSize = 10.5.sp)
                             Text("✓ Transmit encrypted incident report to AI Moderation Guard", fontSize = 10.5.sp)
                         }
                     }
