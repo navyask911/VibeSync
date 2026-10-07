@@ -2290,11 +2290,11 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             val currentPrefs = repository.userPreferences.first()
             val phone = _activeMobile.value.trim()
                 .ifBlank { currentPrefs?.verifiedMobileNumber?.trim() ?: "" }
-                .ifBlank { com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.phoneNumber?.trim() ?: "" }
+                .ifBlank { com.example.util.SupabaseAuthManager.getCachedSession(getApplication())?.user?.phone?.trim() ?: "" }
 
             val email = _activeGoogleEmail.value.trim()
                 .ifBlank { currentPrefs?.googleEmail?.trim() ?: "" }
-                .ifBlank { com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.email?.trim() ?: "" }
+                .ifBlank { com.example.util.SupabaseAuthManager.getCachedSession(getApplication())?.user?.email?.trim() ?: "" }
 
             // Ensure valid Biometric Hash
             val rawHash = if (biometricHash.isNotBlank() && biometricHash.startsWith("BIO_")) {
@@ -2315,6 +2315,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             // Establish and guarantee active Firebase Auth User object
             try {
                 com.example.util.FirebaseAuthHelper.ensureFirebaseAuthUser(
+                    context = getApplication(),
                     preferredEmail = email.ifBlank { null },
                     preferredPhone = phone.ifBlank { null }
                 )
@@ -2548,7 +2549,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
             // 2. Clear session in Firebase Auth
             try {
-                com.example.util.FirebaseAuthHelper.signOut()
+                com.example.util.FirebaseAuthHelper.signOut(getApplication())
             } catch (e: Exception) {
                 android.util.Log.w("DatingViewModel", "FirebaseAuth sign out exception: ${e.message}")
             }
@@ -2598,7 +2599,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
             // 1. Clear session in Firebase Auth and delete Firebase Auth user
             try {
-                com.example.util.FirebaseAuthHelper.deleteFirebaseAccount()
+                com.example.util.FirebaseAuthHelper.deleteFirebaseAccount(getApplication())
             } catch (e: Exception) {
                 android.util.Log.w("DatingViewModel", "FirebaseAuth delete exception: ${e.message}")
             }
