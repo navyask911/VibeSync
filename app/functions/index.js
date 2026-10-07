@@ -3,11 +3,28 @@ const admin = require("firebase-admin");
 
 admin.initializeApp();
 
-// Firebase responsibility: FCM delivery only. No Firestore/Realtime/Storage access.
+function constantTimeEqual(a, b) {
+  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
+  let result = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
+}
+
+// Firebase boundary: FCM delivery only. No Firestore/Realtime/Storage access.
+// The internal key must be supplied through server-side secret configuration.
 exports.sendFcm = onRequest(async (req, res) => {
   try {
     if (req.method !== "POST") {
       return res.status(405).json({ error: "Method not allowed" });
+    }
+
+    const expectedKey = process.env.VIBESYNC_FCM_INTERNAL_KEY;
+    const suppliedKey = req.get("x-vibesync-internal-key") || "";
+
+    if (!expectedKey || !constantTimeEqual(suppliedKey, expectedKey)) {
+      return res.status(401).json({ error: "Unauthorized" });
     }
 
     const { token, data } = req.body || {};
@@ -16,7 +33,7 @@ exports.sendFcm = onRequest(async (req, res) => {
     }
 
     const sanitizedData = Object.fromEntries(
-      Object.entries(data || {}).map(([k, v]) => [String(k), String(v ?? "")])
+      Object.entries(data || {}).slice(0, 40).map(([k, v]) => [String(k).slice(0, 80), String(v ?? "").slice(0, 4000)])
     );
 
     const response = await admin.messaging().send({
