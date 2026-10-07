@@ -5701,54 +5701,10 @@ class SocialConnectRepository(
     }
 
     suspend fun syncAndRestoreBusinessesFromCloud() = withContext(Dispatchers.IO) {
-        try {
-            val currentPrefs = preferencesDao.getPreferencesSync()
-            val currentPhone = currentPrefs?.verifiedMobileNumber ?: ""
-            val currentEmail = currentPrefs?.googleEmail ?: ""
-
-            // ZERO-COST READ SHIELD:
-            // Never perform a full scan of 50,000 businesses!
-            // Only perform a targeted single-user lookup for the merchant's own registered venues (1-2 reads max).
-            if (currentPhone.isBlank() && currentEmail.isBlank()) return@withContext
-
-            val db = FirebaseFirestore.getInstance()
-            val querySnapshot = when {
-                currentPhone.isNotBlank() -> {
-                    db.collection("vibesync_venues")
-                        .whereEqualTo("ownerUserId", currentPhone)
-                        .limit(10)
-                        .get()
-                        .await()
-                }
-                currentEmail.isNotBlank() -> {
-                    db.collection("vibesync_venues")
-                        .whereEqualTo("ownerUserId", currentEmail)
-                        .limit(10)
-                        .get()
-                        .await()
-                }
-                else -> null
-            }
-
-            if (querySnapshot != null && !querySnapshot.isEmpty) {
-                val cloudVenues = querySnapshot.documents.mapNotNull { doc ->
-                    try {
-                        val venue = doc.toObject(BusinessEntity::class.java)
-                        venue?.copy(isUserCreated = true)
-                    } catch (e: Exception) {
-                        null
-                    }
-                }
-                if (cloudVenues.isNotEmpty()) {
-                    businessDao.insertBusinesses(cloudVenues)
-                    Log.d("SocialConnectRepository", "Zero-read recovery: Restored ${cloudVenues.size} merchant venues from Firestore")
-                }
-            }
-        } catch (e: Exception) {
-            Log.w("SocialConnectRepository", "Cloud business restoration note: ${e.message}")
-        }
+        // Existing Firebase business records remain available as a migration source, but are not
+        // automatically queried by the Android client. New business state is local-first / Supabase-authoritative.
+        Log.d("SocialConnectRepository", "Legacy Firebase business restore disabled for normal runtime.")
     }
-
     suspend fun processPhonebookContactsForMatchesAndNotifications(matchedContacts: List<PhoneContact>) = withContext(Dispatchers.IO) {
         // Organic contact handling only: Contacts are displayed in the Contacts screen for organic discovery.
         // No automatic fake message creation or notification loops!
