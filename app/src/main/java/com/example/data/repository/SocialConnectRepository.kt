@@ -4014,21 +4014,28 @@ class SocialConnectRepository(
             hasUnread = false
         )
 
-        // Sync via Supabase PostgREST & Realtime WebSocket
+        // Single authoritative path:
+        // Room -> Google Tink -> Supabase send_encrypted_message -> server-side FCM.
         appScope.launch(Dispatchers.IO) {
             try {
+                val senderIdentity = com.example.util.SupabaseClientManager.getPhoneHash(myPhone)
+                val recipientIdentity = targetProfileId
                 val targetKey = profile.publicIdentityKey.ifBlank {
-                    com.example.util.SupabaseBackendManager.fetchPublicKeyForPhone(targetPhone) ?: ""
+                    com.example.util.SupabaseClientManager.fetchPublicIdentityKey(recipientIdentity).orEmpty()
                 }
-                val cipherText = if (targetKey.isNotBlank()) {
-                    com.example.util.TinkCryptoManager.encryptForRecipient(
-                        recipientPublicKeysetJson = targetKey,
-                        rawText = text,
-                        senderPhone = myPhone,
-                        receiverPhone = targetPhone
-                    )
-                } else {
-                    text
+                if (targetKey.isBlank()) {
+                    android.util.Log.w("SocialConnectRepository", "Message held locally: recipient Tink public key unavailable.")
+                    return@launch
+                }
+                val cipherText = com.example.util.TinkCryptoManager.encryptForRecipient(
+                    recipientPublicKeysetJson = targetKey,
+                    rawText = text,
+                    senderPhone = senderIdentity,
+                    receiverPhone = recipientIdentity
+                )
+                if (!cipherText.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
+                    android.util.Log.e("SocialConnectRepository", "Message rejected: Tink encryption failed.")
+                    return@launch
                 }
                 val networkMsg = userMsg.copy(
                     text = cipherText,
@@ -4036,23 +4043,22 @@ class SocialConnectRepository(
                     isDelivered = false,
                     isRead = false
                 )
-                com.example.util.SupabaseClientManager.upsertChatMessage(networkMsg, myPhone, targetPhone)
-                val success = com.example.util.SupabaseBackendManager.insertChatMessage(networkMsg, myPhone, targetPhone)
-                // Single tick confirmed inserted on server (is_delivered = false, is_read = false).
-                // DO NOT optimistically mark message as delivered. Double ticks only arrive via delivery ACK!
+                val success = com.example.util.SupabaseClientManager.upsertChatMessage(
+                    msg = networkMsg,
+                    senderIdentity = senderIdentity,
+                    receiverIdentity = recipientIdentity,
+                    recipientProfileId = recipientIdentity
+                )
                 if (!success) {
-                    android.util.Log.w("SocialConnectRepository", "Notice: initial insert returned non-200 for $clientMsgId")
+                    android.util.Log.w("SocialConnectRepository", "Encrypted chat insert failed for " + clientMsgId)
                 }
             } catch (e: Exception) {
-                android.util.Log.w("SocialConnectRepository", "Supabase chat message dispatch error: ${e.message}")
+                android.util.Log.w("SocialConnectRepository", "Encrypted message dispatch error: " + e.message)
             }
         }
 
-        // Firebase databases are not message stores. FCM is delivered only by the server-side push gateway.
-        // Supabase chat_messages remains authoritative; recipient ACKs are the only path to delivery ticks.
-
-        startListeningToFirestoreMessages(matchId)
-    }
+        // Firebase databases are not message stores. FCM is requested by the server-side push gateway.
+        // Delivery ticks change only after the recipient device acknowledges receipt.
 
     suspend fun editMessage(messageId: String, newText: String): Boolean {
         val msg = chatMessageDao.getMessageById(messageId) ?: return false
