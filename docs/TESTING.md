@@ -41,14 +41,12 @@ Screenshots are useful for visual review, but screenshot output is not treated a
 A release candidate must pass, in order:
 
 1. secret scan;
-2. JVM unit + Compose UI tests;
-3. on-device Compose UI tests;
-4. debug APK build;
-5. release signing preparation;
-6. release APK build;
-7. release AAB build;
-8. artifact existence checks;
-9. artifact upload.
+2. `./gradlew test`;
+3. release signing preparation;
+4. `./gradlew assembleRelease`;
+5. `./gradlew bundleRelease`;
+6. artifact existence checks;
+7. artifact upload.
 
 CI intentionally fails before release packaging if required signing secrets are not available.
 
