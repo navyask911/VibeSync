@@ -1,89 +1,176 @@
 # VibeSync Privacy Policy
 
-**Effective date: October 7, 2026**
+**Effective date: October 8, 2026**
 
-VibeSync is designed as a privacy-first social and business platform. The product uses data minimization, local-first processing, privacy-preserving contact discovery, authenticated access controls, and server-authoritative business operations.
+This Privacy Policy explains what VibeSync may process, why it is processed, where processing happens, and what controls are available to users.
 
-## 1. Information VibeSync may process
+VibeSync is designed around data minimization and local-first processing. The exact data processed depends on the features a person uses.
 
-Depending on the features enabled by a user, VibeSync may process account/authentication attributes, profile information, profile media, connection/match state, encrypted message envelopes, delivery/read status, device push-token information, abuse/safety reports, business-account information, wallet/accounting records, advertisement campaign information, and operational/security telemetry.
+## 1. Who this policy is for
 
-VibeSync does not require a user to provide every available category of information to use every feature.
+This policy applies to the VibeSync Android application and the VibeSync services that support it.
 
-## 2. Contact discovery
+VibeSync may operate across jurisdictions. Where local law imposes additional rights or obligations, those requirements may apply in addition to this policy.
 
-The original product objective is to help users find people they already know without maintaining a permanent copy of the user's complete address book in the cloud.
+## 2. Data categories
 
-Contacts are normalized and transformed locally before discovery requests. The production server returns only the minimum matching profile information required by the feature.
+| Category | Examples | Main purpose |
+|---|---|---|
+| Account/authentication | Supabase Auth user ID, verified mobile number, session metadata | Sign-in, security, account recovery |
+| Profile | Name, age, gender, city, bio, interests, relationship preferences | Discovery and profile display |
+| Profile media | Avatar/profile photos and other user-selected media | Profile and communication features |
+| Connections | Likes, matches, friendships, blocks, reports | Social graph features and safety |
+| Messages | Encrypted message envelopes, message IDs, timestamps, delivery/read state | Private messaging and delivery |
+| Contact discovery | Locally derived phone representations/hashes | Finding existing VibeSync contacts |
+| Push/device | FCM registration token, platform information | Push notification delivery |
+| Safety/security | Abuse reports, moderation events, rate-limit/security telemetry | Fraud prevention, safety, platform integrity |
+| Business | Business profile, campaign, broadcast, wallet and transaction-reference data | Business services and accounting |
+| Advertising | Campaign settings, impression/delivery outcomes, sponsored-placement metadata | Sponsored delivery and billing |
+| AI feature inputs | Minimum content required by an enabled AI feature | Providing that requested AI function |
+| Support/legal | Support requests, deletion requests, lawful-request records | Service, compliance and dispute handling |
 
-A plain SHA-256 hash of a phone number is treated only as a privacy-preserving pseudonymous representation; VibeSync does not describe plain hashing as cryptographic zero-knowledge contact discovery. A stronger PSI/OPRF-style protocol may be introduced after cryptographic review.
+VibeSync should not collect a category merely because the application can technically access it.
 
-## 3. Messages and encryption
+## 3. Contacts and contact discovery
 
-Supported private messaging uses client-side encryption with Google Tink. The application backend is designed to process encrypted message payloads rather than message plaintext.
+The phonebook is intended to remain on the device.
 
-Encryption applies only to the protocols and release paths actually implemented and verified. A third-party infrastructure provider such as a push service may still observe operational delivery metadata.
+For contact discovery, VibeSync locally normalizes numbers and derives pseudonymous lookup representations before a lookup is attempted. The server is intended to return only the minimum matching profile information required by the feature.
 
-VibeSync does not maintain a universal decryption backdoor for genuinely end-to-end encrypted private-message content.
+A plain SHA-256 phone-number hash is a pseudonymous representation; it is not described as formal zero-knowledge cryptography. Stronger PSI/OPRF-style contact discovery may be introduced only after independent cryptographic review.
 
-## 4. Push notifications
+Raw address-book rows are not intended to be uploaded as a permanent cloud contact database.
 
-Firebase Cloud Messaging (FCM) may be used to deliver Android notifications. FCM is a transport mechanism and is not the authoritative VibeSync application database.
+## 4. Messages and encryption
 
-Private-message push payloads are designed to carry encrypted payloads or opaque notification data rather than plaintext conversation content.
+Supported private-message flows use client-side encryption with Google Tink.
 
-## 5. Media and storage
+The application backend may receive ciphertext, message identifiers, recipient/sender identifiers needed for authorization and routing, timestamps, delivery/read metadata, and other transport data required by the feature.
 
-Large profile and business media, photos, videos, and other objects may be stored in configured object storage such as Cloudflare R2. Access should be authenticated or time-limited according to the feature.
+Encryption claims apply only to protocols and release paths actually implemented and tested. Device compromise, malicious recipients, insecure backups, notification metadata, and third-party transport metadata can affect the overall security boundary.
 
-## 6. Business and advertising data
+VibeSync does not maintain a universal decryption backdoor.
 
-Business features may process business profile data, campaign configuration, wallet balances, transaction references, delivery outcomes, impression records, and analytics required to provide the service.
+## 5. Firebase Cloud Messaging
 
-VibeSync's published advertising policy uses transparent sponsored labeling, immediate user dismissal, frequency controls, and a minimum viewability threshold. VibeSync does not intend to sell device identifiers to advertising brokers.
+Firebase Cloud Messaging (FCM) may be used for Android push delivery.
 
-## 7. AI
+FCM is treated as a transport service, not as the authoritative VibeSync application database. Private-message notifications should avoid sending conversation plaintext when encrypted transport is required.
 
-AI features may send the minimum required user-provided content to the configured AI provider through a server-side function. Server credentials are not embedded in the Android application.
+Existing Firebase Realtime Database or Firestore records may still exist as controlled legacy compatibility/migration data where a reviewed feature requires them. New application features should not create uncontrolled permanent Firebase silos.
 
-The specific retention and processing policies of the external AI provider also apply where external processing occurs.
+## 6. Storage and media
 
-## 8. Security and fraud prevention
+Large objects may be stored in object storage such as Cloudflare R2. Access should use authenticated, scoped, or time-limited mechanisms where appropriate.
 
-VibeSync may collect limited security telemetry necessary to prevent abuse, rate-limit attacks, diagnose failures, preserve audit trails, and protect business transactions.
+VibeSync should retain metadata and references in databases instead of storing large media binaries in ordinary application tables.
 
-Security telemetry should avoid storing private message plaintext unless a lawful and explicitly documented feature requires otherwise.
+## 7. Business and advertising processing
 
-## 9. Account deletion
+Business features may process business identity, campaign settings, broadcasts, wallet/accounting entries, transaction references, delivery results, and analytics.
 
-Users may request account deletion. The production architecture provides a server-authoritative deletion path intended to remove VibeSync account records, device registrations, contact-discovery records, and message transport records owned by that account, subject to lawful retention obligations and records that must be preserved for security, fraud prevention, accounting, or legal compliance.
+Sponsored content should be clearly labelled. VibeSync's advertising policy is intended to prevent deceptive controls, forced waiting, hidden close controls, and unfair impression billing.
 
-## 10. Children and age safety
+The platform's product policy is that it does not sell users' private message content or raw address-book data to advertising brokers.
 
-The core romantic/dating discovery product is designed as 18+ by default. VibeSync must not expose adults to minor dating profiles or allow prohibited adult/minor romantic interaction.
+## 8. AI processing
 
-Any separate 13–17 contact-only product mode remains a controlled design concept and requires a dedicated child-safety and legal review before production activation.
+When an enabled AI feature is used, VibeSync may send the minimum required input to a server-side AI provider.
 
-## 11. Lawful requests and emergency safety
+AI credentials must remain server-side. Provider-specific retention, security and processing terms also apply to the information sent to that provider.
 
-VibeSync may receive lawful requests from authorized authorities and may preserve or disclose information that the platform actually possesses when required by applicable law.
+The application should not send full conversations or unrelated personal information when a smaller request is sufficient.
 
-The company does not promise access to encrypted message plaintext that it does not possess.
+## 9. Security telemetry
 
-Requests and disclosures should be handled through an auditable authorization process.
+VibeSync may process limited logs and security telemetry needed for authentication and abuse prevention, rate limiting and fraud detection, incident investigation, service diagnostics, safety/moderation, and business-accounting integrity.
 
-## 12. International use
+Private message plaintext should not be placed into ordinary telemetry.
 
-The service may be used in multiple jurisdictions. Additional privacy rights, localization, transfer restrictions, retention requirements, or regulatory duties may apply depending on the user's location and the service's legal status.
+## 10. Retention
 
-## 13. Compliance baseline
+VibeSync follows purpose-based retention rather than indefinite retention.
 
-For India, the compliance program should be reviewed against the Digital Personal Data Protection Act, 2023, the Digital Personal Data Protection Rules, 2025 and applicable commencement timeline, the Information Technology Act, 2000, applicable Information Technology Intermediary Rules, CERT-In directions, payment/consumer requirements, and applicable child-safety obligations.
+Retention periods should be documented per data class and reduced when the data is no longer required.
 
-For other jurisdictions, the service should be assessed against the laws that apply to the actual service, users, processing activities, and business model.
+Examples:
 
-This policy is an engineering/product baseline and is not a substitute for legal advice.
+- local chat/cache data: retained according to local user/device settings and cleared on logout or deletion where applicable;
+- session credentials: retained only while needed for an authenticated session;
+- contact-discovery records: limited to the minimum information and duration needed for matching/security;
+- safety/security records: retained as long as reasonably necessary for abuse prevention, incident handling, or legal duties;
+- business/accounting records: retained as required for reconciliation, tax, payment, fraud and legal obligations;
+- deletion requests: retained long enough to prove and administer the deletion process where necessary.
 
-## 14. Changes
+Actual retention schedules must be reviewed against the production data inventory before launch.
 
-VibeSync may update this policy as features, infrastructure, law, or business operations change. The effective date will be updated with material revisions.
+## 11. User controls and requests
+
+Users should have clear mechanisms, appropriate to the feature and applicable law, to:
+
+- access or review personal data;
+- correct inaccurate profile/account information;
+- withdraw consent where consent is the processing basis;
+- request deletion;
+- report abuse or illegal content;
+- block another user;
+- manage discovery/privacy settings;
+- request help with account recovery.
+
+India's notified DPDP Rules require clear, standalone notices and accessible mechanisms for consent withdrawal, rights and complaints according to their applicable commencement timeline. VibeSync's UI and support process are being designed around those requirements.
+
+See SUPPORT.md and docs/COMPLIANCE_MATRIX.md.
+
+## 12. Account deletion
+
+VibeSync provides a server-authoritative account-deletion path.
+
+Deletion is intended to remove or de-identify account and transport records that VibeSync no longer has a reason to retain, subject to legal retention obligations, security/fraud records that must be retained for a limited period, accounting/tax/payment records that must be preserved, and records that must be preserved for a lawful request or dispute.
+
+A deleted account is not a promise that every copy maintained by independent third parties is immediately erased.
+
+## 13. Children and age safety
+
+The core romantic/dating discovery experience is adult-focused and uses an 18+ safety boundary.
+
+VibeSync must not expose adults to minor dating profiles or permit prohibited adult/minor romantic interaction.
+
+Any separate minor-oriented social/contact experience requires a distinct safety, consent, product and legal review before activation. It must not be enabled merely because code exists for it.
+
+For India, the DPDP Act treats a child as a person below 18 and imposes specific child-data safeguards. The application therefore treats age handling as a safety boundary, not just a profile field.
+
+## 14. International transfers and providers
+
+VibeSync may use infrastructure and service providers located in different countries.
+
+Cross-border processing, subprocessors and transfer controls must be assessed against the law applicable to the service and the relevant user. Provider choices should be documented in the production data inventory.
+
+## 15. Lawful requests and safety emergencies
+
+VibeSync may preserve, restrict, or disclose information it actually possesses when required by applicable law or when necessary for a documented safety process.
+
+VibeSync does not promise to produce encrypted content that the service genuinely does not possess in plaintext.
+
+Emergency handling, preservation and disclosure decisions should be authenticated, documented, limited in scope, and auditable.
+
+## 16. India compliance baseline
+
+VibeSync's India compliance program is designed to support the Digital Personal Data Protection Act, 2023, the Digital Personal Data Protection Rules, 2025, applicable Information Technology Rules, 2021, applicable CERT-In requirements, payment/consumer rules and child-safety obligations.
+
+The DPDP Act became law on August 11, 2023. The notified DPDP Rules were published on November 13, 2025 with a phased commencement schedule. VibeSync therefore distinguishes between controls implemented now and legal obligations whose specific provisions have later commencement dates.
+
+Official references:
+
+- https://www.meity.gov.in/digital-personal-data-protection-act-2023
+- https://www.meity.gov.in/documents/act-and-policies/digital-personal-data-protection-rules-2025-gDOxUjMtQWa?pageTitle=Digital-Personal-Data-Protection-Rules-2025
+- https://www.meity.gov.in/static/uploads/2026/02/550681ab908f8afb135b0ad42816a1c9.pdf
+
+See docs/COMPLIANCE_MATRIX.md.
+
+This policy is a product/engineering baseline and is not legal advice.
+
+## 17. Changes
+
+Material changes to this policy will receive a new effective date. The application and support channels should provide access to the current policy version.
+
+**Copyright © 2026 VibeSync. All rights reserved.**
