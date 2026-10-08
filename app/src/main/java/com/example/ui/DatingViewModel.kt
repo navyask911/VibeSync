@@ -2121,13 +2121,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // Deprecated Email Sign-In (Pure Mobile Number Authentication Enforced)
-    fun loginWithAutoGoogleAuth(email: String) {
-        viewModelScope.launch {
-            _toastMessage.emit("VibeSync uses simple phone number sign-in securely. Please enter your mobile number.")
-        }
-    }
-
     fun syncFrontLoginToBackendProfile(context: Context = getApplication<Application>()) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
