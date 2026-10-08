@@ -35,6 +35,10 @@ permissions:
 
 env:
   JAVA_TOOL_OPTIONS: "-Djava.awt.headless=true"
+  VIBESYNC_PACKAGE_NAME: "com.aistudio.freedating.mkwvxq"
+  VIBESYNC_TRUECALLER_CLIENT_ID: "z3rfwgowtpkt-4_5hmsogbcjf2wc8igmb_bjpvzk8xc"
+  VIBESYNC_CONSENT_LABEL: "VIBESYNC"
+  VIBESYNC_RELEASE_SHA256: "99:99:23:2C:62:30:12:15:54:CC:30:EA:D8:EB:0E:95:9F:DA:52:64"
 
 jobs:
   android-release:
@@ -75,6 +79,31 @@ jobs:
             exit 1
           fi
 
+      - name: Verify production Truecaller wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -F 'applicationId = "com.aistudio.freedating.mkwvxq"' app/build.gradle.kts
+          grep -F 'implementation("com.truecaller.android.sdk:truecaller-sdk:3.2.1")' app/build.gradle.kts
+          grep -F 'android:name="com.truecaller.android.sdk.ClientId"' app/src/main/AndroidManifest.xml
+          grep -F 'android:value="z3rfwgowtpkt-4_5hmsogbcjf2wc8igmb_bjpvzk8xc"' app/src/main/AndroidManifest.xml
+          grep -F '<string name="app_name">VIBESYNC</string>' app/src/main/res/values/strings.xml
+          grep -F 'EXPECTED_PACKAGE = "com.aistudio.freedating.mkwvxq"' app/src/main/java/com/example/util/TruecallerVerificationClient.kt
+          grep -F 'EXPECTED_CLIENT_ID = "z3rfwgowtpkt-4_5hmsogbcjf2wc8igmb_bjpvzk8xc"' app/src/main/java/com/example/util/TruecallerVerificationClient.kt
+          grep -F 'BuildConfig.DEBUG && enableSimulatedOtpForTesting' app/src/main/java/com/example/ui/screens/OtpVerificationScreen.kt
+          grep -F 'simulatedOtpCode = null' app/src/main/java/com/example/ui/DatingAppRoot.kt
+
+          if grep -R -n -E '9449878908|919449878908' app/src/main/java app/src/main/res 2>/dev/null; then
+            echo "Known Truecaller test number leaked into production app source."
+            exit 1
+          fi
+
+          if grep -R -n 'com.truecaller.android.sdk.PartnerKey' app/src/main 2>/dev/null; then
+            echo "Legacy Truecaller PartnerKey metadata must not be present in the OAuth build."
+            exit 1
+          fi
+
       - name: JVM unit + Compose UI tests
         run: ./gradlew clean test -Djava.awt.headless=true --no-daemon
 
@@ -101,6 +130,15 @@ jobs:
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
           test -s "$KEYSTORE_FILE"
 
+          SIGNING_ALIAS="$KEY_ALIAS"
+          if [ -z "$SIGNING_ALIAS" ]; then SIGNING_ALIAS="upload"; fi
+          CERT_SHA256=$(keytool -list -v \
+            -keystore "$KEYSTORE_FILE" \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -alias "$SIGNING_ALIAS" \
+            | awk -F": " '/SHA256:/{print $2; exit}' | tr -d "\r")
+          test -n "$CERT_SHA256"
+          test "$CERT_SHA256" = "$VIBESYNC_RELEASE_SHA256"
           echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
           echo "STORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
           echo "KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
@@ -128,6 +166,9 @@ jobs:
 
           echo "Release AAB:"
           ls -lh "${AAB[0]}"
+          BUILD_TOOLS_DIR=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
+          "$BUILD_TOOLS_DIR/apksigner" verify --print-certs "${APK[0]}" \
+            | grep -F "Signer #1 certificate SHA-256 digest: $VIBESYNC_RELEASE_SHA256"
 
       - name: Upload APK, AAB and test reports
         uses: actions/upload-artifact@v6
