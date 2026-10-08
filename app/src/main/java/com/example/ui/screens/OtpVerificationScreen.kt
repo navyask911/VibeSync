@@ -79,7 +79,6 @@ import com.example.ui.theme.CoralPink
 import com.example.ui.theme.LikeGreen
 import com.example.ui.theme.RomanticViolet
 import com.example.ui.theme.VibeSyncTeal
-import com.example.util.FirebaseAuthHelper
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -417,19 +416,20 @@ fun OtpVerificationScreen(
                         // Resend Code Button with Countdown Guard
                         OutlinedButton(
                             onClick = {
-                                val activity = context as? Activity
-                                if (activity != null) {
-                                    FirebaseAuthHelper.sendFirebasePhoneAuthOtp(
-                                        activity = activity,
-                                        phoneNumber = phoneNumber,
-                                        onCodeSent = { id ->
-                                            firebaseVerificationId = id
+                                coroutineScope.launch {
+                                    try {
+                                        val result = SupabaseAuthManager.sendPhoneOtp(
+                                            context = context,
+                                            phone = phoneNumber
+                                        )
+                                        result.onSuccess {
                                             Toast.makeText(context, "Verification code resent", Toast.LENGTH_SHORT).show()
-                                        },
-                                        onError = { _ ->
-                                            Toast.makeText(context, "Verification code resent", Toast.LENGTH_SHORT).show()
+                                        }.onFailure {
+                                            Toast.makeText(context, "Unable to resend verification code. Please try again.", Toast.LENGTH_SHORT).show()
                                         }
-                                    )
+                                    } catch (_: Exception) {
+                                        Toast.makeText(context, "Unable to resend verification code. Please try again.", Toast.LENGTH_SHORT).show()
+                                    }
                                 }
                                 timerSeconds = 60
                                 isTimerRunning = true
@@ -448,7 +448,7 @@ fun OtpVerificationScreen(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = if (isTimerRunning) "Resend OTP in 00:${if (timerSeconds < 10) "0$timerSeconds" else timerSeconds}s" else "Resend OTP Code via Firebase",
+                                text = if (isTimerRunning) "Resend OTP in 00:${if (timerSeconds < 10) "0$timerSeconds" else timerSeconds}s" else "Resend OTP Code",
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold
                             )
