@@ -39,7 +39,39 @@ jobs:
         working-directory: app/functions
         run: npm ci
 
-      - name: Authenticate to Google Cloud
+      - name: Validate deployment credentials
+        shell: bash
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          SUPABASE_WEBHOOK_SECRET: ${{ secrets.SUPABASE_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SUPABASE_WEBHOOK_SECRET:-}" ]]; then
+            echo 'Missing repository secret SUPABASE_WEBHOOK_SECRET.' >&2
+            exit 1
+          fi
+          if [[ -n "${GCP_WORKLOAD_IDENTITY_PROVIDER:-}" && -n "${GCP_SERVICE_ACCOUNT:-}" ]]; then
+            echo 'Using Workload Identity Federation.'
+            exit 0
+          fi
+          if [[ -n "${FIREBASE_SERVICE_ACCOUNT:-}" ]]; then
+            echo 'Using FIREBASE_SERVICE_ACCOUNT JSON credentials.'
+            exit 0
+          fi
+          echo 'Configure GCP_WORKLOAD_IDENTITY_PROVIDER and GCP_SERVICE_ACCOUNT repository variables, or add FIREBASE_SERVICE_ACCOUNT repository secret.' >&2
+          exit 1
+
+      - name: Authenticate with Workload Identity Federation
+        if: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && vars.GCP_SERVICE_ACCOUNT != '' }}
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Authenticate with service account JSON
+        if: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER == '' || vars.GCP_SERVICE_ACCOUNT == '' }}
         uses: google-github-actions/auth@v3
         with:
           credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
