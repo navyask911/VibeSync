@@ -261,21 +261,28 @@ object SupabaseAuthManager {
         profile: TruecallerProfileResult
     ): Result<TruecallerAuthResult> = withContext(Dispatchers.IO) {
         try {
-            if (profile.payload.isBlank() || profile.signature.isBlank() || profile.requestNonce.isBlank()) {
-                return@withContext Result.failure(IllegalArgumentException("Incomplete Truecaller verification response"))
+            if (profile.authorizationCode.isBlank() ||
+                profile.codeVerifier.isBlank() ||
+                profile.state.isBlank()
+            ) {
+                return@withContext Result.failure(
+                    IllegalArgumentException("Incomplete Truecaller OAuth response")
+                )
             }
 
             val body = JSONObject().apply {
-                put("payload", profile.payload)
-                put("signature", profile.signature)
-                put("signature_algorithm", profile.signatureAlgorithm)
-                put("request_nonce", profile.requestNonce)
+                put("authorization_code", profile.authorizationCode)
+                put("code_verifier", profile.codeVerifier)
+                put("state", profile.state)
             }.toString()
 
             val request = Request.Builder()
                 .url("${SupabaseClientManager.SUPABASE_URL}/functions/v1/vibesync-truecaller-auth")
                 .addHeader("apikey", SupabaseClientManager.SUPABASE_PUBLISHABLE_KEY)
-                .addHeader("Authorization", "Bearer ${SupabaseClientManager.SUPABASE_PUBLISHABLE_KEY}")
+                .addHeader(
+                    "Authorization",
+                    "Bearer ${SupabaseClientManager.SUPABASE_PUBLISHABLE_KEY}"
+                )
                 .addHeader("Content-Type", "application/json")
                 .post(body.toRequestBody(mediaType))
                 .build()
@@ -284,22 +291,36 @@ object SupabaseAuthManager {
                 val responseBody = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     return@withContext Result.failure(
-                        IllegalStateException("Truecaller authentication failed (HTTP ${response.code}): ${responseBody.take(300)}")
+                        IllegalStateException(
+                            "Truecaller authentication failed (HTTP ${response.code}): ${responseBody.take(300)}"
+                        )
                     )
                 }
 
                 val root = JSONObject(responseBody)
                 val accessToken = root.optString("access_token", "")
                 if (accessToken.isBlank()) {
-                    return@withContext Result.failure(IllegalStateException("Truecaller auth returned no access token"))
+                    return@withContext Result.failure(
+                        IllegalStateException("Truecaller auth returned no Supabase access token")
+                    )
                 }
 
                 val userObj = root.optJSONObject("user")
                 val user = AuthenticatedUser(
                     id = userObj?.optString("id", "").orEmpty(),
-                    phone = userObj?.optString("phone", "").orEmpty().ifBlank { profile.phoneNumber },
+                    phone = userObj?.optString("phone", "").orEmpty().ifBlank { null },
                     email = userObj?.optString("email", "").orEmpty().ifBlank { null }
                 )
+                if (user.id.isBlank() || user.phone.isNullOrBlank()) {
+                    return@withContext Result.failure(
+                        IllegalStateException("Truecaller auth returned incomplete Supabase user")
+                    )
+                }
+
+                val verifiedProfile = root.optJSONObject("truecaller_profile")
+                val firstName = verifiedProfile?.optString("first_name", "").orEmpty()
+                val lastName = verifiedProfile?.optString("last_name", "").orEmpty()
+                val avatarUrl = verifiedProfile?.optString("avatar_url", "").orEmpty()
 
                 saveSession(
                     context,
@@ -309,18 +330,18 @@ object SupabaseAuthManager {
                         user = user,
                         expiresAtEpochSeconds = root.optLong(
                             "expires_at",
-                            (System.currentTimeMillis() / 1000L) + root.optLong("expires_in", 3600L)
+                            (System.currentTimeMillis() / 1000L) +
+                                root.optLong("expires_in", 3600L)
                         )
                     )
                 )
 
-                val verifiedProfile = root.optJSONObject("truecaller_profile")
                 Result.success(
                     TruecallerAuthResult(
                         user = user,
-                        firstName = verifiedProfile?.optString("first_name", "").orEmpty(),
-                        lastName = verifiedProfile?.optString("last_name", "").orEmpty(),
-                        avatarUrl = verifiedProfile?.optString("avatar_url", "").orEmpty()
+                        firstName = firstName,
+                        lastName = lastName,
+                        avatarUrl = avatarUrl
                     )
                 )
             }
