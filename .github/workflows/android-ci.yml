@@ -76,7 +76,7 @@ jobs:
           fi
 
       - name: JVM unit + Compose UI tests
-        run: ./gradlew --no-daemon -Dkotlin.compiler.execution.strategy=in-process clean test --rerun-tasks
+        run: ./gradlew clean test -Djava.awt.headless=true --no-daemon
 
       - name: Prepare release signing
         env:
@@ -92,7 +92,7 @@ jobs:
             exit 1
           fi
 
-          if [ -z "${KEYSTORE_PASSWORD:-}" ] || [ -z "${KEY_PASSWORD:-}" ]; then
+          if [ -z "${KEYSTORE_PASSWORD:-}" ] || [ -z "${KEY_PASSWORD:-" ]; then
             echo "KEYSTORE_PASSWORD and KEY_PASSWORD secrets are required for the signed release gate."
             exit 1
           fi
@@ -107,10 +107,10 @@ jobs:
           echo "KEY_ALIAS=${KEY_ALIAS:-upload}" >> "$GITHUB_ENV"
 
       - name: Assemble signed release APK
-        run: ./gradlew --no-daemon -Dkotlin.compiler.execution.strategy=in-process assembleRelease --rerun-tasks
+        run: ./gradlew --no-daemon -Djava.awt.headless=true assembleRelease --rerun-tasks
 
       - name: Build signed release AAB
-        run: ./gradlew --no-daemon -Dkotlin.compiler.execution.strategy=in-process bundleRelease --rerun-tasks
+        run: ./gradlew --no-daemon -Djava.awt.headless=true bundleRelease --rerun-tasks
 
       - name: Verify release artifacts
         shell: bash
