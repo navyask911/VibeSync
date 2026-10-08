@@ -328,7 +328,7 @@ fun OtpVerificationScreen(
                                 otpErrorMessage = null
 
                                 val clean = enteredOtpCode.trim()
-                                if (enableSimulatedOtpForTesting && !simulatedOtpCode.isNullOrBlank()) {
+                                if (com.example.BuildConfig.DEBUG && enableSimulatedOtpForTesting && !simulatedOtpCode.isNullOrBlank()) {
                                     isSubmitting = true
                                     if (clean == simulatedOtpCode.trim()) {
                                         onVerificationSuccess(phoneNumber, "Simulated Debug OTP")
