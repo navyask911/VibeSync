@@ -4,10 +4,10 @@
 
 VibeSync follows defense in depth:
 
-- authenticated identity and authorization;
+- Truecaller-verified identity and local session controls;
 - Supabase Row Level Security and server-authoritative RPCs;
 - server-only privileged secrets;
-- Android Keystore protection for sensitive session material;
+- Android Keystore protection for sensitive local verification state;
 - Google Tink encryption for supported private-message flows;
 - fail-closed encrypted-message handling;
 - controlled Firebase compatibility;

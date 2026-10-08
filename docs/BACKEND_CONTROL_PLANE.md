@@ -6,15 +6,15 @@ Copyright © 2026 VibeSync. All rights reserved.
 The backend control plane exists to provide authoritative authorization, auditability, abuse prevention, business accounting, operational diagnostics, retention controls, and lawful request handling while preserving the product's local-first and privacy-first design.
 
 ## Authoritative identities
-All authorization decisions use authenticated Supabase `auth.uid()` or a server-verified equivalent. User-editable profile fields, phone strings, display names, or client flags are never trusted as authorization identities.
+Privileged authorization decisions remain server-controlled. Truecaller verification establishes the client sign-in state; user-editable phone strings, display names, or client flags are never trusted as authorization identities.
 
 ## Control domains
 ### Identity
-- Supabase Auth is the authentication authority.
-- Truecaller/direct-auth integration is development/test-only until a production contract is approved.
+- Truecaller is the end-user verification authority.
+- Truecaller OAuth is the sole end-user sign-in contract; the current client points at the supplied VIBESYNC DEV credential.
 
 ### Device registry
-- FCM tokens are registered against Supabase Auth UUIDs.
+- FCM remains the push transport boundary; end-user sign-in does not require Supabase Auth UUID sessions.
 - FCM tokens are operational identifiers and are not sold, exported to advertisers, or exposed through profile APIs.
 
 ### Messaging

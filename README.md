@@ -19,7 +19,7 @@ Android / Kotlin / Compose
         |
    +----+-------------------+
    |                        |
-Supabase Auth          Google Tink
+Truecaller 1-tap        Google Tink
    |                        |
    +-----------+------------+
                |
@@ -30,7 +30,7 @@ Supabase Auth          Google Tink
          FCM    Realtime  R2
 ~~~
 
-**Authoritative application backend:** Supabase Auth + Postgres + reviewed RPCs/Edge Functions.
+**Authoritative sign-in:** Truecaller verification + a device-local verified session. Supabase/Postgres remains the application data backend; privileged operations stay behind reviewed RPCs/Edge Functions.
 
 **Firebase boundary:** FCM remains a push transport. Existing Firebase Realtime Database / Firestore records may remain available only for explicitly reviewed migration, reconciliation, diagnostics, or legacy-compatibility paths. No new feature should silently introduce a permanent Firebase application-data silo.
 
@@ -48,7 +48,7 @@ VibeSync follows data minimization:
 - contact discovery uses locally derived pseudonymous representations;
 - plain SHA-256 phone hashing is not described as formal zero-knowledge cryptography;
 - phone numbers are not the primary account identity;
-- Supabase Auth UUIDs are the authoritative account identifiers;
+- Truecaller-verified phone identity is the sign-in anchor;
 - private-message transport rejects plaintext where encrypted transport is required.
 
 See docs/CONTACT_DISCOVERY.md and docs/PRIVACY_AND_CONTACT_DISCOVERY.md.

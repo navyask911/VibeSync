@@ -123,7 +123,7 @@ object SupabaseClientManager {
         val builder = Request.Builder()
             .url(url)
             .addHeader("apikey", SUPABASE_PUBLISHABLE_KEY)
-            .addHeader("Authorization", "Bearer ${SupabaseAuthManager.getCachedAccessToken() ?: SUPABASE_PUBLISHABLE_KEY}")
+            .addHeader("Authorization", "Bearer ${SUPABASE_PUBLISHABLE_KEY}")
             .addHeader("Content-Type", "application/json")
 
         if (preferHeader != null) {
@@ -445,7 +445,7 @@ object SupabaseClientManager {
      */
     suspend fun dispatchEncryptedMessagePush(messageId: String): Boolean = withContext(Dispatchers.IO) {
         if (messageId.isBlank()) return@withContext false
-        val token = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
+        val token = SUPABASE_PUBLISHABLE_KEY
         try {
             val body = JSONObject().apply { put("message_id", messageId) }.toString()
             val request = Request.Builder()
@@ -467,7 +467,7 @@ object SupabaseClientManager {
         }
     }
     suspend fun isPlatformStaff(): Boolean = withContext(Dispatchers.IO) {
-        val token = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
+        val token = SUPABASE_PUBLISHABLE_KEY
         try {
             val request = Request.Builder()
                 .url("$SUPABASE_URL/rest/v1/rpc/is_platform_staff")
@@ -883,7 +883,7 @@ object SupabaseClientManager {
         return@withContext results
     }
     suspend fun blockUserRemote(profileId: String, reason: String = "USER_BLOCK"): Boolean = withContext(Dispatchers.IO) {
-        val token = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
+        val token = SUPABASE_PUBLISHABLE_KEY
         try {
             val body = JSONObject().apply {
                 put("p_blocked_profile_id", profileId)
@@ -898,7 +898,7 @@ object SupabaseClientManager {
     }
 
     suspend fun unblockUserRemote(profileId: String): Boolean = withContext(Dispatchers.IO) {
-        val token = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
+        val token = SUPABASE_PUBLISHABLE_KEY
         try {
             val body = JSONObject().apply { put("p_blocked_profile_id", profileId) }.toString()
             val request = buildRequest("rpc/unblock_user", "POST", body)
@@ -910,7 +910,7 @@ object SupabaseClientManager {
     }
 
     suspend fun submitSafetyReportRemote(profileId: String, reason: String, details: String = ""): String? = withContext(Dispatchers.IO) {
-        val token = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext null
+        val token = SUPABASE_PUBLISHABLE_KEY
         try {
             val body = JSONObject().apply {
                 put("p_reported_profile_id", profileId)
@@ -929,7 +929,7 @@ object SupabaseClientManager {
     }
 
     suspend fun staffModerateProfile(profileId: String, action: String, reason: String = ""): Boolean = withContext(Dispatchers.IO) {
-        val token = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
+        val token = SUPABASE_PUBLISHABLE_KEY
         if (!isPlatformStaff()) return@withContext false
         try {
             val body = JSONObject().apply {

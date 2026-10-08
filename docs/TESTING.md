@@ -16,7 +16,7 @@ These tests cover pure Kotlin/data logic and Room-backed repository behavior wit
 
 ### Compose UI tests under Robolectric
 
-The JVM test suite includes UI coverage for login rendering and continuation, secure OTP verification in the controlled debug-test path, OTP authentication-option state changes, and registration form gating before date-of-birth completion.
+The JVM test suite includes UI coverage for the Truecaller-only login screen, its retry/error state, and registration form gating before date-of-birth completion.
 
 ### On-device Compose UI tests
 
@@ -52,6 +52,6 @@ CI intentionally fails before release packaging if required signing secrets are 
 
 ## Manual device matrix
 
-Before public launch, verify at minimum a current Android handset, a tall-screen OnePlus-class device, notification permission handling, camera/microphone permissions, back navigation, phone OTP success/failure/timeout, contact discovery permission and empty state, chat send/delivery/read state, business wallet/broadcast controls, account deletion, and light/dark theme.
+Before public launch, verify at minimum a current Android handset, a tall-screen OnePlus-class device, notification permission handling, camera/microphone permissions, back navigation, Truecaller verification success/failure/retry, contact discovery permission and empty state, chat send/delivery/read state, business wallet/broadcast controls, account deletion, and light/dark theme.
 
 This document describes the automated baseline; it does not claim that manual device validation has already been completed.

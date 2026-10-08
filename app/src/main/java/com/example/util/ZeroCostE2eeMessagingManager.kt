@@ -42,8 +42,7 @@ object ZeroCostE2eeMessagingManager {
     suspend fun publishRegistrationBundle(phoneNumber: String): Boolean {
         val context = appContext ?: return false
         val publicKey = TinkCryptoManager.getMyPublicKeysetJson(context)
-        val session = SupabaseAuthManager.getCachedSession(context)
-        if (session?.user?.id.isNullOrBlank() || publicKey.isBlank()) return false
+        if (publicKey.isBlank()) return false
         return try {
             val prefs = database?.userPreferencesDao()?.getPreferencesSync()
             val profile = prefs?.let {

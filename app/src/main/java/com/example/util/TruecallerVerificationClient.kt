@@ -47,7 +47,7 @@ interface TruecallerVerificationClient {
 object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
     private const val TAG = "TruecallerVerification"
     private const val EXPECTED_PACKAGE = "com.aistudio.freedating.mkwvxq"
-    private const val EXPECTED_CLIENT_ID = "z3rfwgowtpkt-4_5hmsogbcjf2wc8igmb_bjpvzk8xc"
+    private const val EXPECTED_CLIENT_ID = "qkpfffgkiebypf8hvifhkkknj2msgud5hfjqg_ti1wu"
     private const val CLIENT_ID_METADATA = "com.truecaller.android.sdk.ClientId"
 
     private val secureRandom = SecureRandom()

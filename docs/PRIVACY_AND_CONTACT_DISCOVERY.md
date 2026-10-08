@@ -17,7 +17,7 @@ Plain SHA-256 of a phone number is not, by itself, zero-knowledge contact discov
 - Legacy raw-phone matching paths are deprecated and must not be used in production builds.
 
 ## Identity
-Supabase Auth UUID is the authoritative application identity. Phone numbers are authentication/contact-discovery attributes, not the primary database identity.
+Truecaller verification is the authoritative sign-in event for the Android client. Phone numbers remain sensitive contact/discovery data; the client keeps the resulting verification state locally.
 
 ## Local data
 Room may contain the user's local contacts, cached matches, and messages required for offline UX. Android backup of sensitive application data is disabled unless a specific product feature re-encrypts and exports it.

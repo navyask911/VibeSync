@@ -6,7 +6,7 @@ Copyright © 2026 VibeSync. All rights reserved.
 The existing Firebase project may remain connected during transition. Existing Firebase datasets may be read for migration, reconciliation, diagnostics, and user-facing compatibility where the current product requires it.
 
 ## Authoritative boundary
-- Supabase Auth is the application identity authority.
+- Truecaller verification is the application sign-in authority; Firebase remains a transport/legacy compatibility boundary.
 - Supabase Postgres is the authoritative application data store.
 - Firebase Cloud Messaging (FCM) remains the push transport.
 - Existing Firebase Realtime Database / Firestore data is legacy or compatibility state unless a feature specification explicitly says otherwise.

@@ -6,11 +6,11 @@ import android.util.Log
 
 object UserSessionManager {
     private const val TAG = "UserSessionManager"
-    private const val PREFS_AUTH_SESSION = "vibesync_auth_session"
+    private const val PREFS_AUTH_SESSION = "vibesync_verified_session"
 
     fun clearStaleAuthSessions(context: Context) {
         try {
-            Log.i(TAG, "Purging stale / corrupted auth sessions and pending tokens before OTP verification")
+            Log.i(TAG, "Purging stale / corrupted local verification state")
             val sp: SharedPreferences = context.getSharedPreferences(PREFS_AUTH_SESSION, Context.MODE_PRIVATE)
             sp.edit().clear().apply()
 
@@ -23,12 +23,6 @@ object UserSessionManager {
                 .remove("temp_login_state")
                 .apply()
 
-            // Firebase is FCM-only; Supabase Auth owns identity/session state.
-            try {
-                SupabaseAuthManager.signOut(context)
-            } catch (e: Exception) {
-                Log.w(TAG, "Supabase Auth signOut notice: ${e.message}")
-            }
         } catch (e: Exception) {
             Log.w(TAG, "Error purging auth sessions: ${e.message}")
         }
@@ -71,6 +65,14 @@ object UserSessionManager {
             Log.i(TAG, "Successfully saved verified session and Tink keyset for phone: $phoneNumber")
         } catch (e: Exception) {
             Log.e(TAG, "Error saving verified session: ${e.message}", e)
+        }
+    }
+
+    fun clearVerifiedSession(context: Context) {
+        try {
+            context.getSharedPreferences(PREFS_AUTH_SESSION, Context.MODE_PRIVATE).edit().clear().apply()
+        } catch (e: Exception) {
+            Log.w(TAG, "Unable to clear local verified session: ${e.message}")
         }
     }
 

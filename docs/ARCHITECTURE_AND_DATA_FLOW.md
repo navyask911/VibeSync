@@ -16,7 +16,7 @@ VibeSync is an Android social and business platform built around local-first sto
 Room is the immediate user experience and offline cache. Network synchronization is explicit and idempotent. The device must remain useful when the network is unavailable.
 
 ## Messaging target flow
-1. Sender authenticates with Supabase Auth.
+1. Sender completes Truecaller 1-tap verification; the Android client stores only the resulting local verified session state.
 2. Sender encrypts the message locally with the recipient's published VibeSync Tink key.
 3. A serverless dispatch operation validates the sender and recipient relationship.
 4. The opaque encrypted payload is forwarded through FCM.

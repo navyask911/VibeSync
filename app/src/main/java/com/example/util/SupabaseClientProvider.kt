@@ -42,7 +42,7 @@ object SupabaseClientProvider {
         val builder = Request.Builder()
             .url(url)
             .addHeader("apikey", SUPABASE_ANON_KEY)
-            .addHeader("Authorization", "Bearer ${SupabaseAuthManager.getCachedAccessToken() ?: SUPABASE_ANON_KEY}")
+            .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
             .addHeader("Content-Type", "application/json")
 
         if (preferHeader != null) {

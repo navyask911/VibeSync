@@ -36,8 +36,8 @@ permissions:
 env:
   JAVA_TOOL_OPTIONS: "-Djava.awt.headless=true"
   VIBESYNC_PACKAGE_NAME: "com.aistudio.freedating.mkwvxq"
-  VIBESYNC_TRUECALLER_CLIENT_ID: "z3rfwgowtpkt-4_5hmsogbcjf2wc8igmb_bjpvzk8xc"
-  VIBESYNC_CONSENT_LABEL: "VIBESYNC"
+  VIBESYNC_TRUECALLER_CLIENT_ID: "qkpfffgkiebypf8hvifhkkknj2msgud5hfjqg_ti1wu"
+  VIBESYNC_CONSENT_LABEL: "VIBESYNC DEV"
   VIBESYNC_RELEASE_SHA1: "EF:21:E5:62:29:D7:00:94:D1:95:90:D4:F5:9E:6B:5C:AF:8A:DA:6A"
   VIBESYNC_RELEASE_SHA256: "5A:7A:47:9D:46:C1:AB:C5:1B:E5:7A:C3:A2:08:F2:41:4A:7E:B7:11:E4:59:A2:BE:BF:B7:BA:F5:4D:4A:CC:73"
 
@@ -80,7 +80,7 @@ jobs:
             exit 1
           fi
 
-      - name: Verify production Truecaller wiring
+      - name: Verify Truecaller wiring
         shell: bash
         run: |
           set -euo pipefail
@@ -88,13 +88,17 @@ jobs:
           grep -F 'applicationId = "com.aistudio.freedating.mkwvxq"' app/build.gradle.kts
           grep -F 'implementation("com.truecaller.android.sdk:truecaller-sdk:3.2.1")' app/build.gradle.kts
           grep -F 'android:name="com.truecaller.android.sdk.ClientId"' app/src/main/AndroidManifest.xml
-          grep -F 'android:value="z3rfwgowtpkt-4_5hmsogbcjf2wc8igmb_bjpvzk8xc"' app/src/main/AndroidManifest.xml
+          grep -F 'android:value="qkpfffgkiebypf8hvifhkkknj2msgud5hfjqg_ti1wu"' app/src/main/AndroidManifest.xml
           grep -F '<string name="app_name">VIBESYNC</string>' app/src/main/res/values/strings.xml
           grep -F 'EXPECTED_PACKAGE = "com.aistudio.freedating.mkwvxq"' app/src/main/java/com/example/util/TruecallerVerificationClient.kt
-          grep -F 'EXPECTED_CLIENT_ID = "z3rfwgowtpkt-4_5hmsogbcjf2wc8igmb_bjpvzk8xc"' app/src/main/java/com/example/util/TruecallerVerificationClient.kt
-          grep -F 'BuildConfig.DEBUG && enableSimulatedOtpForTesting' app/src/main/java/com/example/ui/screens/OtpVerificationScreen.kt
-          grep -F 'simulatedOtpCode = null' app/src/main/java/com/example/ui/DatingAppRoot.kt
-
+          grep -F 'EXPECTED_CLIENT_ID = "qkpfffgkiebypf8hvifhkkknj2msgud5hfjqg_ti1wu"' app/src/main/java/com/example/util/TruecallerVerificationClient.kt
+          test ! -e app/src/main/java/com/example/ui/screens/OtpVerificationScreen.kt
+          if grep -R -n -E 'SupabaseAuthManager|FirebaseAuthHelper|signInWithOtp|verifyOtp|/auth/v1/(otp|verify|token)|Supabase Auth owns|Supabase Auth is authoritative' app/src/main 2>/dev/null; then
+            echo "Supabase Auth/SMS OTP login code must not remain in the Android app."
+            exit 1
+          fi
+          grep -F 'const val EXPECTED_CLIENT_ID = "qkpfffgkiebypf8hvifhkkknj2msgud5hfjqg_ti1wu"' app/src/main/java/com/example/util/TruecallerVerificationClient.kt
+          grep -F 'const TRUECALLER_CLIENT_ID = "qkpfffgkiebypf8hvifhkkknj2msgud5hfjqg_ti1wu"' supabase/functions/vibesync-truecaller-auth/index.ts
           if grep -R -n -E '9449878908|919449878908' app/src/main/java app/src/main/res --exclude='PhonebookHasher.kt' 2>/dev/null; then
             echo "Known Truecaller test number leaked into production app source."
             exit 1

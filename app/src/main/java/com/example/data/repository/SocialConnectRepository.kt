@@ -27,7 +27,6 @@ import com.example.util.ZeroCostE2eeMessagingManager
 import com.google.firebase.firestore.FirebaseFirestore
 import com.example.util.FirebaseBackendSyncManager
 import com.example.util.SystemHealthDiagnosticsManager
-import com.example.util.SupabaseAuthManager
 import com.example.util.backup.BackupScheduler
 import com.example.util.backup.ChatBackupCryptoHelper
 import com.example.util.backup.ChatBackupPayload
@@ -1951,8 +1950,6 @@ class SocialConnectRepository(
         profileDao.updateVerification(profileId, isVerified, isFaceVerified)
     }
     suspend fun deleteProfile(profileId: String) {
-        val sessionUserId = context?.let { SupabaseAuthManager.getCachedSession(it)?.user?.id }.orEmpty()
-        val isSelf = sessionUserId.isNotBlank() && profileId == sessionUserId
         val matchingProfiles = profileDao.getAllProfilesSync().filter { it.id == profileId }
         matchingProfiles.forEach { profile ->
             profileDao.deleteProfile(profile.id)
@@ -1961,11 +1958,7 @@ class SocialConnectRepository(
                 matchDao.deleteMatch(match.matchId)
             }
         }
-        if (isSelf) {
-            context?.let { SupabaseAuthManager.deleteAccount(it) }
-        } else {
-            Log.w("SocialConnectRepository", "Remote deletion of another user is restricted to the server moderation control plane.")
-        }
+        Log.i("SocialConnectRepository", "Profile deletion completed locally; server-authoritative cleanup is handled outside the client.")
     }
     suspend fun addCustomProfile(profile: ProfileEntity) {
         profileDao.insertProfile(profile)

@@ -567,8 +567,12 @@ object SystemHealthDiagnosticsManager {
         _activeDevices.value = discoveredDevices
         activeDevicesCount = discoveredDevices.size.coerceAtLeast(1)
 
-        val authSession = AppNotificationManager.appContext?.let { SupabaseAuthManager.getCachedSession(it) }
-        val authUid = authSession?.user?.id ?: "No active Supabase session"
+        val verifiedPhone = AppNotificationManager.appContext?.let {
+            UserSessionManager.getVerifiedPhoneNumber(it)
+        }.orEmpty()
+        val authUid = verifiedPhone.takeIf { it.isNotBlank() }?.let {
+            "truecaller-local:" + it.filter(Char::isDigit).takeLast(4)
+        } ?: "No active local verification"
 
         val totalDocs = profilesCount + chatsCount + matchesCount + statusStoriesCount + activeDevicesCount
         val estimatedFirestoreMb = (totalDocs * 0.004).coerceAtLeast(0.04) // ~4KB per document

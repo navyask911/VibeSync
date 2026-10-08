@@ -91,7 +91,6 @@ import com.example.ui.screens.PhonebookContactsScreen
 import com.example.ui.screens.ProfileDetailDialog
 import com.example.ui.screens.ProfileScreen
 import com.example.ui.screens.RegistrationProfileScreen
-import com.example.ui.screens.OtpVerificationScreen
 import com.example.ui.screens.StatusStoriesScreen
 import com.example.ui.screens.VibeSyncSplashScreen
 import com.example.ui.theme.VibeSyncLightGreen
@@ -126,6 +125,7 @@ fun DatingAppRoot(
     val preferences by viewModel.userPreferences.collectAsStateWithLifecycle()
     val isSessionChecking by viewModel.isSessionChecking.collectAsStateWithLifecycle()
     val authState by viewModel.authState.collectAsStateWithLifecycle()
+    val truecallerError by viewModel.truecallerError.collectAsStateWithLifecycle()
 
     val activeMatchDialog by viewModel.activeMatchDialog.collectAsStateWithLifecycle()
     val activeChat by viewModel.activeChat.collectAsStateWithLifecycle()
@@ -160,7 +160,6 @@ fun DatingAppRoot(
     val adminLoginError by viewModel.adminLoginError.collectAsStateWithLifecycle()
     val allAdminProfiles by viewModel.allProfilesForAdmin.collectAsStateWithLifecycle()
     val supabaseDiagnostic by viewModel.supabaseDiagnostic.collectAsStateWithLifecycle()
-    val simulatedOtp by viewModel.simulatedMobileOtp.collectAsStateWithLifecycle()
     val showFaceVerification by viewModel.showFaceVerification.collectAsStateWithLifecycle()
 
     val adminRoles by viewModel.adminRoles.collectAsStateWithLifecycle()
@@ -180,7 +179,6 @@ fun DatingAppRoot(
     val showPhonebookScreen by viewModel.showPhonebookScreen.collectAsStateWithLifecycle()
     val selectedContactToInvite by viewModel.selectedContactToInvite.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var pendingPhoneOtp by remember { mutableStateOf<String?>(null) }
 
     // Zero Profile Duplication & Recovery States
     val duplicateProfileDetected by viewModel.duplicateProfileDetected.collectAsStateWithLifecycle()
@@ -446,32 +444,13 @@ fun DatingAppRoot(
             onRejectApiRequest = { id, notes -> viewModel.updateApiRequestApproval(id, "REJECTED", notes = notes) },
             onClose = { viewModel.closeAdminPortal() }
         )
-    } else if (authState == AuthState.UNAUTHENTICATED && pendingPhoneOtp != null) {
-        val phoneForOtp = pendingPhoneOtp!!
-        OtpVerificationScreen(
-            phoneNumber = phoneForOtp,
-            simulatedOtpCode = null,
-            onVerificationSuccess = { phone, _ ->
-                pendingPhoneOtp = null
-                viewModel.completePhoneOtpLogin(phone)
-            },
-            onBackToPhoneInput = {
-                pendingPhoneOtp = null
-            }
-        )
     } else if (authState == AuthState.UNAUTHENTICATED) {
         AuthLoginScreen(
-            onVerifyPhoneDirect = { phone ->
-                pendingPhoneOtp = phone
-                viewModel.requestPhoneOtp(phone)
-            },
             onTruecallerProfileVerified = { profile ->
                 viewModel.verifyTruecallerProfile(profile)
             },
-            onTruecallerFallbackToPhoneOtp = { phone ->
-                pendingPhoneOtp = phone
-                viewModel.requestPhoneOtp(phone)
-            },
+            truecallerError = truecallerError,
+            onTruecallerRetry = { viewModel.clearTruecallerError() },
             onOpenAdminPortal = { viewModel.openAdminPortal() }
         )
     } else if (!isProfileCompleted) {

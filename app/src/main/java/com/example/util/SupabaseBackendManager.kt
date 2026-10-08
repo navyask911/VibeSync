@@ -419,7 +419,7 @@ object SupabaseBackendManager {
             val request = Request.Builder()
                 .url("$SUPABASE_URL/rest/v1/profiles")
                 .header("apikey", SUPABASE_ANON_KEY)
-                .header("Authorization", "Bearer ${SupabaseAuthManager.getCachedAccessToken() ?: SUPABASE_ANON_KEY}")
+                .header("Authorization", "Bearer ${SUPABASE_ANON_KEY}")
                 .header("Content-Type", "application/json")
                 .header("Prefer", "resolution=merge-duplicates")
                 .post(body)
@@ -601,7 +601,7 @@ object SupabaseBackendManager {
             val request = Request.Builder()
                 .url("$SUPABASE_URL/rest/v1/chat_messages?select=message_id&match_id=eq.$encodedMatchId&is_read=eq.false&limit=100")
                 .header("apikey", SUPABASE_ANON_KEY)
-                .header("Authorization", "Bearer ${SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false}")
+                .header("Authorization", "Bearer ${SUPABASE_ANON_KEY}")
                 .get()
                 .build()
             val ids = mutableListOf<String>()
@@ -639,7 +639,7 @@ object SupabaseBackendManager {
             val encoded = java.net.URLEncoder.encode(messageId, "UTF-8")
             val body = JSONObject().put("is_read", true).toString()
                 .toRequestBody("application/json".toMediaType())
-            val accessToken = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
+            val accessToken = SUPABASE_ANON_KEY
             val request = Request.Builder()
                 .url("$SUPABASE_URL/rest/v1/chat_messages?or=(id.eq.$encoded,message_id.eq.$encoded)")
                 .header("apikey", SUPABASE_ANON_KEY)
@@ -666,7 +666,7 @@ object SupabaseBackendManager {
     ): Boolean = withContext(Dispatchers.IO) {
         if (messageId.isBlank()) return@withContext false
         try {
-            val accessToken = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
+            val accessToken = SUPABASE_ANON_KEY
             val body = JSONObject().apply { put("p_message_id", messageId) }
                 .toString().toRequestBody("application/json".toMediaType())
             val request = Request.Builder()

@@ -253,8 +253,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
 
-        // Supabase Auth session is the authoritative identity state.
-        // Avoid a second Firebase Auth state machine; Firebase is FCM-only.
+        // Truecaller verification is the sign-in authority; the verified session is device-local.
+        // Firebase remains a transport/legacy compatibility boundary only.
 
         // Initialize Supabase Realtime WebSocket for two-way chat synchronization and delivery/read receipts
         try {
@@ -424,8 +424,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     val isMpinUnlocked: StateFlow<Boolean> = _isMpinUnlocked.asStateFlow()
 
     // Auth & Verification States
-    private val _simulatedMobileOtp = MutableStateFlow<String?>(null)
-    val simulatedMobileOtp: StateFlow<String?> = _simulatedMobileOtp.asStateFlow()
+    private val _truecallerError = MutableStateFlow<String?>(null)
+    val truecallerError: StateFlow<String?> = _truecallerError.asStateFlow()
 
     private val _activeMobile = MutableStateFlow("")
     val activeMobile: StateFlow<String> = _activeMobile.asStateFlow()
@@ -1875,13 +1875,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         _isAdminLoggedIn.value = false
 
         viewModelScope.launch {
-            val session = com.example.util.SupabaseAuthManager.getCachedSession(getApplication())
-            if (session?.user?.id.isNullOrBlank()) {
-                _adminLoginError.value = "Sign in to VibeSync first. Admin access is tied to the authenticated account."
-                _adminLoginInProgress.value = false
-                return@launch
-            }
-
             val authorized = com.example.util.SupabaseClientManager.isPlatformStaff()
             if (authorized) {
                 _isAdminLoggedIn.value = true
@@ -2004,33 +1997,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // OTP & Authentication Flow
-    fun requestPhoneOtp(phone: String) {
-        val cleanPhone = phone.trim()
-        if (cleanPhone.filter { it.isDigit() }.length < 10) {
-            viewModelScope.launch {
-                _toastMessage.emit("Please enter a valid 10-digit mobile number.")
-            }
-            return
-        }
-
-        _activeMobile.value = cleanPhone
-        viewModelScope.launch {
-            val result = com.example.util.SupabaseAuthManager.sendPhoneOtp(
-                context = getApplication<Application>(),
-                phone = cleanPhone
-            )
-            result.onSuccess {
-                _toastMessage.emit("Verification code sent to ${cleanPhone}")
-            }.onFailure { error ->
-                _toastMessage.emit(
-                    "Unable to send verification code: ${error.message ?: "Please try again"}"
-                )
-            }
-        }
-    }
-
-    private suspend fun finalizePhoneAuthenticatedSession(
+    private suspend fun finalizeTruecallerAuthenticatedSession(
         phone: String,
         firstName: String = "",
         lastName: String = "",
@@ -2049,18 +2016,12 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             isMobileVerified = true,
             loginTimestamp = System.currentTimeMillis()
         )
-
-        UserSessionManager.saveVerifiedSession(
-            getApplication<Application>(),
-            cleanPhone
-        )
+        UserSessionManager.saveVerifiedSession(getApplication(), cleanPhone)
         repository.updatePreferences(updated)
         _activeMobile.value = cleanPhone
-        _simulatedMobileOtp.value = null
         _isMpinUnlocked.value = true
         _showFaceVerification.value = false
         _authState.value = AuthState.AUTHENTICATED
-
         try {
             repository.startAllSyncsAfterLogin()
         } catch (e: Exception) {
@@ -2068,135 +2029,37 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun completePhoneOtpLogin(phone: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                finalizePhoneAuthenticatedSession(phone)
-            } catch (e: Exception) {
-                android.util.Log.e("AuthSessionManager", "Unable to finalize phone login: ${e.message}", e)
-            }
-        }
+    fun clearTruecallerError() {
+        _truecallerError.value = null
     }
 
     fun verifyTruecallerProfile(profile: com.example.util.TruecallerProfileResult) {
+        _truecallerError.value = null
         if (profile.authorizationCode.isBlank() || profile.codeVerifier.isBlank() || profile.state.isBlank()) {
-            viewModelScope.launch {
-                _toastMessage.emit("Truecaller verification response was incomplete. Please use phone OTP.")
-            }
+            _truecallerError.value = "Truecaller verification response was incomplete. Please retry with Truecaller."
             return
         }
-
         viewModelScope.launch(Dispatchers.IO) {
-            val result = com.example.util.SupabaseAuthManager.signInWithTruecaller(
-                context = getApplication<Application>(),
-                profile = profile
-            )
-
-            result.onSuccess { auth ->
-                finalizePhoneAuthenticatedSession(
-                    phone = auth.user.phone ?: profile.phoneNumber,
-                    firstName = auth.firstName,
-                    lastName = auth.lastName,
-                    avatarUrl = auth.avatarUrl
+            val result = com.example.util.TruecallerAuthGateway.verify(profile)
+            result.onSuccess { identity ->
+                finalizeTruecallerAuthenticatedSession(
+                    phone = identity.phone,
+                    firstName = identity.firstName,
+                    lastName = identity.lastName,
+                    avatarUrl = identity.avatarUrl
                 )
                 _toastMessage.emit(
-                    if (auth.firstName.isNotBlank()) {
-                        "Verified instantly with Truecaller. Welcome ${auth.firstName}!"
+                    if (identity.firstName.isNotBlank()) {
+                        "Verified instantly with Truecaller. Welcome ${identity.firstName}!"
                     } else {
                         "Verified instantly with Truecaller."
                     }
                 )
             }.onFailure { error ->
-                android.util.Log.w(
-                    "TruecallerAuthFlow",
-                    "Truecaller Supabase exchange failed: ${error.message}"
-                )
-                _toastMessage.emit(
-                    "Truecaller verification could not be completed. Please use phone OTP."
-                )
+                android.util.Log.w("TruecallerAuthFlow", "Truecaller verification gateway failed: ${error.message}")
+                _truecallerError.value = "Truecaller verification could not be completed. Please retry with Truecaller."
             }
         }
-    }
-
-    // Production authentication authority: Supabase Auth.
-    // Truecaller/direct authentication is retained only as a DEBUG test hook.
-    fun requestMobileOtp(mobile: String): String {
-        val cleanPhone = mobile.trim()
-        _activeMobile.value = cleanPhone
-        if (cleanPhone.isBlank()) return ""
-
-        viewModelScope.launch {
-            val result = com.example.util.SupabaseAuthManager.sendPhoneOtp(
-                context = getApplication<Application>(),
-                phone = cleanPhone
-            )
-            result.onSuccess {
-                _toastMessage.emit("Verification code sent to $cleanPhone")
-            }.onFailure { error ->
-                _toastMessage.emit(
-                    "Unable to send verification code: ${error.message ?: "Please try again"}"
-                )
-            }
-        }
-
-        // Never return or display an OTP secret from the application.
-        _simulatedMobileOtp.value = null
-        return ""
-    }
-
-    fun verifyPhoneDirect(phone: String): Boolean {
-        if (!com.example.BuildConfig.DEBUG) {
-            viewModelScope.launch {
-                _toastMessage.emit("Direct test authentication is disabled in the production build.")
-            }
-            return false
-        }
-
-        val effectivePhone = phone.trim()
-        if (effectivePhone.isBlank()) return false
-        _activeMobile.value = effectivePhone
-        com.example.util.UserSessionManager.saveVerifiedSession(getApplication(), effectivePhone)
-
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                android.util.Log.i("TruecallerAuthFlow", "[DEBUG TEST] Direct Truecaller-style verification.")
-                val isRestored = kotlinx.coroutines.withTimeoutOrNull(4000L) {
-                    repository.recoverOrRestoreAccountByPhone(effectivePhone)
-                } ?: false
-
-                try {
-                    repository.syncFrontLoginDetailsToBackend(
-                        phone = effectivePhone,
-                        email = "",
-                        context = getApplication<Application>()
-                    )
-                    repository.startAllSyncsAfterLogin()
-                } catch (e: Exception) {
-                    android.util.Log.w("TruecallerAuthFlow", "Post-login sync notice: ${e.message}")
-                }
-
-                _isMpinUnlocked.value = true
-                _showFaceVerification.value = false
-                _authState.value = AuthState.AUTHENTICATED
-
-                val prefs = repository.userPreferences.first()
-                if (isRestored && prefs?.isProfileCompleted == true && prefs.isGoogleCloudBackupEnabled != true) {
-                    _showPostRegistrationBackupDialog.value = true
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("TruecallerAuthFlow", "Debug direct authentication failed: ${e.message}", e)
-            }
-        }
-        return true
-    }
-
-    @Deprecated("Use SupabaseAuthManager.verifyPhoneOtp from the OTP screen.")
-    fun verifyMobileOtp(enteredOtp: String, phone: String = ""): Boolean {
-        android.util.Log.d(
-            "SupabaseAuthFlow",
-            "Legacy synchronous OTP helper is disabled; use SupabaseAuthManager."
-        )
-        return false
     }
 
     /**
@@ -2318,11 +2181,10 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             val currentPrefs = repository.userPreferences.first()
             val phone = _activeMobile.value.trim()
                 .ifBlank { currentPrefs?.verifiedMobileNumber?.trim() ?: "" }
-                .ifBlank { com.example.util.SupabaseAuthManager.getCachedSession(getApplication())?.user?.phone?.trim() ?: "" }
+                .ifBlank { com.example.util.UserSessionManager.getVerifiedPhoneNumber(getApplication()) ?: "" }
 
             val email = _activeGoogleEmail.value.trim()
                 .ifBlank { currentPrefs?.googleEmail?.trim() ?: "" }
-                .ifBlank { com.example.util.SupabaseAuthManager.getCachedSession(getApplication())?.user?.email?.trim() ?: "" }
 
             // Ensure valid Biometric Hash
             val rawHash = if (biometricHash.isNotBlank() && biometricHash.startsWith("BIO_")) {
@@ -2340,12 +2202,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 rawHash
             }
 
-            // Supabase Auth is authoritative after OTP verification.
             // Biometric verification remains device-local; no reusable biometric template is uploaded.
-            val authSession = com.example.util.SupabaseAuthManager.getCachedSession(getApplication())
-            if (authSession?.user?.id.isNullOrBlank()) {
-                android.util.Log.w("DatingViewModel", "Biometric verification completed without an active Supabase session.")
-            }
             // If a real face photo was captured, update avatar and photo in preferences
             if (!capturedPhotoUri.isNullOrBlank()) {
                 val updatedPrefs = repository.userPreferences.first()
@@ -2355,7 +2212,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             }
 
             _showFaceVerification.value = false
-            _simulatedMobileOtp.value = null
             _isMpinUnlocked.value = true
             _toastMessage.emit("Biometric Face Identity Verified & Confirmed! 🎉")
         }
@@ -2505,7 +2361,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         _showFaceVerification.value = false
         _activeMobile.value = ""
         _activeGoogleEmail.value = ""
-        _simulatedMobileOtp.value = null
     }
 
     fun logout() {
@@ -2526,17 +2381,12 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 android.util.Log.w("DatingViewModel", "Repository logout exception: ${e.message}")
             }
 
-            // 2. Clear the authoritative Supabase Auth session
-            try {
-                com.example.util.SupabaseAuthManager.signOut(getApplication())
-            } catch (e: Exception) {
-                android.util.Log.w("DatingViewModel", "Supabase Auth sign out exception: ${e.message}")
-            }
+            // 2. Clear the local Truecaller-verified session
+            com.example.util.UserSessionManager.clearVerifiedSession(getApplication())
 
             // 3. Reset in-memory states and overlays
             _showAdminPortal.value = false
             _isAdminLoggedIn.value = false
-            _simulatedMobileOtp.value = null
             _activeChat.value = null
             _activeCall.value = null
             _selectedProfileDetail.value = null
@@ -2576,13 +2426,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 "user_${prefs?.id ?: 1}"
             }
 
-            // 1. Clear the authoritative Supabase Auth session.
-            // Full account deletion is server-authoritative and will be completed by the trusted delete endpoint.
-            try {
-                com.example.util.SupabaseAuthManager.signOut(getApplication())
-            } catch (e: Exception) {
-                android.util.Log.w("DatingViewModel", "Supabase Auth cleanup exception: ${e.message}")
-            }
+            // 1. Clear the local Truecaller-verified session
+            com.example.util.UserSessionManager.clearVerifiedSession(getApplication())
 
             // 2. Wipe all local user data and registered account records in repository
             try {
@@ -2594,7 +2439,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             // 3. Reset all in-memory states and overlays
             _showAdminPortal.value = false
             _isAdminLoggedIn.value = false
-            _simulatedMobileOtp.value = null
             _activeChat.value = null
             _activeCall.value = null
             _selectedProfileDetail.value = null

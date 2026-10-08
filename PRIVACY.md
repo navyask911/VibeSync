@@ -16,7 +16,7 @@ VibeSync may operate across jurisdictions. Where local law imposes additional ri
 
 | Category | Examples | Main purpose |
 |---|---|---|
-| Account/authentication | Supabase Auth user ID, verified mobile number, session metadata | Sign-in, security, account recovery |
+| Account/authentication | Truecaller-verified mobile number, limited profile fields returned by Truecaller, local verification state | Sign-in and security |
 | Profile | Name, age, gender, city, bio, interests, relationship preferences | Discovery and profile display |
 | Profile media | Avatar/profile photos and other user-selected media | Profile and communication features |
 | Connections | Likes, matches, friendships, blocks, reports | Social graph features and safety |
@@ -83,7 +83,7 @@ The application should not send full conversations or unrelated personal informa
 
 ## 9. Security telemetry
 
-VibeSync may process limited logs and security telemetry needed for authentication and abuse prevention, rate limiting and fraud detection, incident investigation, service diagnostics, safety/moderation, and business-accounting integrity.
+VibeSync may process limited logs and security telemetry needed for Truecaller verification and abuse prevention, rate limiting and fraud detection, incident investigation, service diagnostics, safety/moderation, and business-accounting integrity.
 
 Private message plaintext should not be placed into ordinary telemetry.
 

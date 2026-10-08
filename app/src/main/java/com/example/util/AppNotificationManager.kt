@@ -399,23 +399,7 @@ object AppNotificationManager {
     }
 
     private fun syncTokenToRegistry(context: Context, tokenToSync: String) {
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val userId = SupabaseAuthManager.getCachedSession(context)?.user?.id.orEmpty()
-                if (userId.isBlank()) {
-                    Log.d(TAG, "Skipping FCM registry sync: no authenticated Supabase user session.")
-                    return@launch
-                }
-
-                SupabaseClientManager.upsertDeviceFcmToken(
-                    context = context,
-                    userId = userId,
-                    token = tokenToSync
-                )
-            } catch (e: Exception) {
-                Log.d(TAG, "Device token registry notice: ${e.message}")
-            }
-        }
+        Log.d(TAG, "Skipping Supabase device-token registry; FCM remains the notification transport boundary.")
     }
 
     fun getCachedFcmToken(): String = currentFcmToken.orEmpty()
