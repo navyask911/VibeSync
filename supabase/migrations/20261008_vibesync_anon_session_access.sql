@@ -70,7 +70,7 @@ set search_path = pg_catalog, public
 as $$
 declare
   current_profile_id text := public.vibesync_current_profile_id();
-  changed boolean;
+  changed_count integer;
 begin
   if current_profile_id is null then
     raise exception 'vibesync session required';
@@ -96,8 +96,8 @@ begin
   where id = current_profile_id
     and coalesce(is_deleted,false) = false;
 
-  get diagnostics changed = row_count > 0;
-  return changed;
+  get diagnostics changed_count = row_count;
+  return changed_count > 0;
 end;
 $$;
 
