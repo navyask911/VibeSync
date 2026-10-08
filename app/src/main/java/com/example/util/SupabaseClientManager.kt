@@ -126,9 +126,6 @@ object SupabaseClientManager {
             .addHeader("Authorization", "Bearer ${SUPABASE_PUBLISHABLE_KEY}")
             .addHeader("Content-Type", "application/json")
         VibeSyncSessionManager.getToken()?.let { builder.addHeader("x-vibesync-session", it) }
-            .apply {
-                VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) }
-            }
 
         if (preferHeader != null) {
             builder.addHeader("Prefer", preferHeader)
@@ -426,7 +423,8 @@ object SupabaseClientManager {
             val request = Request.Builder()
                 .url("$SUPABASE_URL/rest/v1/rpc/is_platform_staff")
                 .header("apikey", SUPABASE_PUBLISHABLE_KEY)
-                .header("Authorization", "Bearer $token")
+                .header("Authorization", "Bearer $SUPABASE_PUBLISHABLE_KEY")
+                .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
                 .header("Content-Type", "application/json")
                 .post("{}".toRequestBody(JSON_MEDIA_TYPE))
                 .build()
