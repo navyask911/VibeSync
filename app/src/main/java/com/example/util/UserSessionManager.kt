@@ -23,11 +23,11 @@ object UserSessionManager {
                 .remove("temp_login_state")
                 .apply()
 
-            // Sign out any lingering partial firebase credentials
+            // Firebase is FCM-only; Supabase Auth owns identity/session state.
             try {
-                FirebaseAuth.getInstance().signOut()
+                SupabaseAuthManager.signOut(context)
             } catch (e: Exception) {
-                Log.w(TAG, "FirebaseAuth signOut notice: ${e.message}")
+                Log.w(TAG, "Supabase Auth signOut notice: ${e.message}")
             }
         } catch (e: Exception) {
             Log.w(TAG, "Error purging auth sessions: ${e.message}")

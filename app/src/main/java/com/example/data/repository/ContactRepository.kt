@@ -8,16 +8,13 @@ import com.example.data.model.ProfileEntity
 import com.example.data.model.UserContactEntity
 import com.example.data.model.VibeContactEntity
 import com.example.util.ContactResolver
-import com.example.util.PhonebookHelper
+import com.example.util.PhonebookHasher
 import com.example.util.SupabaseClientManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import okhttp3.Request
-import org.json.JSONArray
-import java.net.URLEncoder
 import java.util.HashSet
 import java.util.concurrent.ConcurrentHashMap
 
@@ -28,7 +25,7 @@ import java.util.concurrent.ConcurrentHashMap
  * 1. BULLETPROOF 10-DIGIT NUMBER NORMALIZATION (normalize10Digit helper).
  * 2. Generates BOTH variations (10-digit suffix & E.164 +91 format) into a deduplicated HashSet.
  * 3. BATCH LOOKUP QUERY: Chunks candidate numbers into lists of 100 (candidateList.chunked(100)).
- *    Runs queries on Dispatchers.IO against Supabase & Firestore.
+ *    Runs privacy-preserving lookup through the authenticated Supabase contact-match RPC.
  * 4. Compares 10-digit suffixes with the phone contact list to map registeredVibeContacts.
  * 5. IMMEDIATE UI LOAD & ROOM PERSISTENCE:
  *    Stores matched contacts in local Room database (VibeContactEntity).
@@ -137,7 +134,7 @@ class ContactRepository(
             val candidateList = candidateSet.toList()
             Log.i(TAG, "⚡ Generated ${candidateList.size} candidate variations from ${deviceContacts.size} contacts")
 
-            // 2. BATCH LOOKUP QUERY (SUPABASE & FIRESTORE)
+            // 2. PRIVATE BATCH LOOKUP QUERY (SUPABASE RPC)
             // Chunk candidate numbers into lists of 100: candidateList.chunked(100)
             val chunks = candidateList.chunked(100)
             val matchedProfilesMap = ConcurrentHashMap<String, ProfileEntity>()
@@ -158,15 +155,14 @@ class ContactRepository(
                 Log.d(TAG, "Notice checking local profile cache: ${e.message}")
             }
 
-            // Run Supabase bulk lookup in parallel chunks of 100 on Dispatchers.IO
+            // Run authenticated Supabase private-match RPCs in parallel chunks of 50 on Dispatchers.IO
             coroutineScope {
                 chunks.map { chunk ->
                     async(Dispatchers.IO) {
                         val profilesFromSupabase = fetchSupabaseProfilesForChunk(chunk)
-                        for (p in profilesFromSupabase) {
-                            val p10 = normalize10Digit(p.phoneNumber)
-                            if (p10.length == 10) {
-                                matchedProfilesMap[p10] = p
+                        for ((phoneHash, p) in profilesFromSupabase) {
+                            if (phoneHash.length == 64) {
+                                matchedProfilesMap[phoneHash] = p
                             }
                             if (p.id.isNotBlank()) {
                                 matchedProfilesMap[p.id] = p
@@ -176,21 +172,7 @@ class ContactRepository(
                 }.awaitAll()
             }
 
-            // Resilient fallback: Firestore lookup for registered users matching candidates
-            try {
-                val firestoreUsers = fetchFirestoreUsersForCandidates(candidateSet)
-                for (p in firestoreUsers) {
-                    val p10 = normalize10Digit(p.phoneNumber)
-                    if (p10.length == 10) {
-                        matchedProfilesMap[p10] = p
-                    }
-                    if (p.id.isNotBlank()) {
-                        matchedProfilesMap[p.id] = p
-                    }
-                }
-            } catch (e: Exception) {
-                Log.d(TAG, "Notice fetching Firestore registered users: ${e.message}")
-            }
+            // No Firebase database fallback: contact discovery is Supabase RPC-only.
 
             // 3. Compare 10-digit suffix with phone contact list & map to registeredVibeContacts
             val registeredVibeContacts = mutableListOf<PhoneContact>()
@@ -203,8 +185,8 @@ class ContactRepository(
 
             for (contact in deviceContacts) {
                 val tenDigit = normalize10Digit(contact.phoneNumber)
-                val matchedProfile = matchedProfilesMap[tenDigit]
-                    ?: matchedProfilesMap[contact.phoneNumber]
+                val lookupHash = PhonebookHasher.hashPhoneNumberToHex(contact.phoneNumber)
+                val matchedProfile = matchedProfilesMap[lookupHash]
                     ?: matchedProfilesMap[contact.id]
 
                 val isOnVibeSync = matchedProfile != null
@@ -217,7 +199,7 @@ class ContactRepository(
                     photoUrl = matchedProfile?.avatarUrl?.ifBlank { "" } ?: contact.photoUrl,
                     statusTagline = matchedProfile?.bio?.ifBlank { "" } ?: contact.statusTagline,
                     vibeSyncUser = matchedProfile ?: contact.vibeSyncUser,
-                    phoneHash = tenDigit
+                    phoneHash = lookupHash
                 )
 
                 allResolvedContacts.add(resolvedContact)
@@ -230,7 +212,7 @@ class ContactRepository(
                         id = resolvedContact.id,
                         contactName = resolvedContact.name,
                         phoneNumber = if (tenDigit.length == 10) "+91$tenDigit" else resolvedContact.phoneNumber,
-                        phoneHash = tenDigit,
+                        phoneHash = lookupHash,
                         vibeSyncUserId = vibeSyncUserId,
                         isOnVibeSync = true,
                         matchedAt = now,
@@ -255,7 +237,7 @@ class ContactRepository(
                         isOnVibeSync = isOnVibeSync,
                         photoUrl = resolvedContact.photoUrl,
                         statusTagline = resolvedContact.statusTagline,
-                        syncedToFirestore = true,
+                        syncedToFirestore = false,
                         updatedAt = now
                     )
                 )
@@ -285,105 +267,35 @@ class ContactRepository(
     /**
      * Executes PostgREST bulk lookup against Supabase 'profiles' table for a chunk of up to 100 numbers.
      */
-    private suspend fun fetchSupabaseProfilesForChunk(chunk: List<String>): List<ProfileEntity> = withContext(Dispatchers.IO) {
-        val list = mutableListOf<ProfileEntity>()
-        if (chunk.isEmpty()) return@withContext list
-
+    private suspend fun fetchSupabaseProfilesForChunk(chunk: List<String>): List<Pair<String, ProfileEntity>> = withContext(Dispatchers.IO) {
+        if (chunk.isEmpty()) return@withContext emptyList()
         try {
-            val supabaseUrl = SupabaseClientManager.SUPABASE_URL
-            val supabaseKey = SupabaseClientManager.SUPABASE_ANON_KEY
-
-            val encodedInList = chunk.joinToString(",") { "%22${it.replace("+", "%2B")}%22" }
-            val rawDigitsList = chunk.map { it.filter { c -> c.isDigit() } }.filter { it.isNotBlank() }.distinct().joinToString(",")
-            val endpoint = "$supabaseUrl/rest/v1/profiles?select=id,name,phone_number,clean_phone,phone_number_e164,avatar_url,avatar_emoji,city,is_verified,bio&or=(phone_number.in.($encodedInList),clean_phone.in.($rawDigitsList),phone_number_e164.in.($encodedInList))&limit=300"
-
-            val request = Request.Builder()
-                .url(endpoint)
-                .header("apikey", supabaseKey)
-                .header("Authorization", "Bearer $supabaseKey")
-                .header("Content-Type", "application/json")
-                .get()
-                .build()
-
-            SupabaseClientManager.httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val bodyStr = response.body?.string() ?: "[]"
-                    val jsonArray = JSONArray(bodyStr)
-                    for (i in 0 until jsonArray.length()) {
-                        val obj = jsonArray.getJSONObject(i)
-                        val id = obj.optString("id", "")
-                        val name = obj.optString("name", "VibeSync Member")
-                        val phone = obj.optString("phone_number", obj.optString("clean_phone", obj.optString("phone_number_e164", "")))
-                        val avatarUrl = obj.optString("avatar_url", "")
-                        val avatarEmoji = obj.optString("avatar_emoji", "✨")
-                        val city = obj.optString("city", "")
-                        val bio = obj.optString("bio", "")
-
-                        if (id.isNotBlank()) {
-                            list.add(
-                                ProfileEntity(
-                                    id = id,
-                                    name = name,
-                                    age = 24,
-                                    phoneNumber = phone,
-                                    avatarUrl = avatarUrl,
-                                    avatarEmoji = avatarEmoji,
-                                    city = city,
-                                    bio = bio,
-                                    isVerified = obj.optBoolean("is_verified", true)
-                                )
-                            )
-                        }
-                    }
+            val hashes = chunk.distinct().take(50)
+                .map { PhonebookHasher.hashPhoneNumberToHex(it) }
+                .filter { it.length == 64 }
+            if (hashes.isEmpty()) return@withContext emptyList()
+            SupabaseClientManager.matchContactsRpc(hashes).mapNotNull { match ->
+                if (match.phoneHash.length != 64) null else {
+                    val profile = ProfileEntity(
+                        id = match.id,
+                        name = match.name,
+                        age = 24,
+                        phoneNumber = "",
+                        avatarUrl = match.photoUrl.orEmpty(),
+                        avatarEmoji = match.avatarEmoji,
+                        isVerified = false
+                    )
+                    match.phoneHash to profile
                 }
             }
         } catch (e: Exception) {
-            Log.d(TAG, "Notice querying Supabase profiles chunk: ${e.message}")
+            Log.d(TAG, "Private contact RPC notice: " + e.message)
+            emptyList()
         }
-        list
     }
-
+    // Contact discovery has no raw-phone Firebase fallback.
     /**
      * Queries Firestore users matching candidate variations as resilient fallback.
      */
-    private suspend fun fetchFirestoreUsersForCandidates(candidates: Set<String>): List<ProfileEntity> = withContext(Dispatchers.IO) {
-        val list = mutableListOf<ProfileEntity>()
-        try {
-            val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-            val snapshot = firestore.collection("users").limit(100).get().awaitTask()
-            if (snapshot != null) {
-                for (doc in snapshot.documents) {
-                    val phone = doc.getString("phoneNumber") ?: doc.getString("phone") ?: ""
-                    val p10 = normalize10Digit(phone)
-                    if (p10.length == 10 && candidates.contains(p10)) {
-                        val id = doc.id
-                        val name = doc.getString("name") ?: doc.getString("userName") ?: "VibeSync Member"
-                        val avatarUrl = doc.getString("avatarUrl") ?: ""
-                        val avatarEmoji = doc.getString("avatarEmoji") ?: "✨"
-                        list.add(
-                            ProfileEntity(
-                                id = id,
-                                name = name,
-                                age = 24,
-                                phoneNumber = phone,
-                                avatarUrl = avatarUrl,
-                                avatarEmoji = avatarEmoji,
-                                isVerified = true
-                            )
-                        )
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.d(TAG, "Notice fetching Firestore users: ${e.message}")
-        }
-        list
-    }
 
-    private suspend fun <T> com.google.android.gms.tasks.Task<T>.awaitTask(): T? =
-        kotlinx.coroutines.suspendCancellableCoroutine { cont ->
-            addOnSuccessListener { result -> cont.resume(result, null) }
-            addOnFailureListener { cont.resume(null, null) }
-            addOnCanceledListener { cont.resume(null, null) }
-        }
 }

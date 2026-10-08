@@ -206,56 +206,14 @@ object CloudflareStorageManager {
     /**
      * Generates an AWS Signature Version 4 presigned GET or PUT URL for Cloudflare R2
      */
+    /**
+     * Presigned URL generation is server-only. Android never receives R2 signing secrets.
+     */
     fun generatePresignedUrl(
         objectKey: String,
         httpMethod: String = "GET",
         expiresSeconds: Long = 3600
-    ): String {
-        if (accountId == "cloudflare-account-id-placeholder" || accessKeyId == "r2-access-key-placeholder") {
-            // Placeholder fallback when credentials not populated yet
-            return "$publicCdnDomain/$objectKey"
-        }
-
-        try {
-            val host = "$accountId.r2.cloudflarestorage.com"
-            val endpoint = "https://$host/$bucketName/$objectKey"
-            val dateFormat = SimpleDateFormat("yyyyMMdd'T'HHmmss'Z'", Locale.US).apply {
-                timeZone = TimeZone.getTimeZone("UTC")
-            }
-            val dateStampFormat = SimpleDateFormat("yyyyMMdd", Locale.US).apply {
-                timeZone = TimeZone.getTimeZone("UTC")
-            }
-            val now = Date()
-            val amzDate = dateFormat.format(now)
-            val dateStamp = dateStampFormat.format(now)
-
-            val credentialScope = "$dateStamp/$region/s3/aws4_request"
-            val queryParams = StringBuilder()
-                .append("X-Amz-Algorithm=AWS4-HMAC-SHA256")
-                .append("&X-Amz-Credential=").append(Uri.encode("$accessKeyId/$credentialScope"))
-                .append("&X-Amz-Date=").append(amzDate)
-                .append("&X-Amz-Expires=").append(expiresSeconds)
-                .append("&X-Amz-SignedHeaders=host")
-                .toString()
-
-            val canonicalUri = "/$bucketName/$objectKey"
-            val canonicalQueryString = queryParams
-            val canonicalHeaders = "host:$host\n"
-            val signedHeaders = "host"
-            val payloadHash = "UNSIGNED-PAYLOAD"
-
-            val canonicalRequest = "$httpMethod\n$canonicalUri\n$canonicalQueryString\n$canonicalHeaders\n$signedHeaders\n$payloadHash"
-            val stringToSign = "AWS4-HMAC-SHA256\n$amzDate\n$credentialScope\n${sha256Hex(canonicalRequest)}"
-
-            val signingKey = getSignatureKey(secretAccessKey, dateStamp, region, "s3")
-            val signature = hmacSha256Hex(signingKey, stringToSign)
-
-            return "$endpoint?$queryParams&X-Amz-Signature=$signature"
-        } catch (e: Exception) {
-            Log.e(TAG, "Error generating presigned URL: ${e.message}", e)
-            return "$publicCdnDomain/$objectKey"
-        }
-    }
+    ): String = ""
 
     /**
      * Uploads media file to Cloudflare R2 bucket with automated compression and zero-egress CDN URL generation
@@ -271,68 +229,35 @@ object CloudflareStorageManager {
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val uniqueId = UUID.randomUUID().toString().take(8)
         val objectKey = "${category.path}/$userId/${timestamp}_$uniqueId.$fileExtension"
-        val publicUrl = "$publicCdnDomain/$objectKey"
-
         try {
-            val (payloadBytes, originalSize) = if (contentType.startsWith("image/")) {
-                val origStream = context.contentResolver.openInputStream(mediaUri)
-                val origSize = origStream?.available()?.toLong() ?: 0L
-                origStream?.close()
-
+            val originalBytes = context.contentResolver.openInputStream(mediaUri)?.use { it.readBytes() } ?: ByteArray(0)
+            val originalSize = originalBytes.size.toLong()
+            val payloadBytes = if (contentType.startsWith("image/")) {
                 val compressed = compressImage(context, mediaUri)
-                Pair(
-                    if (compressed.isNotEmpty()) compressed else (context.contentResolver.openInputStream(mediaUri)?.readBytes() ?: ByteArray(0)),
-                    origSize
-                )
-            } else {
-                val bytes = context.contentResolver.openInputStream(mediaUri)?.readBytes() ?: ByteArray(0)
-                Pair(bytes, bytes.size.toLong())
-            }
-
+                if (compressed.isNotEmpty()) compressed else originalBytes
+            } else originalBytes
             val compressedSize = payloadBytes.size.toLong()
-            val savingsPct = if (originalSize > 0 && originalSize > compressedSize) {
+            val savingsPct = if (originalSize > 0 && compressedSize < originalSize) {
                 ((originalSize - compressedSize).toFloat() / originalSize.toFloat()) * 100f
             } else 0f
-
-            Log.d(TAG, "Uploading ${category.name} to Cloudflare R2: key=$objectKey, size=$compressedSize bytes, savings=$savingsPct%")
-
-            // Execute S3 / R2 upload via Retrofit / OkHttp if active credentials are present
-            if (accountId != "cloudflare-account-id-placeholder" && accessKeyId != "r2-access-key-placeholder") {
-                val mediaType = contentType.toMediaTypeOrNull()
-                val requestBody = payloadBytes.toRequestBody(mediaType)
-                val directEndpoint = "https://$accountId.r2.cloudflarestorage.com/$bucketName/$objectKey"
-
-                try {
-                    val response = retrofitClient.uploadDirect(
-                        fullUrl = directEndpoint,
-                        contentType = contentType,
-                        contentSha256 = "UNSIGNED-PAYLOAD",
-                        body = requestBody
-                    )
-                    if (!response.isSuccessful) {
-                        Log.w(TAG, "Retrofit R2 upload non-200 response: ${response.code()}")
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Direct upload exception: ${e.message}")
-                }
-            }
-
+            Log.d(TAG, "Prepared ${category.name} for server media gateway: $compressedSize bytes ($savingsPct% savings)")
             MediaUploadResult(
-                isSuccess = true,
-                publicUrl = publicUrl,
+                isSuccess = false,
+                publicUrl = "",
                 objectKey = objectKey,
                 originalSizeBytes = originalSize,
                 compressedSizeBytes = compressedSize,
-                bandwidthSavedPercentage = savingsPct
+                bandwidthSavedPercentage = savingsPct,
+                errorMessage = "Server-side media gateway is not configured yet."
             )
         } catch (e: Exception) {
-            Log.e(TAG, "Error in uploadUserMedia: ${e.message}", e)
+            Log.e(TAG, "Error preparing media upload: ${e.message}", e)
             MediaUploadResult(
                 isSuccess = false,
-                publicUrl = mediaUri.toString(),
+                publicUrl = "",
                 objectKey = objectKey,
-                originalSizeBytes = 0,
-                compressedSizeBytes = 0,
+                originalSizeBytes = 0L,
+                compressedSizeBytes = 0L,
                 bandwidthSavedPercentage = 0f,
                 errorMessage = e.message
             )

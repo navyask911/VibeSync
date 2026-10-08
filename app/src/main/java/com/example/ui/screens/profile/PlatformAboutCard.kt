@@ -22,6 +22,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.BuildConfig
 import com.example.ui.theme.LikeGreen
 import com.example.ui.theme.VerifiedBadgeBlue
 import com.example.ui.theme.VibeSyncTeal
@@ -36,7 +37,7 @@ fun PlatformAboutCard(
         icon = Icons.Default.Info,
         iconTint = Color(0xFF6A1B9A),
         iconBackground = Color(0xFF6A1B9A).copy(alpha = 0.15f),
-        statusBadgeText = "VibeSync v2.4.0 • Zero Bots",
+        statusBadgeText = "VibeSync • Release Candidate",
         statusBadgeColor = Color(0xFF6A1B9A),
         isExpanded = isExpanded,
         onToggleExpand = onToggleExpand,
@@ -80,7 +81,7 @@ fun PlatformAboutCard(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Version 2.4.0 (Official Build)",
+                        text = "Version ${BuildConfig.VERSION_NAME}",
                         fontSize = 12.sp,
                         color = Color(0xFF6A1B9A),
                         fontWeight = FontWeight.SemiBold
@@ -108,13 +109,13 @@ fun PlatformAboutCard(
                     Spacer(modifier = Modifier.width(10.dp))
                     Column {
                         Text(
-                            text = "End-to-End Encryption (E2EE)",
+                            text = "Supported Encrypted Messaging",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "VibeSync E2EE Protocol ratchet with AES-256 media cipher",
+                            text = "Supported private-message flows use Google Tink encryption; delivery and security metadata may still be processed.",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -139,13 +140,13 @@ fun PlatformAboutCard(
                     Spacer(modifier = Modifier.width(10.dp))
                     Column {
                         Text(
-                            text = "Strict Zero-Bot Policy",
+                            text = "Account Verification & Safety",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "Mandatory VibeSync SMS verification + 3D facial mesh",
+                            text = "Phone verification plus blocking, reporting, moderation, and other safety controls help reduce abuse.",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -176,7 +177,7 @@ fun PlatformAboutCard(
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "Cluster Online • Latency 24ms • 99.99% Uptime SLA",
+                            text = "Supabase is the authoritative application backend; Firebase Cloud Messaging provides push delivery.",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -194,7 +195,7 @@ fun PlatformAboutCard(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        text = "Data Retention & Account Safety Policy",
+                        text = "Data Retention & Account Safety",
                         fontWeight = FontWeight.Bold,
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurface

@@ -143,7 +143,7 @@ object SupabaseAuthManager {
         getCachedSession(context)?.accessToken?.takeIf { it.isNotBlank() }
 
     fun getAuthorizationToken(context: Context): String =
-        getCachedAccessToken(context) ?: SupabaseClientProvider.SUPABASE_ANON_KEY
+        getCachedAccessToken(context) ?: SupabaseClientManager.SUPABASE_PUBLISHABLE_KEY
 
     suspend fun sendPhoneOtp(
         context: Context,
@@ -160,13 +160,13 @@ object SupabaseAuthManager {
             }.toString()
 
             val request = Request.Builder()
-                .url("${SupabaseClientProvider.SUPABASE_URL}/auth/v1/otp")
-                .addHeader("apikey", SupabaseClientProvider.SUPABASE_ANON_KEY)
-                .addHeader("Authorization", "Bearer ${SupabaseClientProvider.SUPABASE_ANON_KEY}")
+                .url("${SupabaseClientManager.SUPABASE_URL}/auth/v1/otp")
+                .addHeader("apikey", SupabaseClientManager.SUPABASE_PUBLISHABLE_KEY)
+                .addHeader("Authorization", "Bearer ${SupabaseClientManager.SUPABASE_PUBLISHABLE_KEY}")
                 .post(body.toRequestBody(mediaType))
                 .build()
 
-            SupabaseClientProvider.httpClient.newCall(request).execute().use { response ->
+            SupabaseClientManager.httpClient.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
                     Result.success(Unit)
                 } else {
@@ -199,13 +199,13 @@ object SupabaseAuthManager {
             }.toString()
 
             val request = Request.Builder()
-                .url("${SupabaseClientProvider.SUPABASE_URL}/auth/v1/verify")
-                .addHeader("apikey", SupabaseClientProvider.SUPABASE_ANON_KEY)
-                .addHeader("Authorization", "Bearer ${SupabaseClientProvider.SUPABASE_ANON_KEY}")
+                .url("${SupabaseClientManager.SUPABASE_URL}/auth/v1/verify")
+                .addHeader("apikey", SupabaseClientManager.SUPABASE_PUBLISHABLE_KEY)
+                .addHeader("Authorization", "Bearer ${SupabaseClientManager.SUPABASE_PUBLISHABLE_KEY}")
                 .post(body.toRequestBody(mediaType))
                 .build()
 
-            SupabaseClientProvider.httpClient.newCall(request).execute().use { response ->
+            SupabaseClientManager.httpClient.newCall(request).execute().use { response ->
                 val bodyText = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     return@withContext Result.failure(
@@ -222,8 +222,8 @@ object SupabaseAuthManager {
                 val userObj = root.optJSONObject("user")
                 val user = AuthenticatedUser(
                     id = userObj?.optString("id", "").orEmpty(),
-                    phone = userObj?.optString("phone", "").ifBlank { normalized },
-                    email = userObj?.optString("email", "").ifBlank { null }
+                    phone = userObj?.optString("phone", "").orEmpty().ifBlank { normalized },
+                    email = userObj?.optString("email", "").orEmpty().ifBlank { null }
                 )
 
                 val expiresAt = root.optLong(
@@ -257,13 +257,13 @@ object SupabaseAuthManager {
                 ?: return@withContext Result.failure(IllegalStateException("No refresh token"))
 
             val request = Request.Builder()
-                .url("${SupabaseClientProvider.SUPABASE_URL}/auth/v1/token?grant_type=refresh_token")
-                .addHeader("apikey", SupabaseClientProvider.SUPABASE_ANON_KEY)
-                .addHeader("Authorization", "Bearer ${SupabaseClientProvider.SUPABASE_ANON_KEY}")
+                .url("${SupabaseClientManager.SUPABASE_URL}/auth/v1/token?grant_type=refresh_token")
+                .addHeader("apikey", SupabaseClientManager.SUPABASE_PUBLISHABLE_KEY)
+                .addHeader("Authorization", "Bearer ${SupabaseClientManager.SUPABASE_PUBLISHABLE_KEY}")
                 .post(JSONObject().put("refresh_token", refreshToken).toString().toRequestBody(mediaType))
                 .build()
 
-            SupabaseClientProvider.httpClient.newCall(request).execute().use { response ->
+            SupabaseClientManager.httpClient.newCall(request).execute().use { response ->
                 val bodyText = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     return@withContext Result.failure(
@@ -310,10 +310,33 @@ object SupabaseAuthManager {
                 session.expiresAtEpochSeconds > System.currentTimeMillis() / 1000L)
     }
 
-    suspend fun deleteAccount(context: Context): Boolean {
-        // Destructive Auth user deletion requires a trusted backend function.
-        // Local sign-out still always happens.
-        signOut(context)
-        return false
+    suspend fun deleteAccount(context: Context): Boolean = withContext(Dispatchers.IO) {
+        val accessToken = getCachedAccessToken(context)
+        if (accessToken.isNullOrBlank()) {
+            signOut(context)
+            return@withContext false
+        }
+        try {
+            val request = Request.Builder()
+                .url("${SupabaseClientManager.SUPABASE_URL}/functions/v1/vibesync-delete-account")
+                .addHeader("apikey", SupabaseClientManager.SUPABASE_PUBLISHABLE_KEY)
+                .addHeader("Authorization", "Bearer $accessToken")
+                .addHeader("Content-Type", "application/json")
+                .post("{}".toRequestBody(mediaType))
+                .build()
+            SupabaseClientManager.httpClient.newCall(request).execute().use { response ->
+                val success = response.isSuccessful
+                if (success) {
+                    signOut(context)
+                    true
+                } else {
+                    Log.w(TAG, "Server account deletion failed: HTTP ${response.code}")
+                    false
+                }
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Server account deletion exception: ${e.message}")
+            false
+        }
     }
 }

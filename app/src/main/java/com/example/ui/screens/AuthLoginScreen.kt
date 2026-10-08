@@ -173,15 +173,15 @@ fun AuthLoginScreen(
         listOf(
             AppFeatureItem(
                 iconEmoji = "👥",
-                title = "100% Real People",
-                subtitle = "3D Face Verified",
+                title = "Phone-Verified Community",
+                subtitle = "Verified Onboarding",
                 tagBadge = "VERIFIED",
                 bgGradient = listOf(Color(0xFFFFF0F5), Color(0xFFFFE4E6)),
                 borderColor = Color(0xFFFB7185),
-                description = "Every profile on VibeSync completes mandatory 3D Face Liveness scanning during onboarding to eliminate fake accounts, catfish, and automated spam bots.",
-                privacyTip = "Your biometric hash is encrypted with AES-256 and never stored as raw camera images or shared with third parties.",
-                usageTip = "Verified profiles get a Golden Badge, increasing daily match rates and unlocking direct voice audio messages!",
-                highlights = listOf("3D Liveness Anti-Spoofing", "Zero Bot Guarantee", "Golden Verified Badge Perks")
+                description = "VibeSync uses account and phone-verification controls together with safety tools to reduce abuse and improve trust.",
+                privacyTip = "Verification data is handled according to the active account flow and the VibeSync Privacy Policy.",
+                usageTip = "Complete the verification steps required by the features you use.",
+                highlights = listOf("Phone OTP Verification", "Account Safety Controls", "Verified Profile State")
             ),
             AppFeatureItem(
                 iconEmoji = "🤝",
@@ -197,123 +197,123 @@ fun AuthLoginScreen(
             ),
             AppFeatureItem(
                 iconEmoji = "🎭",
-                title = "Chat Anonymously",
-                subtitle = "Read & Vanish",
-                tagBadge = "SECRET",
+                title = "Private Messaging",
+                subtitle = "Supported Encryption",
+                tagBadge = "PRIVATE",
                 bgGradient = listOf(Color(0xFFECFDF5), Color(0xFFA7F3D0)),
                 borderColor = Color(0xFF10B981),
-                description = "Start conversations with zero pressure using alias handles and ephemeral self-destructing text messages.",
-                privacyTip = "Messages auto-vanish from server memory instantly upon delivery with zero cloud backups.",
-                usageTip = "Customize your vanishing chat timer from 10 seconds to 24 hours per chat room!",
-                highlights = listOf("Alias Profile Handles", "Vanishing Text Timers", "Zero Server Memory Footprint")
+                description = "Chat with matches using the supported encrypted messaging flow and normal conversation controls.",
+                privacyTip = "Supported private-message flows use encrypted ciphertext; delivery and security metadata may still be processed.",
+                usageTip = "Use message, block, report, and notification controls according to your preferences.",
+                highlights = listOf("Encrypted Message Flow", "Message Controls", "Block & Report")
             ),
             AppFeatureItem(
                 iconEmoji = "❤️",
                 title = "Like & Match",
-                subtitle = "Deep Chemistry",
-                tagBadge = "98% MATCH",
+                subtitle = "Connection Discovery",
+                tagBadge = "MATCH",
                 bgGradient = listOf(Color(0xFFF3E8FF), Color(0xFFE9D5FF)),
                 borderColor = Color(0xFFA855F7),
-                description = "Our proprietary AI analyzes voice timbre, micro-interests, and conversational energy to calculate a deep compatibility score before you swipe.",
-                privacyTip = "All AI match matching algorithms process anonymously on-device without indexing your private chats or address books.",
-                usageTip = "Complete your 3-question Vibe Quiz to boost your AI match accuracy from 85% to 98%!",
-                highlights = listOf("Voice Timbre Analysis", "Energy Alignment Index", "Instant Icebreaker Generator")
+                description = "Browse profiles, express interest, and create mutual connections where both sides choose to connect.",
+                privacyTip = "Matching uses the application data required for discovery; private-message content is handled separately.",
+                usageTip = "Complete your profile and review each match for yourself rather than relying on a guaranteed compatibility score.",
+                highlights = listOf("Profile Discovery", "Mutual Matches", "User Choice")
             ),
             AppFeatureItem(
                 iconEmoji = "🎥",
-                title = "60s Video Date",
-                subtitle = "Live Face-to-Face",
-                tagBadge = "LIVE",
+                title = "Video Calling",
+                subtitle = "Timed Sessions",
+                tagBadge = "VIDEO",
                 bgGradient = listOf(Color(0xFFFFEEF0), Color(0xFFFFD6DC)),
                 borderColor = Color(0xFFF43F5E),
-                description = "Skip weeks of endless texting! Hop into timed 60-second video mini-dates with online singles nearby in real time.",
-                privacyTip = "Hardware screen recording & screenshots are strictly blocked. Automatic facial blur triggers if suspicious behavior occurs.",
-                usageTip = "Both partners get a 10-second warning to extend the mini-date if the vibe is mutual!",
-                highlights = listOf("Hardware Screenshot Guard", "Auto Blur Safety Net", "1-Tap Call Extension")
+                description = "Use supported in-app video calling to meet a connection face-to-face when the feature is available.",
+                privacyTip = "Calls can involve technical connection metadata. Do not assume a call hides all network or device metadata.",
+                usageTip = "Use call controls and end the session whenever you choose.",
+                highlights = listOf("In-App Video", "Call Controls", "Block & Report")
             ),
             AppFeatureItem(
                 iconEmoji = "📞",
-                title = "1-Tap HD Call",
-                subtitle = "Encrypted Audio",
-                tagBadge = "INSTANT",
+                title = "Voice & Video Calls",
+                subtitle = "In-App Calling",
+                tagBadge = "CALL",
                 bgGradient = listOf(Color(0xFFF0F9FF), Color(0xFFBAE6FD)),
                 borderColor = Color(0xFF0284C7),
-                description = "Call your matches directly inside VibeSync without revealing your personal mobile phone number or personal social handles.",
-                privacyTip = "Encrypted WebRTC peer-to-peer audio masks your IP address for 100% anonymous, safe calling.",
-                usageTip = "Try fun voice filters or ambient music backgrounds during calls to break the ice effortlessly!",
-                highlights = listOf("Masked IP Routing", "No Mobile Number Leak", "Studio-Quality HD Audio")
+                description = "Use supported in-app voice or video calling without publishing your personal phone number in the conversation.",
+                privacyTip = "Calling services may process technical connection metadata required to establish and maintain a call.",
+                usageTip = "Use the available call controls and safety tools during calls.",
+                highlights = listOf("In-App Calling", "No Public Phone Number", "Call Controls")
             ),
             AppFeatureItem(
                 iconEmoji = "⚡",
-                title = "Vibe Spark Meter",
-                subtitle = "Realtime Chemistry",
-                tagBadge = "HOT VIBES",
+                title = "Conversation Insights",
+                subtitle = "Engagement Signals",
+                tagBadge = "INSIGHTS",
                 bgGradient = listOf(Color(0xFFFFF7ED), Color(0xFFFFEDD5)),
                 borderColor = Color(0xFFF97316),
-                description = "A dynamic realtime gauge measuring mutual response frequency, sentiment, and topic chemistry as you chat.",
-                privacyTip = "Sentiment scores are calculated locally on your phone without storing transcript text anywhere.",
-                usageTip = "Reaching 90% Spark unlocks free Super Like gifts and priority date scheduling!",
-                highlights = listOf("Realtime Sentiment Gauge", "Spark Level Gift Unlocks", "Local Device Calculations")
+                description = "Where enabled, engagement features can surface lightweight conversation signals to help users understand interaction patterns.",
+                privacyTip = "Only the data required by an enabled insight feature should be processed; protected chat content is not a marketing dataset.",
+                usageTip = "Treat any engagement signal as guidance, not as a promise of compatibility or outcomes.",
+                highlights = listOf("Engagement Signals", "User Controls", "No Guaranteed Score")
             ),
             AppFeatureItem(
                 iconEmoji = "🎙️",
-                title = "Voice Vibe Notes",
-                subtitle = "Hear Real Voices",
+                title = "Voice Notes",
+                subtitle = "Profile Audio",
                 tagBadge = "AUDIO",
                 bgGradient = listOf(Color(0xFFFDF4FF), Color(0xFFF5D0FE)),
                 borderColor = Color(0xFFD946EF),
-                description = "Showcase your real voice, humor, and tone on your profile with 15-second audio snippets and ambient music tags.",
-                privacyTip = "Audio snippets are digitally watermarked to prevent unauthorized downloading or distribution.",
-                usageTip = "Profiles with voice notes receive 250% higher response rates than text-only profiles!",
-                highlights = listOf("15s Audio Prompts", "Watermark Protection", "2.5x Higher Match Response")
+                description = "Share short voice notes or profile audio where the feature is available.",
+                privacyTip = "Audio is user-provided content and may be stored or transmitted as required by the selected feature.",
+                usageTip = "Record only audio you are comfortable sharing with the people who can view it.",
+                highlights = listOf("Short Audio", "User Consent", "Media Controls")
             ),
             AppFeatureItem(
                 iconEmoji = "📍",
-                title = "Local Hangouts",
-                subtitle = "Singles Near You",
-                tagBadge = "NEARBY",
+                title = "Local Discovery",
+                subtitle = "Nearby Places",
+                tagBadge = "LOCAL",
                 bgGradient = listOf(Color(0xFFF0FDF4), Color(0xFFBBF7D0)),
                 borderColor = Color(0xFF22C55E),
-                description = "Discover single people hanging out at nearby cafes, concerts, or social venues in real time.",
-                privacyTip = "Your exact GPS location is never disclosed; VibeSync uses fuzzy radius approximation for privacy.",
-                usageTip = "Check-in at partner local cafes for free welcome drink vouchers for your first date!",
-                highlights = listOf("Fuzzy Location Radius", "Verified Partner Venues", "Realtime Nearby Singles")
+                description = "Explore supported businesses, venues, and social places through VibeSync local discovery features.",
+                privacyTip = "Location features should disclose only the precision required by the feature; exact location is not intended for public profile display.",
+                usageTip = "Review location and venue details before sharing a check-in or visiting a place.",
+                highlights = listOf("Venue Discovery", "Location Controls", "Business Features")
             ),
             AppFeatureItem(
                 iconEmoji = "💬",
-                title = "Instant Icebreaker",
-                subtitle = "AI Topic Prompts",
-                tagBadge = "FUN",
+                title = "Conversation Starters",
+                subtitle = "Optional Prompt Ideas",
+                tagBadge = "PROMPTS",
                 bgGradient = listOf(Color(0xFFFFF1F2), Color(0xFFFFE4E6)),
                 borderColor = Color(0xFFE11D48),
-                description = "Never get stuck on 'Hey'! Get instant personalized conversation openers based on mutual interests and favorite hobbies.",
-                privacyTip = "Prompt suggestions are generated in real-time without storing user chat histories.",
-                usageTip = "Tap the Sparkle icon in chat to generate 3 custom icebreakers tailored to your match's bio!",
-                highlights = listOf("AI-Powered Conversation Starters", "Personalized Bio Prompts", "Zero Awkward Pauses")
+                description = "Get optional conversation prompts based on profile information and supported AI features.",
+                privacyTip = "Only the minimum context needed for a prompt should be sent to the server-side AI feature.",
+                usageTip = "Review suggestions before sending and edit them to match your own voice.",
+                highlights = listOf("Profile-Based Prompts", "Optional AI", "User Review")
             ),
             AppFeatureItem(
                 iconEmoji = "🎁",
-                title = "Send Virtual Gifts",
-                subtitle = "Express Interest",
+                title = "Virtual Gifts",
+                subtitle = "Social & Business Features",
                 tagBadge = "GIFTS",
                 bgGradient = listOf(Color(0xFFFEF3C7), Color(0xFFFDE68A)),
                 borderColor = Color(0xFFD97706),
-                description = "Stand out in crowded inboxes by sending animated 3D digital gifts, coffee roses, and VIP sparks.",
-                privacyTip = "Gift transactions are handled via secure encrypted store tokens without sharing payment info.",
-                usageTip = "Receivers convert virtual gifts into real coffee vouchers or premium membership extensions!",
-                highlights = listOf("Animated 3D Visual Effects", "Inbox Priority Placement", "Convertible Perk Points")
+                description = "Use supported virtual gifts or social items where the feature is enabled.",
+                privacyTip = "Payments should remain with supported payment providers; VibeSync should not expose raw payment credentials in the app.",
+                usageTip = "Check the item, price, recipient, and applicable terms before confirming a purchase.",
+                highlights = listOf("Supported Gift Items", "Wallet Accounting", "Payment Provider Controls")
             ),
             AppFeatureItem(
                 iconEmoji = "🛡️",
-                title = "Anti-Ghost Shield",
-                subtitle = "Respectful Dating",
-                tagBadge = "SAFE",
+                title = "Safety & Community",
+                subtitle = "Block & Report",
+                tagBadge = "SAFETY",
                 bgGradient = listOf(Color(0xFFFEF2F2), Color(0xFFFECACA)),
                 borderColor = Color(0xFFEF4444),
-                description = "Our community standard algorithm promotes polite, active conversations and discourages ghosting.",
-                privacyTip = "Report unmatching or unwanted behavior with 1-tap encrypted audit logs sent to safety staff.",
-                usageTip = "Maintain a 90%+ reply rate to earn the 'Top Communicator' badge on your profile!",
-                highlights = listOf("Respectful Community Rules", "1-Tap Encrypted Reporting", "Top Communicator Perks")
+                description = "Use community standards, blocking, reporting, and moderation controls to manage unwanted interactions.",
+                privacyTip = "Safety reports may create moderation and audit records required to investigate abuse.",
+                usageTip = "Block or report unwanted behavior and use the available safety controls early.",
+                highlights = listOf("Community Standards", "Block & Report", "Safety Review")
             )
         )
     }
@@ -366,19 +366,17 @@ fun AuthLoginScreen(
 
     // Auto-detect Country & SIM cards on Launch
     LaunchedEffect(Unit) {
-        coroutineScope.launch {
-            val handsetResult = DeviceSimAndIpCountryHelper.detectHandsetMobileNumber(context)
-            selectedCountry = handsetResult.country
-            if (handsetResult.isRealSim && handsetResult.cleanNumber.isNotBlank()) {
-                customMobileNumberInput = handsetResult.cleanNumber
-                selectedSimNumber = handsetResult.formattedFullNumber
-            } else {
-                customMobileNumberInput = ""
-                selectedSimNumber = ""
-            }
-            val sims = DeviceSimAndIpCountryHelper.getAvailableSimCards(context, handsetResult.country)
-            availableSims = sims
+        val handsetResult = DeviceSimAndIpCountryHelper.detectHandsetMobileNumber(context)
+        selectedCountry = handsetResult.country
+        if (handsetResult.isRealSim && handsetResult.cleanNumber.isNotBlank()) {
+            customMobileNumberInput = handsetResult.cleanNumber
+            selectedSimNumber = handsetResult.formattedFullNumber
+        } else {
+            customMobileNumberInput = ""
+            selectedSimNumber = ""
         }
+        val sims = DeviceSimAndIpCountryHelper.getAvailableSimCards(context, handsetResult.country)
+        availableSims = sims
     }
 
 
@@ -431,7 +429,7 @@ fun AuthLoginScreen(
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Connect and chat with real verified people",
+                text = "Connect, chat, and discover with verification and safety controls",
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Normal,
                 color = Color(0xFF667781),

@@ -202,10 +202,9 @@ object SupabaseClientManager {
             .ifBlank { obj.optSafeString("clean_phone", "") }
             .ifBlank { if (phone.isNotBlank()) PhonebookHasher.generate16CharHash(phone) else "" }
 
-        // Filter out records without an ID or Name or Phone
+        // Remote profiles intentionally do not expose phone numbers. Identity is the profile ID.
         if (rawId.isBlank() || rawId.equals("null", ignoreCase = true) ||
-            name.isBlank() || name.equals("null", ignoreCase = true) ||
-            phone.isBlank() || phone.equals("null", ignoreCase = true)) {
+            name.isBlank() || name.equals("null", ignoreCase = true)) {
             return null
         }
 
@@ -288,24 +287,22 @@ object SupabaseClientManager {
 
             val json = JSONObject().apply {
                 put("id", docId)
-                put("phone_number", HackFreeSecurityShield.encrypt(cleanPhoneNum))
-                put("clean_phone", hash16)
-                put("phone_hash", hash64.ifBlank { hash16 })
-                put("phone_number_e164", e164)
-                put("name", HackFreeSecurityShield.encrypt(cleanNameStr.ifBlank { "VibeSync Member" }))
-                put("email", HackFreeSecurityShield.encrypt(cleanEmail))
+                // Phone numbers are not sent through the profile REST surface.
+                // The dedicated phone_sync path stores only the privacy-preserving lookup hash.
+                // Public profile fields are intentionally shareable to authenticated users;\n                // device-local Keystore encryption cannot be used for cross-device profile data.\n                put("name", cleanNameStr.ifBlank { "VibeSync Member" })
+                // Email is not required for discovery; do not persist it in the public profile payload.\n                put("email", "")
                 put("age", profile.age)
-                put("gender", HackFreeSecurityShield.encrypt(ContactResolver.sanitizeName(profile.gender, "User")))
-                put("city", HackFreeSecurityShield.encrypt(ContactResolver.sanitizeName(profile.city, "Online")))
-                put("country", HackFreeSecurityShield.encrypt(ContactResolver.sanitizeName(profile.country, "United States")))
-                put("country_flag", profile.countryFlag.ifBlank { "🇺🇸" })
-                put("place", HackFreeSecurityShield.encrypt(ContactResolver.sanitizeName(profile.place)))
+                put("gender", ContactResolver.sanitizeName(profile.gender, "User"))
+                put("city", ContactResolver.sanitizeName(profile.city, "Online"))
+                put("country", ContactResolver.sanitizeName(profile.country, "United States"))
+                put("country_flag", profile.countryFlag.ifBlank { "🌐" })
+                put("place", ContactResolver.sanitizeName(profile.place))
                 put("avatar_emoji", profile.avatarEmoji.ifBlank { "✨" })
-                put("avatar_url", HackFreeSecurityShield.encrypt(ContactResolver.sanitizeName(profile.avatarUrl)))
-                put("occupation", HackFreeSecurityShield.encrypt(ContactResolver.sanitizeName(profile.occupation, "Member")))
-                put("qualification", HackFreeSecurityShield.encrypt(ContactResolver.sanitizeName(profile.qualification, "Verified")))
-                put("bio", HackFreeSecurityShield.encrypt(cleanBio))
-                put("marital_status", HackFreeSecurityShield.encrypt(ContactResolver.sanitizeName(profile.maritalStatus, "Single")))
+                put("avatar_url", ContactResolver.sanitizeName(profile.avatarUrl))
+                put("occupation", ContactResolver.sanitizeName(profile.occupation, "Member"))
+                put("qualification", ContactResolver.sanitizeName(profile.qualification, "Verified"))
+                put("bio", cleanBio)
+                put("marital_status", ContactResolver.sanitizeName(profile.maritalStatus, "Single"))
                 put("account_status", profile.accountStatus.ifBlank { "ACTIVE" })
                 put("is_verified", profile.isVerified)
                 if (profile.publicIdentityKey.isNotBlank()) {
@@ -366,7 +363,7 @@ object SupabaseClientManager {
         try {
             val safeLimit = limit.coerceIn(1, 50)
             val request = buildRequest(
-                endpoint = "profiles?select=id,name,phone_number,clean_phone,phone_hash,phone_number_e164,email,age,gender,city,country,country_flag,place,avatar_emoji,avatar_url,occupation,qualification,bio,marital_status,account_status,is_verified,is_deleted,updated_at&order=updated_at.desc&limit=$safeLimit",
+                endpoint = "profiles?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key&order=updated_at.desc&limit=$safeLimit",
                 method = "GET"
             )
 
@@ -391,6 +388,30 @@ object SupabaseClientManager {
     }
 
     /**
+     * Fetches one public profile by its opaque VibeSync profile ID.
+     * No phone number is queried or returned through this endpoint.
+     */
+    suspend fun fetchProfileById(profileId: String): ProfileEntity? = withContext(Dispatchers.IO) {
+        if (profileId.isBlank()) return@withContext null
+        try {
+            val encodedId = java.net.URLEncoder.encode(profileId, Charsets.UTF_8.name())
+            val request = buildRequest(
+                endpoint = "profiles?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key&id=eq.$encodedId&limit=1",
+                method = "GET"
+            )
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val body = response.body?.string().orEmpty()
+                val array = JSONArray(body)
+                if (array.length() == 0) return@withContext null
+                parseProfileEntityFromJson(array.getJSONObject(0))
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Supabase single profile fetch notice: ${e.message}")
+            null
+        }
+    }
+    /**
      * Upsert registered account credentials.
      * ENFORCES ZERO-KNOWLEDGE ENCRYPTION ON USER ACCOUNTS.
      */
@@ -398,33 +419,23 @@ object SupabaseClientManager {
         try {
             val cleanPhone = account.phoneNumber.filter { it.isDigit() }
             val docId = if (cleanPhone.length >= 10) getPhoneHash(cleanPhone) else account.id
-
+            if (docId.isBlank() || docId == "current_user" || docId == "null") return@withContext false
             val json = JSONObject().apply {
                 put("id", docId)
-                put("phone_number", HackFreeSecurityShield.encrypt(account.phoneNumber)) // E2E Encrypted
-                put("clean_phone", getPhoneHash(cleanPhone)) // Hash only!
-                put("google_email", HackFreeSecurityShield.encrypt(account.googleEmail)) // E2E Encrypted
-                put("user_name", HackFreeSecurityShield.encrypt(account.userName)) // E2E Encrypted
                 put("user_age", account.userAge)
-                put("is_verified", account.isVerified)
-                put("account_status", account.accountStatus)
-                put("updated_at", System.currentTimeMillis())
             }
-
             val request = buildRequest(
                 endpoint = "registered_accounts",
                 method = "POST",
                 bodyJson = json.toString(),
                 preferHeader = "resolution=merge-duplicates"
             )
-
             httpClient.newCall(request).execute().use { response ->
-                val success = response.isSuccessful
-                Log.i(TAG, "E2EE Registered Account Sync: $success (HTTP ${response.code})")
-                success
+                Log.i(TAG, "Registered account minimal sync: ${response.isSuccessful} (HTTP ${response.code})")
+                response.isSuccessful
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "E2EE Registered Account sync notice: ${e.message}")
+            Log.w(TAG, "Registered account minimal sync notice: ${e.message}")
             false
         }
     }
@@ -432,68 +443,111 @@ object SupabaseClientManager {
     /**
      * Upsert chat message to public.chat_messages with standard E.164 phone normalization and delivery receipts.
      */
+    suspend fun dispatchEncryptedMessagePush(messageId: String): Boolean = withContext(Dispatchers.IO) {
+        if (messageId.isBlank()) return@withContext false
+        val token = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
+        try {
+            val body = JSONObject().apply { put("message_id", messageId) }.toString()
+            val request = Request.Builder()
+                .url("$SUPABASE_URL/functions/v1/vibesync-fcm-dispatch")
+                .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+                .header("Authorization", "Bearer $token")
+                .header("Content-Type", "application/json")
+                .post(body.toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.d(TAG, "FCM dispatch bridge HTTP ${response.code}; message remains queued for retry.")
+                }
+                response.isSuccessful
+            }
+        } catch (e: Throwable) {
+            Log.d(TAG, "FCM dispatch bridge notice: ${e.message}")
+            false
+        }
+    }
+    suspend fun isPlatformStaff(): Boolean = withContext(Dispatchers.IO) {
+        val token = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
+        try {
+            val request = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/rpc/is_platform_staff")
+                .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+                .header("Authorization", "Bearer $token")
+                .header("Content-Type", "application/json")
+                .post("{}".toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext false
+                response.body?.string()?.trim()?.equals("true", ignoreCase = true) == true
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Platform staff verification notice: ${e.message}")
+            false
+        }
+    }
+    suspend fun fetchPublicIdentityKey(profileId: String): String? = withContext(Dispatchers.IO) {
+        if (profileId.isBlank()) return@withContext null
+        try {
+            val safeId = java.net.URLEncoder.encode(profileId, "UTF-8")
+            val request = buildRequest(
+                endpoint = "profiles?select=public_identity_key&id=eq.$safeId&limit=1",
+                method = "GET"
+            )
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val arr = JSONArray(response.body?.string() ?: "[]")
+                arr.optJSONObject(0)?.optSafeString("public_identity_key", "")?.ifBlank { null }
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "fetchPublicIdentityKey notice: ${e.message}")
+            null
+        }
+    }
     suspend fun upsertChatMessage(
         msg: ChatMessageEntity,
-        senderPhone: String = "",
-        receiverPhone: String = ""
+        senderIdentity: String = "",
+        receiverIdentity: String = "",
+        recipientProfileId: String = receiverIdentity
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            val normSender = PhonebookHasher.normalizeToE164(senderPhone.ifBlank { msg.senderId })
-            val normReceiver = PhonebookHasher.normalizeToE164(receiverPhone)
-
+            val recipient = recipientProfileId.ifBlank { receiverIdentity }
+            val ciphertext = msg.text.takeIf { it.startsWith(TinkCryptoManager.TINK_PREFIX) }.orEmpty()
+            if (ciphertext.isBlank() || senderIdentity.isBlank() || recipient.isBlank()) {
+                Log.e(TAG, "Refusing chat sync without Tink ciphertext and stable profile identities.")
+                return@withContext false
+            }
             val json = JSONObject().apply {
-                put("id", msg.messageId)
-                put("message_id", msg.messageId)
-                put("match_id", msg.matchId)
-                put("sender_phone", normSender)
-                put("receiver_phone", normReceiver)
-                put("sender_id", normSender.ifBlank { msg.senderId })
-                put("receiver_id", normReceiver)
-                put("text", msg.text)
-                put("message", msg.text)
-                put("timestamp", msg.timestamp)
-                put("is_delivered", msg.isDelivered)
-                put("is_read", msg.isRead)
-                put("media_url", msg.mediaUrl)
-                put("media_type", msg.mediaType)
-                put("voice_duration_seconds", msg.voiceDurationSeconds)
-                put("reply_to_message_id", msg.replyToMessageId)
-                put("reply_to_text", msg.replyToText)
-                put("reply_to_sender", msg.replyToSender)
-                put("is_forwarded", msg.isForwarded)
-                put("is_encrypted", msg.isEncrypted)
+                put("p_message_id", msg.messageId)
+                put("p_match_id", msg.matchId)
+                put("p_recipient_profile_id", recipient)
+                put("p_ciphertext", ciphertext)
+                put("p_media_type", msg.mediaType)
+                put("p_media_url", msg.mediaUrl)
+                put("p_voice_duration_seconds", msg.voiceDurationSeconds)
             }
-
-            var request = buildRequest(
-                endpoint = "chat_messages",
-                method = "POST",
-                bodyJson = json.toString(),
-                preferHeader = "resolution=merge-duplicates"
-            )
-
-            var success = false
+            val request = buildRequest("rpc/send_encrypted_message", "POST", json.toString())
             httpClient.newCall(request).execute().use { response ->
-                success = response.isSuccessful
-            }
-
-            if (!success) {
-                // Fallback to messages table
-                request = buildRequest(
-                    endpoint = "messages",
-                    method = "POST",
-                    bodyJson = json.toString(),
-                    preferHeader = "resolution=merge-duplicates"
-                )
-                httpClient.newCall(request).execute().use { resp ->
-                    success = resp.isSuccessful
+                val success = response.isSuccessful
+                if (success) {
+                    val broadcast = JSONObject().apply {
+                        put("type", "NEW_E2EE_MESSAGE")
+                        put("message_id", msg.messageId)
+                        put("match_id", msg.matchId)
+                        put("sender_id", senderIdentity)
+                        put("receiver_id", recipient)
+                        put("ciphertext", ciphertext)
+                        put("media_type", msg.mediaType)
+                    }
+                    SupabaseBackendManager.broadcastChatMessage(broadcast)
+                    // Push delivery is server-side FCM transport; failure never rolls back the message.
+                    dispatchEncryptedMessagePush(msg.messageId)
+                } else {
+                    Log.w(TAG, "Encrypted chat RPC failed HTTP ${response.code}: ${response.body?.string()?.take(200)}")
                 }
+                success
             }
-
-            // Also delegate to SupabaseBackendManager for real-time WebSocket broadcast
-            SupabaseBackendManager.broadcastChatMessage(json)
-            success
         } catch (e: Throwable) {
-            Log.w(TAG, "Chat Message Sync notice: ${e.message}")
+            Log.w(TAG, "Encrypted chat RPC notice: ${e.message}")
             false
         }
     }
@@ -503,45 +557,41 @@ object SupabaseClientManager {
     /**
      * Executes update on public.chat_messages to mark messages as read
      */
+    suspend fun markMessageRead(messageId: String): Boolean = withContext(Dispatchers.IO) {
+        if (messageId.isBlank()) return@withContext false
+        try {
+            val body = JSONObject().apply { put("p_message_id", messageId) }.toString()
+            val request = buildRequest("rpc/ack_message_read", "POST", body)
+            httpClient.newCall(request).execute().use { response -> response.isSuccessful }
+        } catch (e: Throwable) {
+            Log.w(TAG, "markMessageRead notice: ${e.message}")
+            false
+        }
+    }
+
     suspend fun markMessagesAsRead(
         currentUserPhone: String,
         chatPartnerPhone: String,
         matchId: String? = null
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            val myLast10 = normalizePhone(currentUserPhone)
-            val partnerLast10 = normalizePhone(chatPartnerPhone)
-
-            val patchJson = JSONObject().apply {
-                put("is_read", true)
-                put("is_delivered", true)
+            if (matchId.isNullOrBlank()) return@withContext false
+            val safeMatch = java.net.URLEncoder.encode(matchId, "UTF-8")
+            val request = buildRequest(
+                endpoint = "chat_messages?select=message_id&match_id=eq.$safeMatch",
+                method = "GET"
+            )
+            val ids = mutableListOf<String>()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext false
+                val arr = JSONArray(response.body?.string() ?: "[]")
+                for (i in 0 until arr.length()) {
+                    arr.optJSONObject(i)?.optString("message_id","")?.takeIf { it.isNotBlank() }?.let(ids::add)
+                }
             }
-
-            val endpoints = mutableListOf<String>()
-            if (currentUserPhone.isNotBlank()) {
-                endpoints.add("chat_messages?receiver_id=eq.$currentUserPhone&is_read=eq.false")
-            }
-            if (myLast10.isNotBlank() && partnerLast10.isNotBlank()) {
-                endpoints.add("chat_messages?receiver_phone=ilike.*$myLast10&sender_phone=ilike.*$partnerLast10&is_read=eq.false")
-            }
-            if (!matchId.isNullOrBlank()) {
-                endpoints.add("chat_messages?match_id=eq.$matchId&is_read=eq.false")
-            }
-
-            var success = false
-            for (endpoint in endpoints.distinct()) {
-                try {
-                    val request = buildRequest(
-                        endpoint = endpoint,
-                        method = "PATCH",
-                        bodyJson = patchJson.toString()
-                    )
-                    httpClient.newCall(request).execute().use { response ->
-                        if (response.isSuccessful) success = true
-                    }
-                } catch (_: Exception) {}
-            }
-            success
+            var any = false
+            for (id in ids) if (markMessageRead(id)) any = true
+            any
         } catch (e: Throwable) {
             Log.w(TAG, "markMessagesAsRead notice: ${e.message}")
             false
@@ -558,93 +608,46 @@ object SupabaseClientManager {
     ): List<ChatMessageEntity> = withContext(Dispatchers.IO) {
         val list = mutableListOf<ChatMessageEntity>()
         try {
-            val myLast10 = normalizePhone(currentUserPhone)
-            val partnerLast10 = normalizePhone(partnerPhone)
-
-            val endpoint = if (myLast10.length == 10 && partnerLast10.length == 10) {
-                "chat_messages?or=(and(sender_phone.ilike.*$partnerLast10,receiver_phone.ilike.*$myLast10),and(sender_phone.ilike.*$myLast10,receiver_phone.ilike.*$partnerLast10),match_id.eq.$matchId)&order=timestamp.asc"
-            } else {
-                "chat_messages?match_id=eq.$matchId&order=timestamp.asc"
-            }
-
-            val request = buildRequest(endpoint = endpoint, method = "GET")
-
+            val safeMatch = java.net.URLEncoder.encode(matchId, "UTF-8")
+            val request = buildRequest(
+                endpoint = "chat_messages?select=message_id,match_id,sender_id,receiver_id,ciphertext,timestamp,is_delivered,is_read,media_url,media_type,voice_duration_seconds,created_at&match_id=eq.$safeMatch&order=timestamp.asc",
+                method = "GET"
+            )
             httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val bodyStr = response.body?.string() ?: "[]"
-                    val jsonArray = JSONArray(bodyStr)
-                    for (i in 0 until jsonArray.length()) {
-                        val obj = jsonArray.getJSONObject(i)
-                        
-                        val isDeleted = obj.optBoolean("is_deleted", false) || obj.optBoolean("isDeleted", false)
-                        if (isDeleted) continue
-
-                        val msgId = obj.optSafeString("message_id", obj.optSafeString("id", ""))
-                        val rawText = sequenceOf("message_text", "text", "message", "content")
-                            .map { obj.optSafeString(it, "") }
-                            .firstOrNull { it.isNotBlank() } ?: ""
-                        val senderPhone = obj.optSafeString("sender_phone", obj.optSafeString("sender_id", ""))
-                        val rawMedia = obj.optSafeString("media_url", "")
-                        val mediaType = obj.optSafeString("media_type", "TEXT")
-
-                        val hasMedia = rawMedia.isNotBlank() || mediaType in listOf("IMAGE", "PHOTO", "VOICE", "AUDIO", "LOCATION", "AI_IMAGE", "DOCUMENT", "VIDEO")
-                        if (rawText.isBlank() && !hasMedia) continue
-                        if (rawText.equals("heartbeat", true) || rawText.equals("ping", true) || rawText.equals("pong", true) || rawText.startsWith("phx_") || rawText.startsWith("phx-")) continue
-
-                        val plainText = if (rawText.isNotBlank()) {
-                            try { HackFreeSecurityShield.decrypt(rawText) } catch (_: Exception) { rawText }
-                        } else ""
-
-                        val plainMedia = if (rawMedia.isNotBlank()) {
-                            try { HackFreeSecurityShield.decrypt(rawMedia) } catch (_: Exception) { rawMedia }
-                        } else ""
-
-                        val senderLast10 = normalizePhone(senderPhone)
-                        val isMine = (myLast10.length == 10 && senderLast10 == myLast10) || senderPhone == "USER"
-                        val senderId = if (isMine) "USER" else senderPhone
-
-                        val ts = obj.optLong("timestamp", 0L).let { rawTs ->
-                            if (rawTs > 0) rawTs
-                            else {
-                                val createdAt = obj.optSafeString("created_at", "")
-                                if (createdAt.isNotBlank()) {
-                                    try {
-                                        java.time.Instant.parse(createdAt).toEpochMilli()
-                                    } catch (_: Exception) {
-                                        System.currentTimeMillis()
-                                    }
-                                } else {
-                                    System.currentTimeMillis()
-                                }
-                            }
-                        }
-
-                        if (msgId.isNotBlank()) {
-                            list.add(
-                                ChatMessageEntity(
-                                    messageId = msgId,
-                                    matchId = obj.optSafeString("match_id", matchId),
-                                    senderId = senderId,
-                                    text = plainText.ifBlank { rawText },
-                                    timestamp = ts,
-                                    isDelivered = obj.optBoolean("is_delivered", true),
-                                    isRead = obj.optBoolean("is_read", false),
-                                    mediaUrl = plainMedia.ifBlank { rawMedia },
-                                    mediaType = mediaType,
-                                    voiceDurationSeconds = obj.optInt("voice_duration_seconds", 0),
-                                    replyToMessageId = obj.optSafeString("reply_to_message_id", "").ifBlank { null },
-                                    replyToText = obj.optSafeString("reply_to_text", "").ifBlank { null },
-                                    replyToSender = obj.optSafeString("reply_to_sender", "").ifBlank { null },
-                                    isForwarded = obj.optBoolean("is_forwarded", false),
-                                    isEncrypted = obj.optBoolean("is_encrypted", true)
-                                )
-                            )
-                        }
-                    }
+                if (!response.isSuccessful) return@withContext list
+                val arr = JSONArray(response.body?.string() ?: "[]")
+                val context = AppNotificationManager.appContext ?: MessageHandler.appContext
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val msgId = obj.optSafeString("message_id", obj.optSafeString("id", ""))
+                    val senderId = obj.optSafeString("sender_id", "")
+                    val receiverId = obj.optSafeString("receiver_id", "")
+                    val ciphertext = obj.optSafeString("ciphertext", "")
+                    if (msgId.isBlank() || senderId.isBlank() || receiverId.isBlank() || ciphertext.isBlank()) continue
+                    val decrypted = if (context != null && ciphertext.startsWith(TinkCryptoManager.TINK_PREFIX)) {
+                        TinkCryptoManager.decryptPayload(context, ciphertext, senderId, receiverId)
+                    } else ""
+                    if (decrypted.isBlank()) continue
+                    val mediaType = obj.optSafeString("media_type", "TEXT")
+                    val rawMedia = obj.optSafeString("media_url", "")
+                    val ts = obj.optLong("timestamp", 0L).takeIf { it > 0 } ?: System.currentTimeMillis()
+                    list.add(ChatMessageEntity(
+                        messageId = msgId,
+                        matchId = obj.optSafeString("match_id", matchId),
+                        senderId = senderId,
+                        text = decrypted,
+                        timestamp = ts,
+                        isDelivered = obj.optBoolean("is_delivered", false),
+                        isRead = obj.optBoolean("is_read", false),
+                        mediaUrl = rawMedia,
+                        mediaType = mediaType,
+                        voiceDurationSeconds = obj.optInt("voice_duration_seconds", 0),
+                        isEncrypted = true
+                    ))
                 }
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "E2EE messages fetch notice: ${e.message}")
+            Log.w(TAG, "Encrypted chat fetch notice: ${e.message}")
         }
         list.sortBy { it.timestamp }
         list
@@ -663,203 +666,68 @@ object SupabaseClientManager {
     }
 
     /**
-     * Queries Supabase 'profiles' table directly by standard international phone numbers in 'phone_number_e164'.
-     * Constrained to chunks of 30 to prevent HTTP URL length errors.
+     * Performs private contact lookup through the authenticated match_contacts RPC.
      */
     suspend fun fetchProfilesByE164Phones(phones: List<String>): List<ProfileEntity> = withContext(Dispatchers.IO) {
-        val list = mutableListOf<ProfileEntity>()
-        val activePhones = phones.filter { it.isNotBlank() && !it.equals("null", ignoreCase = true) }.distinct().take(30)
-        if (activePhones.isEmpty()) return@withContext list
-
-        try {
-            val phonesParam = activePhones.joinToString(",")
-            val request = buildRequest(
-                endpoint = "profiles?phone_number_e164=in.($phonesParam)&select=id,name,phone_number,clean_phone,phone_hash,phone_number_e164,email,age,gender,city,country,country_flag,place,avatar_emoji,avatar_url,occupation,qualification,bio,marital_status,account_status,is_verified,is_deleted,updated_at&limit=30",
-                method = "GET"
+        val hashes = phones.filter { it.isNotBlank() }.distinct().take(50)
+            .map { PhonebookHasher.hashPhoneNumberToHex(it) }
+            .filter { it.length == 64 }
+        if (hashes.isEmpty()) return@withContext emptyList()
+        matchContactsRpc(hashes).map {
+            ProfileEntity(
+                id = it.id,
+                name = it.name,
+                age = 24,
+                phoneNumber = "",
+                avatarUrl = it.photoUrl.orEmpty(),
+                avatarEmoji = it.avatarEmoji,
+                isVerified = true
             )
-
-            httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val bodyStr = response.body?.string() ?: "[]"
-                    val jsonArray = JSONArray(bodyStr)
-                    for (i in 0 until jsonArray.length()) {
-                        val obj = jsonArray.getJSONObject(i)
-                        val parsed = parseProfileEntityFromJson(obj)
-                        if (parsed != null) {
-                            list.add(parsed)
-                        }
-                    }
-                    if (list.isNotEmpty()) {
-                        Log.i(TAG, "⚡ Direct PostgREST phone_number_e164 matched ${list.size} profile(s).")
-                        return@withContext list
-                    }
-                }
-            }
-        } catch (e: Throwable) {
-            Log.w(TAG, "Direct phone_number_e164 PostgREST query notice: ${e.message}")
         }
-
-        // Fallback: Also check clean_phone column with the E.164 phones / hashes
-        try {
-            val hashList = activePhones.flatMap { p ->
-                listOf(p, p.filter { it.isDigit() }, PhonebookHasher.generate16CharHash(p))
-            }.distinct().take(30)
-            val fallbackMatches = fetchProfilesByHashes(hashList)
-            if (fallbackMatches.isNotEmpty()) {
-                return@withContext fallbackMatches
-            }
-        } catch (e: Throwable) {
-            Log.w(TAG, "fetchProfilesByE164Phones fallback notice: ${e.message}")
-        }
-
-        return@withContext list
     }
 
+
     /**
-     * Performs a secure, indexed batch search of registered profile details
-     * by querying 'clean_phone' and 'phone_number_e164'.
-     * Constrained to chunks of 30 to avoid HTTP URL length errors.
+     * Performs secure contact lookup through the private matching RPC.
      */
     suspend fun fetchProfilesByHashes(hashes: List<String>): List<ProfileEntity> = withContext(Dispatchers.IO) {
-        val list = mutableListOf<ProfileEntity>()
-        val activeHashes = hashes.filter { it.isNotBlank() && !it.equals("null", ignoreCase = true) }.distinct().take(30)
-        if (activeHashes.isEmpty()) return@withContext list
-
-        try {
-            val hashesParam = activeHashes.joinToString(",")
-            val request = buildRequest(
-                endpoint = "profiles?clean_phone=in.($hashesParam)&select=id,clean_phone&limit=30",
-                method = "GET"
+        val valid = hashes.filter { it.matches(Regex("^[0-9a-fA-F]{64}$")) }.distinct().take(50)
+        if (valid.isEmpty()) return@withContext emptyList()
+        matchContactsRpc(valid).map {
+            ProfileEntity(
+                id = it.id,
+                name = it.name,
+                age = 24,
+                phoneNumber = "",
+                avatarUrl = it.photoUrl.orEmpty(),
+                avatarEmoji = it.avatarEmoji,
+                isVerified = true
             )
-
-            httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val bodyStr = response.body?.string() ?: "[]"
-                    val jsonArray = JSONArray(bodyStr)
-                    for (i in 0 until jsonArray.length()) {
-                        val obj = jsonArray.getJSONObject(i)
-                        val id = obj.optString("id", "")
-                        val cleanPhone = obj.optString("clean_phone", "")
-                        if (id.isNotBlank()) {
-                            list.add(
-                                ProfileEntity(
-                                    id = id,
-                                    phoneNumber = cleanPhone,
-                                    name = "", // Resolved strictly from local phonebook
-                                    age = 24,
-                                    isVerified = true
-                                )
-                            )
-                        }
-                    }
-                    if (list.isNotEmpty()) {
-                        Log.i(TAG, "⚡ Zero-Knowledge clean_phone matched ${list.size} profile(s).")
-                        return@withContext list
-                    }
-                }
-            }
-        } catch (e: Throwable) {
-            Log.w(TAG, "Direct clean_phone PostgREST query notice: ${e.message}")
         }
-
-        // Fallback: fetch safe profiles list (limit 50) and match
-        try {
-            val allProfiles = fetchAllProfiles(50)
-            if (allProfiles.isNotEmpty()) {
-                val matched = allProfiles.filter { p ->
-                    val h16 = getPhoneHash(p.phoneNumber)
-                    val h16E164 = PhonebookHasher.generate16CharHash(p.phoneNumber)
-                    val h64 = PhonebookHasher.hashPhoneNumberToHex(p.phoneNumber)
-                    activeHashes.contains(p.id) ||
-                    activeHashes.contains(p.phoneNumber) ||
-                    activeHashes.contains(h16) ||
-                    activeHashes.contains(h16E164) ||
-                    activeHashes.contains(h64)
-                }
-                if (matched.isNotEmpty()) {
-                    return@withContext matched
-                }
-            }
-        } catch (e: Throwable) {
-            Log.w(TAG, "fetchProfilesByHashes fallback notice: ${e.message}")
-        }
-        return@withContext list
     }
 
+
     /**
-     * Executes parallel bulk lookup against public.profiles for chunks of 300 normalized 10-digit phone numbers.
-     * GET /rest/v1/profiles?select=id,name,phone_number,clean_phone,avatar_url,avatar_emoji,city,is_verified,bio&or=(clean_phone.in.(...),phone_number.in.(...))
+     * Executes private contact lookup against the server-side hash index.
      */
     suspend fun fetchProfilesByBatch10DigitPhones(
         phoneChunk: List<String>
     ): List<ProfileEntity> = withContext(Dispatchers.IO) {
-        val list = mutableListOf<ProfileEntity>()
-        val validPhones = phoneChunk.filter { it.isNotBlank() && it.length == 10 }.distinct()
-        if (validPhones.isEmpty()) return@withContext list
-
-        try {
-            val inList = validPhones.joinToString(",")
-            val endpoint = "profiles?select=id,name,phone_number,clean_phone,avatar_url,avatar_emoji,city,is_verified,bio&or=(clean_phone.in.($inList),phone_number.in.($inList))&limit=300"
-            val request = buildRequest(endpoint = endpoint, method = "GET")
-
-            httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val bodyStr = response.body?.string() ?: "[]"
-                    val jsonArray = JSONArray(bodyStr)
-                    for (i in 0 until jsonArray.length()) {
-                        val obj = jsonArray.getJSONObject(i)
-                        val id = obj.optSafeString("id", "")
-                        val name = obj.optSafeString("name", "VibeSync Member")
-                        val phone = obj.optSafeString("clean_phone", obj.optSafeString("phone_number", ""))
-                        val avatarUrl = obj.optSafeString("avatar_url", "")
-                        val avatarEmoji = obj.optSafeString("avatar_emoji", "✨")
-                        val city = obj.optSafeString("city", "")
-                        val bio = obj.optSafeString("bio", "")
-                        if (id.isNotBlank()) {
-                            list.add(
-                                ProfileEntity(
-                                    id = id,
-                                    name = name,
-                                    age = 24,
-                                    phoneNumber = phone,
-                                    avatarUrl = avatarUrl,
-                                    avatarEmoji = avatarEmoji,
-                                    city = city,
-                                    bio = bio,
-                                    isVerified = obj.optBoolean("is_verified", true)
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-        } catch (e: Throwable) {
-            Log.w(TAG, "Bulk 10-digit phone query notice: ${e.message}")
-        }
-        list
+        val hashes = phoneChunk.filter { it.length == 10 }.distinct().take(50)
+            .map { PhonebookHasher.hashPhoneNumberToHex(it) }
+        if (hashes.isEmpty()) return@withContext emptyList()
+        fetchProfilesByHashes(hashes)
     }
+
 
     /**
      * Performs indexed, selective lookup by computing matching phone hashes and querying clean_phone with strict LIMIT 50.
      */
     suspend fun fetchProfilesByCleanPhones(cleanPhones: List<String>): List<ProfileEntity> = withContext(Dispatchers.IO) {
-        val activePhones = cleanPhones.filter { it.isNotBlank() && !it.equals("null", ignoreCase = true) }.distinct().take(50)
-        if (activePhones.isEmpty()) return@withContext emptyList()
-
-        val computedHashes = activePhones.flatMap { phone ->
-            val set = mutableSetOf<String>()
-            val h16 = PhonebookHasher.generate16CharHash(phone)
-            if (h16.isNotBlank()) set.add(h16)
-            val h64 = PhonebookHasher.hashPhoneNumberToHex(phone)
-            if (h64.isNotBlank()) set.add(h64)
-            set.addAll(PhonebookHasher.getAllMatchHashes(phone))
-            if (phone.length == 16) set.add(phone)
-            set
-        }.filter { it.isNotBlank() }.distinct().take(50)
-
-        if (computedHashes.isEmpty()) return@withContext emptyList()
-
-        return@withContext fetchProfilesByHashes(computedHashes)
+        val hashes = cleanPhones.filter { it.isNotBlank() }.distinct().take(50)
+            .map { PhonebookHasher.hashPhoneNumberToHex(it) }
+        if (hashes.isEmpty()) return@withContext emptyList()
+        fetchProfilesByHashes(hashes)
     }
 
 
@@ -924,42 +792,34 @@ object SupabaseClientManager {
     suspend fun syncPhoneHashToSyncTable(userId: String, rawPhone: String): Boolean = withContext(Dispatchers.IO) {
         if (userId.isBlank() || rawPhone.isBlank()) return@withContext false
         val hex64 = PhonebookHasher.hashPhoneNumberToHex(rawPhone)
-        if (hex64.isBlank() || hex64.length != 64) return@withContext false
-
+        if (hex64.length != 64) return@withContext false
         try {
-            // In PostgreSQL / PostgREST, BYTEA strings can be formatted as \x<hex_chars>
             val json = JSONObject().apply {
                 put("user_id", userId)
                 put("phone_hash", "\\x$hex64")
             }
-
             val request = buildRequest(
                 endpoint = "phone_sync",
                 method = "POST",
                 bodyJson = json.toString(),
                 preferHeader = "resolution=merge-duplicates"
             )
-
             httpClient.newCall(request).execute().use { response ->
                 val success = response.isSuccessful
-                if (success) {
-                    Log.i(TAG, "⚡ Synced user $userId to 'phone_sync' BYTEA table (64-hex SHA-256)")
-                } else {
-                    Log.d(TAG, "phone_sync table insert HTTP ${response.code}: ${response.body?.string()?.take(100)}")
-                }
+                if (!success) Log.w(TAG, "phone_sync insert rejected HTTP ${response.code}")
                 success
             }
         } catch (e: Throwable) {
-            Log.d(TAG, "phone_sync table notice: ${e.message}")
+            Log.w(TAG, "phone_sync insert notice: ${e.message}")
             false
         }
     }
 
     /**
-     * Zero-Knowledge Remote Procedure Call (RPC): match_contacts
+     * Privacy-Preserving Contact Match RPC: match_contacts
      * Accepts an array of up to 50 hex hashes (64-char strings), decodes them into binary BYTEA
      * in Postgres, joins with profiles, and returns matched user records.
-     * Includes seamless fallback to selective profile hash queries if RPC is not yet executed on backend.
+     * No direct profile-table fallback is permitted; contact discovery remains behind the RPC boundary.
      */
     suspend fun matchContactsRpc(hexHashes: List<String>): List<MatchedSupabaseContact> = withContext(Dispatchers.IO) {
         val validHashes = hexHashes.filter { it.isNotBlank() }.distinct().take(50)
@@ -1009,7 +869,7 @@ object SupabaseClientManager {
                             )
                         }
                     }
-                    Log.i(TAG, "⚡ Zero-Knowledge RPC 'match_contacts' matched ${results.size} user(s) in <2ms indexed join.")
+                    Log.i(TAG, "⚡ Privacy match RPC 'match_contacts' matched ${results.size} user(s) in <2ms indexed join.")
                     return@withContext results
                 } else {
                     Log.d(TAG, "match_contacts RPC HTTP ${response.code}, falling back to selective query.")
@@ -1019,24 +879,69 @@ object SupabaseClientManager {
             Log.w(TAG, "match_contacts RPC notice: ${e.message}, executing fallback query.")
         }
 
-        // Fallback: Query profiles table using selective indexed hashes
+        // No direct profile-table fallback: privacy requires the RPC boundary.
+        return@withContext results
+    }
+    suspend fun blockUserRemote(profileId: String, reason: String = "USER_BLOCK"): Boolean = withContext(Dispatchers.IO) {
+        val token = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
         try {
-            val profiles = fetchProfilesByHashes(validHashes)
-            for (p in profiles) {
-                results.add(
-                    MatchedSupabaseContact(
-                        id = p.id,
-                        name = p.name,
-                        photoUrl = p.avatarUrl.ifBlank { null },
-                        avatarEmoji = p.avatarEmoji.ifBlank { "✨" },
-                        phoneHash = p.phoneNumber.ifBlank { p.id }
-                    )
-                )
+            val body = JSONObject().apply {
+                put("p_blocked_profile_id", profileId)
+                put("p_reason", reason.take(120))
+            }.toString()
+            val request = buildRequest("rpc/block_user", "POST", body)
+            httpClient.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Remote block notice: " + e.message)
+            false
+        }
+    }
+
+    suspend fun unblockUserRemote(profileId: String): Boolean = withContext(Dispatchers.IO) {
+        val token = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
+        try {
+            val body = JSONObject().apply { put("p_blocked_profile_id", profileId) }.toString()
+            val request = buildRequest("rpc/unblock_user", "POST", body)
+            httpClient.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Remote unblock notice: " + e.message)
+            false
+        }
+    }
+
+    suspend fun submitSafetyReportRemote(profileId: String, reason: String, details: String = ""): String? = withContext(Dispatchers.IO) {
+        val token = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext null
+        try {
+            val body = JSONObject().apply {
+                put("p_reported_profile_id", profileId)
+                put("p_reason", reason.take(120))
+                put("p_details", details.take(4000))
+            }.toString()
+            val request = buildRequest("rpc/submit_safety_report", "POST", body)
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                response.body?.string()?.trim()?.trim('"')?.takeIf { it.isNotBlank() }
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "Fallback match notice: ${e.message}")
+            Log.w(TAG, "Remote safety report notice: " + e.message)
+            null
         }
+    }
 
-        return@withContext results
+    suspend fun staffModerateProfile(profileId: String, action: String, reason: String = ""): Boolean = withContext(Dispatchers.IO) {
+        val token = SupabaseAuthManager.getCachedAccessToken() ?: return@withContext false
+        if (!isPlatformStaff()) return@withContext false
+        try {
+            val body = JSONObject().apply {
+                put("p_profile_id", profileId)
+                put("p_action", action)
+                put("p_reason", reason.take(500))
+            }.toString()
+            val request = buildRequest("rpc/staff_set_profile_moderation", "POST", body)
+            httpClient.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Staff moderation notice: " + e.message)
+            false
+        }
     }
 }

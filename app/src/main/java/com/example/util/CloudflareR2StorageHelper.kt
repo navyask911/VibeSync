@@ -160,34 +160,15 @@ object CloudflareR2StorageHelper {
 
             val finalPublicUrl = "$publicCustomDomain/$objectKey"
 
-            // Construct S3 / Cloudflare R2 REST PUT request
-            val endpointUrl = "https://$accountId.r2.cloudflarestorage.com/$bucketName/$objectKey"
-            
-            // If active R2 credentials are configured, execute upload
-            if (accountId != "cloudflare-account-id-placeholder" && accessKeyId != "r2-access-key-placeholder") {
-                val mediaType = contentType.toMediaTypeOrNull()
-                val requestBody = payloadBytes.toRequestBody(mediaType)
-                
-                val request = Request.Builder()
-                    .url(endpointUrl)
-                    .put(requestBody)
-                    .addHeader("Content-Type", contentType)
-                    .addHeader("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
-                    .build()
-
-                val response = httpClient.newCall(request).execute()
-                if (!response.isSuccessful) {
-                    Log.w(TAG, "R2 direct upload HTTP code ${response.code}: ${response.message}")
-                }
-            }
-
-            // Return success with public CDN zero-egress URL
+            // Client-side R2 signing is intentionally disabled.
+            // A server-issued presigned upload URL is required before this operation can succeed.            // Do not claim success when the object was not uploaded.
             UploadResult(
-                isSuccess = true,
-                publicUrl = finalPublicUrl,
+                isSuccess = false,
+                publicUrl = "",
                 originalSizeBytes = originalSize,
                 compressedSizeBytes = compressedSize,
-                bandwidthSavedPercentage = savingsPct
+                bandwidthSavedPercentage = savingsPct,
+                errorMessage = "R2 upload requires the server-side media gateway."
             )
         } catch (e: Exception) {
             Log.e(TAG, "Error uploading to Cloudflare R2: ${e.message}", e)

@@ -403,6 +403,12 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     private val _isAdminLoggedIn = MutableStateFlow(false)
     val isAdminLoggedIn: StateFlow<Boolean> = _isAdminLoggedIn.asStateFlow()
 
+    private val _adminLoginInProgress = MutableStateFlow(false)
+    val adminLoginInProgress: StateFlow<Boolean> = _adminLoginInProgress.asStateFlow()
+
+    private val _adminLoginError = MutableStateFlow<String?>(null)
+    val adminLoginError: StateFlow<String?> = _adminLoginError.asStateFlow()
+
     private val _showAdminPortal = MutableStateFlow(false)
     val showAdminPortal: StateFlow<Boolean> = _showAdminPortal.asStateFlow()
 
@@ -1862,21 +1868,28 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         _showAdminPortal.value = false
     }
 
-    fun loginAdmin(user: String, pass: String): Boolean {
-        val prefs = userPreferences.value
-        val expectedUser = prefs?.adminUsername?.ifBlank { "admin" } ?: "admin"
-        val expectedPass = prefs?.adminPassword?.ifBlank { "admin777" } ?: "admin777"
-        val isValid = (user.trim() == expectedUser && pass.trim() == expectedPass) ||
-                (user.trim() == "admin" && pass.trim() == "admin777") ||
-                pass.trim() == "9999"
+    fun loginAdmin(user: String, pass: String) {
+        _adminLoginInProgress.value = true
+        _adminLoginError.value = null
+        _isAdminLoggedIn.value = false
 
-        if (isValid) {
-            _isAdminLoggedIn.value = true
-            viewModelScope.launch {
-                _toastMessage.emit("Developer Backend Access Granted 🛡️")
+        viewModelScope.launch {
+            val session = com.example.util.SupabaseAuthManager.getCachedSession(getApplication())
+            if (session?.user?.id.isNullOrBlank()) {
+                _adminLoginError.value = "Sign in to VibeSync first. Admin access is tied to the authenticated account."
+                _adminLoginInProgress.value = false
+                return@launch
             }
+
+            val authorized = com.example.util.SupabaseClientManager.isPlatformStaff()
+            if (authorized) {
+                _isAdminLoggedIn.value = true
+                _toastMessage.emit("Platform staff authorization verified 🛡️")
+            } else {
+                _adminLoginError.value = "This account is not authorized for VibeSync operations."
+            }
+            _adminLoginInProgress.value = false
         }
-        return isValid
     }
 
     fun updateAdminCredentials(newUsername: String, newPassword: String) {
@@ -2213,61 +2226,12 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 rawHash
             }
 
-            // Establish and guarantee active Firebase Auth User object
-            try {
-                com.example.util.FirebaseAuthHelper.ensureFirebaseAuthUser(
-                    context = getApplication(),
-                    preferredEmail = email.ifBlank { null },
-                    preferredPhone = phone.ifBlank { null }
-                )
-            } catch (e: Exception) {
-                android.util.Log.w("DatingViewModel", "Firebase Auth session note during face verification: ${e.message}")
+            // Supabase Auth is authoritative after OTP verification.
+            // Biometric verification remains device-local; no reusable biometric template is uploaded.
+            val authSession = com.example.util.SupabaseAuthManager.getCachedSession(getApplication())
+            if (authSession?.user?.id.isNullOrBlank()) {
+                android.util.Log.w("DatingViewModel", "Biometric verification completed without an active Supabase session.")
             }
-
-            // Sync biometric signature to Firestore Cloud Database
-            viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                try {
-                    val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                    val bioMap = hashMapOf(
-                        "accountId" to (if (email.isNotBlank()) email else phone),
-                        "phoneNumber" to phone,
-                        "googleEmail" to email,
-                        "biometricHash" to finalHash,
-                        "photoUrl" to (capturedPhotoUri ?: ""),
-                        "registeredTimestamp" to System.currentTimeMillis(),
-                        "isVerified" to true
-                    )
-                    firestore.collection("biometrics")
-                        .document(finalHash)
-                        .set(bioMap, com.google.firebase.firestore.SetOptions.merge())
-                } catch (e: Exception) {
-                    android.util.Log.e("BiometricSave", "Firestore biometric sync error: ${e.message}")
-                }
-            }
-
-            repository.updateAuthStatus(
-                isLoggedIn = true,
-                mobileNumber = phone,
-                isMobileVerified = true,
-                isFaceVerified = true,
-                googleEmail = email,
-                biometricHash = finalHash
-            )
-
-            // Auto-fetch & sync front login details directly to backend profile & Cloud Firestore
-            try {
-                repository.syncFrontLoginDetailsToBackend(
-                    phone = phone,
-                    email = email,
-                    context = getApplication<Application>()
-                )
-            } catch (e: Exception) {
-                android.util.Log.w("DatingViewModel", "Front login backend sync note: ${e.message}")
-            }
-
-            // Re-trigger global chat sync with newly authenticated identity
-            repository.startGlobalChatSync()
-
             // If a real face photo was captured, update avatar and photo in preferences
             if (!capturedPhotoUri.isNullOrBlank()) {
                 val updatedPrefs = repository.userPreferences.first()
@@ -2448,11 +2412,11 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 android.util.Log.w("DatingViewModel", "Repository logout exception: ${e.message}")
             }
 
-            // 2. Clear session in Firebase Auth
+            // 2. Clear the authoritative Supabase Auth session
             try {
-                com.example.util.FirebaseAuthHelper.signOut(getApplication())
+                com.example.util.SupabaseAuthManager.signOut(getApplication())
             } catch (e: Exception) {
-                android.util.Log.w("DatingViewModel", "FirebaseAuth sign out exception: ${e.message}")
+                android.util.Log.w("DatingViewModel", "Supabase Auth sign out exception: ${e.message}")
             }
 
             // 3. Reset in-memory states and overlays
@@ -2498,11 +2462,12 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 "user_${prefs?.id ?: 1}"
             }
 
-            // 1. Clear session in Firebase Auth and delete Firebase Auth user
+            // 1. Clear the authoritative Supabase Auth session.
+            // Full account deletion is server-authoritative and will be completed by the trusted delete endpoint.
             try {
-                com.example.util.FirebaseAuthHelper.deleteFirebaseAccount(getApplication())
+                com.example.util.SupabaseAuthManager.signOut(getApplication())
             } catch (e: Exception) {
-                android.util.Log.w("DatingViewModel", "FirebaseAuth delete exception: ${e.message}")
+                android.util.Log.w("DatingViewModel", "Supabase Auth cleanup exception: ${e.message}")
             }
 
             // 2. Wipe all local user data and registered account records in repository

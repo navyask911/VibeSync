@@ -159,22 +159,15 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                         try {
                             // Decrypt ciphertext via Google Tink HybridDecrypt
-                            val decryptedText = if (ciphertext.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
-                                com.example.util.TinkCryptoManager.decryptPayload(
-                                    context = applicationContext,
-                                    payload = ciphertext,
-                                    senderPhone = senderPhone,
-                                    receiverPhone = receiverPhone
-                                )
-                            } else {
-                                com.example.util.MessageHandler.verifyAndDecryptPayload(
-                                    senderUid = senderPhone,
-                                    rawPayload = ciphertext,
-                                    context = applicationContext,
-                                    senderPhone = senderPhone,
-                                    receiverPhone = receiverPhone
-                                )
+                            if (!ciphertext.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
+                                throw SecurityException("Rejected non-Tink message payload")
                             }
+                            val decryptedText = com.example.util.TinkCryptoManager.decryptPayload(
+                                context = applicationContext,
+                                payload = ciphertext,
+                                senderPhone = senderPhone,
+                                receiverPhone = receiverPhone
+                            )
 
                             val normSender = com.example.util.PhonebookHasher.normalizeToE164(senderPhone)
                             val matchId = data["match_id"] ?: (if (normSender.isNotBlank()) "match_$normSender" else if (senderOrMatchId.startsWith("match_")) senderOrMatchId else "match_$senderOrMatchId")
@@ -230,9 +223,13 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                         Log.d(TAG, "User is currently ONLINE in-app session. System push notification suppressed.")
                     } else {
                         val displayBody = if (ciphertext.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
-                            com.example.util.TinkCryptoManager.decryptPayload(applicationContext, ciphertext, senderPhone, receiverPhone)
+                            try {
+                                com.example.util.TinkCryptoManager.decryptPayload(applicationContext, ciphertext, senderPhone, receiverPhone)
+                            } catch (_: Exception) {
+                                "Encrypted message"
+                            }
                         } else {
-                            text
+                            "Encrypted message"
                         }
                         AppNotificationManager.showMessageNotification(
                             context = applicationContext,

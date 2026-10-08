@@ -324,27 +324,35 @@ fun OtpVerificationScreen(
                             onClick = {
                                 keyboardController?.hide()
                                 focusManager.clearFocus()
-                                isSubmitting = true
                                 otpErrorMessage = null
 
-                                // 2. Purge Stale / Corrupted Auth Sessions on New OTP Verification
+                                val clean = enteredOtpCode.trim()
+                                if (com.example.BuildConfig.DEBUG && !simulatedOtpCode.isNullOrBlank()) {
+                                    isSubmitting = true
+                                    if (clean == simulatedOtpCode.trim()) {
+                                        onVerificationSuccess(phoneNumber, "Simulated Debug OTP")
+                                    } else {
+                                        isSubmitting = false
+                                        otpErrorMessage = "Incorrect verification code. Please enter the exact 6-digit code received."
+                                        Toast.makeText(context, "Incorrect verification code. Please check and retry.", Toast.LENGTH_SHORT).show()
+                                    }
+                                    return@Button
+                                }
+
+                                isSubmitting = true
+
+                                // Purge stale / corrupted auth sessions before the production OTP verification.
                                 com.example.util.UserSessionManager.clearStaleAuthSessions(context)
 
                                 coroutineScope.launch {
                                     try {
-                                        // 3. Wrap OTP validation logic with strict 3-second timeout: withTimeoutOrNull(3000L)
+                                        // Production path: verify the entered code against Supabase Auth with a strict timeout.
                                         val verificationResult = kotlinx.coroutines.withTimeoutOrNull(15000L) {
-                                            val clean = enteredOtpCode.trim()
-
-                                            if (com.example.BuildConfig.DEBUG && !simulatedOtpCode.isNullOrBlank()) {
-                                                clean == simulatedOtpCode.trim()
-                                            } else {
-                                                com.example.util.SupabaseAuthManager.verifyPhoneOtp(
-                                                    context = context,
-                                                    phone = phoneNumber,
-                                                    token = clean
-                                                ).isSuccess
-                                            }
+                                            com.example.util.SupabaseAuthManager.verifyPhoneOtp(
+                                                context = context,
+                                                phone = phoneNumber,
+                                                token = clean
+                                            ).isSuccess
                                         }
 
                                         if (verificationResult == true) {
@@ -354,7 +362,6 @@ fun OtpVerificationScreen(
                                             otpErrorMessage = "Incorrect verification code. Please enter the exact 6-digit code received."
                                             Toast.makeText(context, "Incorrect verification code. Please check and retry.", Toast.LENGTH_SHORT).show()
                                         } else {
-                                            // Timed out
                                             isSubmitting = false
                                             otpErrorMessage = "Verification timed out or failed. Please check your connection."
                                             Toast.makeText(context, "Verification timed out or failed. Please check your connection.", Toast.LENGTH_SHORT).show()

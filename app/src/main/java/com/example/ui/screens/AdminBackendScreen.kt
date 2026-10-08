@@ -51,9 +51,11 @@ private val AmberWarning = Color(0xFFFFB300)
 @Composable
 fun AdminBackendScreen(
     isAdminLoggedIn: Boolean,
-    onLoginAdmin: (username: String, password: String) -> Boolean,
+    onLoginAdmin: (username: String, password: String) -> Unit,
     onLogoutAdmin: () -> Unit,
     currentAdminUsername: String,
+    adminLoginInProgress: Boolean = false,
+    adminLoginError: String? = null,
     onUpdateAdminCredentials: (username: String, password: String) -> Unit,
     roles: List<AdminRole>,
     employees: List<AdminEmployee>,
@@ -98,8 +100,6 @@ fun AdminBackendScreen(
     if (!isAdminLoggedIn) {
         var usernameInput by remember { mutableStateOf("") }
         var passwordInput by remember { mutableStateOf("") }
-        var loginError by remember { mutableStateOf<String?>(null) }
-        var isLoggingIn by remember { mutableStateOf(false) }
 
         Scaffold(
             topBar = {
@@ -191,37 +191,30 @@ fun AdminBackendScreen(
                             modifier = Modifier.fillMaxWidth().testTag("input_admin_password")
                         )
 
-                        loginError?.let {
+                        adminLoginError?.let {
                             Text(text = it, color = PassRed, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         }
 
                         Button(
                             onClick = {
-                                isLoggingIn = true
-                                val success = onLoginAdmin(usernameInput.trim(), passwordInput.trim())
-                                isLoggingIn = false
-                                if (!success) {
-                                    loginError = "Invalid credentials. Default: creator / 1234"
-                                }
+                                onLoginAdmin(usernameInput.trim(), passwordInput.trim())
                             },
                             modifier = Modifier.fillMaxWidth().height(48.dp).testTag("btn_submit_admin_login"),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = VibeSyncTealGreen)
                         ) {
-                            if (isLoggingIn) {
+                            if (adminLoginInProgress) {
                                 CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
                             } else {
                                 Text("Access Dashboard", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                             }
                         }
 
-                        TextButton(
-                            onClick = {
-                                onLoginAdmin("creator", "1234")
-                            }
-                        ) {
-                            Text("Quick Demo Login (creator / 1234)", color = VibeSyncTealGreen, fontSize = 12.sp)
-                        }
+                        Text(
+                            text = "Administrator access is granted only to a verified VibeSync platform-staff account.",
+                            color = Color.Gray,
+                            fontSize = 11.sp
+                        )
                     }
                 }
             }

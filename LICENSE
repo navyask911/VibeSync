@@ -2,8 +2,38 @@
 
 Copyright (c) 2026 VibeSync. All rights reserved.
 
-VibeSync, its source code, architecture, user interface, branding, documentation, database design, business logic, and related materials are proprietary and confidential unless a separate written license says otherwise.
+## 1. Ownership
 
-No permission is granted to copy, modify, distribute, sublicense, sell, publish, reverse engineer, or create derivative works from this repository or its contents, except as expressly authorized in writing by the owner.
+The VibeSync application source code, architecture, database design, business logic, original UI/UX, branding, product specifications and original documentation in this repository are proprietary works owned by VibeSync, except where a separate written agreement states otherwise.
 
-Third-party libraries remain subject to their respective licenses. This proprietary license does not replace or modify those third-party licenses.
+## 2. Permission
+
+No license is granted to copy, modify, distribute, publish, sublicense, sell, lease, host as a competing service, or create derivative works from VibeSync proprietary material without prior written authorization from the owner.
+
+Private internal use by authorized contributors is permitted only within the scope of the contributor's authorization.
+
+## 3. Third-party components
+
+This license does not replace licenses for third-party libraries, fonts, SDKs, generated assets, sample material or other separately licensed components.
+
+Users must follow each third-party component's license and notice requirements.
+
+## 4. Trademarks
+
+The VibeSync name, logo, product marks and branding are not licensed by this document.
+
+## 5. Confidential information
+
+Repository access does not by itself grant permission to disclose private repository content, credentials, release material, customer information or other confidential information.
+
+## 6. No implied rights
+
+Except for rights expressly granted in a signed written agreement, all rights are reserved.
+
+## 7. No warranty
+
+To the maximum extent permitted by law, VibeSync proprietary material is provided without an implied promise of fitness, availability, or security.
+
+This license is intended to state the repository owner's software rights. It should be reviewed by qualified counsel for the intended distribution model.
+
+**Copyright © 2026 VibeSync. All rights reserved.**
