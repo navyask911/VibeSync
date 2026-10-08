@@ -56,12 +56,6 @@ object TruecallerAuthGateway {
                         )
                     }
 
-                    if (!root.optBoolean("verified", false)) {
-                        return@withContext Result.failure(
-                            IllegalStateException("Truecaller verification was not confirmed")
-                        )
-                    }
-
                     val phone = root.optString("phone", "").trim()
                     val profileId = root.optString("profile_id", "").trim()
                     val sessionToken = root.optString("session_token", "").trim()
