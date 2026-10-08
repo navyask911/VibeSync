@@ -119,13 +119,23 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
                                 "Truecaller authorization was not completed (code ${tcOAuthError.errorCode})."
                             )
                         }
+
+                        override fun onVerificationRequired(tcOAuthError: TcOAuthError?) {
+                            clearRequestState()
+                            mainHandler.post {
+                                callback?.onVerificationRequired(
+                                    "Truecaller requires manual verification" +
+                                        (tcOAuthError?.let { " (code ${it.errorCode})" } ?: "") +
+                                        "."
+                                )
+                            }
+                        }
                     }
 
                     val sdkOptions = TcSdkOptions.Builder(activity, sdkCallback)
                         .consentMode(TcSdkOptions.CONSENT_MODE_BOTTOMSHEET)
                         .footerType(TcSdkOptions.FOOTER_TYPE_ANOTHER_METHOD)
-                        .consentTitleOption(TcSdkOptions.SDK_CONSENT_TITLE_LOG_IN)
-                        .consentHeadingOption(TcSdkOptions.SDK_CONSENT_HEADING_LOGIN_TO_WITH_ONE_TAP)
+                        .consentHeadingOption(TcSdkOptions.SDK_CONSENT_HEADING_LOG_IN_TO)
                         .ctaText(TcSdkOptions.CTA_TEXT_CONTINUE)
                         .sdkOptions(TcSdkOptions.OPTION_VERIFY_ONLY_TC_USERS)
                         .build()
@@ -184,10 +194,11 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
                 notifyFailure("Truecaller is not ready.")
                 return
             }
-            if (activityResultLauncher == null) {
-                notifyFailure("Truecaller activity launcher is not configured.")
-                return
-            }
+            val launcher = activityResultLauncher
+                ?: run {
+                    notifyFailure("Truecaller activity launcher is not configured.")
+                    return
+                }
             if (!TcSdk.getInstance().isOAuthFlowUsable) {
                 notifyFailure("Truecaller is not available on this device.")
                 return
@@ -204,7 +215,7 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
             TcSdk.getInstance().setOAuthState(state)
             TcSdk.getInstance().setOAuthScopes(arrayOf("openid", "profile", "phone"))
             TcSdk.getInstance().setCodeChallenge(codeChallenge)
-            TcSdk.getInstance().getAuthorizationCode(activity, activityResultLauncher)
+            TcSdk.getInstance().getAuthorizationCode(activity, launcher)
         } catch (t: Throwable) {
             clearRequestState()
             Log.w(TAG, "Truecaller OAuth request failed: ${t.message}", t)

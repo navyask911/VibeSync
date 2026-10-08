@@ -38,7 +38,8 @@ env:
   VIBESYNC_PACKAGE_NAME: "com.aistudio.freedating.mkwvxq"
   VIBESYNC_TRUECALLER_CLIENT_ID: "z3rfwgowtpkt-4_5hmsogbcjf2wc8igmb_bjpvzk8xc"
   VIBESYNC_CONSENT_LABEL: "VIBESYNC"
-  VIBESYNC_RELEASE_SHA256: "99:99:23:2C:62:30:12:15:54:CC:30:EA:D8:EB:0E:95:9F:DA:52:64"
+  VIBESYNC_RELEASE_SHA1: "99:99:23:2C:62:30:12:15:54:CC:30:EA:D8:EB:0E:95:9F:DA:52:64"
+  VIBESYNC_RELEASE_SHA256: "CA:D4:B4:D0:B8:84:D7:48:75:44:6C:23:C5:B4:DD:B3:B0:6A:EC:75:65:06:DA:95:2A:43:BD:C5:93:F2:D1:F3"
 
 jobs:
   android-release:
@@ -132,12 +133,19 @@ jobs:
 
           SIGNING_ALIAS="$KEY_ALIAS"
           if [ -z "$SIGNING_ALIAS" ]; then SIGNING_ALIAS="upload"; fi
+          CERT_SHA1=$(keytool -list -v \
+            -keystore "$KEYSTORE_FILE" \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -alias "$SIGNING_ALIAS" \
+            | awk -F": " '/SHA1:/{print $2; exit}' | tr -d "\r" | tr '[:lower:]' '[:upper:]')
           CERT_SHA256=$(keytool -list -v \
             -keystore "$KEYSTORE_FILE" \
             -storepass "$KEYSTORE_PASSWORD" \
             -alias "$SIGNING_ALIAS" \
-            | awk -F": " '/SHA256:/{print $2; exit}' | tr -d "\r")
+            | awk -F": " '/SHA256:/{print $2; exit}' | tr -d "\r" | tr '[:lower:]' '[:upper:]')
+          test -n "$CERT_SHA1"
           test -n "$CERT_SHA256"
+          test "$CERT_SHA1" = "$VIBESYNC_RELEASE_SHA1"
           test "$CERT_SHA256" = "$VIBESYNC_RELEASE_SHA256"
           echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
           echo "STORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
@@ -168,7 +176,7 @@ jobs:
           ls -lh "${AAB[0]}"
           BUILD_TOOLS_DIR=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
           "$BUILD_TOOLS_DIR/apksigner" verify --print-certs "${APK[0]}" \
-            | grep -F "Signer #1 certificate SHA-256 digest: $VIBESYNC_RELEASE_SHA256"
+            | grep -Fi "Signer #1 certificate SHA-256 digest: $VIBESYNC_RELEASE_SHA256"
 
       - name: Upload APK, AAB and test reports
         uses: actions/upload-artifact@v6
