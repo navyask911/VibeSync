@@ -60,13 +60,17 @@ class VibeSyncCoreUiTest {
     @Test
     fun otp_screen_supports_secure_simulated_test_verification_and_mode_switching() {
         val verifiedPhone = AtomicReference<String?>(null)
+        val verificationMethod = AtomicReference<String?>(null)
 
         composeTestRule.setContent {
             MyApplicationTheme {
                 OtpVerificationScreen(
                     phoneNumber = "+919449878908",
                     simulatedOtpCode = "123456",
-                    onVerificationSuccess = { phone, _ -> verifiedPhone.set(phone) },
+                    onVerificationSuccess = { phone, method ->
+                        verifiedPhone.set(phone)
+                        verificationMethod.set(method)
+                    },
                     onBackToPhoneInput = {}
                 )
             }
@@ -81,16 +85,16 @@ class VibeSyncCoreUiTest {
         composeTestRule.waitUntil(timeoutMillis = 5_000) { verifiedPhone.get() != null }
 
         assertEquals("9449878908", verifiedPhone.get()?.filter(Char::isDigit)?.takeLast(10))
+        assertEquals("Simulated Debug OTP", verificationMethod.get())
 
-        // Selecting the second option changes a stable, mode-specific heading.
-        // Use the unmerged semantics tree so the text nested inside the clickable
-        // option card is directly queryable under Robolectric.
+        // The callback above is the authoritative simulated-verification result.
+        // For the mode switch, assert stable test tags rendered by the USER_TEXT_SMS branch
+        // instead of waiting on prose text, which is flaky under headless Robolectric.
         composeTestRule.onNodeWithTag("opt_user_text_sms").assertExists().performClick()
+        composeTestRule.mainClock.advanceTimeByFrame()
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithText(
-            "Outgoing Text Message Preview:",
-            useUnmergedTree = true
-        ).assertExists()
+        composeTestRule.onNodeWithTag("btn_send_self_text_sms").assertExists().assertIsNotEnabled()
+        composeTestRule.onNodeWithTag("btn_confirm_sent_text_sms").assertExists().assertIsNotEnabled()
     }
 
     @Test
