@@ -1,4 +1,6 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+import org.gradle.api.tasks.testing.Test
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
   alias(libs.plugins.android.application)
@@ -37,7 +39,6 @@ android {
         keyPassword = releaseKeyPassword
       }
     }
-
   }
 
   buildTypes {
@@ -49,14 +50,17 @@ android {
     }
     debug { signingConfig = signingConfigs.getByName("debug") }
   }
+
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11
     targetCompatibility = JavaVersion.VERSION_11
   }
+
   buildFeatures {
     compose = true
     buildConfig = true
   }
+
   packaging {
     resources {
       excludes += listOf(
@@ -71,11 +75,31 @@ android {
       )
     }
   }
-  testOptions { unitTests { isIncludeAndroidResources = true } }
+
+  testOptions {
+    unitTests {
+      isIncludeAndroidResources = true
+    }
+  }
+
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
   }
+}
+
+// Force Kotlin compilation and all JVM tests to run with headless AWT settings.
+// The Compose compiler compatibility flag is retained explicitly for CI builds.
+tasks.withType<KotlinCompile>().configureEach {
+  compilerOptions.freeCompilerArgs.addAll(
+    "-P",
+    "plugin:androidx.compose.compiler.plugins.kotlin:suppressKotlinVersionCompatibilityCheck=true"
+  )
+}
+
+tasks.withType<Test>().configureEach {
+  systemProperty("java.awt.headless", "true")
+  jvmArgs("-Djava.awt.headless=true")
 }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
@@ -112,8 +136,6 @@ dependencies {
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.lifecycle.viewmodel.compose)
   implementation(libs.androidx.navigation.compose)
-  implementation(libs.androidx.room.ktx)
-  implementation(libs.androidx.room.runtime)
   implementation("androidx.work:work-runtime-ktx:2.9.0")
   implementation("com.google.apis:google-api-services-drive:v3-rev20240123-2.0.0") {
     exclude(group = "org.apache.httpcomponents")
@@ -166,8 +188,8 @@ dependencies {
   androidTestImplementation(libs.androidx.espresso.core)
   androidTestImplementation(libs.androidx.junit)
   androidTestImplementation(libs.androidx.runner)
-  debugImplementation(libs.androidx.compose.ui.test.manifest)
-  debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
+  debugImplementation(libs.androidx.compose.ui.test.manifest)
+  debugImplementation(libs.androidx.compose.ui.tooling)
 }
