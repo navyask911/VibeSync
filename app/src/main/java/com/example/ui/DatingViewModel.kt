@@ -2004,6 +2004,119 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     // OTP & Authentication Flow
+    fun requestPhoneOtp(phone: String) {
+        val cleanPhone = phone.trim()
+        if (cleanPhone.filter { it.isDigit() }.length < 10) {
+            viewModelScope.launch {
+                _toastMessage.emit("Please enter a valid 10-digit mobile number.")
+            }
+            return
+        }
+
+        _activeMobile.value = cleanPhone
+        viewModelScope.launch {
+            val result = com.example.util.SupabaseAuthManager.sendPhoneOtp(
+                context = getApplication<Application>(),
+                phone = cleanPhone
+            )
+            result.onSuccess {
+                _toastMessage.emit("Verification code sent to ${cleanPhone}")
+            }.onFailure { error ->
+                _toastMessage.emit(
+                    "Unable to send verification code: ${error.message ?: "Please try again"}"
+                )
+            }
+        }
+    }
+
+    private suspend fun finalizePhoneAuthenticatedSession(
+        phone: String,
+        firstName: String = "",
+        lastName: String = "",
+        avatarUrl: String = ""
+    ) {
+        val cleanPhone = phone.trim()
+        val suggestedName = listOf(firstName.trim(), lastName.trim())
+            .filter { it.isNotBlank() }
+            .joinToString(" ")
+        val current = repository.userPreferences.first() ?: UserPreferencesEntity()
+        val updated = current.copy(
+            userName = suggestedName.ifBlank { current.userName },
+            avatarUrl = avatarUrl.trim().ifBlank { current.avatarUrl },
+            isLoggedIn = true,
+            verifiedMobileNumber = cleanPhone,
+            isMobileVerified = true,
+            loginTimestamp = System.currentTimeMillis()
+        )
+
+        UserSessionManager.saveVerifiedSession(
+            getApplication<Application>(),
+            cleanPhone
+        )
+        repository.updatePreferences(updated)
+        _activeMobile.value = cleanPhone
+        _simulatedMobileOtp.value = null
+        _isMpinUnlocked.value = true
+        _showFaceVerification.value = false
+        _authState.value = AuthState.AUTHENTICATED
+
+        try {
+            repository.startAllSyncsAfterLogin()
+        } catch (e: Exception) {
+            android.util.Log.w("AuthSessionManager", "Post-login sync notice: ${e.message}")
+        }
+    }
+
+    fun completePhoneOtpLogin(phone: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                finalizePhoneAuthenticatedSession(phone)
+            } catch (e: Exception) {
+                android.util.Log.e("AuthSessionManager", "Unable to finalize phone login: ${e.message}", e)
+            }
+        }
+    }
+
+    fun verifyTruecallerProfile(profile: com.example.util.TruecallerProfileResult) {
+        if (profile.payload.isBlank() || profile.signature.isBlank()) {
+            viewModelScope.launch {
+                _toastMessage.emit("Truecaller verification response was incomplete. Please use phone OTP.")
+            }
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = com.example.util.SupabaseAuthManager.signInWithTruecaller(
+                context = getApplication<Application>(),
+                profile = profile
+            )
+
+            result.onSuccess { auth ->
+                finalizePhoneAuthenticatedSession(
+                    phone = auth.user.phone ?: profile.phoneNumber,
+                    firstName = auth.firstName,
+                    lastName = auth.lastName,
+                    avatarUrl = auth.avatarUrl
+                )
+                _toastMessage.emit(
+                    if (auth.firstName.isNotBlank()) {
+                        "Verified instantly with Truecaller. Welcome ${auth.firstName}!"
+                    } else {
+                        "Verified instantly with Truecaller."
+                    }
+                )
+            }.onFailure { error ->
+                android.util.Log.w(
+                    "TruecallerAuthFlow",
+                    "Truecaller Supabase exchange failed: ${error.message}"
+                )
+                _toastMessage.emit(
+                    "Truecaller verification could not be completed. Please use phone OTP."
+                )
+            }
+        }
+    }
+
     // Production authentication authority: Supabase Auth.
     // Truecaller/direct authentication is retained only as a DEBUG test hook.
     fun requestMobileOtp(mobile: String): String {
