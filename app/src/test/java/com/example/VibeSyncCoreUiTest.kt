@@ -49,7 +49,7 @@ class VibeSyncCoreUiTest {
         composeTestRule.onNodeWithTag("btn_continue_otp_main").assertIsEnabled().performClick()
         composeTestRule.waitForIdle()
 
-        assertEquals("9876543210", submitted.get())
+        assertEquals("+91 9876543210", submitted.get())
     }
 
     @Test
@@ -73,6 +73,7 @@ class VibeSyncCoreUiTest {
         composeTestRule.onNodeWithTag("input_secure_otp_code").performTextInput("123456")
         composeTestRule.onNodeWithTag("btn_verify_secure_otp").assertIsEnabled().performClick()
         composeTestRule.waitForIdle()
+        composeTestRule.waitUntil(timeoutMillis = 2_000) { verifiedPhone.get() != null }
 
         assertEquals("+919876543210", verifiedPhone.get())
 
