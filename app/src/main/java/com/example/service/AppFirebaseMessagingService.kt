@@ -4,9 +4,6 @@ import android.util.Log
 import com.example.util.AppNotificationManager
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 
 /**
  * AppFirebaseMessagingService
@@ -24,28 +21,7 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
         Log.i(TAG, "FCM token refreshed.")
         AppNotificationManager.updateCachedFcmToken(token)
 
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val userId = com.example.util.SupabaseAuthManager
-                    .getCachedSession(applicationContext)
-                    ?.user
-                    ?.id
-                    .orEmpty()
-
-                if (userId.isBlank()) {
-                    Log.d(TAG, "FCM token refreshed before Supabase authentication; registration deferred.")
-                    return@launch
-                }
-
-                com.example.util.SupabaseClientManager.upsertDeviceFcmToken(
-                    context = applicationContext,
-                    userId = userId,
-                    token = token
-                )
-            } catch (e: Exception) {
-                Log.d(TAG, "Notice saving refreshed FCM token: ${e.message}")
-            }
-        }
+        // FCM registration is intentionally independent of Supabase Auth sessions.
     }
 
     override fun onMessageReceived(remoteMessage: RemoteMessage) {
