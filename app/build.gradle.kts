@@ -156,9 +156,6 @@ dependencies {
   implementation(libs.firebase.messaging)
 
   // implementation(libs.firebase.analytics)
-  implementation(libs.androidx.credentials)
-  implementation(libs.androidx.credentials.play.services)
-  implementation(libs.googleid)
   implementation(libs.firebase.appcheck.recaptcha)
   implementation(libs.firebase.appcheck.debug)
   implementation(libs.kotlinx.coroutines.android)
@@ -168,7 +165,6 @@ dependencies {
   implementation(libs.moshi.kotlin)
   implementation(libs.okhttp)
   implementation(libs.play.services.location)
-  implementation(libs.play.services.auth)
   implementation("com.google.mlkit:face-detection:16.1.7")
   implementation("com.google.zxing:core:3.5.3")
   implementation("androidx.print:print:1.0.0")
