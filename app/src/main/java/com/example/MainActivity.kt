@@ -9,6 +9,7 @@ import com.example.ui.DatingAppRoot
 import com.example.ui.theme.MyApplicationTheme
 import com.example.util.AppNotificationManager
 import com.example.util.PlatformTruecallerVerificationClient
+import com.example.util.VibeSyncSessionManager
 
 class MainActivity : FragmentActivity() {
   private val truecallerActivityResultLauncher =
@@ -23,6 +24,7 @@ class MainActivity : FragmentActivity() {
 
     // Initialize Notification Channels
     AppNotificationManager.initChannels(this)
+    VibeSyncSessionManager.initialize(this)
 
     // Register the Truecaller OAuth ActivityResult launcher before initializing
     // the SDK. OAuth SDK 3.2.x uses the AndroidX ActivityResult contract.
