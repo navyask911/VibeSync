@@ -21,8 +21,6 @@ object UserSessionManager {
             defaultSp.edit()
                 .remove("pending_auth_token")
                 .remove("stale_session_token")
-                .remove("cached_otp_session")
-                .remove("temp_login_state")
                 .apply()
 
         } catch (e: Exception) {
@@ -52,7 +50,13 @@ object UserSessionManager {
         }
     }
 
-    fun saveVerifiedSession(context: Context, phoneNumber: String) {
+    fun saveVerifiedSession(
+        context: Context,
+        phoneNumber: String,
+        sessionToken: String,
+        profileId: String,
+        expiresAtEpochSeconds: Long
+    ) {
         try {
             val publicKeyset = TinkCryptoManager.getMyPublicKeysetJson(context)
             val sp: SharedPreferences = context.getSharedPreferences(PREFS_AUTH_SESSION, Context.MODE_PRIVATE)
@@ -64,7 +68,14 @@ object UserSessionManager {
             if (publicKeyset.isNotBlank()) {
                 sp.edit().putString("public_identity_key", publicKeyset).apply()
             }
-            Log.i(TAG, "Successfully saved verified session and Tink keyset for phone: $phoneNumber")
+            VibeSyncSessionManager.saveSession(
+                context = context,
+                sessionToken = sessionToken,
+                profileId = profileId,
+                phoneNumber = phoneNumber,
+                expiresAtEpochSeconds = expiresAtEpochSeconds
+            )
+            Log.i(TAG, "Saved local Truecaller verification state and encrypted VibeSync session.")
         } catch (e: Exception) {
             Log.e(TAG, "Error saving verified session: ${e.message}", e)
         }
