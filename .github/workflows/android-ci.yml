@@ -259,3 +259,4 @@ jobs:
             app/build/outputs/apk/release/*.apk
             app/build/outputs/bundle/release/*.aab
             app/build/test-results/test/**/*.xml
+            store-assets/vibesync-store-graphic-512.png
