@@ -1,4 +1,5 @@
 name: VibeSync Android Release CI
+# Release verification deliberately uses JVM tests plus signed APK/AAB packaging; no emulator gate.
 # Primary release gate: source, JVM/Compose tests, signing, APK/AAB packaging and artifact verification.
 
 on:
