@@ -51,23 +51,6 @@ jobs:
         with:
           gradle-version: "9.3.1"
 
-      - name: Android SDK
-        env:
-          ANDROID_HOME: /usr/local/lib/android/sdk
-          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-        run: |
-          SDKMANAGER="$(find "$ANDROID_SDK_ROOT" -type f -name sdkmanager | head -n 1)"
-          test -n "$SDKMANAGER"
-          "$SDKMANAGER" --version
-          yes | "$SDKMANAGER" --licenses >/dev/null || true
-
-          if [ ! -f "$ANDROID_SDK_ROOT/platforms/android-35/android.jar" ] || [ ! -x "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt2" ]; then
-            "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-          else
-            echo "Android SDK 35/build-tools 35 already installed on runner."
-          fi
-
-
       - name: Secret scan
         run: |
           set -o pipefail
