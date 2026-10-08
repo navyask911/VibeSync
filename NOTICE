@@ -1,5 +1,21 @@
-VibeSync proprietary software.
+# VibeSync Software Notice
 
 Copyright © 2026 VibeSync. All rights reserved.
 
-Third-party libraries, fonts, SDKs, and other dependencies remain subject to their respective licenses. This notice does not grant rights to VibeSync proprietary source code, branding, product design, database design, business logic, or documentation.
+## Proprietary material
+
+The VibeSync source code, architecture, database design, application logic, original UI/UX, branding, business specifications and original documentation are proprietary unless separately licensed in writing.
+
+## Third-party material
+
+VibeSync incorporates third-party libraries, Android/Google SDKs, Firebase SDKs, Supabase services, fonts, media/tooling and other components.
+
+Those components remain subject to their respective licenses and notices. This file does not grant ownership of or modify third-party rights.
+
+For release distribution, the complete third-party attribution set should be generated from the exact resolved dependency graph used for that release.
+
+## Generated release artifacts
+
+APK/AAB artifacts are release products of the VibeSync application. Their distribution rights remain subject to the VibeSync license and any applicable third-party notices.
+
+**Copyright © 2026 VibeSync. All rights reserved.**
