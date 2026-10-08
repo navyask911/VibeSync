@@ -87,9 +87,7 @@ See docs/FIREBASE_COMPATIBILITY_AND_FREE_TIER.md.
 
 Every release candidate must pass:
 
-- Gradle/JVM unit tests;
-- Compose UI tests under Robolectric;
-- on-device Compose UI smoke tests;
+- Standard `./gradlew test` unit + JVM Compose UI tests;
 - secret scanning;
 - debug APK packaging;
 - signed release APK packaging;
@@ -113,7 +111,8 @@ See docs/TESTING.md and docs/RELEASE_SECURITY_CHECKLIST.md.
 
 - Android SDK 35
 - Java 21
-- Gradle 9.3.1 in CI
+- Gradle 9.3.1
+- Release commands use `./gradlew`
 
 Local commands:
 
