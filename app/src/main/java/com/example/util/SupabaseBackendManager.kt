@@ -557,13 +557,14 @@ object SupabaseBackendManager {
     ): Boolean = withContext(Dispatchers.IO) {
         if (messageId.isBlank()) return@withContext false
         try {
-            val accessToken = SUPABASE_ANON_KEY
+            val accessToken = VibeSyncSessionManager.getToken() ?: return@withContext false
             val body = JSONObject().apply { put("p_message_id", messageId) }
                 .toString().toRequestBody("application/json".toMediaType())
             val request = Request.Builder()
                 .url("$SUPABASE_URL/rest/v1/rpc/ack_message_delivery")
                 .header("apikey", SUPABASE_ANON_KEY)
-                .header("Authorization", "Bearer $accessToken")
+                .header("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .header("x-vibesync-session", accessToken)
                 .header("Content-Type", "application/json")
                 .post(body)
                 .build()
