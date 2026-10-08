@@ -43,6 +43,7 @@ class VibeSyncCoreUiTest {
 
         composeTestRule.onNodeWithText("Welcome to VibeSync").assertExists()
         composeTestRule.onNodeWithTag("input_mobile_number").assertExists()
+        composeTestRule.waitForIdle()
 
         composeTestRule.onNodeWithTag("input_mobile_number").performTextClearance()
         composeTestRule.onNodeWithTag("input_mobile_number").performTextInput("9972396133")
