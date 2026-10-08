@@ -45,11 +45,11 @@ class VibeSyncCoreUiTest {
         composeTestRule.onNodeWithTag("input_mobile_number").assertExists()
 
         composeTestRule.onNodeWithTag("input_mobile_number").performTextClearance()
-        composeTestRule.onNodeWithTag("input_mobile_number").performTextInput("9876543210")
+        composeTestRule.onNodeWithTag("input_mobile_number").performTextInput("9972396133")
         composeTestRule.onNodeWithTag("btn_continue_otp_main").assertIsEnabled().performClick()
         composeTestRule.waitForIdle()
 
-        assertEquals("+91 9876543210", submitted.get())
+        assertEquals("+91 9972396133", submitted.get())
     }
 
     @Test
