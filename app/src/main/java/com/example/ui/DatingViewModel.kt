@@ -2079,7 +2079,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun verifyTruecallerProfile(profile: com.example.util.TruecallerProfileResult) {
-        if (profile.payload.isBlank() || profile.signature.isBlank()) {
+        if (profile.authorizationCode.isBlank() || profile.codeVerifier.isBlank() || profile.state.isBlank()) {
             viewModelScope.launch {
                 _toastMessage.emit("Truecaller verification response was incomplete. Please use phone OTP.")
             }
