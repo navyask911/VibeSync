@@ -33,6 +33,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  JAVA_TOOL_OPTIONS: "-Djava.awt.headless=true"
+
 jobs:
   android-release:
     runs-on: ubuntu-latest
