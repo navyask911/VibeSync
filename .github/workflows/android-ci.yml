@@ -1,5 +1,5 @@
 name: VibeSync Android CI
-# Hardened release gate: build must pass before artifacts are published
+# Release gate: source, JVM UI tests, on-device Compose UI tests, signing and packaging must pass.
 
 on:
   push:
@@ -15,6 +15,14 @@ on:
       - "gradle.properties"
       - "scripts/**"
       - ".github/workflows/android-ci.yml"
+      - "README.md"
+      - "PRIVACY.md"
+      - "TERMS.md"
+      - "LICENSE"
+      - "NOTICE"
+      - "SECURITY.md"
+      - "SUPPORT.md"
+      - "docs/**"
   workflow_dispatch:
 
 concurrency:
@@ -52,39 +60,75 @@ jobs:
           "$SDKMANAGER" --version
           yes | "$SDKMANAGER" --licenses >/dev/null || true
 
-          if [ ! -f "$ANDROID_SDK_ROOT/platforms/android-35/android.jar" ] ||              [ ! -x "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt2" ]; then
-            "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          if [ ! -f "$ANDROID_SDK_ROOT/platforms/android-35/android.jar" ] || [ ! -x "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt2" ]; then
+            "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0" "emulator" "system-images;android-35;google_apis;x86_64"
           else
             echo "Android SDK 35/build-tools 35 already installed on runner."
           fi
 
+          yes | "$SDKMANAGER" "system-images;android-35;google_apis;x86_64" >/dev/null || true
+
       - name: Secret scan
         run: |
           set -o pipefail
-          # Scan source/config for credential *values*. Variable names and parsing patterns are not secrets.
-          if find . -type f \
-              \( -name "*.kt" -o -name "*.java" -o -name "*.kts" -o -name "*.gradle" -o -name "*.gradle.kts" -o -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.xml" -o -name "*.properties" \) \
-              ! -path "./.git/*" \
-              ! -path "./source-archive/*" \
-              ! -path "./.github/*" \
-              ! -path "./build/*" \
-              ! -path "./app/build/*" \
-              ! -path "./app/google-services.json" \
-              -print0 | xargs -0 -r grep -nH -E "\"private_key\"[[:space:]]*:[[:space:]]*\"-----BEGIN|AIzaSy[A-Za-z0-9_-]{30,}|sb_secret_[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{40,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}" 2>/dev/null; then
+          if find . -type f               \( -name "*.kt" -o -name "*.java" -o -name "*.kts" -o -name "*.gradle" -o -name "*.gradle.kts" -o -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.xml" -o -name "*.properties" \)               ! -path "./.git/*"               ! -path "./source-archive/*"               ! -path "./.github/*"               ! -path "./build/*"               ! -path "./app/build/*"               ! -path "./app/google-services.json"               -print0 | xargs -0 -r grep -nH -E "\"private_key\"[[:space:]]*:[[:space:]]*\"-----BEGIN|AIzaSy[A-Za-z0-9_-]{30,}|sb_secret_[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{40,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}" 2>/dev/null; then
             echo "Credential value pattern found in application source"
             exit 1
           fi
-      - name: Unit tests
+
+      - name: JVM unit + Compose UI tests
         run: gradle --no-daemon test
+
+      - name: On-device Compose UI tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          emulator-options: "-no-window -no-audio -no-boot-anim -gpu swiftshader_indirect"
+          disable-animations: true
+          script: gradle --no-daemon connectedDebugAndroidTest
 
       - name: Debug APK
         run: gradle --no-daemon assembleDebug
+
+      - name: Prepare release signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
+            echo "KEYSTORE_BASE64 secret is required for the release gate."
+            exit 1
+          fi
+          if [ -z "${STORE_PASSWORD:-}" ] || [ -z "${KEY_PASSWORD:-}" ]; then
+            echo "STORE_PASSWORD and KEY_PASSWORD secrets are required for the release gate."
+            exit 1
+          fi
+          KEYSTORE_FILE="${RUNNER_TEMP}/vibesync-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+          test -s "$KEYSTORE_FILE"
+          echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+          echo "STORE_PASSWORD=$STORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+          echo "KEY_ALIAS=${KEY_ALIAS:-upload}" >> "$GITHUB_ENV"
 
       - name: Release APK
         run: gradle --no-daemon assembleRelease
 
       - name: Release AAB
         run: gradle --no-daemon bundleRelease
+
+      - name: Verify release artifacts
+        run: |
+          set -euo pipefail
+          test -s app/build/outputs/apk/release/*.apk
+          test -s app/build/outputs/bundle/release/*.aab
+          ls -lh app/build/outputs/apk/release/*.apk app/build/outputs/bundle/release/*.aab
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
@@ -96,3 +140,5 @@ jobs:
             app/build/outputs/apk/release/*.apk
             app/build/outputs/bundle/release/*.aab
             app/build/test-results/test/**/*.xml
+            app/build/outputs/androidTest-results/connected/**/*.xml
+            app/build/outputs/connected_android_test_additional_output/**/*
