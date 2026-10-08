@@ -46,11 +46,11 @@ class VibeSyncCoreUiTest {
         composeTestRule.waitForIdle()
 
         composeTestRule.onNodeWithTag("input_mobile_number").performTextClearance()
-        composeTestRule.onNodeWithTag("input_mobile_number").performTextInput("9972396133")
+        composeTestRule.onNodeWithTag("input_mobile_number").performTextInput("9449878908")
         composeTestRule.onNodeWithTag("btn_continue_otp_main").assertIsEnabled().performClick()
         composeTestRule.waitForIdle()
 
-        assertEquals("+91 9972396133", submitted.get())
+        assertEquals("+91 9449878908", submitted.get())
     }
 
     @Test
@@ -60,7 +60,7 @@ class VibeSyncCoreUiTest {
         composeTestRule.setContent {
             MyApplicationTheme {
                 OtpVerificationScreen(
-                    phoneNumber = "+919876543210",
+                    phoneNumber = "+919449878908",
                     simulatedOtpCode = "123456",
                     onVerificationSuccess = { phone, _ -> verifiedPhone.set(phone) },
                     onBackToPhoneInput = {}
@@ -76,7 +76,7 @@ class VibeSyncCoreUiTest {
         composeTestRule.waitForIdle()
         composeTestRule.waitUntil(timeoutMillis = 2_000) { verifiedPhone.get() != null }
 
-        assertEquals("+919876543210", verifiedPhone.get())
+        assertEquals("+919449878908", verifiedPhone.get())
 
         composeTestRule.onNodeWithTag("opt_user_text_sms").performClick()
         composeTestRule.onNodeWithText("Disabled until a server-side verification gateway is connected").assertExists()
