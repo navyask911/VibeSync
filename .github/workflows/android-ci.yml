@@ -143,10 +143,16 @@ jobs:
             -storepass "$KEYSTORE_PASSWORD" \
             -alias "$SIGNING_ALIAS" \
             | awk -F": " '/SHA256:/{print $2; exit}' | tr -d "\r" | tr '[:lower:]' '[:upper:]')
-          test -n "$CERT_SHA1"
-          test -n "$CERT_SHA256"
-          test "$CERT_SHA1" = "$VIBESYNC_RELEASE_SHA1"
-          test "$CERT_SHA256" = "$VIBESYNC_RELEASE_SHA256"
+          echo "Keystore certificate SHA-1: $CERT_SHA1"
+          echo "Keystore certificate SHA-256: $CERT_SHA256"
+          if [ "$CERT_SHA1" != "$VIBESYNC_RELEASE_SHA1" ]; then
+            echo "Release SHA-1 mismatch."
+            exit 1
+          fi
+          if [ "$CERT_SHA256" != "$VIBESYNC_RELEASE_SHA256" ]; then
+            echo "Release SHA-256 mismatch."
+            exit 1
+          fi
           echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
           echo "STORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
           echo "KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
