@@ -176,7 +176,7 @@ dependencies {
   implementation("com.google.zxing:core:3.5.3")
   implementation("androidx.print:print:1.0.0")
   implementation("com.google.crypto.tink:tink-android:1.13.0")
-  implementation("com.truecaller.android.sdk:truecaller-sdk:2.8.0")
+  implementation("com.truecaller.android.sdk:truecaller-sdk:3.2.1")
   implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
