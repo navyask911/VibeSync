@@ -125,6 +125,7 @@ object SupabaseClientManager {
             .addHeader("apikey", SUPABASE_PUBLISHABLE_KEY)
             .addHeader("Authorization", "Bearer ${SUPABASE_PUBLISHABLE_KEY}")
             .addHeader("Content-Type", "application/json")
+        VibeSyncSessionManager.getToken()?.let { builder.addHeader("x-vibesync-session", it) }
             .apply {
                 VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) }
             }
@@ -397,7 +398,7 @@ object SupabaseClientManager {
      */
     suspend fun dispatchEncryptedMessagePush(messageId: String): Boolean = withContext(Dispatchers.IO) {
         if (messageId.isBlank()) return@withContext false
-        val token = SUPABASE_PUBLISHABLE_KEY
+        val token = VibeSyncSessionManager.getToken() ?: return@withContext false
         try {
             val body = JSONObject().apply { put("message_id", messageId) }.toString()
             val request = Request.Builder()
