@@ -79,6 +79,7 @@ import com.example.ui.theme.CoralPink
 import com.example.ui.theme.LikeGreen
 import com.example.ui.theme.RomanticViolet
 import com.example.ui.theme.VibeSyncTeal
+import com.example.util.SupabaseAuthManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
