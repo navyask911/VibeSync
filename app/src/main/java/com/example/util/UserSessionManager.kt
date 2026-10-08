@@ -14,6 +14,8 @@ object UserSessionManager {
             val sp: SharedPreferences = context.getSharedPreferences(PREFS_AUTH_SESSION, Context.MODE_PRIVATE)
             sp.edit().clear().apply()
 
+            VibeSyncSessionManager.clear(context)
+
             // Also clear default shared preferences auth keys if any exist
             val defaultSp = context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE)
             defaultSp.edit()
@@ -71,6 +73,7 @@ object UserSessionManager {
     fun clearVerifiedSession(context: Context) {
         try {
             context.getSharedPreferences(PREFS_AUTH_SESSION, Context.MODE_PRIVATE).edit().clear().apply()
+            VibeSyncSessionManager.clear(context)
         } catch (e: Exception) {
             Log.w(TAG, "Unable to clear local verified session: ${e.message}")
         }
