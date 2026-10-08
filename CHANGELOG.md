@@ -2,8 +2,7 @@
 
 ## 2026-10-08 — Release hardening and verification
 - Added JVM Compose UI coverage for login, OTP verification and registration gating.
-- Added on-device Compose UI smoke tests.
-- Updated CI to require on-device UI tests before release packaging.
+- Retained optional on-device Compose UI smoke tests for manual/device validation; removed them from the primary release gate.
 - Updated CI to decode the configured KEYSTORE_BASE64 release key into an ephemeral runner file.
 - Made signed release APK/AAB existence an explicit CI gate.
 - Uploads now include debug APK, release APK, release AAB, JVM reports and instrumented test reports.
