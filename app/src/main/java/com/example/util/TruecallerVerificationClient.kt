@@ -134,7 +134,6 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
 
                     val sdkOptions = TcSdkOptions.Builder(activity, sdkCallback)
                         .consentMode(TcSdkOptions.CONSENT_MODE_BOTTOMSHEET)
-                        .footerType(TcSdkOptions.FOOTER_TYPE_ANOTHER_METHOD)
                         .consentHeadingOption(TcSdkOptions.SDK_CONSENT_HEADING_LOG_IN_TO)
                         .ctaText(TcSdkOptions.CTA_TEXT_CONTINUE)
                         .sdkOptions(TcSdkOptions.OPTION_VERIFY_ONLY_TC_USERS)
