@@ -9,6 +9,9 @@ import org.json.JSONObject
 
 data class VerifiedTruecallerIdentity(
     val phone: String,
+    val profileId: String,
+    val sessionToken: String,
+    val expiresAtEpochSeconds: Long,
     val firstName: String,
     val lastName: String,
     val avatarUrl: String
@@ -53,16 +56,28 @@ object TruecallerAuthGateway {
                         )
                     }
 
-                    val phone = root.optString("phone", "").trim()
-                    if (phone.isBlank()) {
+                    if (!root.optBoolean("verified", false)) {
                         return@withContext Result.failure(
-                            IllegalStateException("Truecaller gateway returned no verified phone")
+                            IllegalStateException("Truecaller verification was not confirmed")
+                        )
+                    }
+
+                    val phone = root.optString("phone", "").trim()
+                    val profileId = root.optString("profile_id", "").trim()
+                    val sessionToken = root.optString("session_token", "").trim()
+                    val expiresAt = root.optLong("expires_at", 0L)
+                    if (phone.isBlank() || profileId.isBlank() || sessionToken.isBlank() || expiresAt <= 0L) {
+                        return@withContext Result.failure(
+                            IllegalStateException("Truecaller gateway returned an incomplete VibeSync session")
                         )
                     }
 
                     Result.success(
                         VerifiedTruecallerIdentity(
                             phone = phone,
+                            profileId = profileId,
+                            sessionToken = sessionToken,
+                            expiresAtEpochSeconds = expiresAt,
                             firstName = root.optString("first_name", "").trim(),
                             lastName = root.optString("last_name", "").trim(),
                             avatarUrl = root.optString("avatar_url", "").trim()
