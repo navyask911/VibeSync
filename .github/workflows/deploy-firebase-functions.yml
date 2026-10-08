@@ -7,6 +7,7 @@ on:
       - vibesync-hardening-2026-10-07
     paths:
       - 'app/functions/**'
+      - '.github/workflows/deploy-firebase-functions.yml'
   workflow_dispatch:
 
 permissions:
@@ -78,6 +79,30 @@ jobs:
 
       - name: Install Firebase CLI
         run: npm install --global firebase-tools
+
+      - name: Setup Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: vibesync-chat-social-connect
+
+      - name: Check Secret Manager API availability
+        shell: bash
+        env:
+          GCP_PROJECT_ID: vibesync-chat-social-connect
+        run: |
+          set -euo pipefail
+          enabled="$(gcloud services list --enabled \
+            --project "$GCP_PROJECT_ID" \
+            --filter='config.name=secretmanager.googleapis.com' \
+            --format='value(config.name)')"
+          if [[ "$enabled" != "secretmanager.googleapis.com" ]]; then
+            echo "::error::Secret Manager API is not enabled for $GCP_PROJECT_ID."
+            echo "A Google Cloud project owner must enable it at:"
+            echo "https://console.cloud.google.com/apis/library/secretmanager.googleapis.com?project=$GCP_PROJECT_ID"
+            echo "Alternatively grant the deployment service account serviceusage.services.enable, enable the API once, then rerun this workflow."
+            exit 1
+          fi
+          echo "Secret Manager API is enabled."
 
       - name: Validate and stage webhook secret
         shell: bash
