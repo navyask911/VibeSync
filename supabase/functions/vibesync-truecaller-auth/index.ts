@@ -3,7 +3,7 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
 const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const truecallerAppKey = Deno.env.get("TRUECALLER_APP_KEY") ?? "";
+const EXPECTED_PACKAGE_VERIFIER = "WQuYgMzFxBPqeqLHW3WdXRth1KR7FZv/l9Ci6SabNvI=";
 const registeredPackage = "com.aistudio.freedating.mkwvxq";
 const requestTtlSeconds = 600;
 
@@ -38,21 +38,6 @@ function equal(a: string, b: string): boolean {
   return diff === 0;
 }
 
-async function hmac(secret: string, message: string) {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  return new Uint8Array(await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(message),
-  ));
-}
-
 async function verifyProfile(input: any) {
   if (!truecallerAppKey) throw new Error("TRUECALLER_APP_KEY is not configured");
   if (!input?.payload || !input?.signature || input?.signature_algorithm !== "SHA512withRSA") {
@@ -73,11 +58,11 @@ async function verifyProfile(input: any) {
   }
 
   const verifier = String(payload.verifier ?? "");
-  const expected = await hmac(truecallerAppKey, registeredPackage);
-  if (!equal(verifier, b64encode(expected)) && !equal(verifier.toLowerCase(), hex(expected))) {
+  const normalizedVerifier = verifier.replace(/-/g, "+").replace(/_/g, "/").replace(/=+$/g, "");
+  const expectedVerifier = EXPECTED_PACKAGE_VERIFIER.replace(/=+$/g, "");
+  if (!equal(verifier, EXPECTED_PACKAGE_VERIFIER) && !equal(normalizedVerifier, expectedVerifier)) {
     throw new Error("truecaller_package_verifier_mismatch");
   }
-
   const keyResponse = await fetch("https://api4.truecaller.com/v1/key", {
     headers: { accept: "application/json" },
   });
