@@ -324,14 +324,11 @@ fun OtpVerificationScreen(
                             onClick = {
                                 keyboardController?.hide()
                                 focusManager.clearFocus()
-                                isSubmitting = true
                                 otpErrorMessage = null
-
-                                // 2. Purge Stale / Corrupted Auth Sessions on New OTP Verification
-                                com.example.util.UserSessionManager.clearStaleAuthSessions(context)
 
                                 val clean = enteredOtpCode.trim()
                                 if (com.example.BuildConfig.DEBUG && !simulatedOtpCode.isNullOrBlank()) {
+                                    isSubmitting = true
                                     if (clean == simulatedOtpCode.trim()) {
                                         onVerificationSuccess(phoneNumber, "Simulated Debug OTP")
                                     } else {
@@ -341,6 +338,11 @@ fun OtpVerificationScreen(
                                     }
                                     return@Button
                                 }
+
+                                isSubmitting = true
+
+                                // Purge stale / corrupted auth sessions before the production OTP verification.
+                                com.example.util.UserSessionManager.clearStaleAuthSessions(context)
 
                                 coroutineScope.launch {
                                     try {
