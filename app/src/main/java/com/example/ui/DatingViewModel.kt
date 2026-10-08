@@ -232,16 +232,21 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 val prefs = kotlinx.coroutines.withTimeoutOrNull(2500L) {
                     repository.userPreferences.firstOrNull()
                 }
-                if (prefs != null && prefs.isLoggedIn && prefs.userName.isNotBlank()) {
+                val hasVibeSyncSession = com.example.util.VibeSyncSessionManager.hasValidSession(getApplication())
+                if (prefs != null && prefs.isLoggedIn && prefs.userName.isNotBlank() && hasVibeSyncSession) {
                     val thirtyDaysMillis = 30L * 24 * 60 * 60 * 1000L
                     val isExpired = prefs.loginTimestamp > 0L && (System.currentTimeMillis() - prefs.loginTimestamp) > thirtyDaysMillis
                     if (!isExpired) {
                         android.util.Log.i("AuthSessionManager", "[AUTH STATE] Session valid: userName=${prefs.userName}")
                         _authState.value = AuthState.AUTHENTICATED
                     } else {
+                        com.example.util.VibeSyncSessionManager.clear(getApplication())
                         _authState.value = AuthState.UNAUTHENTICATED
                     }
                 } else {
+                    if (prefs?.isLoggedIn == true && !hasVibeSyncSession) {
+                        com.example.util.UserSessionManager.clearVerifiedSession(getApplication())
+                    }
                     _authState.value = AuthState.UNAUTHENTICATED
                 }
             } catch (e: Exception) {
