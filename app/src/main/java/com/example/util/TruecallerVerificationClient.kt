@@ -125,7 +125,7 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
                         .consentMode(TcSdkOptions.CONSENT_MODE_BOTTOMSHEET)
                         .footerType(TcSdkOptions.FOOTER_TYPE_ANOTHER_METHOD)
                         .consentTitleOption(TcSdkOptions.SDK_CONSENT_TITLE_LOG_IN)
-                        .heading(TcSdkOptions.SDK_CONSENT_HEADING_LOGIN_TO_WITH_ONE_TAP)
+                        .consentHeadingOption(TcSdkOptions.SDK_CONSENT_HEADING_LOGIN_TO_WITH_ONE_TAP)
                         .ctaText(TcSdkOptions.CTA_TEXT_CONTINUE)
                         .sdkOptions(TcSdkOptions.OPTION_VERIFY_ONLY_TC_USERS)
                         .build()
