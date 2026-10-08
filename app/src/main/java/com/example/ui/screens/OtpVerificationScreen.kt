@@ -92,6 +92,7 @@ enum class OtpOptionMode {
 fun OtpVerificationScreen(
     phoneNumber: String,
     simulatedOtpCode: String? = null,
+    enableSimulatedOtpForTesting: Boolean = com.example.BuildConfig.DEBUG,
     onVerificationSuccess: (verifiedPhone: String, authMethod: String) -> Unit,
     onBackToPhoneInput: () -> Unit,
     modifier: Modifier = Modifier
@@ -327,7 +328,7 @@ fun OtpVerificationScreen(
                                 otpErrorMessage = null
 
                                 val clean = enteredOtpCode.trim()
-                                if (com.example.BuildConfig.DEBUG && !simulatedOtpCode.isNullOrBlank()) {
+                                if (enableSimulatedOtpForTesting && !simulatedOtpCode.isNullOrBlank()) {
                                     isSubmitting = true
                                     if (clean == simulatedOtpCode.trim()) {
                                         onVerificationSuccess(phoneNumber, "Simulated Debug OTP")
