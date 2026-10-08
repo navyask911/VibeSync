@@ -1,169 +1,164 @@
 # VibeSync
 
-**VibeSync is a proprietary Android social + business platform built around privacy-preserving contact discovery, local-first operation, secure private communication, and a low-persistent-state serverless backend.**
+**VibeSync is a privacy-first Android social, communication, discovery, and business platform built for local-first operation and controlled serverless infrastructure.**
 
-## Product purpose
+## What VibeSync is
 
-VibeSync combines:
+VibeSync brings together adult social and relationship discovery, private communication, phonebook-based contact discovery, business tools, wallet/points, sponsored placements, safety reporting, and account recovery.
 
-- private contact discovery without maintaining a user's complete address book as a cloud dataset;
-- profile discovery, connection/matching, and private conversations;
-- local-first/offline chat and media workflows;
-- business profiles, broadcasts, wallet, analytics, and ethical native advertising;
-- serverless backend control for authentication, authorization, push dispatch, business accounting, safety, and auditability.
+The application is Kotlin + Jetpack Compose with Room for local state, Supabase for authoritative application services, Google Tink for supported message encryption, Firebase Cloud Messaging (FCM) for push transport, and object storage for large media.
 
-## Production architecture
+## Architecture and ownership
 
-```text
-Android / Kotlin + Compose
+~~~text
+Android / Kotlin / Compose
         |
        Room
         |
-  local-first state
+ local-first state
         |
-        +------------------+
-        |                  |
-   Supabase Auth       Google Tink
-        |                  |
-        +--------+---------+
-                 |
-          Supabase/Postgres
-                 |
-        +--------+---------+
-        |                  |
-   Edge Functions       Realtime
-        |
-   +----+----+------------------+
-   |         |                  |
-  FCM      Gemini              R2
- push      server-side       large media
-```
+   +----+-------------------+
+   |                        |
+Supabase Auth          Google Tink
+   |                        |
+   +-----------+------------+
+               |
+        Supabase / Postgres
+               |
+        Edge Functions + RPC
+          |       |       |
+         FCM    Realtime  R2
+~~~
 
-## Backend ownership
+**Authoritative application backend:** Supabase Auth + Postgres + reviewed RPCs/Edge Functions.
 
-**Supabase** is authoritative for application identity, structured application state, controlled RPCs, Edge Functions, business accounting, and security policies.
+**Firebase boundary:** FCM remains a push transport. Existing Firebase Realtime Database / Firestore records may remain available only for explicitly reviewed migration, reconciliation, diagnostics, or legacy-compatibility paths. No new feature should silently introduce a permanent Firebase application-data silo.
 
-**Firebase** is retained for **Firebase Cloud Messaging (FCM)** push delivery. The existing Firebase project/data may be used as a controlled legacy compatibility or migration source, but new authoritative VibeSync application data belongs in Supabase.
+**Local data:** Room is the device-local cache/storage boundary. It is not the identity, accounting, or legal authority.
 
-**Google Tink** is the application cryptography boundary for supported private-message encryption. Encryption failure is fail-closed.
+**Cryptography:** Supported private-message flows use Google Tink and fail closed when encryption/decryption requirements are not met. VibeSync does not claim to be impossible to hack.
 
-**Room** is the local-first data/cache layer and is not a financial or identity authority.
+**Media:** Large objects belong in object storage such as Cloudflare R2; Postgres should retain metadata/references instead of binary media.
 
-**R2/object storage** holds large media. PostgreSQL should hold metadata/references rather than media binaries.
-
-## Privacy
+## Privacy model
 
 VibeSync follows data minimization:
 
-- the complete device address book is not uploaded as a permanent cloud dataset;
-- contact discovery uses locally derived privacy-preserving identifiers;
-- plain SHA-256 phone hashing is **not** called zero-knowledge cryptography;
-- a stronger PSI/OPRF-style protocol is the target for a future reviewed contact-discovery implementation;
-- phone numbers are not the primary application identity;
-- Supabase Auth UUIDs are the authoritative identities.
+- raw device address books remain on the device;
+- contact discovery uses locally derived pseudonymous representations;
+- plain SHA-256 phone hashing is not described as formal zero-knowledge cryptography;
+- phone numbers are not the primary account identity;
+- Supabase Auth UUIDs are the authoritative account identifiers;
+- private-message transport rejects plaintext where encrypted transport is required.
 
-See `docs/CONTACT_DISCOVERY.md` and `docs/PRIVACY_AND_CONTACT_DISCOVERY.md`.
+See docs/CONTACT_DISCOVERY.md and docs/PRIVACY_AND_CONTACT_DISCOVERY.md.
 
-## Security
+## Safety and trust
 
-VibeSync does not make an impossible-to-hack claim. It uses defense in depth:
+The product includes adult-first dating/romantic discovery controls, block/report/moderation flows, account deletion and local-data clearing, lawful-request handling, no universal decryption backdoor, and explicit advertising disclosures.
 
-- authenticated Supabase RLS;
-- server-authoritative privileged RPCs;
-- Android Keystore protected session material;
-- Google Tink encryption;
-- secret scanning in CI;
-- fail-closed encrypted-message handling;
-- server-side FCM dispatch;
-- short-lived/expired delivery state;
-- server-authoritative business ledger controls.
-
-See `SECURITY.md`, `docs/SECURITY_THREAT_MODEL.md`, and `docs/RELEASE_SECURITY_CHECKLIST.md`.
-
-## Lawful requests and safety
-
-VibeSync supports a documented process for lawful requests, preservation, abuse reporting, safety escalation, and auditable disclosure decisions. It does **not** provide a universal message-decryption backdoor.
-
-See `docs/LAW_ENFORCEMENT_AND_DATA_REQUESTS.md` and `docs/MINOR_SAFETY.md`.
+See docs/MINOR_SAFETY.md, docs/LAW_ENFORCEMENT_AND_DATA_REQUESTS.md, and docs/AD_POLICY.md.
 
 ## Business platform
 
-The business suite is designed for revenue generation before infrastructure needs to scale:
+Business features are designed around transparent accounting and first-party controls: business profiles and venue discovery, follower broadcasts, VibeSync Points, campaign/impression accounting, direct business messaging/API concepts, and native sponsored placement.
 
-- ethical native CPM advertising;
-- local-business discovery;
-- follower broadcasts;
-- business wallet/points;
-- transaction and delivery accounting;
-- direct business chat/API/webhooks.
+The current product specification uses 1 VibeSync Point = INR 0.05. Real payments should be handled by approved payment providers; VibeSync should not store card credentials.
 
-The business specification defines **1 VibeSync Point = ₹0.05**. Actual payment processing remains with approved payment providers; VibeSync should retain transaction references rather than card credentials.
+See docs/BUSINESS_PLATFORM.md.
 
-See `docs/BUSINESS_PLATFORM.md` and `docs/AD_POLICY.md`.
+## Firebase and free-tier boundary
 
-## Firebase and free-tier rule
+The existing Firebase project may be used during transition, but it must not become an uncontrolled second application backend.
 
-The existing Firebase project is currently operated under the no-cost Firebase plan. VibeSync engineering must not activate paid Firebase/Blaze billing as part of this development track.
+Approved uses include:
 
-FCM remains the preferred push transport because push delivery itself is not the application data store.
+1. FCM push notification delivery;
+2. explicitly reviewed legacy reads/migration/reconciliation;
+3. bounded diagnostics where the feature still depends on legacy records.
 
-See `docs/FIREBASE_COMPATIBILITY_AND_FREE_TIER.md`.
+Service-account credentials are server-only. They must never be committed, embedded in the APK, logged, or pasted into chat.
 
-## Build
+VibeSync development must not enable paid Firebase/Blaze billing without explicit owner approval.
 
-Requirements:
+See docs/FIREBASE_COMPATIBILITY_AND_FREE_TIER.md.
+
+## Testing and release gates
+
+Every release candidate must pass:
+
+- Gradle/JVM unit tests;
+- Compose UI tests under Robolectric;
+- on-device Compose UI smoke tests;
+- secret scanning;
+- debug APK packaging;
+- signed release APK packaging;
+- signed release AAB packaging;
+- artifact existence verification.
+
+CI uploads:
+
+~~~text
+VibeSync-Android/
+├── debug APK
+├── signed release APK
+├── signed release AAB
+├── JVM test reports
+└── instrumented Android test reports
+~~~
+
+See docs/TESTING.md and docs/RELEASE_SECURITY_CHECKLIST.md.
+
+## Build requirements
+
 - Android SDK 35
 - Java 21
 - Gradle 9.3.1 in CI
 
-Local build commands:
+Local commands:
 
-```bash
+~~~bash
 gradle test
 gradle assembleDebug
 gradle assembleRelease
 gradle bundleRelease
-```
+~~~
 
-Debug builds use the standard generated Android debug signing key.
+Release signing is supplied through environment variables or CI secrets. The release keystore is never committed.
 
-Release builds use environment-provided signing values:
-- `KEYSTORE_PATH`
-- `STORE_PASSWORD`
-- `KEY_PASSWORD`
-- `KEY_ALIAS`
+## Secrets
 
-**Never commit the release keystore.**
+Server-only credentials must live in secure provider secret storage. Never embed them in Android source.
 
-## Required server secrets
+Examples include Supabase service-role credentials, Firebase service-account JSON, server-side AI credentials, R2 signing credentials, and release keystore/password material.
 
-Server-only secrets must live in secure provider secret storage. Never embed them in Android source:
+Android builds may contain only the minimum public client configuration required for the selected SDKs.
 
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `FIREBASE_SERVICE_ACCOUNT_JSON` for the FCM Edge Function
-- Gemini server credential
-- Cloudflare/R2 signing credentials
+## Repository map
 
-## Repository structure
-
-```text
+~~~text
 app/                         Android application
-supabase/migrations/         database migrations
-supabase/functions/          serverless functions
-docs/                        architecture, privacy, security, legal baseline
-scripts/                     controlled setup/verification scripts
-tests/                       automated/non-Android tests where present
-.github/                     CI and repository governance
-```
+supabase/migrations/         Database migrations
+supabase/functions/          Edge/serverless functions
+docs/                        Architecture, safety, privacy and release controls
+scripts/                     Setup and verification scripts
+.github/workflows/           CI/release gates
+~~~
 
-## Proprietary rights
+## Legal and policy documents
+
+PRIVACY.md — privacy/data handling baseline  
+TERMS.md — user and business terms baseline  
+LICENSE — VibeSync proprietary license  
+NOTICE — proprietary + third-party notice  
+SUPPORT.md — support, privacy and abuse request process  
+SECURITY.md — security reporting and security boundary  
+docs/COMPLIANCE_MATRIX.md — India-focused compliance/control mapping
+
+These documents are product and engineering baselines, not legal advice. Public launch should receive jurisdiction-specific legal review.
+
+## Current release status
+
+The repository is under an active hardening and release-validation program. A release is considered ready only when the CI release gate is green, signed APK/AAB artifacts are present, the UI smoke suite passes, and backend/security configuration has been reviewed.
 
 Copyright © 2026 VibeSync. All rights reserved.
-
-The VibeSync source code, architecture, database design, business logic, UI/UX, product specifications, trademarks/branding, and documentation are proprietary unless a separate written license states otherwise.
-
-See `LICENSE`, `NOTICE`, and `PRIVACY.md`.
-
-## Development status
-
-This repository is undergoing a security and architecture hardening pass. A release is considered ready only after automated tests, APK/AAB packaging, backend security review, secret review, and production configuration review all pass.
