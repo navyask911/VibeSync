@@ -68,19 +68,24 @@ object VibeSyncSessionManager {
         )
     }
 
-    private fun decrypt(value: String): String? = try {
-        val raw = Base64.decode(value, Base64.NO_WRAP)
-        if (raw.size < 13) return null
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(
-            Cipher.DECRYPT_MODE,
-            key(),
-            GCMParameterSpec(GCM_TAG_BITS, raw.copyOfRange(0, 12))
-        )
-        String(cipher.doFinal(raw.copyOfRange(12, raw.size)), StandardCharsets.UTF_8)
-    } catch (e: Throwable) {
-        Log.w(TAG, "Encrypted VibeSync session could not be opened: ${e.message}")
-        null
+    private fun decrypt(value: String): String? {
+        return try {
+            val raw = Base64.decode(value, Base64.NO_WRAP)
+            if (raw.size < 13) {
+                null
+            } else {
+                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+                cipher.init(
+                    Cipher.DECRYPT_MODE,
+                    key(),
+                    GCMParameterSpec(GCM_TAG_BITS, raw.copyOfRange(0, 12))
+                )
+                String(cipher.doFinal(raw.copyOfRange(12, raw.size)), StandardCharsets.UTF_8)
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Encrypted VibeSync session could not be opened: ${e.message}")
+            null
+        }
     }
 
     fun initialize(context: Context) {
