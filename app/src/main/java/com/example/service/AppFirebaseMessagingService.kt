@@ -4,6 +4,10 @@ import android.util.Log
 import com.example.util.AppNotificationManager
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /**
@@ -17,17 +21,22 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
         private const val TAG = "AppFirebaseMsgService"
     }
 
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     override fun onNewToken(token: String) {
         super.onNewToken(token)
         Log.i(TAG, "FCM token refreshed.")
         AppNotificationManager.updateCachedFcmToken(token)
-
-        // FCM registration is intentionally independent of Supabase Auth sessions.
+        serviceScope.launch {
+            com.example.util.SupabaseClientManager.registerFcmTokenRpc(token)
+        }
     }
 
     override fun onMessageReceived(remoteMessage: RemoteMessage) {
         super.onMessageReceived(remoteMessage)
-        Log.d(TAG, "FCM Message received from: ${remoteMessage.from}")
+        AppNotificationManager.initChannels(applicationContext)
+        com.example.util.VibeSyncSessionManager.triggerImmediateMessageSync(applicationContext)
+        Log.d(TAG, "FCM Message received from: " + remoteMessage.from)
 
         // Check if message contains a data payload
         if (remoteMessage.data.isNotEmpty()) {
@@ -214,7 +223,12 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                             senderName = name,
                             messageText = displayBody,
                             senderPhotoUrl = photoUrl,
-                            mediaType = mediaType
+                            mediaType = mediaType,
+                            channelId = if (!AppNotificationManager.isAppInForeground) {
+                                AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES
+                            } else {
+                                AppNotificationManager.CHANNEL_ID_MESSAGES
+                            }
                         )
                     }
                 }
@@ -251,7 +265,12 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                             senderName = name,
                             messageText = text,
                             senderPhotoUrl = photoUrl,
-                            mediaType = mediaType
+                            mediaType = mediaType,
+                            channelId = if (!AppNotificationManager.isAppInForeground) {
+                                AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES
+                            } else {
+                                AppNotificationManager.CHANNEL_ID_MESSAGES
+                            }
                         )
                     }
                 }
@@ -282,9 +301,18 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     senderName = title,
                     messageText = body,
                     senderPhotoUrl = imageUri,
-                    mediaType = "TEXT"
+                    mediaType = "TEXT",
+                    channelId = if (!AppNotificationManager.isAppInForeground) {
+                        AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES
+                    } else {
+                        AppNotificationManager.CHANNEL_ID_MESSAGES
+                    }
                 )
             }
         }
+    }
+    override fun onDestroy() {
+        serviceScope.cancel()
+        super.onDestroy()
     }
 }

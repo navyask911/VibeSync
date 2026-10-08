@@ -68,6 +68,7 @@ object AppNotificationManager {
     // Channel IDs
     const val CHANNEL_ID_MATCHES = "channel_vibe_matches_v3"
     const val CHANNEL_ID_MESSAGES = "channel_vibe_messages_v3"
+    const val CHANNEL_ID_VIBESYNC_MESSAGES = "vibesync_messages"
     const val CHANNEL_ID_ALERTS = "channel_vibe_alerts_v3"
     const val CHANNEL_ID_OTP = "channel_vibe_otp_v3"
 
@@ -203,6 +204,21 @@ object AppNotificationManager {
                 lockscreenVisibility = NotificationCompat.VISIBILITY_PRIVATE
             }
 
+            // Stable channel for background FCM-delivered VibeSync messages.
+            val vibesyncMessagesChannel = NotificationChannel(
+                CHANNEL_ID_VIBESYNC_MESSAGES,
+                "VibeSync Messages",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Background VibeSync chat messages delivered through FCM"
+                enableLights(true)
+                lightColor = VIBESYNC_TEAL_COLOR
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 200, 100, 250)
+                setSound(soundUri, audioAttributes)
+                setShowBadge(true)
+                lockscreenVisibility = NotificationCompat.VISIBILITY_PRIVATE
+            }
             // 2. High Priority Matches & Mutual Likes Channel
             val matchChannel = NotificationChannel(
                 CHANNEL_ID_MATCHES,
@@ -246,7 +262,9 @@ object AppNotificationManager {
                 lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
             }
 
-            notificationManager.createNotificationChannels(listOf(messageChannel, matchChannel, alertChannel, otpChannel))
+            notificationManager.createNotificationChannels(
+                listOf(messageChannel, vibesyncMessagesChannel, matchChannel, alertChannel, otpChannel)
+            )
             Log.d(TAG, "VibeSync-style notification channels initialized successfully")
         }
     }
@@ -420,7 +438,8 @@ object AppNotificationManager {
         senderName: String,
         messageText: String,
         senderPhotoUrl: String = "",
-        mediaType: String = "TEXT"
+        mediaType: String = "TEXT",
+        channelId: String = CHANNEL_ID_MESSAGES
     ) {
         if (!hasNotificationPermission(context)) return
 
@@ -553,7 +572,7 @@ object AppNotificationManager {
 
             val defaultSoundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
 
-            val notification = NotificationCompat.Builder(context, CHANNEL_ID_MESSAGES)
+            val notification = NotificationCompat.Builder(context, channelId)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setStyle(messagingStyle)
                 .setContentTitle(senderName)

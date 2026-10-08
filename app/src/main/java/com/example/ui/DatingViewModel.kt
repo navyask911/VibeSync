@@ -41,7 +41,9 @@ import com.example.util.UserPresenceInfo
 import com.example.util.UserSessionManager
 import com.example.util.UserPresenceManager
 import com.example.util.WebRTCManager
+import com.example.util.SupabaseClientManager
 import com.example.util.backup.DriveBackupMetadata
+import com.google.firebase.messaging.FirebaseMessaging
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -2031,6 +2033,27 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             profileId = profileId,
             expiresAtEpochSeconds = expiresAtEpochSeconds
         )
+
+        // The VibeSync session now exists, so register the current FCM token immediately.
+        try {
+            FirebaseMessaging.getInstance().token
+                .addOnSuccessListener { token ->
+                    if (token.isNotBlank()) {
+                        viewModelScope.launch(Dispatchers.IO) {
+                            SupabaseClientManager.registerFcmTokenRpc(token)
+                        }
+                    }
+                }
+                .addOnFailureListener { error ->
+                    android.util.Log.w(
+                        "FcmRegistration",
+                        "FCM token fetch after Truecaller sign-in failed: ${error.message}"
+                    )
+                }
+        } catch (e: Throwable) {
+            android.util.Log.w("FcmRegistration", "FCM token registration hook notice: ${e.message}")
+        }
+
         repository.updatePreferences(updated)
         _activeMobile.value = cleanPhone
         _isMpinUnlocked.value = true

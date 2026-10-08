@@ -3,6 +3,12 @@ package com.example.util
 import android.content.Context
 import android.util.Base64
 import android.util.Log
+import com.example.data.database.DatingDatabase
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
@@ -25,6 +31,7 @@ object VibeSyncSessionManager {
     private const val KEY_ALIAS = "vibesync_session_aes_v1"
     private const val GCM_TAG_BITS = 128
     private val secureRandom = SecureRandom()
+    private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     data class Session(
         val sessionToken: String,
@@ -161,6 +168,83 @@ object VibeSyncSessionManager {
         appContext = context.applicationContext
     }
 
+    /**
+     * Immediately fetches session-authorized encrypted messages for the user's active matches.
+     * This is best-effort and asynchronous so FCM processing is never blocked.
+     */
+    fun triggerImmediateMessageSync(context: Context) {
+        if (!hasValidSession(context)) {
+            Log.d(TAG, "Skipping immediate message sync: no valid VibeSync session.")
+            return
+        }
+        syncScope.launch {
+            syncMessagesNow(context.applicationContext)
+        }
+    }
+
+    private suspend fun syncMessagesNow(context: Context) = withContext(Dispatchers.IO) {
+        try {
+            val database = DatingDatabase.getDatabase(context)
+            val prefs = database.userPreferencesDao().getPreferencesSync()
+            val myPhone = ContactResolver.sanitizePhone(prefs?.verifiedMobileNumber.orEmpty())
+            if (myPhone.isBlank()) {
+                Log.d(TAG, "Skipping immediate message sync: verified phone is not available.")
+                return@withContext
+            }
+
+            var fetched = 0
+            var inserted = 0
+            val myDigits = myPhone.filter { it.isDigit() }
+            database.matchDao().getAllMatchesSync().forEach { match ->
+                val queryMatchId = match.matchId.trim()
+                if (queryMatchId.isBlank()) return@forEach
+
+                val remoteMessages = SupabaseClientManager.fetchMessagesForMatch(
+                    matchId = queryMatchId,
+                    currentUserPhone = myPhone,
+                    partnerPhone = match.profileId
+                )
+                fetched += remoteMessages.size
+
+                remoteMessages.forEach remoteLoop@ { remote ->
+                    if (remote.text.isBlank() || remote.text == "null") return@remoteLoop
+                    val isControlPacket =
+                        remote.mediaType in listOf("KEY_EXCHANGE", "HANDSHAKE", "SETUP", "PROTOCOL", "SYSTEM") ||
+                            remote.text.startsWith("KEY_EXCHANGE") ||
+                            remote.text.startsWith("DH_HANDSHAKE") ||
+                            remote.text.startsWith("E2EE_SETUP") ||
+                            remote.text.equals("Message", ignoreCase = true)
+                    if (isControlPacket) return@remoteLoop
+                    if (database.chatMessageDao().getMessageById(remote.messageId) != null) return@remoteLoop
+
+                    val senderDigits = remote.senderId.filter { it.isDigit() }
+                    val isMyOwn = remote.senderId == "USER" ||
+                        remote.senderId == myPhone ||
+                        (myDigits.length >= 7 && senderDigits.length >= 7 &&
+                            senderDigits.endsWith(myDigits.takeLast(10)))
+                    val incoming = remote.copy(
+                        matchId = match.matchId,
+                        senderId = if (isMyOwn) "USER" else match.profileId,
+                        isDelivered = true,
+                        isRead = false
+                    )
+                    database.chatMessageDao().insertMessage(incoming)
+                    database.messageDao().insertMessage(incoming.toLocalMessage())
+                    database.matchDao().updateLastMessage(
+                        matchId = match.matchId,
+                        text = remote.text,
+                        timestamp = remote.timestamp,
+                        hasUnread = !isMyOwn
+                    )
+                    inserted++
+                }
+            }
+
+            Log.d(TAG, "Immediate message sync completed: fetched=$fetched inserted=$inserted")
+        } catch (e: Throwable) {
+            Log.w(TAG, "Immediate message sync notice: ${e.message}")
+        }
+    }
     suspend fun deleteAccount(context: Context): Boolean = try {
         val token = getToken(context)
         if (token.isNullOrBlank()) {

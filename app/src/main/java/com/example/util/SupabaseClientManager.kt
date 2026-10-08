@@ -690,34 +690,38 @@ object SupabaseClientManager {
      * owns the token registry so it can select the correct device without
      * depending on Firestore/Realtime Database.
      */
-    suspend fun upsertDeviceFcmToken(
-        context: android.content.Context,
-        userId: String,
-        token: String,
-        platform: String = "android"
-    ): Boolean = withContext(Dispatchers.IO) {
-        if (token.isBlank()) return@withContext false
+    /**
+     * Registers an FCM token through the session-bound VibeSync RPC.
+     * buildRequest() supplies x-vibesync-session from VibeSyncSessionManager.
+     */
+    suspend fun registerFcmTokenRpc(token: String): Boolean = withContext(Dispatchers.IO) {
+        val cleanToken = token.trim()
+        if (cleanToken.length < 20) return@withContext false
+
         try {
-            val body = JSONObject()
-                .put("p_fcm_token", token)
-                .put("p_platform", platform)
-                .toString()
+            val body = JSONObject().put("p_fcm_token", cleanToken).toString()
             val request = buildRequest(
-                endpoint = "rpc/register_device_token",
+                endpoint = "rpc/register_fcm_token",
                 method = "POST",
                 bodyJson = body
             )
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    Log.w(TAG, "device token RPC failed HTTP ${response.code}")
+                    Log.w(TAG, "register_fcm_token RPC failed HTTP ${response.code}")
                 }
                 response.isSuccessful
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "device token VibeSync sync notice: ${e.message}")
+            Log.w(TAG, "register_fcm_token RPC notice: ${e.message}")
             false
         }
     }
+    suspend fun upsertDeviceFcmToken(
+        context: android.content.Context,
+        userId: String,
+        token: String,
+        platform: String = "android"
+    ): Boolean = registerFcmTokenRpc(token)
 
     /**
      * Matched contact record returned by Zero-Knowledge RPC / lookup.
