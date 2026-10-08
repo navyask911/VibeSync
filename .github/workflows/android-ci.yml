@@ -127,36 +127,59 @@ jobs:
             exit 1
           fi
 
+          normalize_fingerprint() {
+            printf '%s' "$1" | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]'
+          }
+
+          EXPECTED_SHA1=$(normalize_fingerprint "$VIBESYNC_RELEASE_SHA1")
+          EXPECTED_SHA256=$(normalize_fingerprint "$VIBESYNC_RELEASE_SHA256")
+
           KEYSTORE_FILE="${RUNNER_TEMP}/vibesync-release.jks"
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
           test -s "$KEYSTORE_FILE"
 
-          SIGNING_ALIAS="$KEY_ALIAS"
-          if [ -z "$SIGNING_ALIAS" ]; then SIGNING_ALIAS="upload"; fi
-          CERT_SHA1=$(keytool -list -v \
-            -keystore "$KEYSTORE_FILE" \
-            -storepass "$KEYSTORE_PASSWORD" \
-            -alias "$SIGNING_ALIAS" \
-            | awk -F": " '/SHA1:/{print $2; exit}' | tr -d "\r" | tr '[:lower:]' '[:upper:]')
-          CERT_SHA256=$(keytool -list -v \
-            -keystore "$KEYSTORE_FILE" \
-            -storepass "$KEYSTORE_PASSWORD" \
-            -alias "$SIGNING_ALIAS" \
-            | awk -F": " '/SHA256:/{print $2; exit}' | tr -d "\r" | tr '[:lower:]' '[:upper:]')
-          echo "Keystore certificate SHA-1: $CERT_SHA1"
-          echo "Keystore certificate SHA-256: $CERT_SHA256"
-          if [ "$CERT_SHA1" != "$VIBESYNC_RELEASE_SHA1" ]; then
-            echo "Release SHA-1 mismatch."
+          SIGNING_ALIAS="${KEY_ALIAS:-upload}"
+          MATCHING_ALIAS=""
+          MATCH_COUNT=0
+
+          while IFS= read -r alias; do
+            [ -n "$alias" ] || continue
+
+            CERT_SHA1=$(keytool -list -v               -keystore "$KEYSTORE_FILE"               -storepass "$KEYSTORE_PASSWORD"               -alias "$alias"               | awk -F": " '/SHA1:/{print $2; exit}'               | tr -d '[:space:]:'               | tr '[:lower:]' '[:upper:]')
+
+            CERT_SHA256=$(keytool -list -v               -keystore "$KEYSTORE_FILE"               -storepass "$KEYSTORE_PASSWORD"               -alias "$alias"               | awk -F": " '/SHA256:/{print $2; exit}'               | tr -d '[:space:]:'               | tr '[:lower:]' '[:upper:]')
+
+            if [ "$CERT_SHA1" = "$EXPECTED_SHA1" ] && [ "$CERT_SHA256" = "$EXPECTED_SHA256" ]; then
+              MATCHING_ALIAS="$alias"
+              MATCH_COUNT=$((MATCH_COUNT + 1))
+            fi
+          done < <(
+            keytool -list               -keystore "$KEYSTORE_FILE"               -storepass "$KEYSTORE_PASSWORD"               | awk -F": " '/^Alias name:/{print $2}'
+          )
+
+          if [ "$MATCH_COUNT" -ne 1 ]; then
+            echo "No unique keystore alias matches the exact production SHA-1/SHA-256 pair."
+            echo "Configured alias: $SIGNING_ALIAS"
+            echo "Expected SHA-1: $EXPECTED_SHA1"
+            echo "Expected SHA-256: $EXPECTED_SHA256"
             exit 1
           fi
-          if [ "$CERT_SHA256" != "$VIBESYNC_RELEASE_SHA256" ]; then
-            echo "Release SHA-256 mismatch."
-            exit 1
-          fi
+
+          SIGNING_ALIAS="$MATCHING_ALIAS"
+          CERT_SHA1=$(keytool -list -v             -keystore "$KEYSTORE_FILE"             -storepass "$KEYSTORE_PASSWORD"             -alias "$SIGNING_ALIAS"             | awk -F": " '/SHA1:/{print $2; exit}'             | tr -d '[:space:]:'             | tr '[:lower:]' '[:upper:]')
+          CERT_SHA256=$(keytool -list -v             -keystore "$KEYSTORE_FILE"             -storepass "$KEYSTORE_PASSWORD"             -alias "$SIGNING_ALIAS"             | awk -F": " '/SHA256:/{print $2; exit}'             | tr -d '[:space:]:'             | tr '[:lower:]' '[:upper:]')
+
+          echo "Verified release signing alias: $SIGNING_ALIAS"
+          echo "Verified keystore SHA-1: $CERT_SHA1"
+          echo "Verified keystore SHA-256: $CERT_SHA256"
+
+          test "$CERT_SHA1" = "$EXPECTED_SHA1"
+          test "$CERT_SHA256" = "$EXPECTED_SHA256"
+
           echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
           echo "STORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
           echo "KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
-          echo "KEY_ALIAS=${KEY_ALIAS:-upload}" >> "$GITHUB_ENV"
+          echo "KEY_ALIAS=$SIGNING_ALIAS" >> "$GITHUB_ENV"
 
       - name: Assemble signed release APK
         run: ./gradlew --no-daemon -Djava.awt.headless=true assembleRelease --rerun-tasks
@@ -181,8 +204,24 @@ jobs:
           echo "Release AAB:"
           ls -lh "${AAB[0]}"
           BUILD_TOOLS_DIR=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
-          "$BUILD_TOOLS_DIR/apksigner" verify --print-certs "${APK[0]}" \
-            | grep -Fi "Signer #1 certificate SHA-256 digest: $VIBESYNC_RELEASE_SHA256"
+          APKSIGNER_CERTS=$("$BUILD_TOOLS_DIR/apksigner" verify --print-certs "${APK[0]}")
+
+          normalize_fingerprint() {
+            printf '%s' "$1" | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]'
+          }
+
+          APK_SHA1=$(printf '%s\n' "$APKSIGNER_CERTS" \
+            | awk -F": " '/Signer #1 certificate SHA-1 digest:/{print $2; exit}' \
+            | tr -d '[:space:]:' \
+            | tr '[:lower:]' '[:upper:]')
+          APK_SHA256=$(printf '%s\n' "$APKSIGNER_CERTS" \
+            | awk -F": " '/Signer #1 certificate SHA-256 digest:/{print $2; exit}' \
+            | tr -d '[:space:]:' \
+            | tr '[:lower:]' '[:upper:]')
+
+          test "$APK_SHA1" = "$(normalize_fingerprint "$VIBESYNC_RELEASE_SHA1")"
+          test "$APK_SHA256" = "$(normalize_fingerprint "$VIBESYNC_RELEASE_SHA256")"
+          echo "Release APK certificate SHA-1 and SHA-256 verified."
 
       - name: Upload APK, AAB and test reports
         uses: actions/upload-artifact@v6
