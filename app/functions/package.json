@@ -1,12 +1,14 @@
 {
   "name": "vibesync-fcm-functions",
-  "description": "VibeSync serverless Firebase Cloud Messaging delivery only",
+  "description": "VibeSync Firebase Functions including FCM delivery and Supabase row webhooks",
   "version": "1.0.0",
   "main": "index.js",
-  "engines": { "node": "20" },
+  "engines": {
+    "node": "20"
+  },
   "dependencies": {
-    "firebase-admin": "^14.5.0",
-    "firebase-functions": "^6.0.0"
+    "firebase-admin": "^12.0.0",
+    "firebase-functions": "^5.0.0"
   },
   "private": true
 }

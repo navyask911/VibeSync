@@ -1,0 +1,77 @@
+name: Deploy Firebase Cloud Functions
+
+on:
+  push:
+    branches:
+      - main
+      - vibesync-hardening-2026-10-07
+    paths:
+      - 'app/functions/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-firebase-webhook-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy-webhook:
+    name: Deploy supabaseRowWebhook
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: app/functions/package-lock.json
+
+      - name: Install function dependencies
+        working-directory: app/functions
+        run: npm ci
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - name: Install Firebase CLI
+        run: npm install --global firebase-tools
+
+      - name: Validate and stage webhook secret
+        shell: bash
+        env:
+          SUPABASE_WEBHOOK_SECRET: ${{ secrets.SUPABASE_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SUPABASE_WEBHOOK_SECRET:-}" ]]; then
+            echo 'Missing repository secret SUPABASE_WEBHOOK_SECRET.' >&2
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$SUPABASE_WEBHOOK_SECRET" > "$RUNNER_TEMP/supabase-webhook-secret"
+
+      - name: Set Firebase Secret Manager version
+        working-directory: app
+        run: >-
+          firebase functions:secrets:set SUPABASE_WEBHOOK_SECRET
+          --project vibesync-chat-social-connect
+          --data-file "$RUNNER_TEMP/supabase-webhook-secret"
+
+      - name: Deploy only Supabase webhook
+        working-directory: app
+        run: firebase deploy --only functions:supabaseRowWebhook --project vibesync-chat-social-connect
+
+      - name: Remove temporary secret file
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/supabase-webhook-secret"
