@@ -154,7 +154,7 @@ jobs:
               MATCH_COUNT=$((MATCH_COUNT + 1))
             fi
           done < <(
-            keytool -list               -keystore "$KEYSTORE_FILE"               -storepass "$KEYSTORE_PASSWORD"               | awk -F": " '/^Alias name:/{print $2}'
+            keytool -list -v               -keystore "$KEYSTORE_FILE"               -storepass "$KEYSTORE_PASSWORD"               | awk -F": " '/^Alias name:/{print $2}'
           )
 
           if [ "$MATCH_COUNT" -ne 1 ]; then
