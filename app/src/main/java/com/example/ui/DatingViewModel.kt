@@ -1999,6 +1999,9 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
     private suspend fun finalizeTruecallerAuthenticatedSession(
         phone: String,
+        profileId: String,
+        sessionToken: String,
+        expiresAtEpochSeconds: Long,
         firstName: String = "",
         lastName: String = "",
         avatarUrl: String = ""
@@ -2016,7 +2019,13 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             isMobileVerified = true,
             loginTimestamp = System.currentTimeMillis()
         )
-        UserSessionManager.saveVerifiedSession(getApplication(), cleanPhone)
+        UserSessionManager.saveVerifiedSession(
+            context = getApplication(),
+            phoneNumber = cleanPhone,
+            sessionToken = sessionToken,
+            profileId = profileId,
+            expiresAtEpochSeconds = expiresAtEpochSeconds
+        )
         repository.updatePreferences(updated)
         _activeMobile.value = cleanPhone
         _isMpinUnlocked.value = true
@@ -2044,6 +2053,9 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             result.onSuccess { identity ->
                 finalizeTruecallerAuthenticatedSession(
                     phone = identity.phone,
+                    profileId = identity.profileId,
+                    sessionToken = identity.sessionToken,
+                    expiresAtEpochSeconds = identity.expiresAtEpochSeconds,
                     firstName = identity.firstName,
                     lastName = identity.lastName,
                     avatarUrl = identity.avatarUrl
