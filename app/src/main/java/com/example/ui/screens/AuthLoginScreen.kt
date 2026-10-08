@@ -147,6 +147,16 @@ fun AuthLoginScreen(
     val coroutineScope = rememberCoroutineScope()
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    val onOpenAccountRecovery: () -> Unit = {}
+
+    // Country & SIM Detection
+    var selectedCountry by remember {
+        mutableStateOf(CountryCodeList.allCountries.firstOrNull { it.isoCode == "IN" } ?: CountryCodeList.allCountries[0])
+    }
+    var availableSims by remember { mutableStateOf<List<SimSlotInfo>>(emptyList()) }
+    var selectedSimNumber by remember { mutableStateOf("+91 9972396133") }
+    var customMobileNumberInput by remember { mutableStateOf("9972396133") }
+
     val latestTruecallerSuccess by rememberUpdatedState(onTruecallerProfileVerified)
     val latestTruecallerFallback by rememberUpdatedState(onTruecallerFallbackToPhoneOtp)
 
@@ -170,16 +180,6 @@ fun AuthLoginScreen(
             truecallerClient.setCallback(null)
         }
     }
-
-    val onOpenAccountRecovery: () -> Unit = {}
-
-    // Country & SIM Detection
-    var selectedCountry by remember {
-        mutableStateOf(CountryCodeList.allCountries.firstOrNull { it.isoCode == "IN" } ?: CountryCodeList.allCountries[0])
-    }
-    var availableSims by remember { mutableStateOf<List<SimSlotInfo>>(emptyList()) }
-    var selectedSimNumber by remember { mutableStateOf("+91 9972396133") }
-    var customMobileNumberInput by remember { mutableStateOf("9972396133") }
 
     // Dialog States
     var showCountryPicker by remember { mutableStateOf(false) }
@@ -630,9 +630,7 @@ fun AuthLoginScreen(
                     return@Surface
                 }
 
-                if (!truecallerClient.launch(activity)) {
-                    latestTruecallerFallback(customMobileNumberInput.filter { it.isDigit() })
-                }
+                truecallerClient.launch(activity)
             },
             shape = RoundedCornerShape(12.dp),
             color = Color.White,
