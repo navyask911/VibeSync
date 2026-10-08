@@ -366,19 +366,17 @@ fun AuthLoginScreen(
 
     // Auto-detect Country & SIM cards on Launch
     LaunchedEffect(Unit) {
-        coroutineScope.launch {
-            val handsetResult = DeviceSimAndIpCountryHelper.detectHandsetMobileNumber(context)
-            selectedCountry = handsetResult.country
-            if (handsetResult.isRealSim && handsetResult.cleanNumber.isNotBlank()) {
-                customMobileNumberInput = handsetResult.cleanNumber
-                selectedSimNumber = handsetResult.formattedFullNumber
-            } else {
-                customMobileNumberInput = ""
-                selectedSimNumber = ""
-            }
-            val sims = DeviceSimAndIpCountryHelper.getAvailableSimCards(context, handsetResult.country)
-            availableSims = sims
+        val handsetResult = DeviceSimAndIpCountryHelper.detectHandsetMobileNumber(context)
+        selectedCountry = handsetResult.country
+        if (handsetResult.isRealSim && handsetResult.cleanNumber.isNotBlank()) {
+            customMobileNumberInput = handsetResult.cleanNumber
+            selectedSimNumber = handsetResult.formattedFullNumber
+        } else {
+            customMobileNumberInput = ""
+            selectedSimNumber = ""
         }
+        val sims = DeviceSimAndIpCountryHelper.getAvailableSimCards(context, handsetResult.country)
+        availableSims = sims
     }
 
 
