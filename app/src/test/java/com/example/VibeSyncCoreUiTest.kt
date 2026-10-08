@@ -67,6 +67,7 @@ class VibeSyncCoreUiTest {
                 OtpVerificationScreen(
                     phoneNumber = "+919449878908",
                     simulatedOtpCode = "123456",
+                    enableSimulatedOtpForTesting = true,
                     onVerificationSuccess = { phone, method ->
                         verifiedPhone.set(phone)
                         verificationMethod.set(method)
@@ -81,11 +82,12 @@ class VibeSyncCoreUiTest {
 
         composeTestRule.onNodeWithTag("input_secure_otp_code").performTextInput("123456")
         composeTestRule.onNodeWithTag("btn_verify_secure_otp").assertIsEnabled().performClick()
+        composeTestRule.mainClock.advanceTimeByFrame()
         composeTestRule.waitForIdle()
-        composeTestRule.waitUntil(timeoutMillis = 5_000) { verifiedPhone.get() != null }
-
-        assertEquals("9449878908", verifiedPhone.get()?.filter(Char::isDigit)?.takeLast(10))
-        assertEquals("Simulated Debug OTP", verificationMethod.get())
+        composeTestRule.runOnIdle {
+            assertEquals("9449878908", verifiedPhone.get()?.filter(Char::isDigit)?.takeLast(10))
+            assertEquals("Simulated Debug OTP", verificationMethod.get())
+        }
 
         // The callback above is the authoritative simulated-verification result.
         // For the mode switch, assert stable test tags rendered by the USER_TEXT_SMS branch
