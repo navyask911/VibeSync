@@ -734,31 +734,6 @@ object SupabaseClientManager {
      * Syncs a user's phone hash into the dedicated lightweight 'phone_sync' table (BYTEA binary column).
      * 32-byte binary format ensures 1,000,000 users occupy only ~110 MB.
      */
-    suspend fun syncPhoneHashToSyncTable(userId: String, rawPhone: String): Boolean = withContext(Dispatchers.IO) {
-        if (userId.isBlank() || rawPhone.isBlank()) return@withContext false
-        val hex64 = PhonebookHasher.hashPhoneNumberToHex(rawPhone)
-        if (hex64.length != 64) return@withContext false
-        try {
-            val json = JSONObject().apply {
-                put("user_id", userId)
-                put("phone_hash", "\\x$hex64")
-            }
-            val request = buildRequest(
-                endpoint = "phone_sync",
-                method = "POST",
-                bodyJson = json.toString(),
-                preferHeader = "resolution=merge-duplicates"
-            )
-            httpClient.newCall(request).execute().use { response ->
-                val success = response.isSuccessful
-                if (!success) Log.w(TAG, "phone_sync insert rejected HTTP ${response.code}")
-                success
-            }
-        } catch (e: Throwable) {
-            Log.w(TAG, "phone_sync insert notice: ${e.message}")
-            false
-        }
-    }
 
     /**
      * Privacy-Preserving Contact Match RPC: match_contacts
