@@ -1,6 +1,5 @@
 package com.example.util
 
-import android.app.Activity
 import android.content.Intent
 import android.util.Base64
 import android.util.Log
@@ -34,7 +33,7 @@ interface TruecallerVerificationClient {
     fun initialize(activity: FragmentActivity)
     fun isUsable(): Boolean
     fun launch(activity: FragmentActivity): Boolean
-    fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?)
+    fun onActivityResult(activity: FragmentActivity, requestCode: Int, resultCode: Int, data: Intent?)
     fun clear()
 }
 
@@ -152,7 +151,7 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
     }
 
     override fun onActivityResult(
-        activity: Activity,
+        activity: FragmentActivity,
         requestCode: Int,
         resultCode: Int,
         data: Intent?
