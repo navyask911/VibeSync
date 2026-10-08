@@ -42,7 +42,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
-import com.example.theme.VibeSyncTeal
+import com.example.ui.theme.VibeSyncTeal
 import com.example.util.PlatformTruecallerVerificationClient
 import com.example.util.TruecallerProfileResult
 import com.example.util.TruecallerVerificationClient
