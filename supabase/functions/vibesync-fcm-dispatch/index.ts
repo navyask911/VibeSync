@@ -9,15 +9,41 @@ type ServiceAccount = {
 };
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
-const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+const serviceRoleKey =
+  (() => {
+    try {
+      const parsed = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "");
+      if (typeof parsed?.default === "string" && parsed.default) return parsed.default;
+    } catch {
+      // Compatibility while projects migrate to the secret-key format.
+    }
+    return Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  })();
 const firebaseServiceAccountJson = Deno.env.get("FIREBASE_SERVICE_ACCOUNT_JSON") ?? "";
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8" },
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
   });
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(bytes)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function resolveProfileId(admin: ReturnType<typeof createClient>, sessionToken: string): Promise<string> {
+  if (!sessionToken) throw new Error("vibesync_session_required");
+  const sessionHash = await sha256Hex(sessionToken);
+  const { data, error } = await admin
+    .from("vibesync_sessions")
+    .select("profile_id,expires_at")
+    .eq("session_hash", sessionHash)
+    .gt("expires_at", new Date().toISOString())
+    .maybeSingle();
+  if (error || !data?.profile_id) throw new Error("invalid_vibesync_session");
+  return String(data.profile_id);
 }
 
 function base64Url(input: string | Uint8Array): string {
@@ -61,15 +87,17 @@ async function createGoogleAccessToken(sa: ServiceAccount): Promise<string> {
     new TextEncoder().encode(unsigned),
   );
   const assertion = unsigned + "." + base64Url(new Uint8Array(signature));
-
-  const tokenResponse = await fetch(sa.token_uri ?? "https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-      assertion,
-    }),
-  });
+  const tokenResponse = await fetch(
+    sa.token_uri ?? "https://oauth2.googleapis.com/token",
+    {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        assertion,
+      }),
+    },
+  );
   if (!tokenResponse.ok) {
     throw new Error("Google OAuth token exchange failed: HTTP " + tokenResponse.status);
   }
@@ -81,9 +109,8 @@ async function createGoogleAccessToken(sa: ServiceAccount): Promise<string> {
 
 async function sendFcm(sa: ServiceAccount, token: string, data: Record<string, string>) {
   const accessToken = await createGoogleAccessToken(sa);
-  const projectId = sa.project_id;
   const response = await fetch(
-    "https://fcm.googleapis.com/v1/projects/" + encodeURIComponent(projectId) + "/messages:send",
+    "https://fcm.googleapis.com/v1/projects/" + encodeURIComponent(sa.project_id) + "/messages:send",
     {
       method: "POST",
       headers: {
@@ -94,10 +121,7 @@ async function sendFcm(sa: ServiceAccount, token: string, data: Record<string, s
         message: {
           token,
           data,
-          android: {
-            priority: "HIGH",
-            ttl: "86400s",
-          },
+          android: { priority: "HIGH", ttl: "86400s" },
         },
       }),
     },
@@ -111,21 +135,10 @@ async function sendFcm(sa: ServiceAccount, token: string, data: Record<string, s
 
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
-  if (!supabaseUrl || !supabaseAnonKey || !serviceRoleKey) {
-    return json({ error: "server_configuration_incomplete" }, 503);
-  }
+  if (!supabaseUrl || !serviceRoleKey) return json({ error: "server_configuration_incomplete" }, 503);
 
-  const authHeader = req.headers.get("authorization") ?? "";
-  if (!authHeader.toLowerCase().startsWith("bearer ")) {
-    return json({ error: "authentication_required" }, 401);
-  }
-
-  const userClient = createClient(supabaseUrl, supabaseAnonKey, {
-    global: { headers: { Authorization: authHeader } },
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-  const { data: userData, error: userError } = await userClient.auth.getUser();
-  if (userError || !userData.user) return json({ error: "invalid_session" }, 401);
+  const sessionToken = req.headers.get("x-vibesync-session")?.trim() ?? "";
+  if (!sessionToken) return json({ error: "vibesync_session_required" }, 401);
 
   let body: { message_id?: string };
   try {
@@ -156,65 +169,74 @@ Deno.serve(async (req) => {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  const { data: message, error: messageError } = await adminClient
-    .from("chat_messages")
-    .select("message_id,match_id,sender_user_id,receiver_user_id,receiver_id,ciphertext,is_encrypted,media_type")
-    .eq("message_id", messageId)
-    .maybeSingle();
+  try {
+    const profileId = await resolveProfileId(adminClient, sessionToken);
 
-  if (messageError || !message) return json({ error: "message_not_found" }, 404);
-  if (message.sender_user_id !== userData.user.id) return json({ error: "sender_mismatch" }, 403);
-  if (!message.is_encrypted || typeof message.ciphertext !== "string" || !message.ciphertext.startsWith("TINK_ENC:")) {
-    return json({ error: "encrypted_payload_required" }, 422);
-  }
-  if (!message.receiver_user_id) return json({ error: "recipient_unresolved" }, 422);
+    const { data: message, error: messageError } = await adminClient
+      .from("chat_messages")
+      .select("message_id,match_id,sender_id,receiver_id,ciphertext,is_encrypted,media_type")
+      .eq("message_id", messageId)
+      .maybeSingle();
 
-  const { data: tokens, error: tokenError } = await adminClient
-    .from("device_tokens")
-    .select("id,fcm_token")
-    .eq("user_id", message.receiver_user_id);
+    if (messageError || !message) return json({ error: "message_not_found" }, 404);
+    if (message.sender_id !== profileId) return json({ error: "sender_mismatch" }, 403);
+    if (!message.is_encrypted || typeof message.ciphertext !== "string" || !message.ciphertext.startsWith("TINK_ENC:")) {
+      return json({ error: "encrypted_payload_required" }, 422);
+    }
+    if (!message.receiver_id) return json({ error: "recipient_unresolved" }, 422);
 
-  if (tokenError) return json({ error: "token_lookup_failed" }, 500);
-  if (!tokens?.length) return json({ ok: true, delivered_to_devices: 0 });
+    const { data: tokens, error: tokenError } = await adminClient
+      .from("device_tokens")
+      .select("id,fcm_token")
+      .eq("profile_id", message.receiver_id);
 
-  let delivered = 0;
-  const failedTokenIds: string[] = [];
-  for (const row of tokens) {
-    try {
-      await sendFcm(sa, row.fcm_token, {
-        type: "NEW_E2EE_MESSAGE",
-        message_id: String(message.message_id),
-        match_id: String(message.match_id ?? ""),
-        sender_id: String(message.sender_user_id),
-        receiver_id: String(message.receiver_id ?? ""),
-        ciphertext: message.ciphertext,
-        media_type: String(message.media_type ?? "TEXT"),
-      });
-      delivered++;
-    } catch (e) {
-      const detail = String((e as Error)?.message ?? e);
-      if (/registration-token-not-registered|invalid-registration-token|UNREGISTERED/i.test(detail)) {
-        failedTokenIds.push(row.id);
+    if (tokenError) return json({ error: "token_lookup_failed" }, 500);
+    if (!tokens?.length) return json({ ok: true, delivered_to_devices: 0 });
+
+    let delivered = 0;
+    const failedTokenIds: string[] = [];
+    for (const row of tokens) {
+      try {
+        await sendFcm(sa, row.fcm_token, {
+          type: "NEW_E2EE_MESSAGE",
+          message_id: String(message.message_id),
+          match_id: String(message.match_id ?? ""),
+          sender_id: profileId,
+          receiver_id: String(message.receiver_id),
+          ciphertext: message.ciphertext,
+          media_type: String(message.media_type ?? "TEXT"),
+        });
+        delivered++;
+      } catch (e) {
+        const detail = String((e as Error)?.message ?? e);
+        if (/registration-token-not-registered|invalid-registration-token|UNREGISTERED/i.test(detail)) {
+          failedTokenIds.push(row.id);
+        }
       }
     }
+
+    if (failedTokenIds.length) {
+      await adminClient.from("device_tokens").delete().in("id", failedTokenIds);
+    }
+
+    await adminClient.from("chat_messages")
+      .update({
+        dispatch_status: delivered > 0 ? "SENT" : "PENDING",
+        dispatch_attempts: 1,
+      })
+      .eq("message_id", messageId)
+      .eq("sender_id", profileId);
+
+    return json({
+      ok: true,
+      message_id: messageId,
+      delivered_to_devices: delivered,
+      stale_tokens_removed: failedTokenIds.length,
+    });
+  } catch (error) {
+    return json({
+      error: "fcm_dispatch_failed",
+      detail: String((error as Error)?.message ?? error).slice(0, 300),
+    }, 401);
   }
-
-  if (failedTokenIds.length) {
-    await adminClient.from("device_tokens").delete().in("id", failedTokenIds);
-  }
-
-  await adminClient.from("chat_messages")
-    .update({
-      dispatch_status: delivered > 0 ? "SENT" : "PENDING",
-      dispatch_attempts: 1,
-    })
-    .eq("message_id", messageId)
-    .eq("sender_user_id", userData.user.id);
-
-  return json({
-    ok: true,
-    message_id: messageId,
-    delivered_to_devices: delivered,
-    stale_tokens_removed: failedTokenIds.length,
-  });
 });
