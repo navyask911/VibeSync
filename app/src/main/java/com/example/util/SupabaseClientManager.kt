@@ -125,6 +125,9 @@ object SupabaseClientManager {
             .addHeader("apikey", SUPABASE_PUBLISHABLE_KEY)
             .addHeader("Authorization", "Bearer ${SUPABASE_PUBLISHABLE_KEY}")
             .addHeader("Content-Type", "application/json")
+            .apply {
+                VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) }
+            }
 
         if (preferHeader != null) {
             builder.addHeader("Prefer", preferHeader)
@@ -260,37 +263,15 @@ object SupabaseClientManager {
      */
     suspend fun upsertProfile(profile: ProfileEntity): Boolean = withContext(Dispatchers.IO) {
         try {
-            val cleanPhoneNum = ContactResolver.sanitizePhone(profile.phoneNumber)
-            val cleanNameStr = ContactResolver.sanitizeName(profile.name).take(60)
-            val cleanId = ContactResolver.sanitizePhone(profile.id)
-            val cleanEmail = ContactResolver.sanitizeName(profile.email)
-            val cleanBio = ContactResolver.sanitizeName(profile.bio, "Hey there! Secure with VibeSync E2EE.").take(160)
-
-            // GUARD: Refuse to upsert uninitialized or empty ghost profiles
-            if (cleanId == "current_user" || cleanId == "null" || cleanId.isBlank() ||
-                (cleanPhoneNum.isBlank() && cleanEmail.isBlank()) ||
-                (cleanNameStr.equals("null", ignoreCase = true) && cleanPhoneNum.isBlank())) {
-                Log.w(TAG, "Skipping upsert of uninitialized or empty profile: id=$cleanId, name=$cleanNameStr, phone=$cleanPhoneNum")
+            val cleanName = ContactResolver.sanitizeName(profile.name).take(60)
+            if (cleanName.isBlank() || cleanName.equals("null", ignoreCase = true)) {
+                Log.w(TAG, "Skipping profile update with empty name")
                 return@withContext false
             }
 
-            val phoneKey = cleanPhoneNum.ifBlank { cleanId }
-            val hash64 = PhonebookHasher.hashPhoneNumberToHex(phoneKey)
-            val hash16 = PhonebookHasher.generate16CharHash(phoneKey)
-            val e164 = PhonebookHasher.normalizeToE164(phoneKey)
-            val docId = if (hash16.isNotBlank() && hash16 != "null") hash16 else cleanId
-
-            if (docId.isBlank() || docId == "null" || docId == "current_user") {
-                Log.w(TAG, "Refusing profile upsert with invalid docId: $docId")
-                return@withContext false
-            }
-
-            val json = JSONObject().apply {
-                put("id", docId)
-                // Phone numbers are not sent through the profile REST surface.
-                // The dedicated phone_sync path stores only the privacy-preserving lookup hash.
-                // Public profile fields are intentionally shareable to authenticated users;\n                // device-local Keystore encryption cannot be used for cross-device profile data.\n                put("name", cleanNameStr.ifBlank { "VibeSync Member" })
-                // Email is not required for discovery; do not persist it in the public profile payload.\n                put("email", "")
+            val payload = JSONObject().apply {
+                put("name", cleanName)
+                put("bio", ContactResolver.sanitizeName(profile.bio).take(160))
                 put("age", profile.age)
                 put("gender", ContactResolver.sanitizeName(profile.gender, "User"))
                 put("city", ContactResolver.sanitizeName(profile.city, "Online"))
@@ -301,55 +282,26 @@ object SupabaseClientManager {
                 put("avatar_url", ContactResolver.sanitizeName(profile.avatarUrl))
                 put("occupation", ContactResolver.sanitizeName(profile.occupation, "Member"))
                 put("qualification", ContactResolver.sanitizeName(profile.qualification, "Verified"))
-                put("bio", cleanBio)
                 put("marital_status", ContactResolver.sanitizeName(profile.maritalStatus, "Single"))
-                put("account_status", profile.accountStatus.ifBlank { "ACTIVE" })
-                put("is_verified", profile.isVerified)
                 if (profile.publicIdentityKey.isNotBlank()) {
                     put("public_identity_key", profile.publicIdentityKey)
                 }
-                put("updated_at", System.currentTimeMillis())
             }
 
             val request = buildRequest(
-                endpoint = "profiles",
+                endpoint = "rpc/upsert_my_profile",
                 method = "POST",
-                bodyJson = json.toString(),
-                preferHeader = "resolution=merge-duplicates"
+                bodyJson = JSONObject().put("payload", payload).toString()
             )
 
-            var profileSuccess = false
             httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    Log.i(TAG, "E2EE Profile Upsert Success: true (HTTP ${response.code})")
-                    profileSuccess = true
-                } else {
-                    val errorBody = response.body?.string() ?: ""
-                    Log.w(TAG, "E2EE Profile Upsert HTTP ${response.code}: $errorBody")
-                    if (errorBody.contains("email") && json.has("email")) {
-                        json.remove("email")
-                        val retryRequest = buildRequest(
-                            endpoint = "profiles",
-                            method = "POST",
-                            bodyJson = json.toString(),
-                            preferHeader = "resolution=merge-duplicates"
-                        )
-                        httpClient.newCall(retryRequest).execute().use { retryResp ->
-                            profileSuccess = retryResp.isSuccessful
-                            Log.i(TAG, "E2EE Profile Upsert Retry Success: $profileSuccess (HTTP ${retryResp.code})")
-                        }
-                    }
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "VibeSync profile RPC failed HTTP ${response.code}: ${response.body?.string()?.take(250)}")
                 }
+                response.isSuccessful
             }
-
-            // Sync to dedicated binary phone_sync table for zero-knowledge RPC matching
-            if (profileSuccess && cleanPhoneNum.isNotBlank()) {
-                syncPhoneHashToSyncTable(docId, cleanPhoneNum)
-            }
-
-            profileSuccess
         } catch (e: Throwable) {
-            Log.w(TAG, "E2EE Profile Upsert notice: ${e.message}")
+            Log.w(TAG, "VibeSync profile update notice: ${e.message}")
             false
         }
     }
@@ -451,7 +403,8 @@ object SupabaseClientManager {
             val request = Request.Builder()
                 .url("$SUPABASE_URL/functions/v1/vibesync-fcm-dispatch")
                 .header("apikey", SUPABASE_PUBLISHABLE_KEY)
-                .header("Authorization", "Bearer $token")
+                .header("Authorization", "Bearer $SUPABASE_PUBLISHABLE_KEY")
+                .header("x-vibesync-session", token)
                 .header("Content-Type", "application/json")
                 .post(body.toRequestBody(JSON_MEDIA_TYPE))
                 .build()
@@ -744,32 +697,25 @@ object SupabaseClientManager {
         token: String,
         platform: String = "android"
     ): Boolean = withContext(Dispatchers.IO) {
-        if (userId.isBlank() || token.isBlank()) return@withContext false
-
+        if (token.isBlank()) return@withContext false
         try {
-            val json = JSONObject().apply {
-                put("user_id", userId)
-                put("fcm_token", token)
-                put("platform", platform)
-                put("updated_at", System.currentTimeMillis())
-            }
-
+            val body = JSONObject()
+                .put("p_fcm_token", token)
+                .put("p_platform", platform)
+                .toString()
             val request = buildRequest(
-                endpoint = "device_tokens",
+                endpoint = "rpc/register_device_token",
                 method = "POST",
-                bodyJson = json.toString(),
-                preferHeader = "resolution=merge-duplicates"
+                bodyJson = body
             )
-
             httpClient.newCall(request).execute().use { response ->
-                val success = response.isSuccessful
-                if (!success) {
-                    Log.w(TAG, "device_tokens upsert failed (HTTP ${response.code}): ${response.body?.string()?.take(250)}")
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "device token RPC failed HTTP ${response.code}")
                 }
-                success
+                response.isSuccessful
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "device token Supabase sync notice: ${e.message}")
+            Log.w(TAG, "device token VibeSync sync notice: ${e.message}")
             false
         }
     }
