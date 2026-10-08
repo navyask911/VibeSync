@@ -73,7 +73,7 @@ jobs:
           fi
 
       - name: JVM unit + Compose UI tests
-        run: ./gradlew --no-daemon test
+        run: ./gradlew --no-daemon -Dkotlin.compiler.execution.strategy=in-process clean test --rerun-tasks
 
       - name: Prepare release signing
         env:
@@ -104,10 +104,10 @@ jobs:
           echo "KEY_ALIAS=${KEY_ALIAS:-upload}" >> "$GITHUB_ENV"
 
       - name: Assemble signed release APK
-        run: ./gradlew --no-daemon assembleRelease
+        run: ./gradlew --no-daemon -Dkotlin.compiler.execution.strategy=in-process assembleRelease --rerun-tasks
 
       - name: Build signed release AAB
-        run: ./gradlew --no-daemon bundleRelease
+        run: ./gradlew --no-daemon -Dkotlin.compiler.execution.strategy=in-process bundleRelease --rerun-tasks
 
       - name: Verify release artifacts
         shell: bash
