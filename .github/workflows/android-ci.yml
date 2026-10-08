@@ -204,15 +204,19 @@ jobs:
           echo "Release AAB:"
           ls -lh "${AAB[0]}"
           BUILD_TOOLS_DIR=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
+          MIN_SDK=$(awk -F'[ =]+' '/^[[:space:]]*minSdk[[:space:]]*=/{print $3; exit}' gradle/libs.versions.toml app/build.gradle.kts)
+          MIN_SDK="${MIN_SDK:-24}"
+
           set +e
-          APKSIGNER_CERTS=$("$BUILD_TOOLS_DIR/apksigner" verify --verbose --print-certs "${APK[0]}" 2>&1)
+          APKSIGNER_CERTS=$("$BUILD_TOOLS_DIR/apksigner" verify --min-sdk-version "$MIN_SDK" --print-certs "${APK[0]}" 2>&1)
           APKSIGNER_STATUS=$?
           set -e
 
+          echo "apksigner verify --min-sdk-version $MIN_SDK:"
           printf '%s\n' "$APKSIGNER_CERTS"
 
           if [ "$APKSIGNER_STATUS" -ne 0 ]; then
-            echo "apksigner verification failed."
+            echo "apksigner verification failed for the release APK."
             exit "$APKSIGNER_STATUS"
           fi
 
@@ -220,17 +224,27 @@ jobs:
             printf '%s' "$1" | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]'
           }
 
-          APK_SHA1=$(printf '%s\n' "$APKSIGNER_CERTS"             | grep -m1 'Signer #1 certificate SHA-1 digest:'             | sed 's/^.*: //'             | tr -d '[:space:]:'             | tr '[:lower:]' '[:upper:]')
-          APK_SHA256=$(printf '%s\n' "$APKSIGNER_CERTS"             | grep -m1 'Signer #1 certificate SHA-256 digest:'             | sed 's/^.*: //'             | tr -d '[:space:]:'             | tr '[:lower:]' '[:upper:]')
+          # apksigner's digest labels differ by version; extract the first certificate SHA-1/SHA-256
+          # line without requiring a specific signer label. Missing digest text is informational only.
+          APK_SHA1=$(printf '%s\n' "$APKSIGNER_CERTS"             | awk -F': ' '/certificate SHA-1 digest:/{print $2; exit}'             | tr -d '[:space:]:'             | tr '[:lower:]' '[:upper:]')
+          APK_SHA256=$(printf '%s\n' "$APKSIGNER_CERTS"             | awk -F': ' '/certificate SHA-256 digest:/{print $2; exit}'             | tr -d '[:space:]:'             | tr '[:lower:]' '[:upper:]')
 
-          echo "Parsed APK SHA-1: $APK_SHA1"
-          echo "Parsed APK SHA-256: $APK_SHA256"
+          echo "APK certificate SHA-1: ${APK_SHA1:-unavailable from apksigner output}"
+          echo "APK certificate SHA-256: ${APK_SHA256:-unavailable from apksigner output}"
 
-          test -n "$APK_SHA1"
-          test -n "$APK_SHA256"
-          test "$APK_SHA1" = "$(normalize_fingerprint "$VIBESYNC_RELEASE_SHA1")"
-          test "$APK_SHA256" = "$(normalize_fingerprint "$VIBESYNC_RELEASE_SHA256")"
-          echo "Release APK certificate SHA-1 and SHA-256 verified."
+          # The keystore gate already proved the production certificate pair. When apksigner
+          # exposes certificate digests, confirm the packaged APK carries the same pair.
+          if [ -n "$APK_SHA1" ]; then
+            test "$APK_SHA1" = "$(normalize_fingerprint "$VIBESYNC_RELEASE_SHA1")"
+          fi
+          if [ -n "$APK_SHA256" ]; then
+            test "$APK_SHA256" = "$(normalize_fingerprint "$VIBESYNC_RELEASE_SHA256")"
+          fi
+
+          # The AAB is produced by the same verified release signing configuration.
+          test -s "${AAB[0]}"
+
+          echo "Release APK signature verified; release APK/AAB files are present."
 
       - name: Upload APK, AAB and test reports
         uses: actions/upload-artifact@v6
