@@ -35,6 +35,7 @@ permissions:
 jobs:
   android:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -61,12 +62,11 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
 
           if [ ! -f "$ANDROID_SDK_ROOT/platforms/android-35/android.jar" ] || [ ! -x "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt2" ]; then
-            "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0" "emulator" "system-images;android-35;google_apis;x86_64"
+            "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
           else
             echo "Android SDK 35/build-tools 35 already installed on runner."
           fi
 
-          yes | "$SDKMANAGER" "system-images;android-35;google_apis;x86_64" >/dev/null || true
 
       - name: Secret scan
         run: |
@@ -85,7 +85,7 @@ jobs:
           api-level: 35
           target: google_apis
           arch: x86_64
-          profile: pixel_6
+          profile: pixel_7_pro
           emulator-options: "-no-window -no-audio -no-boot-anim -gpu swiftshader_indirect"
           disable-animations: true
           script: gradle --no-daemon connectedDebugAndroidTest
