@@ -117,7 +117,9 @@ object SupabaseBackendManager {
             val wsUrl = SUPABASE_URL.replace("https://", "wss://").replace("http://", "ws://") +
                     "/realtime/v1/websocket?apikey=$SUPABASE_ANON_KEY&v=1.0.0"
 
-            val request = Request.Builder().url(wsUrl).build()
+            val requestBuilder = Request.Builder().url(wsUrl)
+            VibeSyncSessionManager.getToken()?.let { requestBuilder.header("x-vibesync-session", it) }
+            val request = requestBuilder.build()
             realtimeWebSocket = wsHttpClient.newWebSocket(request, object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
                     _realtimeConnected.value = true
@@ -392,49 +394,8 @@ object SupabaseBackendManager {
     /**
      * Sync user profile to Supabase PostgREST Database
      */
-    suspend fun syncProfileToSupabase(profile: ProfileEntity): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val cleanPhone = profile.phoneNumber.filter { it.isDigit() }
-            val docId = if (cleanPhone.isNotBlank()) cleanPhone else profile.id
-
-            val json = JSONObject().apply {
-                put("id", docId)
-                put("name", profile.name)
-                put("age", profile.age)
-                put("occupation", profile.occupation)
-                put("city", profile.city)
-                put("country", profile.country)
-                put("bio", profile.bio)
-                put("interests", profile.interests)
-                put("phone_number", profile.phoneNumber)
-                put("clean_phone", cleanPhone)
-                put("email", profile.email)
-                put("is_verified", profile.isVerified)
-                put("is_deleted", profile.isDeleted)
-                put("account_status", profile.accountStatus)
-                put("updated_at", System.currentTimeMillis())
-            }
-
-            val body = json.toString().toRequestBody("application/json".toMediaType())
-            val request = Request.Builder()
-                .url("$SUPABASE_URL/rest/v1/profiles")
-                .header("apikey", SUPABASE_ANON_KEY)
-                .header("Authorization", "Bearer ${SUPABASE_ANON_KEY}")
-                .header("Content-Type", "application/json")
-                .header("Prefer", "resolution=merge-duplicates")
-                .post(body)
-                .build()
-
-            httpClient.newCall(request).execute().use { response ->
-                val success = response.isSuccessful
-                Log.d(TAG, "PostgREST profile sync success: $success (${response.code})")
-                return@withContext success
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Supabase PostgREST sync exception: ${e.message}")
-            return@withContext false
-        }
-    }
+    suspend fun syncProfileToSupabase(profile: ProfileEntity): Boolean =
+        SupabaseClientManager.upsertProfile(profile)
 
     /**
      * Inserts/Upserts a chat message directly into public.chat_messages via PostgREST
@@ -445,68 +406,31 @@ object SupabaseBackendManager {
         receiverPhone: String
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            val normSender = PhonebookHasher.normalizeToE164(senderPhone)
-            val normReceiver = PhonebookHasher.normalizeToE164(receiverPhone)
-
-            val json = JSONObject().apply {
-                put("id", msg.messageId)
-                put("message_id", msg.messageId)
-                put("sender_phone", normSender)
-                put("receiver_phone", normReceiver)
-                put("sender_id", normSender.ifBlank { msg.senderId })
-                put("receiver_id", normReceiver)
-                put("match_id", msg.matchId)
-                put("text", msg.text)
-                put("message", msg.text)
-                put("timestamp", msg.timestamp)
-                put("is_read", msg.isRead)
-                put("is_delivered", msg.isDelivered)
-                put("media_type", msg.mediaType)
-                put("media_url", msg.mediaUrl)
-                put("voice_duration_seconds", msg.voiceDurationSeconds)
-                put("reply_to_message_id", msg.replyToMessageId)
-                put("reply_to_text", msg.replyToText)
-                put("reply_to_sender", msg.replyToSender)
-                put("is_forwarded", msg.isForwarded)
-                put("is_encrypted", msg.isEncrypted)
+            val senderProfileId = VibeSyncSessionManager.getProfileId() ?: return@withContext false
+            val recipient = SupabaseClientManager.fetchProfilesByE164Phones(listOf(receiverPhone)).firstOrNull()
+                ?: return@withContext false
+            val recipientKey = SupabaseClientManager.fetchPublicIdentityKey(recipient.id)
+                ?: return@withContext false
+            val ciphertext = if (msg.text.startsWith(TinkCryptoManager.TINK_PREFIX)) {
+                msg.text
+            } else {
+                TinkCryptoManager.encryptForRecipient(
+                    recipientPublicKeysetJson = recipientKey,
+                    rawText = msg.text,
+                    senderPhone = senderProfileId,
+                    receiverPhone = recipient.id
+                )
             }
+            if (ciphertext.isBlank()) return@withContext false
 
-            val body = json.toString().toRequestBody("application/json".toMediaType())
-            val request = Request.Builder()
-                .url("$SUPABASE_URL/rest/v1/chat_messages")
-                .header("apikey", SUPABASE_ANON_KEY)
-                .header("Authorization", "Bearer $SUPABASE_ANON_KEY")
-                .header("Content-Type", "application/json")
-                .header("Prefer", "resolution=merge-duplicates")
-                .post(body)
-                .build()
-
-            var success = false
-            httpClient.newCall(request).execute().use { response ->
-                success = response.isSuccessful
-                Log.d(TAG, "PostgREST chat_messages insert success: $success (${response.code})")
-            }
-
-            // Fallback insert to 'messages' table if needed
-            if (!success) {
-                val fallbackReq = Request.Builder()
-                    .url("$SUPABASE_URL/rest/v1/messages")
-                    .header("apikey", SUPABASE_ANON_KEY)
-                    .header("Authorization", "Bearer $SUPABASE_ANON_KEY")
-                    .header("Content-Type", "application/json")
-                    .header("Prefer", "resolution=merge-duplicates")
-                    .post(body)
-                    .build()
-                httpClient.newCall(fallbackReq).execute().use { fallbackResp ->
-                    success = fallbackResp.isSuccessful
-                }
-            }
-
-            // Broadcast to WebSocket subscribers
-            broadcastChatMessage(json)
-            success
+            SupabaseClientManager.upsertChatMessage(
+                msg = msg.copy(text = ciphertext, isEncrypted = true),
+                senderIdentity = senderProfileId,
+                receiverIdentity = recipient.id,
+                recipientProfileId = recipient.id
+            )
         } catch (e: Exception) {
-            Log.w(TAG, "insertChatMessage exception: ${e.message}")
+            Log.w(TAG, "Encrypted chat insert notice: ${e.message}")
             false
         }
     }
@@ -514,76 +438,43 @@ object SupabaseBackendManager {
     /**
      * Broadcasts and soft-deletes a message for everyone via PostgREST and Realtime WebSocket
      */
-    suspend fun deleteChatMessageForEveryone(messageId: String, matchId: String = ""): Boolean = withContext(Dispatchers.IO) {
+    suspend fun deleteChatMessageForEveryone(
+        messageId: String,
+        matchId: String = ""
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (messageId.isBlank()) return@withContext false
         try {
-            val deleteBody = JSONObject().apply {
-                put("is_deleted", true)
-                put("text", "🚫 This message was deleted")
-                put("message", "🚫 This message was deleted")
-                put("updated_at", System.currentTimeMillis())
-            }.toString().toRequestBody("application/json".toMediaType())
-
-            // 1. Soft-delete in public.chat_messages
-            val patchReq = Request.Builder()
-                .url("$SUPABASE_URL/rest/v1/chat_messages?or=(message_id.eq.$messageId,id.eq.$messageId)")
+            val body = JSONObject()
+                .put("p_message_id", messageId)
+                .put("p_match_id", matchId)
+                .toString()
+                .toRequestBody("application/json".toMediaType())
+            val request = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/rpc/delete_encrypted_message")
                 .header("apikey", SUPABASE_ANON_KEY)
                 .header("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
                 .header("Content-Type", "application/json")
-                .header("Prefer", "return=minimal")
-                .patch(deleteBody)
+                .post(body)
                 .build()
-
-            var success = false
-            try {
-                httpClient.newCall(patchReq).execute().use { response ->
-                    success = response.isSuccessful
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "patch chat_messages delete notice: ${e.message}")
-            }
-
-            // 2. Soft-delete in fallback public.messages
-            try {
-                val fallbackReq = Request.Builder()
-                    .url("$SUPABASE_URL/rest/v1/messages?or=(message_id.eq.$messageId,id.eq.$messageId)")
-                    .header("apikey", SUPABASE_ANON_KEY)
-                    .header("Authorization", "Bearer $SUPABASE_ANON_KEY")
-                    .header("Content-Type", "application/json")
-                    .header("Prefer", "return=minimal")
-                    .patch(deleteBody)
-                    .build()
-                httpClient.newCall(fallbackReq).execute().close()
-            } catch (_: Exception) {}
-
-            // 3. Broadcast deletion event to all connected realtime clients across both channels
-            val channels = listOf("realtime:public:chat_messages", "realtime:public:messages")
-            for (ch in channels) {
-                val broadcastMsg = JSONObject().apply {
-                    put("topic", ch)
-                    put("event", "broadcast")
-                    put("payload", JSONObject().apply {
+            httpClient.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    broadcastUpdateStatus(JSONObject().apply {
+                        put("id", messageId)
+                        put("message_id", messageId)
+                        put("match_id", matchId)
+                        put("is_deleted", true)
                         put("type", "DELETE")
-                        put("event", "DELETE")
-                        put("record", JSONObject().apply {
-                            put("id", messageId)
-                            put("message_id", messageId)
-                            put("match_id", matchId)
-                            put("is_deleted", true)
-                            put("text", "🚫 This message was deleted")
-                            put("message", "🚫 This message was deleted")
-                        })
                     })
-                    put("ref", "del_${System.currentTimeMillis()}_$messageId")
                 }
-                realtimeWebSocket?.send(broadcastMsg.toString())
+                response.isSuccessful
             }
-            Log.i(TAG, "Broadcasted Delete for Everyone for message $messageId (HTTP $success)")
-            success
         } catch (e: Exception) {
             Log.w(TAG, "deleteChatMessageForEveryone exception: ${e.message}")
             false
         }
     }
+
 
     fun normalizePhone(p: String): String = p.replace("[^0-9]".toRegex(), "").takeLast(10)
 
@@ -602,6 +493,7 @@ object SupabaseBackendManager {
                 .url("$SUPABASE_URL/rest/v1/chat_messages?select=message_id&match_id=eq.$encodedMatchId&is_read=eq.false&limit=100")
                 .header("apikey", SUPABASE_ANON_KEY)
                 .header("Authorization", "Bearer ${SUPABASE_ANON_KEY}")
+                .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
                 .get()
                 .build()
             val ids = mutableListOf<String>()
@@ -636,17 +528,15 @@ object SupabaseBackendManager {
     suspend fun markMessageRead(messageId: String): Boolean = withContext(Dispatchers.IO) {
         if (messageId.isBlank()) return@withContext false
         try {
-            val encoded = java.net.URLEncoder.encode(messageId, "UTF-8")
-            val body = JSONObject().put("is_read", true).toString()
-                .toRequestBody("application/json".toMediaType())
-            val accessToken = SUPABASE_ANON_KEY
+            val body = JSONObject().put("p_message_id", messageId)
+                .toString().toRequestBody("application/json".toMediaType())
             val request = Request.Builder()
-                .url("$SUPABASE_URL/rest/v1/chat_messages?or=(id.eq.$encoded,message_id.eq.$encoded)")
+                .url("$SUPABASE_URL/rest/v1/rpc/ack_message_read")
                 .header("apikey", SUPABASE_ANON_KEY)
-                .header("Authorization", "Bearer $accessToken")
+                .header("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
                 .header("Content-Type", "application/json")
-                .header("Prefer", "return=minimal")
-                .patch(body)
+                .post(body)
                 .build()
             httpClient.newCall(request).execute().use { it.isSuccessful }
         } catch (e: Exception) {
@@ -654,6 +544,7 @@ object SupabaseBackendManager {
             false
         }
     }
+
     /**
      * Executes delivery ACK back to Supabase:
      * UPDATE public.chat_messages SET is_delivered = true WHERE id = :messageId
@@ -701,32 +592,31 @@ object SupabaseBackendManager {
      * Fetches public identity keyset handle for contact from Supabase profiles table.
      * Invoked when Tink decryption failure signals a possible keyset mismatch or rotation.
      */
-    suspend fun fetchPublicKeyForPhone(phoneNumber: String): String? = withContext(Dispatchers.IO) {
-        try {
-            val norm = PhonebookHasher.normalizeToE164(phoneNumber)
-            val last10 = normalizePhone(phoneNumber)
-            val endpoint = "$SUPABASE_URL/rest/v1/profiles?select=id,phone_number,public_identity_key&or=(phone_number.eq.%22$norm%22,clean_phone.eq.%22$last10%22,phone_number.ilike.*$last10)&limit=1"
-            val request = Request.Builder()
-                .url(endpoint)
-                .header("apikey", SUPABASE_ANON_KEY)
-                .header("Authorization", "Bearer $SUPABASE_ANON_KEY")
-                .get()
-                .build()
-            httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val bodyStr = response.body?.string() ?: "[]"
-                    val arr = JSONArray(bodyStr)
-                    if (arr.length() > 0) {
-                        val key = arr.getJSONObject(0).optString("public_identity_key", "")
-                        if (key.isNotBlank()) return@withContext key
-                    }
+    suspend fun fetchPublicKeyForPhone(phoneNumber: String): String? =
+        withContext(Dispatchers.IO) {
+            try {
+                val hash = PhonebookHasher.hashPhoneNumberToHex(phoneNumber)
+                if (hash.length != 64) return@withContext null
+                val body = JSONObject().put("p_hash", hash)
+                    .toString().toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("$SUPABASE_URL/rest/v1/rpc/get_public_identity_key_by_phone_hash")
+                    .header("apikey", SUPABASE_ANON_KEY)
+                    .header("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                    .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
+                    .header("Content-Type", "application/json")
+                    .post(body)
+                    .build()
+                httpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@withContext null
+                    response.body?.string()?.trim()?.trim('"')?.takeIf { it.isNotBlank() }
                 }
+            } catch (e: Exception) {
+                Log.w("TinkE2EE", "Public key lookup notice: ${e.message}")
+                null
             }
-        } catch (e: Exception) {
-            Log.e("TinkE2EE", "Error fetching contact public keyset handle from Supabase: ${e.message}", e)
         }
-        null
-    }
+
 
     private fun broadcastUpdateStatus(record: JSONObject) {
         try {
@@ -765,6 +655,7 @@ object SupabaseBackendManager {
                 .url("$SUPABASE_URL/functions/v1/send-message")
                 .header("x-api-key", apiKey)
                 .header("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
                 .header("Content-Type", "application/json")
                 .post(body)
                 .build()
@@ -788,6 +679,7 @@ object SupabaseBackendManager {
             val request = Request.Builder()
                 .url("$SUPABASE_URL/functions/v1/get-r2-upload-url?file=$fileName")
                 .header("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
                 .get()
                 .build()
 
