@@ -78,7 +78,7 @@ jobs:
       - name: Prepare release signing
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
@@ -89,8 +89,8 @@ jobs:
             exit 1
           fi
 
-          if [ -z "${STORE_PASSWORD:-}" ] || [ -z "${KEY_PASSWORD:-}" ]; then
-            echo "STORE_PASSWORD and KEY_PASSWORD secrets are required for the signed release gate."
+          if [ -z "${KEYSTORE_PASSWORD:-}" ] || [ -z "${KEY_PASSWORD:-}" ]; then
+            echo "KEYSTORE_PASSWORD and KEY_PASSWORD secrets are required for the signed release gate."
             exit 1
           fi
 
@@ -99,7 +99,7 @@ jobs:
           test -s "$KEYSTORE_FILE"
 
           echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
-          echo "STORE_PASSWORD=$STORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "STORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
           echo "KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
           echo "KEY_ALIAS=${KEY_ALIAS:-upload}" >> "$GITHUB_ENV"
 
