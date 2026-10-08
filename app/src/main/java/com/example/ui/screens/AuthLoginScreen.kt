@@ -3,6 +3,7 @@ package com.example.ui.screens
 import android.accounts.AccountManager
 import android.app.Activity
 import android.widget.Toast
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -72,6 +73,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -104,6 +107,9 @@ import com.example.ui.theme.LikeGreen
 import com.example.util.DeviceSimAndIpCountryHelper
 import com.example.util.FirebaseAuthHelper
 import com.example.util.SimSlotInfo
+import com.example.util.PlatformTruecallerVerificationClient
+import com.example.util.TruecallerProfileResult
+import com.example.util.TruecallerVerificationClient
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -132,12 +138,38 @@ data class AppFeatureItem(
 fun AuthLoginScreen(
     onVerifyPhoneDirect: (mobileNumber: String) -> Unit,
     onOpenAdminPortal: () -> Unit = {},
+    onTruecallerProfileVerified: (TruecallerProfileResult) -> Unit = {},
+    onTruecallerFallbackToPhoneOtp: (mobileNumber: String) -> Unit = onVerifyPhoneDirect,
+    truecallerClient: TruecallerVerificationClient = PlatformTruecallerVerificationClient,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    val latestTruecallerSuccess by rememberUpdatedState(onTruecallerProfileVerified)
+    val latestTruecallerFallback by rememberUpdatedState(onTruecallerFallbackToPhoneOtp)
+
+    DisposableEffect(truecallerClient) {
+        truecallerClient.setCallback(object : TruecallerVerificationClient.Callback {
+            override fun onSuccess(profile: TruecallerProfileResult) {
+                latestTruecallerSuccess(profile)
+            }
+
+            override fun onFailure(reason: String) {
+                Toast.makeText(context, reason, Toast.LENGTH_SHORT).show()
+                latestTruecallerFallback(customMobileNumberInput.filter { it.isDigit() })
+            }
+
+            override fun onVerificationRequired(reason: String?) {
+                reason?.let { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+                latestTruecallerFallback(customMobileNumberInput.filter { it.isDigit() })
+            }
+        })
+        onDispose {
+            truecallerClient.setCallback(null)
+        }
+    }
 
     val onOpenAccountRecovery: () -> Unit = {}
 
@@ -592,22 +624,15 @@ fun AuthLoginScreen(
         // TRUECALLER ONE TAP LOGIN BUTTON
         Surface(
             onClick = {
-                val handsetResult = DeviceSimAndIpCountryHelper.detectHandsetMobileNumber(context, selectedCountry)
-                selectedCountry = handsetResult.country
-                val verifiedNumber = if (handsetResult.cleanNumber.isNotBlank()) {
-                    handsetResult.formattedFullNumber
-                } else if (customMobileNumberInput.filter { it.isDigit() }.length >= 10) {
-                    "${selectedCountry.dialCode} ${customMobileNumberInput.filter { it.isDigit() }}"
-                } else {
-                    "${selectedCountry.dialCode} 9972396133"
+                val activity = context as? FragmentActivity
+                if (activity == null) {
+                    latestTruecallerFallback(customMobileNumberInput.filter { it.isDigit() })
+                    return@Surface
                 }
-                val cleanDigits = verifiedNumber.filter { it.isDigit() }.takeLast(10)
-                customMobileNumberInput = cleanDigits
-                selectedSimNumber = verifiedNumber
 
-                android.util.Log.i("AuthLoginScreen", "[Truecaller One-Tap] Authenticated verified number: $verifiedNumber")
-                Toast.makeText(context, "Truecaller One-Tap Verified: $verifiedNumber", Toast.LENGTH_SHORT).show()
-                onVerifyPhoneDirect(verifiedNumber)
+                if (!truecallerClient.launch(activity)) {
+                    latestTruecallerFallback(customMobileNumberInput.filter { it.isDigit() })
+                }
             },
             shape = RoundedCornerShape(12.dp),
             color = Color.White,
