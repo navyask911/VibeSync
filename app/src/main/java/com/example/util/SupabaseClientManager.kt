@@ -79,7 +79,7 @@ object SupabaseClientManager {
         totalSyncsAttempted++
         try {
             val request = buildRequest(
-                endpoint = "profiles?select=id&limit=1",
+                endpoint = "vibesync_profiles_public?select=id&limit=1",
                 method = "GET"
             )
             httpClient.newCall(request).execute().use { response ->
@@ -313,7 +313,7 @@ object SupabaseClientManager {
         try {
             val safeLimit = limit.coerceIn(1, 50)
             val request = buildRequest(
-                endpoint = "profiles?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key&order=updated_at.desc&limit=$safeLimit",
+                endpoint = "vibesync_profiles_public?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key&order=updated_at.desc&limit=$safeLimit",
                 method = "GET"
             )
 
@@ -346,7 +346,7 @@ object SupabaseClientManager {
         try {
             val encodedId = java.net.URLEncoder.encode(profileId, Charsets.UTF_8.name())
             val request = buildRequest(
-                endpoint = "profiles?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key&id=eq.$encodedId&limit=1",
+                endpoint = "vibesync_profiles_public?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key&id=eq.$encodedId&limit=1",
                 method = "GET"
             )
             httpClient.newCall(request).execute().use { response ->
@@ -442,7 +442,7 @@ object SupabaseClientManager {
         try {
             val safeId = java.net.URLEncoder.encode(profileId, "UTF-8")
             val request = buildRequest(
-                endpoint = "profiles?select=public_identity_key&id=eq.$safeId&limit=1",
+                endpoint = "vibesync_profiles_public?select=public_identity_key&id=eq.$safeId&limit=1",
                 method = "GET"
             )
             httpClient.newCall(request).execute().use { response ->
