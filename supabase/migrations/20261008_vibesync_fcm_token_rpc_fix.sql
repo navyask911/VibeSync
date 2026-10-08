@@ -16,4 +16,5 @@ end;
 $$;
 
 revoke all on function public.register_fcm_token(text) from public;
+revoke execute on function public.register_fcm_token(text) from authenticated;
 grant execute on function public.register_fcm_token(text) to anon;
