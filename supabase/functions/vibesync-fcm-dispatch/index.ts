@@ -133,75 +133,98 @@ async function sendFcm(sa: ServiceAccount, token: string, data: Record<string, s
   return text;
 }
 
-Deno.serve(async (req) => {
-  if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
-  if (!supabaseUrl || !serviceRoleKey) return json({ error: "server_configuration_incomplete" }, 503);
 
-  const sessionToken = req.headers.get("x-vibesync-session")?.trim() ?? "";
-  if (!sessionToken) return json({ error: "vibesync_session_required" }, 401);
-
-  let body: { message_id?: string };
+function parseFirebaseServiceAccount(): ServiceAccount | null {
+  if (!firebaseServiceAccountJson) return null;
   try {
-    body = await req.json();
+    const sa = JSON.parse(firebaseServiceAccountJson) as ServiceAccount;
+    if (!sa.client_email || !sa.private_key || !sa.project_id) return null;
+    return sa;
   } catch {
-    return json({ error: "invalid_json" }, 400);
+    return null;
   }
+}
 
-  const messageId = String(body.message_id ?? "").trim();
-  if (!messageId) return json({ error: "message_id_required" }, 400);
+async function dispatchStoredMessage(
+  adminClient: ReturnType<typeof createClient>,
+  sa: ServiceAccount,
+  messageId: string,
+  expectedSenderId: string,
+  webhookMode: boolean,
+): Promise<Response> {
+  const { data: message, error: messageError } = await adminClient
+    .from("chat_messages")
+    .select("message_id,match_id,sender_id,receiver_id,ciphertext,is_encrypted,media_type,dispatch_status,dispatch_attempts")
+    .eq("message_id", messageId)
+    .maybeSingle();
 
-  if (!firebaseServiceAccountJson) {
-    return json({
-      error: "fcm_server_credential_not_configured",
-      message: "Set FIREBASE_SERVICE_ACCOUNT_JSON as a Supabase Edge Function secret.",
-    }, 503);
+  if (messageError || !message) return json({ error: "message_not_found" }, 404);
+  if (String(message.sender_id ?? "") !== expectedSenderId) {
+    return json({ error: "sender_mismatch" }, 403);
   }
-
-  let sa: ServiceAccount;
-  try {
-    sa = JSON.parse(firebaseServiceAccountJson) as ServiceAccount;
-    if (!sa.client_email || !sa.private_key || !sa.project_id) throw new Error("invalid service account");
-  } catch {
-    return json({ error: "invalid_fcm_server_credential" }, 503);
+  if (!message.is_encrypted || typeof message.ciphertext !== "string" || !message.ciphertext.startsWith("TINK_ENC:")) {
+    return json({ error: "encrypted_payload_required" }, 422);
   }
+  if (!message.receiver_id) return json({ error: "recipient_unresolved" }, 422);
 
-  const adminClient = createClient(supabaseUrl, serviceRoleKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  let attempts = Number(message.dispatch_attempts ?? 0);
+  let claimed = false;
 
-  try {
-    const profileId = await resolveProfileId(adminClient, sessionToken);
-
-    const { data: message, error: messageError } = await adminClient
+  // pg_net/webhook delivery is at-least-once. Atomically claim PENDING messages
+  // so duplicate callbacks cannot send the same notification twice.
+  if (webhookMode) {
+    if (message.dispatch_status === "SENT") {
+      return json({ ok: true, message_id: messageId, skipped: "already_sent" });
+    }
+    const { data: claim, error: claimError } = await adminClient
       .from("chat_messages")
-      .select("message_id,match_id,sender_id,receiver_id,ciphertext,is_encrypted,media_type")
+      .update({ dispatch_status: "SENDING", dispatch_attempts: attempts + 1 })
       .eq("message_id", messageId)
+      .eq("dispatch_status", "PENDING")
+      .select("message_id")
       .maybeSingle();
 
-    if (messageError || !message) return json({ error: "message_not_found" }, 404);
-    if (message.sender_id !== profileId) return json({ error: "sender_mismatch" }, 403);
-    if (!message.is_encrypted || typeof message.ciphertext !== "string" || !message.ciphertext.startsWith("TINK_ENC:")) {
-      return json({ error: "encrypted_payload_required" }, 422);
+    if (claimError) return json({ error: "dispatch_claim_failed" }, 500);
+    if (!claim) return json({ ok: true, message_id: messageId, skipped: "already_claimed_or_dispatched" });
+    claimed = true;
+    attempts += 1;
+  }
+
+  const { data: tokens, error: tokenError } = await adminClient
+    .from("device_tokens")
+    .select("id,fcm_token")
+    .eq("profile_id", message.receiver_id);
+
+  if (tokenError) {
+    if (claimed) {
+      await adminClient.from("chat_messages")
+        .update({ dispatch_status: "PENDING" })
+        .eq("message_id", messageId)
+        .eq("dispatch_status", "SENDING");
     }
-    if (!message.receiver_id) return json({ error: "recipient_unresolved" }, 422);
+    return json({ error: "token_lookup_failed" }, 500);
+  }
 
-    const { data: tokens, error: tokenError } = await adminClient
-      .from("device_tokens")
-      .select("id,fcm_token")
-      .eq("profile_id", message.receiver_id);
+  if (!tokens?.length) {
+    if (claimed) {
+      await adminClient.from("chat_messages")
+        .update({ dispatch_status: "PENDING", dispatch_attempts: attempts })
+        .eq("message_id", messageId)
+        .eq("dispatch_status", "SENDING");
+    }
+    return json({ ok: true, message_id: messageId, delivered_to_devices: 0 });
+  }
 
-    if (tokenError) return json({ error: "token_lookup_failed" }, 500);
-    if (!tokens?.length) return json({ ok: true, delivered_to_devices: 0 });
-
-    let delivered = 0;
-    const failedTokenIds: string[] = [];
+  let delivered = 0;
+  const failedTokenIds: string[] = [];
+  try {
     for (const row of tokens) {
       try {
         await sendFcm(sa, row.fcm_token, {
           type: "NEW_E2EE_MESSAGE",
           message_id: String(message.message_id),
           match_id: String(message.match_id ?? ""),
-          sender_id: profileId,
+          sender_id: String(message.sender_id),
           receiver_id: String(message.receiver_id),
           ciphertext: message.ciphertext,
           media_type: String(message.media_type ?? "TEXT"),
@@ -219,13 +242,20 @@ Deno.serve(async (req) => {
       await adminClient.from("device_tokens").delete().in("id", failedTokenIds);
     }
 
-    await adminClient.from("chat_messages")
+    let statusUpdate = adminClient.from("chat_messages")
       .update({
         dispatch_status: delivered > 0 ? "SENT" : "PENDING",
-        dispatch_attempts: 1,
+        dispatch_attempts: attempts + (webhookMode ? 0 : 1),
       })
-      .eq("message_id", messageId)
-      .eq("sender_id", profileId);
+      .eq("message_id", messageId);
+
+    if (webhookMode) {
+      statusUpdate = statusUpdate.eq("dispatch_status", "SENDING");
+    } else {
+      statusUpdate = statusUpdate.eq("sender_id", expectedSenderId);
+    }
+    const { error: statusError } = await statusUpdate;
+    if (statusError) console.error("Could not update FCM dispatch status:", statusError.message);
 
     return json({
       ok: true,
@@ -233,6 +263,81 @@ Deno.serve(async (req) => {
       delivered_to_devices: delivered,
       stale_tokens_removed: failedTokenIds.length,
     });
+  } catch (e) {
+    if (claimed) {
+      await adminClient.from("chat_messages")
+        .update({ dispatch_status: "PENDING", dispatch_attempts: attempts })
+        .eq("message_id", messageId)
+        .eq("dispatch_status", "SENDING");
+    }
+    console.error("FCM dispatch error:", String((e as Error)?.message ?? e));
+    return json({ error: "fcm_dispatch_failed" }, 502);
+  }
+}
+
+Deno.serve(async (req) => {
+  if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  if (!supabaseUrl || !serviceRoleKey) return json({ error: "server_configuration_incomplete" }, 503);
+
+  let body: Record<string, unknown>;
+  try {
+    const parsed = await req.json();
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return json({ error: "invalid_json_object" }, 400);
+    }
+    body = parsed as Record<string, unknown>;
+  } catch {
+    return json({ error: "invalid_json" }, 400);
+  }
+
+  const adminClient = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+
+  // Database-trigger mode: pg_net sends the row-change envelope and x-webhook-secret.
+  // The secret is validated against Vault via an RPC available only to service_role.
+  const webhookSecret = req.headers.get("x-webhook-secret")?.trim() ?? "";
+  if (webhookSecret) {
+    const { data: authorized, error: authError } = await adminClient.rpc(
+      "verify_vibesync_fcm_webhook_secret",
+      { p_supplied_secret: webhookSecret },
+    );
+    if (authError || authorized !== true) return json({ error: "unauthorized_webhook" }, 401);
+
+    const eventType = typeof body.type === "string" ? body.type.toUpperCase() : "";
+    const schema = typeof body.schema === "string" ? body.schema : "public";
+    const table = typeof body.table === "string" ? body.table : "";
+    const record = body.record && typeof body.record === "object" && !Array.isArray(body.record)
+      ? body.record as Record<string, unknown>
+      : null;
+
+    if (!["INSERT", "UPDATE"].includes(eventType) || schema !== "public" || table !== "chat_messages" || !record) {
+      return json({ error: "invalid_row_change_payload" }, 400);
+    }
+
+    const messageId = String(record.message_id ?? "").trim();
+    const senderId = String(record.sender_id ?? "").trim();
+    if (!messageId || !senderId) return json({ error: "message_id_and_sender_id_required" }, 400);
+
+    const sa = parseFirebaseServiceAccount();
+    if (!sa) return json({ error: "invalid_fcm_server_credential" }, 503);
+
+    // Re-read the authoritative row; do not trust payload fields for FCM delivery.
+    return await dispatchStoredMessage(adminClient, sa, messageId, senderId, true);
+  }
+
+  // Existing Android dispatch path: custom VibeSync session plus message_id.
+  const sessionToken = req.headers.get("x-vibesync-session")?.trim() ?? "";
+  if (!sessionToken) return json({ error: "vibesync_session_required" }, 401);
+  const messageId = String(body.message_id ?? "").trim();
+  if (!messageId) return json({ error: "message_id_required" }, 400);
+
+  const sa = parseFirebaseServiceAccount();
+  if (!sa) return json({ error: "invalid_fcm_server_credential" }, 503);
+
+  try {
+    const profileId = await resolveProfileId(adminClient, sessionToken);
+    return await dispatchStoredMessage(adminClient, sa, messageId, profileId, false);
   } catch (error) {
     return json({
       error: "fcm_dispatch_failed",
