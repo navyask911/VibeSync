@@ -450,8 +450,7 @@ fun DatingAppRoot(
                 viewModel.verifyTruecallerProfile(profile)
             },
             truecallerError = truecallerError,
-            onTruecallerRetry = { viewModel.clearTruecallerError() },
-            onOpenAdminPortal = { viewModel.openAdminPortal() }
+            onTruecallerRetry = { viewModel.clearTruecallerError() }
         )
     } else if (!isProfileCompleted) {
         RegistrationProfileScreen(
