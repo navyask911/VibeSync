@@ -62,11 +62,13 @@ export const supabaseRowWebhook = onRequest(
     }
 
     try {
+      const recordId = String(record.id ?? record.message_id ?? "");
+
       await admin.firestore().collection("supabase_webhook_events").add({
         type,
         table,
         schema,
-        record,
+        recordId,
         receivedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
