@@ -92,7 +92,7 @@ jobs:
             exit 1
           fi
 
-          if [ -z "${KEYSTORE_PASSWORD:-}" ] || [ -z "${KEY_PASSWORD:-" ]; then
+          if [ -z "${KEYSTORE_PASSWORD:-}" ] || [ -z "${KEY_PASSWORD:-}" ]; then
             echo "KEYSTORE_PASSWORD and KEY_PASSWORD secrets are required for the signed release gate."
             exit 1
           fi
