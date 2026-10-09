@@ -392,7 +392,8 @@ fun CloudBackupCard(
                 }
             }
         }
-    
+    }
+
     if (showPassphraseDialog) {
         AlertDialog(
             onDismissRequest = { showPassphraseDialog = false; encryptionPassphrase = "" },
