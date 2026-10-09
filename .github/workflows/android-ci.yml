@@ -11,6 +11,7 @@ on:
       - fix/release-startup-icons-ci
     paths:
       - "app/**"
+      - ".env.example"
       - "gradle/**"
       - "build.gradle.kts"
       - "settings.gradle.kts"
@@ -96,7 +97,7 @@ jobs:
           )
 
           google_services = Path("app/google-services.json")
-          supplied_json = os.environ.get("GOOGLE_SERVICES_JSON_BASE64", "").strip()
+          supplied_json = "".join(os.environ.get("GOOGLE_SERVICES_JSON_BASE64", "").split())
           if supplied_json:
               try:
                   decoded = base64.b64decode(supplied_json, validate=True)
