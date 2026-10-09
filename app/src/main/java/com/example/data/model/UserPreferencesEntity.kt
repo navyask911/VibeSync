@@ -65,10 +65,11 @@ data class UserPreferencesEntity(
     // Creator / Admin Dynamic Credentials
     val adminUsername: String = "",
     val adminPassword: String = "",
-    // Daily Swipe Quotas (Strictly 1 Super Like, 5 Likes, 100 Friendship Requests per day)
+    // Legacy counters retained for Room compatibility; connection requests are limited to 25/day.
     val dailySuperLikesSent: Int = 0,
     val dailyLikesSent: Int = 0,
     val dailyFriendRequestsSent: Int = 0,
+    val lastFriendRequestResetTimestamp: Long = 0L,
     val lastDailySwipeResetTimestamp: Long = 0L,
     // Daily Status Upload Limits (Strictly 5 Photos & 1 Video <60s per day)
     val dailyPhotosUploaded: Int = 0,
@@ -117,8 +118,14 @@ data class UserPreferencesEntity(
 
     val remainingFriendRequestsToday: Int
         get() {
-            val isNewDay = (System.currentTimeMillis() - lastDailySwipeResetTimestamp) > (24 * 60 * 60 * 1000L)
-            return if (isNewDay) 100 else (100 - dailyFriendRequestsSent).coerceAtLeast(0)
+            val calendar = java.util.Calendar.getInstance()
+            calendar.set(java.util.Calendar.HOUR_OF_DAY, 0)
+            calendar.set(java.util.Calendar.MINUTE, 0)
+            calendar.set(java.util.Calendar.SECOND, 0)
+            calendar.set(java.util.Calendar.MILLISECOND, 0)
+            val localMidnight = calendar.timeInMillis
+            return if (lastFriendRequestResetTimestamp < localMidnight) 25
+            else (25 - dailyFriendRequestsSent).coerceAtLeast(0)
         }
 
     val remainingPhotosToday: Int
