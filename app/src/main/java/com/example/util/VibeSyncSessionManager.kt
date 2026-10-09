@@ -30,7 +30,7 @@ object VibeSyncSessionManager {
     private const val SESSION_KEY = "session_blob"
     private const val KEY_ALIAS = "vibesync_session_aes_v1"
     private const val GCM_TAG_BITS = 128
-    private val secureRandom = SecureRandom()
+    private val secureRandom by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { SecureRandom() }
     private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     data class Session(

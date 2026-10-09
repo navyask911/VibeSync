@@ -96,7 +96,7 @@ class UserPresenceManager private constructor() {
     private var connectivityManager: ConnectivityManager? = null
     private var currentUserId = ""
     private var appInForeground = true
-    private val deviceId = UUID.randomUUID().toString().take(12)
+    private val deviceId by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { UUID.randomUUID().toString().take(12) }
 
     fun startMonitoring(context: Context, localUserId: String) {
         currentUserId = localUserId.trim()
