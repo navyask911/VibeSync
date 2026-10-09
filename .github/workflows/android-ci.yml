@@ -109,6 +109,9 @@ jobs:
             exit 1
           fi
 
+      - name: Compile Debug Kotlin
+        run: ./gradlew --no-daemon compileDebugKotlin
+
       - name: JVM unit + Compose UI tests
         run: ./gradlew clean test -Djava.awt.headless=true --no-daemon
 
