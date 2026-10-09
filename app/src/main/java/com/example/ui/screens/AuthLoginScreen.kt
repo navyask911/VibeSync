@@ -130,7 +130,7 @@ fun AuthLoginScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Image(
-                    painter = painterResource(id = com.example.R.mipmap.ic_launcher),
+                    painter = painterResource(id = com.example.R.drawable.ic_launcher_foreground),
                     contentDescription = "VibeSync app logo",
                     modifier = Modifier.size(92.dp).clip(CircleShape)
                 )
