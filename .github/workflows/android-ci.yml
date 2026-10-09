@@ -128,35 +128,49 @@ jobs:
           application = manifest.find("application")
           if application is None:
               raise SystemExit("AndroidManifest.xml is missing <application>")
-          if "icon" in application.attrib or "roundIcon" in application.attrib:
-              raise SystemExit("Custom launcher icon attributes must stay absent until the replacement ZIP is applied")
+          expected_icons = {
+              "icon": "@mipmap/ic_launcher",
+              "roundIcon": "@mipmap/ic_launcher_round",
+          }
+          for attribute, expected in expected_icons.items():
+              actual = application.get(android_ns + attribute)
+              if actual != expected:
+                  raise SystemExit(f"AndroidManifest.xml android:{attribute} must be {expected}, found {actual!r}")
 
-          # The old icon set must be completely removed before replacement assets are uploaded.
-          legacy_icon_paths = [
-              "app/src/main/res/drawable/app_icon.xml",
-              "app/src/main/res/drawable/ic_launcher_background.xml",
-              "app/src/main/res/drawable/ic_launcher_foreground.xml",
-              "app/src/main/res/drawable/vibesync_launcher.png",
-              "app/src/main/res/drawable-nodpi/vibesync_store_graphic_512.png",
+          # Launcher icons from AppIcons(3).zip: all density fallbacks plus Android adaptive icons.
+          required_icon_paths = [
+              "app/src/main/res/mipmap-mdpi/ic_launcher.webp",
+              "app/src/main/res/mipmap-mdpi/ic_launcher_round.webp",
+              "app/src/main/res/mipmap-hdpi/ic_launcher.webp",
+              "app/src/main/res/mipmap-hdpi/ic_launcher_round.webp",
+              "app/src/main/res/mipmap-xhdpi/ic_launcher.webp",
+              "app/src/main/res/mipmap-xhdpi/ic_launcher_round.webp",
+              "app/src/main/res/mipmap-xxhdpi/ic_launcher.webp",
+              "app/src/main/res/mipmap-xxhdpi/ic_launcher_round.webp",
+              "app/src/main/res/mipmap-xxxhdpi/ic_launcher.webp",
+              "app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.webp",
+              "app/src/main/res/drawable-nodpi/ic_launcher_foreground.webp",
+              "app/src/main/res/values/ic_launcher_background.xml",
               "app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml",
               "app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml",
-              "app/src/main/res/mipmap-mdpi/ic_launcher.png",
-              "app/src/main/res/mipmap-mdpi/ic_launcher_round.png",
-              "app/src/main/res/mipmap-hdpi/ic_launcher.png",
-              "app/src/main/res/mipmap-hdpi/ic_launcher_round.png",
-              "app/src/main/res/mipmap-xhdpi/ic_launcher.png",
-              "app/src/main/res/mipmap-xhdpi/ic_launcher_round.png",
-              "app/src/main/res/mipmap-xxhdpi/ic_launcher.png",
-              "app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png",
-              "app/src/main/res/mipmap-xxxhdpi/ic_launcher.png",
-              "app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png",
-              "store-assets/vibesync-store-graphic-512.png",
           ]
-          left_over = [path for path in legacy_icon_paths if Path(path).exists()]
-          if left_over:
-              raise SystemExit("Old launcher artwork still present: " + ", ".join(left_over))
+          missing_icons = [path for path in required_icon_paths if not Path(path).is_file()]
+          if missing_icons:
+              raise SystemExit("Missing VibeSync launcher icon assets: " + ", ".join(missing_icons))
 
-          print("App config and Google Services package validated; old custom icon assets are removed pending replacement ZIP.")
+          for adaptive_path in (
+              "app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml",
+              "app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml",
+          ):
+              adaptive = ET.parse(adaptive_path).getroot()
+              background = adaptive.find("background")
+              foreground = adaptive.find("foreground")
+              if background is None or background.get(android_ns + "drawable") != "@color/ic_launcher_background":
+                  raise SystemExit(f"{adaptive_path} must reference @color/ic_launcher_background")
+              if foreground is None or foreground.get(android_ns + "drawable") != "@drawable/ic_launcher_foreground":
+                  raise SystemExit(f"{adaptive_path} must reference @drawable/ic_launcher_foreground")
+
+          print("App config, Google Services package and supplied VibeSync launcher icon resources validated.")
 
       - name: JDK 21
         uses: actions/setup-java@v5

@@ -53,8 +53,10 @@
         <package android:name="com.amazon.mShop.android.shopping" />
     </queries>
 
-    <!-- Custom launcher artwork intentionally removed until the replacement icon ZIP is supplied. -->
+    <!-- Supplied VibeSync launcher artwork; adaptive icons on Android 8+ with density fallbacks for older versions. -->
     <application
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:name=".VibeSyncApplication"
         android:allowBackup="false"
         android:usesCleartextTraffic="false"
