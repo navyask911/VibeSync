@@ -640,7 +640,8 @@ fun ChatDetailScreen(
                         colorEnd = profile.gradientColorEnd,
                         size = 40.dp,
                         isOnline = profile.activityStatus.contains("Online", ignoreCase = true),
-                        avatarUrl = profile.avatarUrl
+                        avatarUrl = profile.avatarUrl,
+                        avatarCacheVersion = profile.avatarCacheVersion
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Column {
@@ -2557,7 +2558,8 @@ fun ChatDetailScreen(
                                             colorStart = targetProfile.gradientColorStart,
                                             colorEnd = targetProfile.gradientColorEnd,
                                             size = 32.dp,
-                                            avatarUrl = targetProfile.avatarUrl
+                                            avatarUrl = targetProfile.avatarUrl,
+                                            avatarCacheVersion = targetProfile.avatarCacheVersion
                                         )
                                         Spacer(modifier = Modifier.width(10.dp))
                                         Text(targetProfile.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
