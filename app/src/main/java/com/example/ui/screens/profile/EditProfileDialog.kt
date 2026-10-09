@@ -50,7 +50,6 @@ fun EditProfileDialog(
     onUpdatePreferences: (UserPreferencesEntity) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val context = LocalContext.current
     var editName by remember { mutableStateOf(preferences.userName) }
     var editJob by remember { mutableStateOf(preferences.userOccupation) }
     var editQualification by remember { mutableStateOf(preferences.userQualification) }
@@ -274,6 +273,7 @@ fun EditProfileDialog(
                     // Slot 1
                     EditPhotoSlot(
                         photoUrl = photo1,
+                        avatarCacheVersion = preferences.avatarCacheVersion,
                         slotNumber = 1,
                         label = "Main Photo",
                         modifier = Modifier.weight(1f),
@@ -286,6 +286,7 @@ fun EditProfileDialog(
                     // Slot 2
                     EditPhotoSlot(
                         photoUrl = photo2,
+                        avatarCacheVersion = preferences.avatarCacheVersion,
                         slotNumber = 2,
                         label = "Photo 2",
                         modifier = Modifier.weight(1f),
@@ -298,6 +299,7 @@ fun EditProfileDialog(
                     // Slot 3
                     EditPhotoSlot(
                         photoUrl = photo3,
+                        avatarCacheVersion = preferences.avatarCacheVersion,
                         slotNumber = 3,
                         label = "Photo 3",
                         modifier = Modifier.weight(1f),
@@ -470,6 +472,7 @@ fun EditProfileDialog(
 @Composable
 private fun EditPhotoSlot(
     photoUrl: String,
+    avatarCacheVersion: Long = 0L,
     slotNumber: Int,
     label: String,
     modifier: Modifier = Modifier,
@@ -492,8 +495,8 @@ private fun EditPhotoSlot(
                 AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current)
                         .data(photoUrl)
-                        .memoryCacheKey("user-avatar:$photoUrl:${preferences.avatarCacheVersion}")
-                        .diskCacheKey("user-avatar:$photoUrl:${preferences.avatarCacheVersion}")
+                        .memoryCacheKey("user-avatar:$photoUrl:$avatarCacheVersion")
+                        .diskCacheKey("user-avatar:$photoUrl:$avatarCacheVersion")
                         .crossfade(true)
                         .diskCachePolicy(CachePolicy.ENABLED)
                         .memoryCachePolicy(CachePolicy.ENABLED)
