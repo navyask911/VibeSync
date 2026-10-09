@@ -120,7 +120,6 @@ fun DatingAppRoot(
     val snackbarHostState = remember { SnackbarHostState() }
 
     val candidates by viewModel.candidateProfiles.collectAsStateWithLifecycle()
-    val likedMeProfiles by viewModel.likedMeProfiles.collectAsStateWithLifecycle()
     val matches by viewModel.rawMatches.collectAsStateWithLifecycle()
     val preferences by viewModel.userPreferences.collectAsStateWithLifecycle()
     val isSessionChecking by viewModel.isSessionChecking.collectAsStateWithLifecycle()
@@ -169,7 +168,6 @@ fun DatingAppRoot(
     val superLikesCount by viewModel.superLikesCount.collectAsStateWithLifecycle()
     val isSpotlightActive by viewModel.isSpotlightActive.collectAsStateWithLifecycle()
 
-    val activeDatingProfile by viewModel.activeDatingMatchProfile.collectAsStateWithLifecycle()
     val demographicAnalytics by viewModel.demographicAnalytics.collectAsStateWithLifecycle()
     val activeCall by viewModel.activeCall.collectAsStateWithLifecycle()
 
@@ -573,7 +571,7 @@ fun DatingAppRoot(
                         icon = {
                             BadgedBox(
                                 badge = {
-                                    val totalFriendsNotifications = likedMeProfiles.size + pendingFriendRequests.size
+                                    val totalFriendsNotifications = pendingFriendRequests.size
                                     if (totalFriendsNotifications > 0) {
                                         Badge(containerColor = VibeSyncTeal) {
                                             Text("$totalFriendsNotifications")
@@ -683,11 +681,6 @@ fun DatingAppRoot(
                 2 -> DiscoverScreen(
                     candidates = candidates,
                     viewModel = viewModel,
-                    activeDatingProfile = null,
-                    isOpenForDating = true,
-                    onEnableOpenForDating = {},
-                    onOpenActiveChat = {},
-                    onBreakupActiveMatch = {},
                     onSwipe = { profileId, dir -> viewModel.swipe(profileId, dir) },
                     onRewind = { viewModel.rewind() },
                     onOpenProfileDetail = { viewModel.openProfileDetail(it) },
@@ -698,7 +691,6 @@ fun DatingAppRoot(
                     mutualFriendsMap = mutualFriendsMap,
                     onOpenInteractionsModal = { showInteractionsModal = true },
                     onOpenReviewRequest = { viewModel.openFriendRequestReview(it) },
-                    likedMeProfiles = likedMeProfiles,
                     userPreferences = preferences,
                     onUpdatePreferences = { viewModel.updatePreferences(it) },
                     sharedBreakupCounts = sharedBreakupCounts,
@@ -763,21 +755,6 @@ fun DatingAppRoot(
                 onStartCall = { isVideo ->
                     viewModel.startCall(profile, isVideo)
                 },
-                onProposeRelationship = {
-                    viewModel.proposeRelationship(match.matchId)
-                },
-                onRespondToProposal = { accept ->
-                    viewModel.respondToRelationshipProposal(match.matchId, accept)
-                },
-                onRequestBreakup = {
-                    viewModel.requestBreakup(match.matchId)
-                },
-                onRespondToBreakup = { accept ->
-                    viewModel.respondToBreakupRequest(match.matchId, accept)
-                },
-                onBreakup = {
-                    viewModel.requestBreakup(match.matchId)
-                },
                 onBack = { viewModel.closeChat() },
                 onViewProfile = { viewModel.openProfileDetail(profile) },
                 onBlockAndReport = { reason, details ->
@@ -786,8 +763,6 @@ fun DatingAppRoot(
                 onOpenReport = { targetProf ->
                     viewModel.openAccountReport(targetProf)
                 },
-                hasActiveDatingPartner = (preferences?.activeDatingMatchId != null && preferences?.activeDatingMatchId != match.matchId),
-                activeDatingPartnerName = activeDatingProfile?.name,
                 onEditMessage = { messageId, newText ->
                     viewModel.editMessage(messageId, newText)
                 },

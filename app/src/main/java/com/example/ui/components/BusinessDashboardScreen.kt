@@ -40,6 +40,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material.icons.filled.Download
@@ -59,6 +60,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.DockedSearchBar
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -113,6 +117,7 @@ import com.example.util.VenueReportExporter
 import java.text.NumberFormat
 import java.util.Locale
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BusinessDashboardScreen(
     venue: BusinessEntity,
@@ -124,6 +129,8 @@ fun BusinessDashboardScreen(
     var selectedTimeframe by remember { mutableStateOf("This Week") } // "Today", "This Week", "This Month", "All Time"
     var selectedMetricTab by remember { mutableIntStateOf(0) } // 0: Traffic & Footfall, 1: Engagement & Leads, 2: Popular Menu
     var showExportDialog by remember { mutableStateOf(false) }
+    var venueSearchQuery by remember { mutableStateOf("") }
+    var venueSearchActive by remember { mutableStateOf(false) }
 
     // Pure Local Room SQLite Analytics (Requirement 5: Bound to businessId, 0 Supabase Weight)
     var localAnalytics by remember { mutableStateOf(com.example.data.model.LocalBusinessAnalyticsEntity(business_id = venue.id)) }
@@ -157,10 +164,10 @@ fun BusinessDashboardScreen(
                 val inquiries = analyticsDao.countAllEvents(venue.id, "INQUIRY")
                 localAnalytics = com.example.data.model.LocalBusinessAnalyticsEntity(
                     business_id = venue.id,
-                    views_count = views.coerceAtLeast(primaryTotal?.views_count ?: (venue.reviewCount * 7)),
-                    visits_count = visits.coerceAtLeast(primaryTotal?.visits_count ?: (venue.followerCount)),
-                    navigations_count = navigations.coerceAtLeast(primaryTotal?.navigations_count ?: (venue.followerCount / 5)),
-                    inquiries_count = inquiries.coerceAtLeast(primaryTotal?.inquiries_count ?: (venue.followerCount / 12)),
+                    views_count = views.coerceAtLeast(primaryTotal?.views_count ?: 0),
+                    visits_count = visits.coerceAtLeast(primaryTotal?.visits_count ?: 0),
+                    navigations_count = navigations.coerceAtLeast(primaryTotal?.navigations_count ?: 0),
+                    inquiries_count = inquiries.coerceAtLeast(primaryTotal?.inquiries_count ?: 0),
                     updated_at = now
                 )
             } else {
@@ -168,22 +175,12 @@ fun BusinessDashboardScreen(
                 val visits = analyticsDao.countEventsSince(venue.id, "VISIT", sinceTimestamp)
                 val navigations = analyticsDao.countEventsSince(venue.id, "NAVIGATION", sinceTimestamp)
                 val inquiries = analyticsDao.countEventsSince(venue.id, "INQUIRY", sinceTimestamp)
-                val ratio = when (selectedTimeframe) {
-                    "Today" -> 0.08f
-                    "This Week" -> 0.35f
-                    else -> 0.75f
-                }
-                val baselineViews = ((primaryTotal?.views_count ?: (venue.reviewCount * 7)) * ratio).toInt()
-                val baselineVisits = ((primaryTotal?.visits_count ?: venue.followerCount) * ratio).toInt()
-                val baselineNav = ((primaryTotal?.navigations_count ?: (venue.followerCount / 5)) * ratio).toInt()
-                val baselineInq = ((primaryTotal?.inquiries_count ?: (venue.followerCount / 12)) * ratio).toInt()
-                
                 localAnalytics = com.example.data.model.LocalBusinessAnalyticsEntity(
                     business_id = venue.id,
-                    views_count = views.coerceAtLeast(baselineViews),
-                    visits_count = visits.coerceAtLeast(baselineVisits),
-                    navigations_count = navigations.coerceAtLeast(baselineNav),
-                    inquiries_count = inquiries.coerceAtLeast(baselineInq),
+                    views_count = views,
+                    visits_count = visits,
+                    navigations_count = navigations,
+                    inquiries_count = inquiries,
                     updated_at = now
                 )
             }
@@ -321,6 +318,38 @@ fun BusinessDashboardScreen(
                                         fontSize = 11.sp
                                     )
                                 }
+                            }
+                        }
+                    }
+
+                    DockedSearchBar(
+                        query = venueSearchQuery,
+                        onQueryChange = { venueSearchQuery = it },
+                        onSearch = { query ->
+                            venueSearchQuery = query.trim()
+                            venueSearchActive = false
+                        },
+                        active = venueSearchActive,
+                        onActiveChange = { venueSearchActive = it },
+                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                        placeholder = { Text("Search businesses") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }
+                    ) {
+                        val matchedVenues = allVenues.filter {
+                            it.name.contains(venueSearchQuery.trim(), ignoreCase = true)
+                        }
+                        if (matchedVenues.isEmpty()) {
+                            ListItem(headlineContent = { Text("No matching businesses") })
+                        } else {
+                            matchedVenues.forEach { candidate ->
+                                ListItem(
+                                    headlineContent = { Text(candidate.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                    modifier = Modifier.clickable {
+                                        onSelectVenue(candidate)
+                                        venueSearchQuery = candidate.name
+                                        venueSearchActive = false
+                                    }
+                                )
                             }
                         }
                     }

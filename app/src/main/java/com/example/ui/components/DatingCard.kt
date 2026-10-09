@@ -155,7 +155,7 @@ fun DatingCard(
                 )
             }
             .fillMaxSize()
-            .testTag("dating_card_${profile.id}")
+            .testTag("connection_card_${profile.id}")
     ) {
         Card(
             modifier = Modifier
@@ -189,6 +189,8 @@ fun DatingCard(
                             SubcomposeAsyncImage(
                                 model = ImageRequest.Builder(context)
                                     .data(effectivePhoto)
+                                    .memoryCacheKey("profile-avatar:${profile.id}:$effectivePhoto")
+                                    .diskCacheKey("profile-avatar:${profile.id}:$effectivePhoto")
                                     .crossfade(true)
                                     .diskCachePolicy(CachePolicy.ENABLED)
                                     .memoryCachePolicy(CachePolicy.ENABLED)
@@ -361,14 +363,6 @@ fun DatingCard(
                                     style = MaterialTheme.typography.titleLarge.copy(
                                         fontWeight = FontWeight.ExtraBold,
                                         letterSpacing = (-0.5).sp
-                                    )
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "${profile.age}",
-                                    style = MaterialTheme.typography.titleMedium.copy(
-                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                                        fontWeight = FontWeight.Normal
                                     )
                                 )
                                 if (profile.isVerified) {

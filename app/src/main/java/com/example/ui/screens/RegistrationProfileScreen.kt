@@ -198,9 +198,6 @@ fun RegistrationProfileScreen(
     val genderOptions = listOf("Woman", "Man", "Non-binary", "Other")
     var selectedGender by remember { mutableStateOf("Woman") }
 
-    // 5. Relationship Status (Pills)
-    val maritalOptions = listOf("Single", "In a relationship", "Divorced", "Complicated")
-    var selectedMaritalStatus by remember { mutableStateOf("Single") }
 
     // 6. Bio (Max 160 chars)
     var bioText by remember { mutableStateOf("") }
@@ -501,42 +498,6 @@ fun RegistrationProfileScreen(
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // 5. Relationship Status (Single-select chips)
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = "Relationship Status",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.padding(bottom = 6.dp)
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    maritalOptions.forEach { option ->
-                        val isSelected = selectedMaritalStatus.equals(option, ignoreCase = true)
-                        FilterChip(
-                            selected = isSelected,
-                            onClick = { selectedMaritalStatus = option },
-                            label = { Text(option, fontSize = 13.sp) },
-                            leadingIcon = if (isSelected) {
-                                { Icon(Icons.Default.Favorite, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                            } else null,
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = CoralPink.copy(alpha = 0.15f),
-                                selectedLabelColor = CoralPink,
-                                selectedLeadingIconColor = CoralPink
-                            ),
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
             // 6. Bio Input (Multi-line with visible 160-char counter)
             OutlinedTextField(
                 value = bioText,
@@ -733,7 +694,7 @@ fun RegistrationProfileScreen(
                             initialOccupation.ifBlank { "Member" },
                             finalBio,
                             interestsText,
-                            selectedMaritalStatus,
+                            "Not specified",
                             isDiscoveryEnabled,
                             "$detectedCity, $detectedState",
                             detectedCity,

@@ -2589,6 +2589,11 @@ class SocialConnectRepository(
                     accountStatus = "ACTIVE"
                 )
                 profileDao.insertProfile(ownProf)
+                try {
+                    com.example.util.SupabaseClientManager.upsertProfile(ownProf)
+                } catch (e: Exception) {
+                    android.util.Log.w("ProfileSync", "Supabase registration profile sync notice: ${e.message}")
+                }
                 pullProfilesFromFirestore()
             } catch (e: Exception) {
                 android.util.Log.w("SocialConnectRepository", "Firestore sync on profile update failed: ${e.message}")
@@ -3078,145 +3083,6 @@ class SocialConnectRepository(
         return MatchOutcome.MutualMatch(profile, matchId)
     }
 
-    // --- MUTUAL CONSENT DATING RELATIONSHIP & MUTUAL BREAKUP SYSTEM ---
-
-    suspend fun proposeRelationship(matchId: String): Boolean {
-        val currentPrefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
-
-        // 1-ON-1 EXCLUSIVITY POLICY CHECK:
-        // If user is ALREADY in an active dating relationship with someone else, proposal is strictly prohibited until mutual breakup!
-        if (currentPrefs.activeDatingMatchId != null && currentPrefs.activeDatingMatchId != matchId) {
-            return false
-        }
-
-        val match = matchDao.getMatchById(matchId).first() ?: return false
-        val profile = profileDao.getProfileByIdSync(match.profileId) ?: return false
-
-        // Update match status to PROPOSAL_SENT
-        matchDao.updateRelationshipStatus(matchId, "PROPOSAL_SENT", isDating = false)
-
-        val proposalMsg = ChatMessageEntity(
-            messageId = UUID.randomUUID().toString(),
-            matchId = matchId,
-            senderId = "USER",
-            text = "💌 I would love to be in an official Dating Relationship (Date Mate) with you! Asking for your mutual consent. 💖",
-            timestamp = System.currentTimeMillis(),
-            isEncrypted = true
-        )
-        chatMessageDao.insertMessage(proposalMsg)
-        matchDao.updateLastMessage(
-            matchId = matchId,
-            text = "💌 Relationship proposal sent",
-            timestamp = proposalMsg.timestamp,
-            hasUnread = false
-        )
-
-        // Simulated partner response with mutual consent agreement
-        appScope.launch {
-            delay(2000)
-            val updatedMatch = matchDao.getMatchById(matchId).first() ?: return@launch
-            if (updatedMatch.relationshipStatus == "PROPOSAL_SENT") {
-                val latestPrefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
-                // Re-verify that user didn't enter another relationship in the meantime
-                if (latestPrefs.activeDatingMatchId == null || latestPrefs.activeDatingMatchId == matchId) {
-                    // Partner agrees by mutual consent!
-                    matchDao.updateRelationshipStatus(matchId, "IN_RELATIONSHIP", isDating = true)
-                    preferencesDao.insertOrUpdate(latestPrefs.copy(activeDatingMatchId = matchId))
-
-                    val consentMsg = ChatMessageEntity(
-                        messageId = UUID.randomUUID().toString(),
-                        matchId = matchId,
-                        senderId = profile.id,
-                        text = "💖 I gladly agree! We are now officially in an exclusive Dating Relationship by mutual consent! Excited for this chapter together 🥰",
-                        timestamp = System.currentTimeMillis(),
-                        isEncrypted = true
-                    )
-                    chatMessageDao.insertMessage(consentMsg)
-
-                    val systemMsg = ChatMessageEntity(
-                        messageId = UUID.randomUUID().toString(),
-                        matchId = matchId,
-                        senderId = "SYSTEM",
-                        text = "💑 Official Dating Relationship Confirmed! Mutual consent recorded. 1-on-1 exclusive focus active.",
-                        timestamp = System.currentTimeMillis() + 50,
-                        isEncrypted = true
-                    )
-                    chatMessageDao.insertMessage(systemMsg)
-
-                    matchDao.updateLastMessage(
-                        matchId = matchId,
-                        text = "💖 In Dating Relationship (Mutual Consent)",
-                        timestamp = systemMsg.timestamp,
-                        hasUnread = true
-                    )
-                }
-            }
-        }
-        return true
-    }
-
-    suspend fun respondToRelationshipProposal(matchId: String, accept: Boolean): Boolean {
-        val match = matchDao.getMatchById(matchId).first() ?: return false
-        val profile = profileDao.getProfileByIdSync(match.profileId) ?: return false
-        val currentPrefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
-
-        if (accept) {
-            // Cannot accept if currently committed to another active dating relationship
-            if (currentPrefs.activeDatingMatchId != null && currentPrefs.activeDatingMatchId != matchId) {
-                return false
-            }
-
-            matchDao.updateRelationshipStatus(matchId, "IN_RELATIONSHIP", isDating = true)
-            preferencesDao.insertOrUpdate(currentPrefs.copy(activeDatingMatchId = matchId))
-
-            val acceptMsg = ChatMessageEntity(
-                messageId = UUID.randomUUID().toString(),
-                matchId = matchId,
-                senderId = "USER",
-                text = "💖 I agree with all my heart! Let's be official Date Mates by mutual consent! 💑",
-                timestamp = System.currentTimeMillis(),
-                isEncrypted = true
-            )
-            chatMessageDao.insertMessage(acceptMsg)
-
-            val systemMsg = ChatMessageEntity(
-                messageId = UUID.randomUUID().toString(),
-                matchId = matchId,
-                senderId = "SYSTEM",
-                text = "💑 Official Dating Relationship Confirmed! Both parties agreed by mutual consent.",
-                timestamp = System.currentTimeMillis() + 50,
-                isEncrypted = true
-            )
-            chatMessageDao.insertMessage(systemMsg)
-
-            matchDao.updateLastMessage(
-                matchId = matchId,
-                text = "💖 In Dating Relationship (Mutual Consent)",
-                timestamp = systemMsg.timestamp,
-                hasUnread = false
-            )
-        } else {
-            matchDao.updateRelationshipStatus(matchId, "FRIENDS", isDating = false)
-            val declineMsg = ChatMessageEntity(
-                messageId = UUID.randomUUID().toString(),
-                matchId = matchId,
-                senderId = "USER",
-                text = "🤝 I truly value our connection, but I'd prefer to stay great friends for now.",
-                timestamp = System.currentTimeMillis(),
-                isEncrypted = true
-            )
-            chatMessageDao.insertMessage(declineMsg)
-            matchDao.updateLastMessage(
-                matchId = matchId,
-                text = "Stayed as friends 🤝",
-                timestamp = declineMsg.timestamp,
-                hasUnread = false
-            )
-        }
-        return true
-    }
-
-    // =========================================================================
     // Google Cloud & Google Drive Private Encrypted Backup & Restore System
     // =========================================================================
 
@@ -3483,113 +3349,6 @@ class SocialConnectRepository(
                 instance
             }
         }
-    }
-
-    suspend fun requestBreakup(matchId: String) {
-        val match = matchDao.getMatchById(matchId).first() ?: return
-        val profile = profileDao.getProfileByIdSync(match.profileId) ?: return
-
-        matchDao.updateRelationshipStatus(matchId, "BREAKUP_PENDING_USER", isDating = true)
-
-        val reqMsg = ChatMessageEntity(
-            messageId = UUID.randomUUID().toString(),
-            matchId = matchId,
-            senderId = "USER",
-            text = "💔 I feel it's best for us to conclude our romantic relationship. Requesting mutual consent to end gracefully.",
-            timestamp = System.currentTimeMillis(),
-            isEncrypted = true
-        )
-        chatMessageDao.insertMessage(reqMsg)
-        matchDao.updateLastMessage(
-            matchId = matchId,
-            text = "💔 Breakup requested",
-            timestamp = reqMsg.timestamp,
-            hasUnread = false
-        )
-
-        // Simulated partner consent response to complete mutual breakup
-        appScope.launch {
-            delay(2200)
-            val updatedMatch = matchDao.getMatchById(matchId).first() ?: return@launch
-            if (updatedMatch.relationshipStatus == "BREAKUP_PENDING_USER") {
-                // Partner agrees to mutual breakup!
-                finalizeMutualBreakup(matchId, profile)
-            }
-        }
-    }
-
-    suspend fun respondToBreakupRequest(matchId: String, accept: Boolean) {
-        val match = matchDao.getMatchById(matchId).first() ?: return
-        val profile = profileDao.getProfileByIdSync(match.profileId) ?: return
-
-        if (accept) {
-            finalizeMutualBreakup(matchId, profile)
-        } else {
-            // Profile & relationship updated as Complicated (Not Mutual Breakup)
-            matchDao.updateRelationshipStatus(matchId, "COMPLICATED", isDating = true)
-            matchDao.updateMatchStatus(matchId, "COMPLICATED")
-            val keepMsg = ChatMessageEntity(
-                messageId = UUID.randomUUID().toString(),
-                matchId = matchId,
-                senderId = "USER",
-                text = "⚠️ Breakup request was declined. Profile and relationship status updated as 'Complicated (Not Mutual Breakup)'.",
-                timestamp = System.currentTimeMillis(),
-                isEncrypted = true
-            )
-            chatMessageDao.insertMessage(keepMsg)
-            matchDao.updateLastMessage(
-                matchId = matchId,
-                text = "⚠️ Complicated (Not Mutual Breakup)",
-                timestamp = keepMsg.timestamp,
-                hasUnread = false
-            )
-        }
-    }
-
-    private suspend fun finalizeMutualBreakup(matchId: String, profile: ProfileEntity) {
-        matchDao.updateRelationshipStatus(matchId, "MUTUAL_BROKEN_UP", isDating = false)
-        matchDao.updateMatchStatus(matchId, "MUTUAL_BROKEN_UP")
-
-        // Crucial requirement: Breakups ONLY count when BOTH sides made breakup by mutual consent!
-        profileDao.incrementBreakupCount(profile.id)
-        val currentPrefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
-        preferencesDao.insertOrUpdate(
-            currentPrefs.copy(
-                breakupCount = currentPrefs.breakupCount + 1,
-                activeDatingMatchId = null // Unlock discovery swipe deck!
-            )
-        )
-
-        val partnerConsentMsg = ChatMessageEntity(
-            messageId = UUID.randomUUID().toString(),
-            matchId = matchId,
-            senderId = profile.id,
-            text = "🕊️ I agree and give mutual consent to end our dating relationship respectfully. Wishing you the very best. 🤝",
-            timestamp = System.currentTimeMillis(),
-            isEncrypted = true
-        )
-        chatMessageDao.insertMessage(partnerConsentMsg)
-
-        val finalClosureMsg = ChatMessageEntity(
-            messageId = UUID.randomUUID().toString(),
-            matchId = matchId,
-            senderId = "SYSTEM",
-            text = "💔 Mutual Consent Breakup Finalized. +1 Breakup recorded on both profiles for transparent ethics. Discovery swipe deck is now unlocked.",
-            timestamp = System.currentTimeMillis() + 50,
-            isEncrypted = true
-        )
-        chatMessageDao.insertMessage(finalClosureMsg)
-
-        matchDao.updateLastMessage(
-            matchId = matchId,
-            text = "💔 Breakup ended by mutual consent",
-            timestamp = finalClosureMsg.timestamp,
-            hasUnread = true
-        )
-    }
-
-    suspend fun breakupWithMatch(matchId: String) {
-        requestBreakup(matchId)
     }
 
     suspend fun markMatchAsRead(matchId: String, currentUserPhone: String = "", partnerPhone: String = "") {
@@ -3862,6 +3621,11 @@ class SocialConnectRepository(
             accountStatus = "ACTIVE"
         )
         profileDao.insertProfile(ownProf)
+        try {
+            com.example.util.SupabaseClientManager.upsertProfile(ownProf)
+        } catch (e: Exception) {
+            android.util.Log.w("ProfileSync", "Supabase profile update notice: ${e.message}")
+        }
 
         if (userId != "current_user" && userId != "null" && (cleanPhone.isNotBlank() || cleanEmail.isNotBlank())) {
             syncProfileToFirestore(ownProf)

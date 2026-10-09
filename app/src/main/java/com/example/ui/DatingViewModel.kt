@@ -339,18 +339,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     val allProfilesForAdmin: StateFlow<List<ProfileEntity>> = repository.allProfilesForAdmin
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val activeDatingMatchProfile: StateFlow<ProfileEntity?> = combine(
-        userPreferences,
-        allProfilesForAdmin
-    ) { prefs, profiles ->
-        val activeMatchId = prefs?.activeDatingMatchId
-        if (activeMatchId != null) {
-            profiles.find { it.id == activeMatchId }
-        } else {
-            null
-        }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
-
     val demographicAnalytics: StateFlow<DemographicAnalytics> = combine(
         allProfilesForAdmin,
         userPreferences
@@ -1447,100 +1435,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         _activeCall.value = current.copy(isCameraOff = newCamState)
     }
 
-    // Relationship Ethics: Mutual Consent Dating & Breakup Logic
-    fun proposeRelationship(matchId: String) {
-        val currentActiveMatchId = userPreferences.value?.activeDatingMatchId
-        val activePartner = activeDatingMatchProfile.value
-        
-        // 1-ON-1 EXCLUSIVITY POLICY:
-        // If user already has an active dating relationship with someone else, block new proposals
-        if (currentActiveMatchId != null && currentActiveMatchId != matchId) {
-            val partnerName = activePartner?.name ?: "your Date Mate"
-            viewModelScope.launch {
-                _toastMessage.emit("⚠️ Policy Block: You are currently dating $partnerName. You must mutually break up before proposing to someone else.")
-            }
-            return
-        }
-
-        // Check if there is already a pending proposal sent to another match
-        val alreadyPending = rawMatches.value.find { it.relationshipStatus == "PROPOSAL_SENT" && it.matchId != matchId }
-        if (alreadyPending != null) {
-            viewModelScope.launch {
-                _toastMessage.emit("⚠️ You have a pending dating proposal awaiting partner consent. Please wait or resolve it first.")
-            }
-            return
-        }
-
-        viewModelScope.launch {
-            val success = repository.proposeRelationship(matchId)
-            if (success) {
-                _toastMessage.emit("Proposal sent! Awaiting mutual consent 💌")
-            } else {
-                _toastMessage.emit("⚠️ Cannot send proposal. Please check active relationship status.")
-            }
-        }
-    }
-
-    fun respondToRelationshipProposal(matchId: String, accept: Boolean) {
-        val currentActiveMatchId = userPreferences.value?.activeDatingMatchId
-        val activePartner = activeDatingMatchProfile.value
-
-        if (accept && currentActiveMatchId != null && currentActiveMatchId != matchId) {
-            val partnerName = activePartner?.name ?: "your current partner"
-            viewModelScope.launch {
-                _toastMessage.emit("⚠️ Cannot accept: You are already in a relationship with $partnerName. You must break up before accepting a new proposal.")
-            }
-            return
-        }
-
-        viewModelScope.launch {
-            val success = repository.respondToRelationshipProposal(matchId, accept)
-            if (accept) {
-                if (success) {
-                    _toastMessage.emit("Official Dating Relationship Confirmed by mutual consent! 💖")
-                } else {
-                    _toastMessage.emit("⚠️ Could not confirm relationship: already committed to an active dating partner.")
-                }
-            } else {
-                _toastMessage.emit("Stayed as friends 🤝")
-            }
-        }
-    }
-
-    fun requestBreakup(matchId: String) {
-        viewModelScope.launch {
-            repository.requestBreakup(matchId)
-            _toastMessage.emit("Breakup request sent. Awaiting partner consent 💔")
-        }
-    }
-
-    fun respondToBreakupRequest(matchId: String, accept: Boolean) {
-        viewModelScope.launch {
-            repository.respondToBreakupRequest(matchId, accept)
-            if (accept) {
-                _toastMessage.emit("Mutual breakup finalized. +1 Breakup recorded on both profiles 🕊️")
-            } else {
-                _toastMessage.emit("Continuing dating conversation 💬")
-            }
-        }
-    }
-
-    fun breakupWithMatch(matchId: String) {
-        requestBreakup(matchId)
-    }
-
-    fun breakupCurrentActiveMatch() {
-        val activeMatchId = userPreferences.value?.activeDatingMatchId ?: return
-        requestBreakup(activeMatchId)
-    }
-
-    fun openChatForActiveDatingMatch() {
-        val activeMatchId = userPreferences.value?.activeDatingMatchId ?: return
-        val partner = activeDatingMatchProfile.value ?: return
-        val match = rawMatches.value.find { it.profileId == activeMatchId } ?: return
-        openChat(match, partner)
-    }
-
     // Google Cloud & Google Drive Private Encrypted Backup Handlers
     fun enableGoogleCloudBackup(
         email: String = "",
@@ -1839,7 +1733,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             val prefs = repository.userPreferences.first() ?: UserPreferencesEntity()
             val expectedUser = prefs.adminUsername.ifBlank { "creator" }
             val expectedPass = prefs.adminPassword.ifBlank { "9999" }
-            if (user.trim() != expectedUser || pass.trim() != expectedPass) {
+            if (!user.trim().equals(expectedUser, ignoreCase = true) || pass.trim() != expectedPass) {
                 _adminLoginError.value = "Invalid administrator username or passcode."
             } else if (com.example.util.SupabaseClientManager.isPlatformStaff()) {
                 _isAdminLoggedIn.value = true
@@ -1985,8 +1879,31 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             expiresAtEpochSeconds = expiresAtEpochSeconds
         )
 
-        // Returners are looked up by their verified server-issued profile ID; never trust a local-only identity.
-        val existingProfile = SupabaseClientManager.fetchProfileById(profileId)
+        // Look up the server-issued profile ID first, then try authenticated phone-hash lookup
+        // for returning accounts created by an older registration flow.
+        val profileById = SupabaseClientManager.fetchProfileById(profileId)
+        val profileByVerifiedPhone = if (profileById == null && cleanPhone.isNotBlank()) {
+            try {
+                SupabaseClientManager.fetchProfilesByE164Phones(listOf(cleanPhone)).firstOrNull()
+            } catch (e: Exception) {
+                android.util.Log.w("AuthSessionManager", "Verified-phone profile lookup notice: ${e.message}")
+                null
+            }
+        } else null
+        val phoneDigits = cleanPhone.filter { it.isDigit() }
+        val localProfileByPhone = if (profileById == null && profileByVerifiedPhone == null) {
+            try {
+                database.profileDao().getAllProfilesSync().firstOrNull { candidate ->
+                    candidate.id == profileId || (
+                        phoneDigits.length >= 7 &&
+                            candidate.phoneNumber.filter { it.isDigit() }.takeLast(10) == phoneDigits.takeLast(10)
+                    )
+                }
+            } catch (_: Exception) {
+                null
+            }
+        } else null
+        val existingProfile = profileById ?: profileByVerifiedPhone ?: localProfileByPhone
         if (existingProfile != null) {
             try {
                 database.profileDao().insertProfile(
@@ -2332,14 +2249,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             repository.updatePermissionsStatus(true)
             _showMandatoryPermissionsDialog.value = false
-        }
-    }
-
-    fun enableOpenForDating() {
-        viewModelScope.launch {
-            val current = userPreferences.value ?: UserPreferencesEntity()
-            repository.updatePreferences(current.copy(isOpenForDating = true))
-            _toastMessage.emit("Open for Dating enabled! 💖 You are now discoverable.")
         }
     }
 

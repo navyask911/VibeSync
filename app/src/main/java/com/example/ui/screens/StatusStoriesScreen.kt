@@ -39,6 +39,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.navigationBars
@@ -439,7 +440,7 @@ fun StatusStoriesScreen(
                         title = story.userName,
                         subtitle = formatRelativeTime(story.timestamp),
                         avatarEmoji = story.userAvatarEmoji,
-                        avatarUrl = story.mediaUrl,
+                        avatarUrl = story.userAvatarUrl,
                         isViewed = story.isViewed,
                         onClick = { viewModel.openStoryViewer(story) }
                     )
@@ -1125,11 +1126,16 @@ fun AddStatusBottomSheet(
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
         containerColor = MaterialTheme.colorScheme.surface
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 20.dp)
+        androidx.compose.foundation.layout.BoxWithConstraints(
+            modifier = Modifier.fillMaxWidth().navigationBarsPadding().imePadding()
         ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = maxHeight)
+                    .statusBarsPadding()
+                    .padding(bottom = 20.dp)
+            ) {
             // Top Bar: 'X' close button and "Add Stories" title
             Row(
                 modifier = Modifier
@@ -1367,6 +1373,7 @@ fun AddStatusBottomSheet(
                         modifier = Modifier.size(20.dp)
                     )
                 }
+            }
             }
         }
     }

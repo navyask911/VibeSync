@@ -253,17 +253,10 @@ fun ChatDetailScreen(
     onSendMessage: (String) -> Unit,
     onSendMedia: (mediaType: String, text: String, mediaUrl: String, voiceSeconds: Int) -> Unit,
     onStartCall: (isVideo: Boolean) -> Unit,
-    onProposeRelationship: () -> Unit = {},
-    onRespondToProposal: (Boolean) -> Unit = {},
-    onRequestBreakup: () -> Unit = {},
-    onRespondToBreakup: (Boolean) -> Unit = {},
-    onBreakup: () -> Unit = {},
     onBack: () -> Unit,
     onViewProfile: () -> Unit,
     onBlockAndReport: (reason: String, details: String) -> Unit = { _, _ -> },
     onOpenReport: ((ProfileEntity) -> Unit)? = null,
-    hasActiveDatingPartner: Boolean = false,
-    activeDatingPartnerName: String? = null,
     onSendMessageWithReply: (text: String, replyToId: String?, replyToText: String?, replyToSender: String?) -> Unit = { t, _, _, _ -> onSendMessage(t) },
     onEditMessage: (messageId: String, newText: String) -> Unit = { _, _ -> },
     onToggleStarMessage: (messageId: String) -> Unit = {},
@@ -271,9 +264,6 @@ fun ChatDetailScreen(
     onDeleteForEveryone: (messageId: String) -> Unit = {},
     onForwardMessage: (targetMatchId: String, message: ChatMessageEntity) -> Unit = { _, _ -> },
     otherMatches: List<Pair<MatchEntity, ProfileEntity>> = emptyList(),
-    isBreakupShared: Boolean = false,
-    isBreakupPending: Boolean = false,
-    onRequestBreakupShare: (() -> Unit)? = null,
     currentUserId: String? = null,
     modifier: Modifier = Modifier
 ) {
@@ -378,9 +368,6 @@ fun ChatDetailScreen(
     val chatTextColor = remember(selectedChatColorHex) {
         com.example.util.ChatColorPreferences.parseColor(selectedChatColorHex)
     }
-    var showBreakupDialog by remember { mutableStateOf(false) }
-    var showProposeDialog by remember { mutableStateOf(false) }
-    var showActivePartnerLockedDialog by remember { mutableStateOf(false) }
     var showE2eeDetailsDialog by remember { mutableStateOf(false) }
     var e2eeVisualizerTab by remember { mutableStateOf("FINGERPRINT") } // "FINGERPRINT", "EXPLAINER", "SCANNER"
     var fingerprintVerificationStatus by remember { mutableStateOf("UNVERIFIED") } // "UNVERIFIED", "VERIFYING", "VERIFIED"
@@ -553,12 +540,6 @@ fun ChatDetailScreen(
             showSafetyProtocolsSheet = false
         } else if (showEmergencyBlockReportDialog) {
             showEmergencyBlockReportDialog = false
-        } else if (showBreakupDialog) {
-            showBreakupDialog = false
-        } else if (showProposeDialog) {
-            showProposeDialog = false
-        } else if (showActivePartnerLockedDialog) {
-            showActivePartnerLockedDialog = false
         } else if (showChatColorDialog) {
             showChatColorDialog = false
         } else if (showE2eeDetailsDialog) {
@@ -753,66 +734,6 @@ fun ChatDetailScreen(
                                 onViewProfile()
                             }
                         )
-                        if (match?.relationshipStatus == "IN_RELATIONSHIP") {
-                            DropdownMenuItem(
-                                text = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            imageVector = Icons.Default.HeartBroken,
-                                            contentDescription = null,
-                                            tint = Color(0xFFE53935),
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Request Mutual Breakup 💔", color = Color(0xFFE53935), fontWeight = FontWeight.Bold)
-                                    }
-                                },
-                                onClick = {
-                                    showMenu = false
-                                    showBreakupDialog = true
-                                }
-                            )
-                        } else {
-                            if (hasActiveDatingPartner) {
-                                DropdownMenuItem(
-                                    text = {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(
-                                                imageVector = Icons.Default.Lock,
-                                                contentDescription = null,
-                                                tint = Color.Gray,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Propose Connect (Locked 🔒)", color = Color.Gray)
-                                        }
-                                    },
-                                    onClick = {
-                                        showMenu = false
-                                        showActivePartnerLockedDialog = true
-                                    }
-                                )
-                            } else {
-                                DropdownMenuItem(
-                                    text = {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(
-                                                imageVector = Icons.Default.Favorite,
-                                                contentDescription = null,
-                                                tint = VibeSyncTeal,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Propose Connect Relationship 💖", color = VibeSyncTeal, fontWeight = FontWeight.Bold)
-                                        }
-                                    },
-                                    onClick = {
-                                        showMenu = false
-                                        showProposeDialog = true
-                                    }
-                                )
-                            }
-                        }
                         DropdownMenuItem(
                             text = {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -926,189 +847,13 @@ fun ChatDetailScreen(
             }
         }
 
-        // Relationship Status & Mutual Consent Banner (only shown for active proposals/relationships to protect casual & family chats)
-        val currentStatus = match?.relationshipStatus ?: if (match?.isDatingMatch == true) "IN_RELATIONSHIP" else "FRIENDS"
-        val isDatingOrProposalActive = currentStatus in listOf(
-            "IN_RELATIONSHIP",
-            "PROPOSAL_SENT",
-            "PROPOSAL_RECEIVED",
-            "BREAKUP_PENDING_USER",
-            "BREAKUP_PENDING_PARTNER",
-            "MUTUAL_BROKEN_UP",
-            "COMPLICATED",
-            "NOT_MUTUAL_BREAKUP"
-        )
-
         val isPhonebookOrFriendsCircle = match?.isPhonebookContact == true ||
-            match?.relationshipStatus == "FRIENDS" ||
-            match?.relationshipStatus == "FRIENDS_CIRCLE" ||
             match?.lastMessage?.contains("Phonebook", ignoreCase = true) == true ||
             match?.lastMessage?.contains("Phone Contact", ignoreCase = true) == true ||
             match?.lastMessage?.contains("Contacts", ignoreCase = true) == true ||
             match?.lastMessage?.contains("Friendship", ignoreCase = true) == true
 
-        if (isDatingOrProposalActive) {
-            Surface(
-                color = when (currentStatus) {
-                    "IN_RELATIONSHIP" -> VibeSyncTeal.copy(alpha = 0.15f)
-                    "PROPOSAL_SENT", "PROPOSAL_RECEIVED" -> Color(0xFF9C27B0).copy(alpha = 0.15f)
-                    "BREAKUP_PENDING_USER", "BREAKUP_PENDING_PARTNER" -> Color(0xFFE53935).copy(alpha = 0.15f)
-                    "COMPLICATED", "NOT_MUTUAL_BREAKUP" -> Color(0xFFFF9800).copy(alpha = 0.15f)
-                    "MUTUAL_BROKEN_UP" -> Color.Gray.copy(alpha = 0.15f)
-                    else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
-                ) {
-                    when (currentStatus) {
-                        "IN_RELATIONSHIP" -> {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = "💑 Official Connect Mate (Mutual Consent)",
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp,
-                                        color = VibeSyncTeal
-                                    )
-                                    Text(
-                                        text = "Exclusive 1-on-1 connect relationship. End-to-end focus active.",
-                                        fontSize = 10.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-                        "PROPOSAL_SENT" -> {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "💌 Proposal Sent: Awaiting ${profile.name}'s mutual consent to confirm Connect Mate status",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = Color(0xFF9C27B0)
-                                )
-                            }
-                        }
-                        "PROPOSAL_RECEIVED" -> {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = "💖 ${profile.name} proposes an Official Connect Relationship!",
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp,
-                                        color = VibeSyncTeal
-                                    )
-                                    Text(
-                                        text = if (hasActiveDatingPartner) "⚠️ You are currently connected with ${activeDatingPartnerName ?: "another partner"}. Break up first to accept." else "Only counts as Connect Mate if you mutually agree.",
-                                        fontSize = 10.sp,
-                                        color = if (hasActiveDatingPartner) Color(0xFFE53935) else MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Button(
-                                        onClick = {
-                                            if (hasActiveDatingPartner) {
-                                                showActivePartnerLockedDialog = true
-                                            } else {
-                                                onRespondToProposal(true)
-                                            }
-                                        },
-                                        modifier = Modifier.height(28.dp),
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = if (hasActiveDatingPartner) Color.Gray else VibeSyncTeal
-                                        )
-                                    ) {
-                                        Text(if (hasActiveDatingPartner) "Locked 🔒" else "Accept 💖", fontSize = 10.sp)
-                                    }
-                                    OutlinedButton(
-                                        onClick = { onRespondToProposal(false) },
-                                        modifier = Modifier.height(28.dp),
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                                    ) {
-                                        Text("Decline", fontSize = 10.sp)
-                                    }
-                                }
-                            }
-                        }
-                        "BREAKUP_PENDING_USER" -> {
-                            Text(
-                                text = "💔 Breakup Request Sent: Waiting for ${profile.name} to consent to complete mutual breakup.",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = Color(0xFFE53935)
-                            )
-                        }
-                        "BREAKUP_PENDING_PARTNER" -> {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = "💔 ${profile.name} requested to end the relationship",
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp,
-                                        color = Color(0xFFE53935)
-                                    )
-                                    Text(
-                                        text = "If you consent, +1 Breakup will be counted on both profiles.",
-                                        fontSize = 10.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Button(
-                                        onClick = { onRespondToBreakup(true) },
-                                        modifier = Modifier.height(28.dp),
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE53935))
-                                    ) {
-                                        Text("Consent 🕊️", fontSize = 10.sp)
-                                    }
-                                    OutlinedButton(
-                                        onClick = { onRespondToBreakup(false) },
-                                        modifier = Modifier.height(28.dp),
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                                    ) {
-                                        Text("Decline", fontSize = 10.sp)
-                                    }
-                                }
-                            }
-                        }
-                        "MUTUAL_BROKEN_UP" -> {
-                            Text(
-                                text = "🕊️ Relationship ended by mutual consent (+1 Breakup recorded on both profiles)",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        "COMPLICATED", "NOT_MUTUAL_BREAKUP" -> {
-                            Text(
-                                text = "⚠️ Status: Complicated (Breakup Proposed, Not Accepted Mutually)",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFFE65100)
-                            )
-                        }
-                    }
-                }
-            }
-        } else if (!isPhonebookOrFriendsCircle) {
+        if (!isPhonebookOrFriendsCircle) {
             // Anonymous Safety Protocol Banner for pre-relationship chatting
             Surface(
                 color = VibeSyncTeal.copy(alpha = 0.12f),
@@ -2219,128 +1964,6 @@ fun ChatDetailScreen(
                 }
             }
         }
-    }
-
-    // Mutual Consent Proposal Dialog
-    if (showProposeDialog) {
-        AlertDialog(
-            onDismissRequest = { showProposeDialog = false },
-            icon = {
-                Icon(
-                    imageVector = Icons.Default.Favorite,
-                    contentDescription = null,
-                    tint = VibeSyncTeal,
-                    modifier = Modifier.size(36.dp)
-                )
-            },
-            title = {
-                Text(text = "Propose Connect Relationship? 💖", fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Column {
-                    Text(
-                        text = "Ethics & Mutual Consent Principle:\n\n• You are proposing to be official Connect Mates with ${profile.name}.\n• This will ONLY count as a Connect Relationship if ${profile.name} agrees with mutual consent.\n• Casual chats remain as Friends.",
-                        fontSize = 13.sp
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showProposeDialog = false
-                        onProposeRelationship()
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = VibeSyncTeal),
-                    modifier = Modifier.testTag("confirm_propose_button")
-                ) {
-                    Text("Send Proposal 💌")
-                }
-            },
-            dismissButton = {
-                OutlinedButton(onClick = { showProposeDialog = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    // 1-on-1 Exclusivity Connect Policy Locked Dialog
-    if (showActivePartnerLockedDialog) {
-        AlertDialog(
-            onDismissRequest = { showActivePartnerLockedDialog = false },
-            icon = {
-                Icon(
-                    imageVector = Icons.Default.Lock,
-                    contentDescription = null,
-                    tint = VibeSyncTeal,
-                    modifier = Modifier.size(36.dp)
-                )
-            },
-            title = {
-                Text(text = "1-on-1 Connect Policy 💍", fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Column {
-                    Text(
-                        text = "You are currently in an official Connect Relationship with ${activeDatingPartnerName ?: "your Connect Mate"}.\n\nUnder VibeSync's strict 1-on-1 mutual consent community policy:\n\n• Sending new connect proposals is locked.\n• Accepting new relationships is locked.\n• You can only connect with one person at a time.\n\nTo propose to or connect with someone new, you must first complete a mutual consent breakup with ${activeDatingPartnerName ?: "your current partner"}.",
-                        fontSize = 13.sp,
-                        lineHeight = 18.sp
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = { showActivePartnerLockedDialog = false },
-                    colors = ButtonDefaults.buttonColors(containerColor = VibeSyncTeal),
-                    modifier = Modifier.testTag("btn_understand_lock_policy")
-                ) {
-                    Text("Understood 🛡️")
-                }
-            }
-        )
-    }
-
-    // Mutual Consent Breakup Dialog
-    if (showBreakupDialog) {
-        AlertDialog(
-            onDismissRequest = { showBreakupDialog = false },
-            icon = {
-                Icon(
-                    imageVector = Icons.Default.HeartBroken,
-                    contentDescription = null,
-                    tint = Color(0xFFE53935),
-                    modifier = Modifier.size(36.dp)
-                )
-            },
-            title = {
-                Text(text = "Request Mutual Breakup? 💔", fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Column {
-                    Text(
-                        text = "EthicReal Mutual Breakup Rule:\n\n• Breakups ONLY count on profiles when both sides consent to end the connect relationship.\n• A breakup request will be sent to ${profile.name}.\n• When both agree, +1 Breakup is recorded for full transparency and ethical accountability.",
-                        fontSize = 13.sp
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showBreakupDialog = false
-                        onRequestBreakup()
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE53935)),
-                    modifier = Modifier.testTag("confirm_breakup_button")
-                ) {
-                    Text("Request Breakup 💔")
-                }
-            },
-            dismissButton = {
-                OutlinedButton(onClick = { showBreakupDialog = false }) {
-                    Text("Stay Together")
-                }
-            }
-        )
     }
 
     // E2EE Info Dialog (VibeSync E2EE Protocol Interactive Visualizer)

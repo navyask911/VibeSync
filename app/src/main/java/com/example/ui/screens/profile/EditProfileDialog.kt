@@ -54,7 +54,6 @@ fun EditProfileDialog(
     var editCity by remember { mutableStateOf(preferences.userCity) }
     var editCountry by remember { mutableStateOf(preferences.userCountry) }
     var editAddress by remember { mutableStateOf(preferences.userAddress) }
-    var editMaritalStatus by remember { mutableStateOf(preferences.userMaritalStatus) }
     var editBio by remember { mutableStateOf(preferences.userBio) }
     var editInterests by remember { mutableStateOf(preferences.userInterests) }
     var editIsOpenForDating by remember { mutableStateOf(preferences.isOpenForDating) }
@@ -363,8 +362,8 @@ fun EditProfileDialog(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Open for Connect other People inside Vibesync 🤝", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        Text("Allow discovery in Connect deck", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Allow connection discovery", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Text("Allow your profile to appear in Connect suggestions", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Switch(
                         checked = editIsOpenForDating,
@@ -379,7 +378,7 @@ fun EditProfileDialog(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text("Profile Lock Privacy Shield 🔒", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        Text("Shield private details from non-matched suitors", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Limit visibility of selected profile details", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Switch(
                         checked = editIsProfileLocked,
@@ -429,8 +428,7 @@ fun EditProfileDialog(
                             userPlace = preferences.userPlace,
                             userCity = preferences.userCity,
                             userAddress = "", // Removed visible address
-                            userMaritalStatus = editMaritalStatus.trim().ifBlank { preferences.userMaritalStatus },
-                            userBio = editBio.trim().ifBlank { preferences.userBio },
+                                                        userBio = editBio.trim().ifBlank { preferences.userBio },
                             userInterests = editInterests.trim().ifBlank { preferences.userInterests },
                             userCountry = preferences.userCountry,
                             userCountryFlag = preferences.userCountryFlag,
