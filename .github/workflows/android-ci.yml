@@ -156,7 +156,7 @@ jobs:
 
           # Validate both legacy raster icons as well as adaptive icons for density-qualified devices.
           expected_pixels = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
-          png_signature = b"\\x89PNG\\r\\n\\x1a\\n"
+          png_signature = bytes((137, 80, 78, 71, 13, 10, 26, 10))
           for density, expected_size in expected_pixels.items():
               for icon_name in ("ic_launcher", "ic_launcher_round"):
                   png_path = Path(f"app/src/main/res/mipmap-{density}/{icon_name}.png")
