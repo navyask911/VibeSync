@@ -86,6 +86,12 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
 
                     val sdkCallback = object : TcOAuthCallback {
                         override fun onSuccess(tcOAuthData: TcOAuthData) {
+                            Log.i(
+                                TAG,
+                                "OAuth success callback received; codePresent=${!tcOAuthData.authorizationCode.isNullOrBlank()}, " +
+                                    "statePresent=${!tcOAuthData.state.isNullOrBlank()}, " +
+                                    "scopes=${tcOAuthData.scopesGranted.orEmpty()}"
+                            )
                             val state = tcOAuthData.state.orEmpty()
                             val expectedState = lastOAuthState
                             val authorizationCode = tcOAuthData.authorizationCode.orEmpty()
@@ -114,13 +120,26 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
                         }
 
                         override fun onFailure(tcOAuthError: TcOAuthError) {
+                            val errorCode = tcOAuthError.errorCode
+                            val errorMessage = tcOAuthError.errorMessage.orEmpty()
+                            Log.e(
+                                TAG,
+                                "OAuth failure callback: code=$errorCode, message=$errorMessage"
+                            )
                             clearRequestState()
                             notifyFailure(
-                                "Truecaller authorization was not completed (code ${tcOAuthError.errorCode})."
+                                "Truecaller authorization failed (code $errorCode" +
+                                    (errorMessage.takeIf { it.isNotBlank() }?.let { ": $it" } ?: "") +
+                                    ")."
                             )
                         }
 
                         override fun onVerificationRequired(tcOAuthError: TcOAuthError?) {
+                            Log.w(
+                                TAG,
+                                "OAuth verification-required callback: code=${tcOAuthError?.errorCode}, " +
+                                    "message=${tcOAuthError?.errorMessage.orEmpty()}"
+                            )
                             clearRequestState()
                             mainHandler.post {
                                 callback?.onVerificationRequired(
@@ -151,7 +170,7 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
                     initialized = false
                     initializing = false
                     launchWhenReady = false
-                    Log.w(TAG, "Truecaller OAuth SDK unavailable: ${t.message}", t)
+                    Log.e(TAG, "Truecaller OAuth SDK initialization failed: ${t.javaClass.simpleName}: ${t.message}", t)
                     notifyFailure("Truecaller could not be initialized.")
                 }
             }
@@ -163,7 +182,7 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
         return try {
             TcSdk.getInstance().isOAuthFlowUsable
         } catch (t: Throwable) {
-            Log.w(TAG, "Truecaller OAuth usability check failed: ${t.message}")
+            Log.e(TAG, "Truecaller OAuth usability check failed: ${t.javaClass.simpleName}: ${t.message}", t)
             false
         }
     }
@@ -181,7 +200,7 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
                 true
             }
         } catch (t: Throwable) {
-            Log.w(TAG, "Truecaller OAuth launch rejected: ${t.message}", t)
+            Log.e(TAG, "Truecaller OAuth launch rejected: ${t.javaClass.simpleName}: ${t.message}", t)
             notifyFailure("Truecaller could not be opened.")
             false
         }
@@ -232,7 +251,7 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
         try {
             TcSdk.getInstance().onActivityResultObtained(activity, resultCode, data)
         } catch (t: Throwable) {
-            Log.w(TAG, "Truecaller OAuth activity-result handling failed: ${t.message}", t)
+            Log.e(TAG, "Truecaller OAuth activity-result handling failed: ${t.javaClass.simpleName}: ${t.message}", t)
             notifyFailure("Truecaller verification could not be completed.")
         }
     }
