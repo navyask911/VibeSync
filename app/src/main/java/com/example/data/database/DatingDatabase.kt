@@ -231,6 +231,7 @@ abstract class DatingDatabase : RoomDatabase() {
         private val MIGRATION_36_37 = object : Migration(36, 37) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `user_preferences` ADD COLUMN `lastFriendRequestResetTimestamp` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `status_stories` ADD COLUMN `backgroundMusicUrl` TEXT NOT NULL DEFAULT ''")
             }
         }
 
