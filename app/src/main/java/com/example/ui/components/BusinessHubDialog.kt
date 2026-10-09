@@ -179,6 +179,7 @@ fun BusinessHubContent(
     var activeQrStickerBiz by remember { mutableStateOf<BusinessEntity?>(null) }
     var editingBusiness by remember { mutableStateOf<BusinessEntity?>(null) }
     var globalSearchQuery by remember { mutableStateOf("") }
+    var isBusinessSearchActive by remember { mutableStateOf(false) }
     val searchFocusRequester = remember { FocusRequester() }
 
     Surface(
@@ -277,74 +278,43 @@ fun BusinessHubContent(
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // 1. Top-Pinned Interactive Search Bar (Requirement 1)
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        shadowElevation = 1.dp,
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("top_pinned_search_bar")
-                    ) {
-                        OutlinedTextField(
-                            value = globalSearchQuery,
-                            onValueChange = { query ->
-                                globalSearchQuery = query
-                                if (selectedTab != 0 && selectedTab != 2 && query.isNotBlank()) {
-                                    selectedTab = 0 // Auto switch to venues tab when typing search
-                                }
-                            },
-                            placeholder = {
-                                Text(
-                                    text = "Search businesses, deals, cafes, services, listings...",
-                                    fontFamily = FontFamily.Serif,
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                )
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Default.Search,
-                                    contentDescription = "Search",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            },
-                            trailingIcon = {
-                                if (globalSearchQuery.isNotEmpty()) {
-                                    IconButton(
-                                        onClick = { globalSearchQuery = "" },
-                                        modifier = Modifier.size(28.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Close,
-                                            contentDescription = "Clear search",
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-                                }
-                            },
-                            singleLine = true,
-                            textStyle = androidx.compose.ui.text.TextStyle(
-                                fontFamily = FontFamily.Serif,
+                    // Enterprise search; filter chips remain in the content area below.
+                    DockedSearchBar(
+                        query = globalSearchQuery,
+                        onQueryChange = { query ->
+                            globalSearchQuery = query
+                            if (selectedTab != 0 && selectedTab != 2 && query.isNotBlank()) selectedTab = 0
+                        },
+                        onSearch = { isBusinessSearchActive = false },
+                        active = isBusinessSearchActive,
+                        onActiveChange = { isBusinessSearchActive = it },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("top_pinned_search_bar"),
+                        placeholder = {
+                            Text(
+                                "Search businesses, deals, cafes, services…",
                                 fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            ),
-                            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                                unfocusedBorderColor = Color.Transparent,
-                                focusedBorderColor = MaterialTheme.colorScheme.primary,
-                                unfocusedContainerColor = Color.Transparent,
-                                focusedContainerColor = Color.Transparent
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .focusRequester(searchFocusRequester),
-                            shape = RoundedCornerShape(16.dp)
-                        )
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search", tint = MaterialTheme.colorScheme.primary) },
+                        trailingIcon = {
+                            if (globalSearchQuery.isNotEmpty()) {
+                                IconButton(onClick = { globalSearchQuery = "" }) {
+                                    Icon(Icons.Default.Close, contentDescription = "Clear search")
+                                }
+                            }
+                        }
+                    ) {
+                        if (globalSearchQuery.isNotBlank()) {
+                            Text(
+                                "Searching businesses, services and listings",
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
+
 
                     Spacer(modifier = Modifier.height(6.dp))
 
