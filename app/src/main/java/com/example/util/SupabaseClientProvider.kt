@@ -16,8 +16,8 @@ object SupabaseClientProvider {
 
     private const val TAG = "SupabaseClientProvider"
 
-    const val SUPABASE_URL = "https://imhcbgpvjwersbnlgwzq.supabase.co"
-    const val SUPABASE_ANON_KEY = "sb_publishable_U1jQSTm-S9YNQxx7RHPl-Q_w_Up-RBe"
+    val SUPABASE_URL: String = SupabaseClientManager.SUPABASE_URL
+    val SUPABASE_ANON_KEY: String = SupabaseClientManager.SUPABASE_ANON_KEY
 
     val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
