@@ -224,171 +224,57 @@ fun DiscoverScreen(
 
     if (showPreferencesDialog) {
         val prefs = userPreferences ?: com.example.data.model.UserPreferencesEntity()
-        var tempMinAge by remember { mutableFloatStateOf(prefs.minAge.toFloat()) }
-        var tempMaxAge by remember { mutableFloatStateOf(prefs.maxAge.toFloat()) }
-        var tempMaxDistance by remember { mutableFloatStateOf(prefs.maxDistanceMiles.toFloat()) }
-        var tempGender by remember { mutableStateOf(prefs.userInterestedIn.ifBlank { "Any" }) }
-        var tempIsOpenForDating by remember { mutableStateOf(prefs.isOpenForDating) }
-        var tempOnlyVerified by remember { mutableStateOf(prefs.onlyVerified) }
-        var tempIsProfileLocked by remember { mutableStateOf(prefs.isProfileLocked) }
-
+        var tempMaxDistance by remember(prefs.maxDistanceMiles) { mutableFloatStateOf(prefs.maxDistanceMiles.coerceIn(5, 150).toFloat()) }
+        var tempOnlyVerified by remember(prefs.onlyVerified) { mutableStateOf(prefs.onlyVerified) }
+        var tempIsProfileLocked by remember(prefs.isProfileLocked) { mutableStateOf(prefs.isProfileLocked) }
         AlertDialog(
             onDismissRequest = { showPreferencesDialog = false },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Tune, contentDescription = null, tint = CoralPink)
+                    Icon(Icons.Default.Tune, contentDescription = null, tint = VibeSyncTeal)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Edit Connect Preferences", fontWeight = FontWeight.Bold)
+                    Text("Connection Preferences", fontWeight = FontWeight.Bold)
                 }
             },
             text = {
-                Column(
-                    modifier = Modifier.verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    // Interested In Gender Filter
-                    Column {
-                        Text("I'm interested in meeting:", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            listOf("Any", "Women", "Men").forEach { option ->
-                                FilterChip(
-                                    selected = tempGender.equals(option, ignoreCase = true),
-                                    onClick = { tempGender = option },
-                                    label = { Text(option, fontSize = 12.sp) },
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                        }
+                Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text("Discovery radius", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        Text("${tempMaxDistance.toInt()} km", fontWeight = FontWeight.Bold, color = VibeSyncTeal)
                     }
-
+                    Slider(value = tempMaxDistance, onValueChange = { tempMaxDistance = it }, valueRange = 5f..150f, steps = 28, modifier = Modifier.fillMaxWidth().testTag("slider_connection_radius"))
                     HorizontalDivider(thickness = 0.5.dp)
-
-                    // Age Range
-                    Column {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Age Range Preference:", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            Text("${tempMinAge.toInt()} - ${tempMaxAge.toInt()} yrs", fontWeight = FontWeight.Bold, color = CoralPink, fontSize = 13.sp)
-                        }
-                        RangeSlider(
-                            value = tempMinAge..tempMaxAge,
-                            onValueChange = { range ->
-                                tempMinAge = range.start
-                                tempMaxAge = range.endInclusive
-                            },
-                            valueRange = 18f..80f,
-                            steps = 62,
-                            modifier = Modifier.fillMaxWidth().testTag("slider_age_range")
-                        )
-                    }
-
-                    HorizontalDivider(thickness = 0.5.dp)
-
-                    // Maximum Distance
-                    Column {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Maximum Distance:", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            Text("${tempMaxDistance.toInt()} miles", fontWeight = FontWeight.Bold, color = CoralPink, fontSize = 13.sp)
-                        }
-                        Slider(
-                            value = tempMaxDistance,
-                            onValueChange = { tempMaxDistance = it },
-                            valueRange = 1f..100f,
-                            steps = 99,
-                            modifier = Modifier.fillMaxWidth().testTag("slider_max_distance")
-                        )
-                    }
-
-                    HorizontalDivider(thickness = 0.5.dp)
-
-                    // Open for Dating Toggle
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Open for Connect other People inside Vibesync 🤝", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            Text("Show your profile in the Connect deck", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Verified profiles", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            Text("Prioritize verified people and organizations", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Switch(
-                            checked = tempIsOpenForDating,
-                            onCheckedChange = { tempIsOpenForDating = it }
-                        )
+                        Switch(checked = tempOnlyVerified, onCheckedChange = { tempOnlyVerified = it })
                     }
-
-                    // Verified Profiles Only Toggle
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Verified Profiles Only ⚡", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            Text("Show only 3D Liveness face-verified people", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Profile privacy", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            Text("Limit visibility of sensitive profile details", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Switch(
-                            checked = tempOnlyVerified,
-                            onCheckedChange = { tempOnlyVerified = it }
-                        )
-                    }
-
-                    // Profile Lock Privacy Shield
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Profile Lock Privacy Shield 🔒", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            Text("Shield phone and exact street location", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Switch(
-                            checked = tempIsProfileLocked,
-                            onCheckedChange = { tempIsProfileLocked = it }
-                        )
+                        Switch(checked = tempIsProfileLocked, onCheckedChange = { tempIsProfileLocked = it })
                     }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        onUpdatePreferences(
-                            prefs.copy(
-                                userInterestedIn = tempGender,
-                                minAge = tempMinAge.toInt(),
-                                maxAge = tempMaxAge.toInt(),
-                                maxDistanceMiles = tempMaxDistance.toInt(),
-                                isOpenForDating = tempIsOpenForDating,
-                                onlyVerified = tempOnlyVerified,
-                                isProfileLocked = tempIsProfileLocked
-                            )
-                        )
+                        onUpdatePreferences(prefs.copy(
+                            maxDistanceMiles = tempMaxDistance.toInt().coerceIn(5, 150),
+                            onlyVerified = tempOnlyVerified,
+                            isProfileLocked = tempIsProfileLocked
+                        ))
                         showPreferencesDialog = false
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = CoralPink),
+                    colors = ButtonDefaults.buttonColors(containerColor = VibeSyncTeal),
                     modifier = Modifier.testTag("btn_save_connect_preferences")
-                ) {
-                    Text("Save Preferences ✨")
-                }
+                ) { Text("Save connection settings") }
             },
-            dismissButton = {
-                TextButton(onClick = { showPreferencesDialog = false }) {
-                    Text("Cancel")
-                }
-            }
+            dismissButton = { TextButton(onClick = { showPreferencesDialog = false }) { Text("Cancel") } }
         )
     }
 
@@ -422,7 +308,7 @@ fun DiscoverScreen(
                     color = LikeGreen.copy(alpha = 0.15f)
                 ) {
                     Text(
-                        text = "100% GENUINE",
+                        text = "CONNECT & BUSINESS",
                         color = LikeGreen,
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontWeight = FontWeight.ExtraBold,
@@ -438,31 +324,6 @@ fun DiscoverScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Daily Super Likes Indicator Badge
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = SuperLikeBlue.copy(alpha = 0.15f),
-                    modifier = Modifier.testTag("btn_super_likes_counter")
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Star,
-                            contentDescription = null,
-                            tint = SuperLikeBlue,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "${userPreferences?.remainingSuperLikesToday ?: 1}/1 ⭐",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp,
-                            color = SuperLikeBlue
-                        )
-                    }
-                }
 
                 IconButton(
                     onClick = onOpenInteractionsModal,
@@ -498,72 +359,17 @@ fun DiscoverScreen(
             }
         }
 
-        // Daily Quotas & Gender Referral Lock Status Indicator Bar
-        val remainingLikes = userPreferences?.remainingLikesToday ?: 5
-        val remainingSuperLikes = userPreferences?.remainingSuperLikesToday ?: 1
-        val remainingRequests = userPreferences?.remainingFriendRequestsToday ?: 100
-        val targetGender = userPreferences?.userInterestedIn ?: "Any"
-
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-            onClick = { showPreferencesDialog = true },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 6.dp)
-                .testTag("surface_connect_preferences")
+        val remainingRequests = userPreferences?.remainingFriendRequestsToday ?: 25
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("⚙️ ", fontSize = 11.sp)
-                    Text(
-                        text = "Preference: ",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = if (targetGender.isBlank()) "Any" else targetGender,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = CoralPink
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "✏️ Edit",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = "⭐ $remainingSuperLikes/1",
-                        fontSize = 10.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = SuperLikeBlue
-                    )
-                    Text(
-                        text = "💚 $remainingLikes/5",
-                        fontSize = 10.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = LikeGreen
-                    )
-                    Text(
-                        text = "🤝 $remainingRequests/100",
-                        fontSize = 10.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF1565C0)
-                    )
-                }
-            }
+            Text(
+                text = "${25 - remainingRequests}/25 connection requests today",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
 
         // Connect Feature Quick Tag ("Join with Us")
@@ -1437,7 +1243,7 @@ fun DiscoverScreen(
             }
         }
 
-        // Bottom Action Controls (Rewind, Pass, SuperLike, Like, Boost/Filter)
+        // Bottom Action Controls (Rewind, Pass, Ask Friendship, Filters)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1484,60 +1290,6 @@ fun DiscoverScreen(
                 size = 56.dp,
                 iconSize = 28.dp,
                 testTag = "btn_action_pass"
-            )
-
-            // Super Like Button (Freemium: Extra from Rewarded Ad)
-            DatingActionButton(
-                icon = Icons.Default.Star,
-                contentDescription = "Super Like",
-                tint = SuperLikeBlue,
-                onClick = {
-                    if (showInjectedBusinessCard && activeInjectedBusiness != null) {
-                        val b = activeInjectedBusiness!!
-                        viewModel?.toggleFollowBusiness(b.id)
-                        selectedBusinessForDetail = b
-                        showInjectedBusinessCard = false
-                    } else if (candidates.isNotEmpty()) {
-                        AdManager.recordCardSwipe()
-                        swipeCounter++
-                        if (swipeCounter % 5 == 0 && sortedNearestBusinesses.isNotEmpty()) {
-                            val bizIndex = ((swipeCounter / 5) - 1) % sortedNearestBusinesses.size
-                            activeInjectedBusiness = sortedNearestBusinesses[bizIndex]
-                            showInjectedBusinessCard = true
-                        }
-                        onSwipe(candidates[0].id, "SUPER_LIKE")
-                    }
-                },
-                size = 48.dp,
-                iconSize = 24.dp,
-                testTag = "btn_action_superlike"
-            )
-
-            // Like Button (Left swipe action)
-            DatingActionButton(
-                icon = Icons.Default.Favorite,
-                contentDescription = "Like",
-                tint = LikeGreen,
-                onClick = {
-                    if (showInjectedBusinessCard && activeInjectedBusiness != null) {
-                        val b = activeInjectedBusiness!!
-                        viewModel?.toggleFollowBusiness(b.id)
-                        selectedBusinessForDetail = b
-                        showInjectedBusinessCard = false
-                    } else if (candidates.isNotEmpty()) {
-                        AdManager.recordCardSwipe()
-                        swipeCounter++
-                        if (swipeCounter % 5 == 0 && sortedNearestBusinesses.isNotEmpty()) {
-                            val bizIndex = ((swipeCounter / 5) - 1) % sortedNearestBusinesses.size
-                            activeInjectedBusiness = sortedNearestBusinesses[bizIndex]
-                            showInjectedBusinessCard = true
-                        }
-                        onSwipe(candidates[0].id, "LIKE")
-                    }
-                },
-                size = 56.dp,
-                iconSize = 28.dp,
-                testTag = "btn_action_like"
             )
 
             // Ask Friendship Button (Below swipe action 🤝)
