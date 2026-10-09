@@ -1,7 +1,9 @@
 package com.example.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,6 +22,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -34,14 +37,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import androidx.compose.foundation.Image
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
+import com.example.R
 import com.example.ui.theme.VibeSyncTeal
 import com.example.util.PlatformTruecallerVerificationClient
 import com.example.util.TruecallerProfileResult
@@ -69,167 +76,110 @@ fun AuthLoginScreen(
                 localError = null
                 latestSuccess(profile)
             }
-
             override fun onFailure(reason: String) {
                 isLaunching = false
-                localError = reason.ifBlank { "Truecaller verification could not be completed." }
+                localError = reason.ifBlank { "Phone verification could not be completed. Please retry." }
             }
-
             override fun onVerificationRequired(reason: String?) {
                 isLaunching = false
-                localError = reason?.ifBlank { null }
-                    ?: "Truecaller verification is required on this device."
+                localError = reason?.ifBlank { null } ?: "Complete the secure phone verification flow to continue."
             }
         })
         onDispose { truecallerClient.setCallback(null) }
     }
 
-    fun launchTruecaller() {
+    fun launchVerification() {
         localError = null
         onTruecallerRetry()
         val activity = context as? FragmentActivity
         if (activity == null) {
-            localError = "Truecaller could not be started here. Please retry."
+            localError = "Secure phone verification could not be started here. Please retry."
             return
         }
         isLaunching = true
-        if (!truecallerClient.launch(activity)) isLaunching = false
+        if (!truecallerClient.launch(activity)) {
+            isLaunching = false
+            localError = "Verification could not be started. Please retry."
+        }
     }
 
     Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 22.dp, vertical = 24.dp),
+            modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 22.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Spacer(modifier = Modifier.height(20.dp))
-            Surface(
-                modifier = Modifier
-                    .size(92.dp)
-                    .clip(CircleShape),
-                shape = CircleShape,
-                color = VibeSyncTeal.copy(alpha = 0.12f)
-            ) {
-                androidx.compose.foundation.layout.Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        Icons.Default.VerifiedUser,
-                        contentDescription = "VibeSync",
-                        tint = VibeSyncTeal,
-                        modifier = Modifier.size(46.dp)
-                    )
+            Spacer(Modifier.height(12.dp))
+            Image(
+                painter = painterResource(id = R.mipmap.ic_launcher),
+                contentDescription = "VibeSync logo",
+                modifier = Modifier.size(88.dp).clip(CircleShape)
+            )
+            Text(
+                "VibeSync",
+                style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.5).sp),
+                textAlign = TextAlign.Center
+            )
+            Text(
+                "Chat Connect  •  Business Connect",
+                style = MaterialTheme.typography.titleMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold),
+                textAlign = TextAlign.Center
+            )
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Surface(modifier = Modifier.weight(1f), shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)) {
+                    Text("Made in India, for the World", modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp), textAlign = TextAlign.Center, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+                }
+                Surface(modifier = Modifier.weight(1f), shape = RoundedCornerShape(14.dp), color = VibeSyncTeal.copy(alpha = 0.12f)) {
+                    Text("Google Tink • E2EE", modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp), textAlign = TextAlign.Center, style = MaterialTheme.typography.labelMedium.copy(color = VibeSyncTeal, fontWeight = FontWeight.Bold))
                 }
             }
-
-            Text(
-                text = "Welcome to VibeSync",
-                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.ExtraBold),
-                textAlign = TextAlign.Center
-            )
-            Text(
-                text = "Secure sign-in with Truecaller 1-tap verification.",
-                style = MaterialTheme.typography.bodyLarge.copy(
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                ),
-                textAlign = TextAlign.Center
-            )
-
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(22.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                ),
-                border = BorderStroke(1.dp, VibeSyncTeal.copy(alpha = 0.16f))
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
             ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
+                Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.PhoneAndroid,
-                            contentDescription = null,
-                            tint = Color(0xFF0088FF),
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Spacer(modifier = Modifier.size(10.dp))
-                        Text(
-                            text = "Truecaller is the only sign-in method",
-                            fontWeight = FontWeight.Bold
-                        )
+                        Icon(Icons.Default.PhoneAndroid, contentDescription = null, tint = Color(0xFF0088FF), modifier = Modifier.size(23.dp))
+                        Spacer(Modifier.size(9.dp))
+                        Text("Secure phone verification", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
                     }
                     Text(
-                        text = "There is no SMS OTP or manual phone-number fallback. A successful Truecaller verification creates the encrypted local VibeSync session used for data access.",
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        "Continue with Truecaller for one-tap verification. If one-tap is unavailable, the supported phone-verification flow may offer a missed-call or SMS check.",
+                        style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
                     )
                 }
             }
-
             Button(
-                onClick = { launchTruecaller() },
+                onClick = { launchVerification() },
                 enabled = !isLaunching,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp)
-                    .testTag(
-                        if (hasError) "btn_retry_truecaller"
-                        else "btn_truecaller_one_tap_main"
-                    ),
-                shape = RoundedCornerShape(18.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0088FF))
+                modifier = Modifier.fillMaxWidth().height(56.dp).testTag(if (hasError) "btn_retry_truecaller" else "btn_truecaller_one_tap_main"),
+                shape = RoundedCornerShape(17.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0877D1))
             ) {
-                Icon(
-                    if (hasError) Icons.Default.Refresh else Icons.Default.PhoneAndroid,
-                    contentDescription = null,
-                    modifier = Modifier.size(21.dp)
-                )
-                Spacer(modifier = Modifier.size(10.dp))
+                if (isLaunching) {
+                    CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(21.dp))
+                } else {
+                    Icon(if (hasError) Icons.Default.Refresh else Icons.Default.PhoneAndroid, contentDescription = null, modifier = Modifier.size(21.dp))
+                }
+                Spacer(Modifier.size(10.dp))
                 Text(
-                    text = when {
-                        isLaunching -> "Opening Truecaller..."
-                        hasError -> "Retry with Truecaller"
-                        else -> "Continue with Truecaller"
-                    },
+                    when { isLaunching -> "Starting secure verification…"; hasError -> "Retry verification"; else -> "Continue with Truecaller" },
                     fontWeight = FontWeight.Bold,
                     fontSize = 16.sp
                 )
             }
-
             if (hasError) {
-                Card(
-                    modifier = Modifier.fillMaxWidth().testTag("truecaller_error_state"),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer
-                    ),
-                    shape = RoundedCornerShape(18.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Text(
-                            text = "Truecaller verification failed",
-                            fontWeight = FontWeight.ExtraBold,
-                            color = MaterialTheme.colorScheme.onErrorContainer
-                        )
-                        Text(
-                            text = visibleError.orEmpty(),
-                            color = MaterialTheme.colorScheme.onErrorContainer
-                        )
-                    }
+                Card(modifier = Modifier.fillMaxWidth().testTag("truecaller_error_state"), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer), shape = RoundedCornerShape(16.dp)) {
+                    Text(visibleError.orEmpty(), modifier = Modifier.padding(14.dp), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodyMedium)
                 }
             }
-
-            Spacer(modifier = Modifier.weight(1f))
+            Spacer(Modifier.weight(1f))
             Text(
-                text = "Your verified identity is exchanged server-side and the resulting session is protected by Android Keystore.",
-                style = MaterialTheme.typography.bodySmall.copy(
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                ),
+                "Your verified phone number opens your existing VibeSync profile when one is already registered.",
+                style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
                 textAlign = TextAlign.Center
             )
         }
