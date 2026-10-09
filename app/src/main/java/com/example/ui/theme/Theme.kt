@@ -16,7 +16,7 @@ private val DarkColorScheme = darkColorScheme(
     secondary = VibeSyncEmerald,
     onSecondary = Color(0xFF111B21),
     secondaryContainer = Color(0xFF1F3528),
-    onSecondaryContainer = Color(0xFF8696A0),
+    onSecondaryContainer = Color(0xFFC7D4DA),
     tertiary = VibeSyncBlueTick,
     onTertiary = PureWhite,
     background = VibeSyncDarkCanvas,
@@ -24,7 +24,7 @@ private val DarkColorScheme = darkColorScheme(
     surface = VibeSyncDarkSurface,
     onSurface = Color(0xFFE9EDEF),
     surfaceVariant = VibeSyncDarkSurfaceVariant,
-    onSurfaceVariant = Color(0xFF8696A0)
+    onSurfaceVariant = Color(0xFFB9C8CE)
 )
 
 // 2. PURE LIGHT PRESET (Crisp High-Contrast Daytime Canvas)
@@ -104,7 +104,7 @@ private val EveningSunsetColorScheme = darkColorScheme(
     surface = Color(0xFF270718),
     onSurface = Color(0xFFFFE4E6),
     surfaceVariant = Color(0xFF3F0E2A),
-    onSurfaceVariant = Color(0xFFFDA4AF)
+    onSurfaceVariant = Color(0xFFFFCBD3)
 )
 
 data class AppThemeOption(

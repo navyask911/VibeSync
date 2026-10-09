@@ -1,6 +1,12 @@
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 package com.example.ui.components
 
+import kotlinx.coroutines.withContext
+
+import kotlinx.coroutines.Dispatchers
+
+import android.location.Geocoder
+
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
@@ -250,7 +256,7 @@ fun BusinessHubContent(
                         Spacer(modifier = Modifier.width(8.dp))
 
                         Button(
-                            onClick = { showAdCampaignWizard = true },
+                            onClick = { selectedTab = 1 },
                             colors = ButtonDefaults.buttonColors(containerColor = CoralPink),
                             elevation = ButtonDefaults.buttonElevation(defaultElevation = 3.dp),
                             shape = RoundedCornerShape(16.dp),
@@ -279,143 +285,151 @@ fun BusinessHubContent(
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // Enterprise search; filter chips remain in the content area below.
-                    DockedSearchBar(
-                        query = globalSearchQuery,
-                        onQueryChange = { query ->
-                            globalSearchQuery = query
-                            if (selectedTab != 0 && selectedTab != 2 && query.isNotBlank()) selectedTab = 0
-                        },
-                        onSearch = { isBusinessSearchActive = false },
-                        active = isBusinessSearchActive,
-                        onActiveChange = { isBusinessSearchActive = it },
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("top_pinned_search_bar"),
-                        placeholder = {
-                            Text(
-                                "Search businesses, deals, cafes, services…",
-                                fontSize = 13.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        },
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search", tint = MaterialTheme.colorScheme.primary) },
-                        trailingIcon = {
-                            if (globalSearchQuery.isNotEmpty()) {
-                                IconButton(onClick = { globalSearchQuery = "" }) {
-                                    Icon(Icons.Default.Close, contentDescription = "Clear search")
+                    if (selectedTab != 3) {
+                        // Enterprise search; filter chips remain in the content area below.
+                        DockedSearchBar(
+                            query = globalSearchQuery,
+                            onQueryChange = { query ->
+                                globalSearchQuery = query
+                                if (selectedTab != 0 && selectedTab != 2 && query.isNotBlank()) selectedTab = 0
+                            },
+                            onSearch = { isBusinessSearchActive = false },
+                            active = isBusinessSearchActive,
+                            onActiveChange = { isBusinessSearchActive = it },
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("top_pinned_search_bar"),
+                            placeholder = {
+                                Text(
+                                    "Search businesses, deals, cafes, services…",
+                                    fontSize = 13.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            },
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search", tint = MaterialTheme.colorScheme.primary) },
+                            trailingIcon = {
+                                if (globalSearchQuery.isNotEmpty()) {
+                                    IconButton(onClick = { globalSearchQuery = "" }) {
+                                        Icon(Icons.Default.Close, contentDescription = "Clear search")
+                                    }
                                 }
                             }
-                        }
-                    ) {
-                        if (globalSearchQuery.isNotBlank()) {
-                            Text(
-                                "Searching businesses, services and listings",
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    // Wallet & Broadcast Dropdown Summary Chip
-                    val primaryVenue = myCreatedBusinesses.firstOrNull() ?: allBusinesses.firstOrNull()
-                    val walletPoints = primaryVenue?.walletPoints ?: 500
-                    val walletInr = walletPoints * 0.01
-                    var showWalletDropdown by remember { mutableStateOf(false) }
-
-                    Box(modifier = Modifier.fillMaxWidth()) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color(0xFFE8F5E9),
-                            border = BorderStroke(1.dp, Color(0xFFA5D6A7)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { showWalletDropdown = !showWalletDropdown }
-                                .testTag("chip_wallet_dropdown")
                         ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("💳", fontSize = 13.sp)
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = "Business Wallet: $walletPoints Pts (₹${String.format(Locale.getDefault(), "%.2f", walletInr)}) ▾",
-                                        fontFamily = FontFamily.Serif,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp,
-                                        color = Color(0xFF1B5E20)
-                                    )
-                                }
+                            if (globalSearchQuery.isNotBlank()) {
                                 Text(
-                                    text = if (showWalletDropdown) "Close Menu ▴" else "Manage Hub ▾",
-                                    fontFamily = FontFamily.Serif,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF2E7D32)
+                                    "Searching businesses, services and listings",
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
-
-                        DropdownMenu(
-                            expanded = showWalletDropdown,
-                            onDismissRequest = { showWalletDropdown = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("⚡ Top-Up Points (+500 Pts)", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold) },
-                                onClick = {
-                                    showWalletDropdown = false
-                                    activeWalletBiz = primaryVenue ?: BusinessEntity(
-                                        id = "biz_default",
-                                        name = "My Business",
-                                        category = "Partner",
-                                        description = "VibeSync Partner Venue",
-                                        address = "Local Hub",
-                                        walletPoints = 500
-                                    )
-                                },
-                                leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("📢 Broadcast to Followers", fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold) },
-                                onClick = {
-                                    showWalletDropdown = false
-                                    activeBroadcastBiz = primaryVenue ?: BusinessEntity(
-                                        id = "biz_default",
-                                        name = "My Business",
-                                        category = "Partner",
-                                        description = "VibeSync Partner Venue",
-                                        address = "Local Hub",
-                                        walletPoints = 500
-                                    )
-                                },
-                                leadingIcon = { Icon(Icons.Default.Campaign, contentDescription = null) }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("🏷️ Print Counter QR & Stickers", fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold) },
-                                onClick = {
-                                    showWalletDropdown = false
-                                    activeQrStickerBiz = primaryVenue ?: allBusinesses.firstOrNull() ?: BusinessEntity(
-                                        id = "biz_default",
-                                        name = "My Business",
-                                        category = "Partner",
-                                        description = "VibeSync Partner Venue",
-                                        address = "Local Hub",
-                                        walletPoints = 500
-                                    )
-                                },
-                                leadingIcon = { Icon(Icons.Default.QrCode2, contentDescription = null) }
-                            )
-                        }
+    
+    
+                        Spacer(modifier = Modifier.height(6.dp))
+    
+    
                     }
 
-                    Spacer(modifier = Modifier.height(6.dp))
+                    if (selectedTab != 3) {
+                        // Wallet & Broadcast Dropdown Summary Chip
+                        val primaryVenue = myCreatedBusinesses.firstOrNull() ?: allBusinesses.firstOrNull()
+                        val walletPoints = primaryVenue?.walletPoints ?: 500
+                        val walletInr = walletPoints * 0.01
+                        var showWalletDropdown by remember { mutableStateOf(false) }
+    
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color(0xFFE8F5E9),
+                                border = BorderStroke(1.dp, Color(0xFFA5D6A7)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { showWalletDropdown = !showWalletDropdown }
+                                    .testTag("chip_wallet_dropdown")
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("💳", fontSize = 13.sp)
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "Business Wallet: $walletPoints Pts (₹${String.format(Locale.getDefault(), "%.2f", walletInr)}) ▾",
+                                            fontFamily = FontFamily.Serif,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp,
+                                            color = Color(0xFF1B5E20)
+                                        )
+                                    }
+                                    Text(
+                                        text = if (showWalletDropdown) "Close Menu ▴" else "Manage Hub ▾",
+                                        fontFamily = FontFamily.Serif,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF2E7D32)
+                                    )
+                                }
+                            }
+    
+                            DropdownMenu(
+                                expanded = showWalletDropdown,
+                                onDismissRequest = { showWalletDropdown = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("⚡ Top-Up Points (+500 Pts)", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold) },
+                                    onClick = {
+                                        showWalletDropdown = false
+                                        activeWalletBiz = primaryVenue ?: BusinessEntity(
+                                            id = "biz_default",
+                                            name = "My Business",
+                                            category = "Partner",
+                                            description = "VibeSync Partner Venue",
+                                            address = "Local Hub",
+                                            walletPoints = 500
+                                        )
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("📢 Broadcast to Followers", fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold) },
+                                    onClick = {
+                                        showWalletDropdown = false
+                                        activeBroadcastBiz = primaryVenue ?: BusinessEntity(
+                                            id = "biz_default",
+                                            name = "My Business",
+                                            category = "Partner",
+                                            description = "VibeSync Partner Venue",
+                                            address = "Local Hub",
+                                            walletPoints = 500
+                                        )
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.Campaign, contentDescription = null) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("🏷️ Print Counter QR & Stickers", fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold) },
+                                    onClick = {
+                                        showWalletDropdown = false
+                                        activeQrStickerBiz = primaryVenue ?: allBusinesses.firstOrNull() ?: BusinessEntity(
+                                            id = "biz_default",
+                                            name = "My Business",
+                                            category = "Partner",
+                                            description = "VibeSync Partner Venue",
+                                            address = "Local Hub",
+                                            walletPoints = 500
+                                        )
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.QrCode2, contentDescription = null) }
+                                )
+                            }
+                        }
+    
+                        Spacer(modifier = Modifier.height(6.dp))
+    
+    
+                    }
 
                     // Compact Segmented Navigation Tabs
                     Row(
@@ -427,7 +441,6 @@ fun BusinessHubContent(
                     ) {
                         val tabs = listOf(
                             Triple(0, "Nearest (${allBusinesses.size})", Icons.Default.Store),
-                            Triple(1, "Join with Us", Icons.Default.AddBusiness),
                             Triple(2, "My Venues (${myCreatedBusinesses.size})", Icons.Default.Business),
                             Triple(3, "Analytics", Icons.Default.ShowChart),
                             Triple(4, "QR Stickers", Icons.Default.QrCode2)
@@ -740,7 +753,8 @@ private fun NearestBusinessesTab(
                     biz.name.contains(searchQuery, ignoreCase = true) ||
                     biz.tagline.contains(searchQuery, ignoreCase = true) ||
                     biz.address.contains(searchQuery, ignoreCase = true) ||
-                    biz.category.contains(searchQuery, ignoreCase = true)
+                    biz.category.contains(searchQuery, ignoreCase = true) ||
+                    biz.city.contains(searchQuery, ignoreCase = true)
 
             val matchesCat = BusinessCategories.matchesCategory(
                 bizCategory = biz.category,
@@ -760,82 +774,156 @@ private fun NearestBusinessesTab(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
-            // Collapsible Location & Sorting Info Accordion Drawer
-            var showLocationAccordion by remember { mutableStateOf(false) }
+            var locationQuery by remember { mutableStateOf("") }
+            var isSearchingLocation by remember { mutableStateOf(false) }
+            var locationSearchMessage by remember { mutableStateOf("") }
 
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { showLocationAccordion = !showLocationAccordion }
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.LocationOn, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            modifier = Modifier.size(44.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.MyLocation, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                            }
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Current Location", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
                             Text(
-                                text = "📍 Live GPS: Bengaluru (${String.format(Locale.getDefault(), "%.2f", currentCoordinate.latitude)}, ${String.format(Locale.getDefault(), "%.2f", currentCoordinate.longitude)})",
-                                fontFamily = FontFamily.Serif,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp
+                                text = currentCoordinate.label,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
-                        Text(
-                            text = if (showLocationAccordion) "Hide Info ▴" else "Location & Sorting Info ▾",
-                            fontFamily = FontFamily.Serif,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-
-                    if (showLocationAccordion) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        HorizontalDivider()
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Sorting Priority Legend:", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                Text(
-                                    "1. Gold Verified Spots\n2. Silver Verified Venues\n3. Blue Tick Verified\n4. Proximity & Rating",
-                                    fontFamily = FontFamily.Serif,
-                                    fontSize = 10.sp,
-                                    lineHeight = 14.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Button(
-                                onClick = { refreshLocation() },
-                                shape = RoundedCornerShape(16.dp),
-                                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                modifier = Modifier.height(32.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                            ) {
-                                if (isGpsRefreshing) {
-                                    CircularProgressIndicator(color = Color.White, modifier = Modifier.size(12.dp))
+                        Button(
+                            onClick = {
+                                if (hasLocationPermission) {
+                                    refreshLocation()
+                                    onSearchQueryChange("")
                                 } else {
-                                    Text("Locate Me", fontFamily = FontFamily.Serif, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    permissionLauncher.launch(
+                                        arrayOf(
+                                            android.Manifest.permission.ACCESS_FINE_LOCATION,
+                                            android.Manifest.permission.ACCESS_COARSE_LOCATION
+                                        )
+                                    )
                                 }
+                            },
+                            enabled = !isGpsRefreshing,
+                            shape = RoundedCornerShape(14.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                            elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
+                        ) {
+                            if (isGpsRefreshing) {
+                                CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp)
+                            } else {
+                                Text("Use GPS", fontWeight = FontWeight.Bold, fontSize = 11.sp)
                             }
                         }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+
+                    Text("Search Location", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = locationQuery,
+                            onValueChange = { locationQuery = it; locationSearchMessage = "" },
+                            modifier = Modifier.weight(1f).testTag("field_business_search_location"),
+                            placeholder = { Text("City or latitude, longitude") },
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                            singleLine = true,
+                            shape = RoundedCornerShape(14.dp)
+                        )
+                        Button(
+                            onClick = {
+                                val query = locationQuery.trim()
+                                if (query.isNotBlank()) {
+                                    scope.launch {
+                                        isSearchingLocation = true
+                                        locationSearchMessage = ""
+                                        val coordinatePattern = Regex("""^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$""")
+                                        val parsed = coordinatePattern.matchEntire(query)
+                                        val foundCoordinate = if (parsed != null) {
+                                            val latitude = parsed.groupValues[1].toDoubleOrNull()
+                                            val longitude = parsed.groupValues[2].toDoubleOrNull()
+                                            if (latitude != null && longitude != null && latitude in -90.0..90.0 && longitude in -180.0..180.0) {
+                                                GpsCoordinate(latitude, longitude, "Search: $query", false)
+                                            } else null
+                                        } else {
+                                            withContext(Dispatchers.IO) {
+                                                try {
+                                                    @Suppress("DEPRECATION")
+                                                    val addresses = Geocoder(context, Locale.getDefault()).getFromLocationName(query, 1)
+                                                    addresses?.firstOrNull()?.let { address ->
+                                                        GpsCoordinate(
+                                                            address.latitude,
+                                                            address.longitude,
+                                                            address.locality ?: address.subAdminArea ?: address.adminArea ?: query,
+                                                            false
+                                                        )
+                                                    }
+                                                } catch (_: Exception) {
+                                                    null
+                                                }
+                                            }
+                                        }
+                                        if (foundCoordinate != null) {
+                                            currentCoordinate = foundCoordinate
+                                            // For a city search, restrict results to matching business city/address;
+                                            // for coordinates, show the nearest venues around the entered point.
+                                            onSearchQueryChange(if (parsed == null) query else "")
+                                            locationSearchMessage = "Showing venues around ${foundCoordinate.label}"
+                                        } else {
+                                            locationSearchMessage = "Location not found. Try a city name or valid coordinates."
+                                        }
+                                        isSearchingLocation = false
+                                    }
+                                }
+                            },
+                            enabled = locationQuery.isNotBlank() && !isSearchingLocation,
+                            shape = RoundedCornerShape(14.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp),
+                            elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
+                        ) {
+                            if (isSearchingLocation) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            else Text("Search", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+                    }
+                    if (locationSearchMessage.isNotBlank()) {
+                        Text(
+                            locationSearchMessage,
+                            color = if (locationSearchMessage.startsWith("Showing")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                            fontSize = 11.sp
+                        )
                     }
                 }
             }
         }
 
         item {
+            // 1. Horizontal Category Bar        item {
             // 1. Horizontal Category Bar (All + 5 Parent Categories with dropdown sub-navigation)
             Row(
                 modifier = Modifier
@@ -1086,7 +1174,7 @@ private fun NearestBusinessesTab(
                         Column {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    text = if (currentCoordinate.isRealTimeGps) "📍 Live GPS: ${currentCoordinate.label}" else "📍 ${currentCoordinate.label}",
+                                    text = if (currentCoordinate.isRealTimeGps) "Current Location: ${currentCoordinate.label}" else "Search Area: ${currentCoordinate.label}",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = if (currentCoordinate.isRealTimeGps) Color(0xFF1B5E20) else MaterialTheme.colorScheme.onSurface
@@ -1097,7 +1185,7 @@ private fun NearestBusinessesTab(
                                     color = if (currentCoordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outlineVariant
                                 ) {
                                     Text(
-                                        text = if (currentCoordinate.isRealTimeGps) "PROXIMITY GPS" else "DEFAULT COORDS",
+                                        text = if (currentCoordinate.isRealTimeGps) "GPS ACTIVE" else "SEARCH AREA",
                                         color = Color.White,
                                         fontSize = 8.sp,
                                         fontWeight = FontWeight.ExtraBold,
@@ -1295,6 +1383,7 @@ private fun BusinessListItemCard(
                     Column {
                         Text(
                             text = business.name,
+                            fontFamily = FontFamily.Serif,
                             fontWeight = FontWeight.Bold,
                             fontSize = 15.sp,
                             color = Color.White,

@@ -876,6 +876,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     fun normalizePhone(p: String): String = p.replace("[^0-9]".toRegex(), "").takeLast(10)
 
     fun openChat(match: MatchEntity, profile: ProfileEntity) {
+        com.example.util.AlertSoundAndVibrationManager.stopAllSounds(getApplication())
         val resolvedProfile = com.example.util.ContactResolver.matchChatSessionParticipant(getApplication(), profile)
         _activeChat.value = Pair(match, resolvedProfile)
         _currentMatchId.value = match.matchId
@@ -1211,6 +1212,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun closeChat() {
+        com.example.util.AlertSoundAndVibrationManager.stopAllSounds(getApplication())
         _activeChat.value = null
         _currentMatchId.value = null
         com.example.util.AppNotificationManager.clearActiveChatSession()
@@ -1321,6 +1323,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     // Voice & Video Calling (WebRTC P2P Direct Stream with Zero Relay Bandwidth Costs)
     fun startCall(profile: ProfileEntity, isVideo: Boolean) {
         val app = getApplication<Application>()
+        com.example.util.AlertSoundAndVibrationManager.stopAllSounds(app)
         val currentUserId = userPreferences.value?.userName?.ifBlank { "user_self" } ?: "user_self"
 
         WebRTCManager.startCall(
@@ -1348,6 +1351,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun endCall() {
+        com.example.util.AlertSoundAndVibrationManager.stopAllSounds(getApplication())
         val call = _activeCall.value
         WebRTCManager.endCall()
         _activeCall.value = null
@@ -1389,7 +1393,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun syncGoogleCloudBackupNow(email: String = "", wifiOnly: Boolean = false) {
+    fun syncGoogleCloudBackupNow(email: String = "", wifiOnly: Boolean = false, encryptionPassphrase: String = "") {
         viewModelScope.launch {
             _isBackupInProgress.value = true
             val currentPrefs = userPreferences.value
@@ -1398,7 +1402,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             val (success, msg) = repository.performGoogleDriveBackup(
                 accountEmail = targetEmail,
                 frequency = freq,
-                wifiOnly = wifiOnly
+                wifiOnly = wifiOnly,
+                encryptionPassphrase = encryptionPassphrase
             )
             _isBackupInProgress.value = false
             _toastMessage.emit(msg)
@@ -1419,14 +1424,15 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun restoreFromGoogleCloudBackup(fileId: String? = null, email: String = "") {
+    fun restoreFromGoogleCloudBackup(fileId: String? = null, email: String = "", encryptionPassphrase: String = "") {
         viewModelScope.launch {
             _isRestoreInProgress.value = true
             val currentPrefs = userPreferences.value
             val targetEmail = email.ifBlank { currentPrefs?.cloudBackupAccount?.ifBlank { currentPrefs.googleEmail } ?: "" }
             val (success, msg) = repository.restoreGoogleDriveBackup(
                 accountEmail = targetEmail,
-                fileId = fileId
+                fileId = fileId,
+                encryptionPassphrase = encryptionPassphrase
             )
             _isRestoreInProgress.value = false
             _showRestorePromptDialog.value = false
@@ -2244,6 +2250,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun logout() {
+        com.example.util.AlertSoundAndVibrationManager.stopAllSounds(getApplication())
         viewModelScope.launch {
             val prefs = userPreferences.value
             val userId = if (prefs?.verifiedMobileNumber?.isNotBlank() == true) {

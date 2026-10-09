@@ -34,6 +34,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,6 +55,9 @@ fun AppSoundsNotificationCard(
     onToggleExpand: () -> Unit
 ) {
     val context = LocalContext.current
+    DisposableEffect(Unit) {
+        onDispose { AlertSoundAndVibrationManager.stopAllSounds(context) }
+    }
     val tealColor = Color(0xFF00A884)
 
     Card(

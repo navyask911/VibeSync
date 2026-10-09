@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Button
@@ -153,13 +154,37 @@ fun AuthLoginScreen(
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
                     )
                 }
-                Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), color = VibeSyncTeal.copy(alpha = 0.12f)) {
-                    Text(
-                        "Secured by Google Tink Cryptography (E2EE)",
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                        textAlign = TextAlign.Center,
-                        style = MaterialTheme.typography.labelMedium.copy(color = VibeSyncTeal, fontWeight = FontWeight.Bold)
-                    )
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color.Transparent,
+                    border = BorderStroke(1.dp, VibeSyncTeal.copy(alpha = 0.35f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .background(Brush.horizontalGradient(listOf(Color(0xFF075E54), Color(0xFF137F76), Color(0xFF5B3EA6))))
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Surface(shape = CircleShape, color = Color.White.copy(alpha = 0.16f), modifier = Modifier.size(34.dp)) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Lock, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                "Google Tink • End-to-End Encryption",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.ExtraBold),
+                                color = Color.White
+                            )
+                            Text(
+                                "Client-side encryption keeps message content private.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.White.copy(alpha = 0.9f)
+                            )
+                        }
+                    }
                 }
             }
             Card(

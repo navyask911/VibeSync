@@ -6,6 +6,8 @@ import android.media.AudioManager
 import android.media.Ringtone
 import android.media.RingtoneManager
 import android.media.ToneGenerator
+import android.os.Handler
+import android.os.Looper
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -21,6 +23,9 @@ object AlertSoundAndVibrationManager {
 
     private const val TAG = "AlertSoundVibManager"
     private var activePreviewRingtone: Ringtone? = null
+    private val activeRingtones = linkedSetOf<Ringtone>()
+    private val activeToneGenerators = linkedSetOf<ToneGenerator>()
+    private val audioLock = Any()
 
     /**
      * Plays a brief notification tone/ringtone and triggers haptic vibration.
@@ -71,8 +76,10 @@ object AlertSoundAndVibrationManager {
                     )
                     val ringtone = RingtoneManager.getRingtone(context.applicationContext, soundUri)
                     if (ringtone != null) {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                            ringtone.isLooping = false
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) ringtone.isLooping = false
+                        synchronized(audioLock) {
+                            activeRingtones.add(ringtone)
+                            activePreviewRingtone = ringtone
                         }
                         ringtone.play()
                     } else {
@@ -105,17 +112,47 @@ object AlertSoundAndVibrationManager {
         }
     }
 
-    fun stopPreviewSound() {
-        try {
-            activePreviewRingtone?.stop()
+    fun stopPreviewSound() = stopActiveAudio()
+
+    /** Stop active alert audio and haptics when a call/chat is accepted, declined or dismissed. */
+    fun stopAllSounds(context: Context? = null) {
+        stopActiveAudio()
+        if (context != null) {
+            try {
+                val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager)?.defaultVibrator
+                } else {
+                    @Suppress("DEPRECATION")
+                    context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+                }
+                vibrator?.cancel()
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun stopActiveAudio() {
+        val ringtones: List<Ringtone>
+        val generators: List<ToneGenerator>
+        synchronized(audioLock) {
+            ringtones = activeRingtones.toList()
+            activeRingtones.clear()
             activePreviewRingtone = null
-        } catch (_: Exception) {}
+            generators = activeToneGenerators.toList()
+            activeToneGenerators.clear()
+        }
+        ringtones.forEach { try { it.stop() } catch (_: Exception) {} }
+        generators.forEach { try { it.stopTone(); it.release() } catch (_: Exception) {} }
     }
 
     private fun playToneSequence(toneType: Int, durationMs: Int, volume: Int) {
         try {
             val toneGen = ToneGenerator(AudioManager.STREAM_NOTIFICATION, volume)
+            synchronized(audioLock) { activeToneGenerators.add(toneGen) }
             toneGen.startTone(toneType, durationMs)
+            Handler(Looper.getMainLooper()).postDelayed({
+                synchronized(audioLock) { activeToneGenerators.remove(toneGen) }
+                try { toneGen.release() } catch (_: Exception) {}
+            }, durationMs.toLong() + 100L)
         } catch (e: Exception) {
             Log.w(TAG, "ToneGenerator execution failed: ${e.message}")
         }

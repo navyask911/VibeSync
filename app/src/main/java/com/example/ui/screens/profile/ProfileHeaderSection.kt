@@ -16,7 +16,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Cake
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Lock
@@ -56,12 +55,20 @@ fun ProfileHeaderSection(
     onLogout: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val photos = remember(preferences.profilePhotos, preferences.avatarUrl) { preferences.getPhotoList().take(3) }
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         uri?.let {
-            val updated = preferences.copy(avatarUrl = it.toString(), avatarCacheVersion = System.currentTimeMillis())
-            onUpdatePreferences(updated)
+            val currentPhotos = preferences.getPhotoList().take(3).toMutableList()
+            if (currentPhotos.isEmpty()) currentPhotos.add(it.toString()) else currentPhotos[0] = it.toString()
+            onUpdatePreferences(
+                preferences.copy(
+                    avatarUrl = it.toString(),
+                    profilePhotos = currentPhotos.joinToString("|||"),
+                    avatarCacheVersion = System.currentTimeMillis()
+                )
+            )
         }
     }
 
@@ -70,10 +77,18 @@ fun ProfileHeaderSection(
     ) { uri ->
         uri?.let {
             val currentList = preferences.getPhotoList().toMutableList()
-            if (!currentList.contains(it.toString())) {
+            if (!currentList.contains(it.toString()) && currentList.size < 3) {
                 currentList.add(it.toString())
-                val updatedPhotos = currentList.joinToString("|||")
-                onUpdatePreferences(preferences.copy(profilePhotos = updatedPhotos, avatarCacheVersion = System.currentTimeMillis()))
+                onUpdatePreferences(
+                    preferences.copy(
+                        // The first uploaded image is always the canonical profile/discovery avatar.
+                        avatarUrl = preferences.avatarUrl.ifBlank { it.toString() },
+                        profilePhotos = currentList.joinToString("|||"),
+                        avatarCacheVersion = System.currentTimeMillis()
+                    )
+                )
+            } else if (currentList.size >= 3 && !currentList.contains(it.toString())) {
+                android.widget.Toast.makeText(context, "You can upload up to 3 profile photos.", android.widget.Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -100,7 +115,7 @@ fun ProfileHeaderSection(
                 .padding(18.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Profile Photo: Pure Round Type with Touch to View Full Photo
+            // One unified circular avatar, shared with discovery/profile identity.
             Box(
                 modifier = Modifier
                     .size(112.dp)
@@ -152,29 +167,38 @@ fun ProfileHeaderSection(
                         )
                     }
                 }
+                Surface(
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp).clickable {
+                        if (photos.size < 3) {
+                            galleryPhotoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        } else {
+                            photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        }
+                    },
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary,
+                    border = androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.surface),
+                    shadowElevation = 4.dp
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("${photos.size}/3", color = MaterialTheme.colorScheme.onPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        Icon(Icons.Default.Add, contentDescription = "Add profile photo", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(14.dp))
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // Touch to view hint (No top uploader button)
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = VibeSyncTeal.copy(alpha = 0.12f),
-                modifier = Modifier.clickable {
-                    onViewFullPhoto(
-                        preferences.avatarUrl,
-                        "${preferences.userName}'s Profile Photo"
-                    )
-                }
-            ) {
-                Text(
-                    text = "Touch photo to view full 🔍",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = VibeSyncTeal,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                )
-            }
+            Text(
+                text = "Tap avatar to view • ${photos.size}/3 photos",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp)
+            )
 
             Spacer(modifier = Modifier.height(12.dp))
 
@@ -204,232 +228,20 @@ fun ProfileHeaderSection(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // 3-Photo Profile Gallery (Synced Across Platform)
-            val photos = preferences.getPhotoList()
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
-                )
+            // Keep the profile header focused; full logout remains at the bottom of Profile & Settings.
+            Button(
+                onClick = onOpenEditProfile,
+                modifier = Modifier.fillMaxWidth().height(44.dp).testTag("btn_edit_profile"),
+                shape = RoundedCornerShape(22.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = VibeSyncTeal),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
             ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "My Profile Photos (Up to 3)",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.5.sp,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "${photos.size}/3 Photos",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = VibeSyncTeal
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        // Slot 1
-                        val p1 = photos.getOrNull(0) ?: preferences.avatarUrl
-                        PhotoThumbnailBox(
-                            photoUrl = p1,
-                            avatarCacheVersion = preferences.avatarCacheVersion,
-                            slotNumber = 1,
-                            label = "Main",
-                            modifier = Modifier.weight(1f),
-                            onView = { if (p1.isNotBlank()) onViewFullPhoto(p1, "${preferences.userName} - Photo 1") },
-                            onPick = {
-                                photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                            }
-                        )
-
-                        // Slot 2
-                        val p2 = photos.getOrNull(1) ?: ""
-                        PhotoThumbnailBox(
-                            photoUrl = p2,
-                            avatarCacheVersion = preferences.avatarCacheVersion,
-                            slotNumber = 2,
-                            label = "Photo 2",
-                            modifier = Modifier.weight(1f),
-                            onView = { if (p2.isNotBlank()) onViewFullPhoto(p2, "${preferences.userName} - Photo 2") },
-                            onPick = {
-                                galleryPhotoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                            }
-                        )
-
-                        // Slot 3
-                        val p3 = photos.getOrNull(2) ?: ""
-                        PhotoThumbnailBox(
-                            photoUrl = p3,
-                            avatarCacheVersion = preferences.avatarCacheVersion,
-                            slotNumber = 3,
-                            label = "Photo 3",
-                            modifier = Modifier.weight(1f),
-                            onView = { if (p3.isNotBlank()) onViewFullPhoto(p3, "${preferences.userName} - Photo 3") },
-                            onPick = {
-                                galleryPhotoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                            }
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Edit Profile, Cover Art & Quick Logout Action Buttons
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(
-                    onClick = onOpenEditProfile,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(42.dp)
-                        .testTag("btn_edit_profile"),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = VibeSyncTeal
-                    ),
-                    contentPadding = PaddingValues(horizontal = 8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Edit,
-                        contentDescription = null,
-                        modifier = Modifier.size(15.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Edit Profile", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                }
-
-                OutlinedButton(
-                    onClick = onOpenWallpaperDialog,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(42.dp)
-                        .testTag("btn_change_wallpaper"),
-                    shape = RoundedCornerShape(12.dp),
-                    contentPadding = PaddingValues(horizontal = 8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Image,
-                        contentDescription = null,
-                        modifier = Modifier.size(15.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Cover Art", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                }
-
-                OutlinedButton(
-                    onClick = onLogout,
-                    modifier = Modifier
-                        .height(42.dp)
-                        .testTag("btn_quick_logout_profile_header"),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = PassRed),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, PassRed.copy(alpha = 0.5f)),
-                    contentPadding = PaddingValues(horizontal = 10.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.ExitToApp,
-                        contentDescription = "Log Out",
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Log Out", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                }
+                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Edit Profile", fontWeight = FontWeight.Bold, fontSize = 13.sp)
             }
 
             // Profile Action Buttons
         }
     }
 }
-
-@Composable
-private fun PhotoThumbnailBox(
-    photoUrl: String,
-    avatarCacheVersion: Long = 0L,
-    slotNumber: Int,
-    label: String,
-    modifier: Modifier = Modifier,
-    onView: () -> Unit,
-    onPick: () -> Unit
-) {
-    Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-        border = androidx.compose.foundation.BorderStroke(
-            1.5.dp,
-            if (photoUrl.isNotBlank()) VibeSyncTeal else MaterialTheme.colorScheme.outlineVariant
-        ),
-        modifier = modifier
-            .height(105.dp)
-            .clickable {
-                if (photoUrl.isNotBlank()) onView() else onPick()
-            }
-    ) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            if (photoUrl.isNotBlank()) {
-                AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
-                        .data(photoUrl)
-                        .memoryCacheKey("user-avatar:$photoUrl:$avatarCacheVersion")
-                        .diskCacheKey("user-avatar:$photoUrl:$avatarCacheVersion")
-                        .crossfade(true)
-                        .diskCachePolicy(CachePolicy.ENABLED)
-                        .memoryCachePolicy(CachePolicy.ENABLED)
-                        .build(),
-                    contentDescription = label,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp))
-                )
-
-                Surface(
-                    shape = RoundedCornerShape(topStart = 8.dp),
-                    color = if (slotNumber == 1) VibeSyncTeal else Color.Black.copy(alpha = 0.6f),
-                    modifier = Modifier.align(Alignment.BottomEnd)
-                ) {
-                    Text(
-                        text = if (slotNumber == 1) "★ 1" else "$slotNumber",
-                        color = Color.White,
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                    )
-                }
-            } else {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "Add $label",
-                        tint = VibeSyncTeal,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.height(3.dp))
-                    Text(
-                        text = label,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-    }
-}
-

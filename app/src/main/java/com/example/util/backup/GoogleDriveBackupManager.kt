@@ -61,9 +61,9 @@ class GoogleDriveBackupManager(private val context: Context) {
 
             val timestampStr = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
             val fileMetadata = File().apply {
-                name = "chat_backup_${timestampStr}.enc"
+                name = "vibesync_room_db_${timestampStr}.enc"
                 parents = Collections.singletonList("appDataFolder")
-                description = "VibeSync AES-256 Encrypted Chat & Social Graph Backup"
+                description = "VibeSync encrypted local Room SQLite database backup"
             }
 
             val mediaContent = FileContent("application/octet-stream", localBackupFile)
@@ -97,6 +97,7 @@ class GoogleDriveBackupManager(private val context: Context) {
 
             val result: FileList = driveService.files().list()
                 .setSpaces("appDataFolder")
+                .setQ("name contains 'vibesync_room_db_'")
                 .setFields("files(id, name, createdTime, size, modifiedTime)")
                 .setOrderBy("createdTime desc")
                 .setPageSize(5)
@@ -154,6 +155,7 @@ class GoogleDriveBackupManager(private val context: Context) {
             val driveService = getDriveService(accountName)
             val result: FileList = driveService.files().list()
                 .setSpaces("appDataFolder")
+                .setQ("name contains 'vibesync_room_db_'")
                 .setFields("files(id, name, createdTime)")
                 .setOrderBy("createdTime desc")
                 .setPageSize(20)

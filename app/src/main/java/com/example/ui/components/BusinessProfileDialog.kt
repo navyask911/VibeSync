@@ -63,6 +63,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
@@ -749,7 +750,9 @@ fun BusinessProfileDialog(
                             // Tabs: Discounts & Offers vs Timeline Posts vs Verified Reviews
                             PrimaryTabRow(
                                 selectedTabIndex = selectedTab,
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier.fillMaxWidth(),
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
+                                divider = { HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)) }
                             ) {
                                 Tab(
                                     selected = selectedTab == 0,
@@ -776,11 +779,27 @@ fun BusinessProfileDialog(
                                 Tab(
                                     selected = selectedTab == 2,
                                     onClick = { selectedTab = 2 },
+                                    selectedContentColor = MaterialTheme.colorScheme.primary,
+                                    unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                     text = {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFFFFB300), modifier = Modifier.size(15.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Reviews (${reviews.size})", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = if (selectedTab == 2) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                            border = BorderStroke(1.dp, if (selectedTab == 2) MaterialTheme.colorScheme.primary.copy(alpha = 0.35f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFFFFB300), modifier = Modifier.size(15.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text(
+                                                    "Reviews (${reviews.size})",
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 11.sp,
+                                                    color = if (selectedTab == 2) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
                                         }
                                     }
                                 )
@@ -901,6 +920,71 @@ fun BusinessProfileDialog(
                                             Spacer(modifier = Modifier.width(4.dp))
                                             Text("Check-In & Rate", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                         }
+                                    }
+                                }
+                            }
+
+                            item {
+                                val totalRatings = reviews.size
+                                val denominator = totalRatings.coerceAtLeast(1)
+                                val distribution = (5 downTo 1).map { stars ->
+                                    stars to reviews.count { it.rating.toInt().coerceIn(1, 5) == stars }
+                                }
+                                Card(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                                    shape = RoundedCornerShape(18.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                                ) {
+                                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    business.rating.toString(),
+                                                    fontSize = 30.sp,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    fontFamily = FontFamily.Serif,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    repeat(5) {
+                                                        Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFFFFB300), modifier = Modifier.size(14.dp))
+                                                    }
+                                                }
+                                            }
+                                            Column(horizontalAlignment = Alignment.End) {
+                                                Text(
+                                                    "${business.reviewCount}",
+                                                    fontSize = 22.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                                Text("total reviews", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            }
+                                        }
+                                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                                        distribution.forEach { (stars, count) ->
+                                            val percentage = (count * 100f / denominator).coerceIn(0f, 100f)
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Text("${stars}★", modifier = Modifier.width(30.dp), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                                                LinearProgressIndicator(
+                                                    progress = { percentage / 100f },
+                                                    modifier = Modifier.weight(1f).height(7.dp).clip(RoundedCornerShape(8.dp)),
+                                                    color = Color(0xFFFFB300),
+                                                    trackColor = MaterialTheme.colorScheme.surfaceVariant
+                                                )
+                                                Text("${percentage.toInt()}%", modifier = Modifier.width(38.dp), fontSize = 11.sp, textAlign = TextAlign.End, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            }
+                                        }
+                                        Text(
+                                            "Distribution of ${totalRatings} recorded reviews",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                     }
                                 }
                             }

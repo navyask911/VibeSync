@@ -28,6 +28,8 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.example.util.FirebaseBackendSyncManager
 import com.example.util.SystemHealthDiagnosticsManager
 import com.example.util.backup.BackupScheduler
+import com.example.util.backup.RoomDatabaseBackupHelper
+import com.example.util.backup.DriveBackupSecretStore
 import com.example.util.backup.ChatBackupCryptoHelper
 import com.example.util.backup.ChatBackupPayload
 import com.example.util.backup.DriveBackupMetadata
@@ -2853,102 +2855,56 @@ class SocialConnectRepository(
     suspend fun performGoogleDriveBackup(
         accountEmail: String = "",
         frequency: String = "DAILY",
-        wifiOnly: Boolean = false
+        wifiOnly: Boolean = false,
+        encryptionPassphrase: String = ""
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         val currentPrefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
         val targetEmail = accountEmail.ifBlank { currentPrefs.cloudBackupAccount.ifBlank { currentPrefs.googleEmail } }
+        val appContext = context ?: return@withContext Pair(false, "Application context is not available.")
+        if (targetEmail.isBlank()) return@withContext Pair(false, "Choose your Google Drive account before backing up.")
 
-        if (targetEmail.isBlank()) {
-            return@withContext Pair(false, "Please link a Google Account to activate Drive backup.")
+        val passphrase = encryptionPassphrase.ifBlank {
+            DriveBackupSecretStore.load(appContext, targetEmail).orEmpty()
         }
-
-        val ctx = context
-        if (ctx == null) {
-            // Local persistence fallback
-            preferencesDao.insertOrUpdate(
-                currentPrefs.copy(
-                    isGoogleCloudBackupEnabled = (frequency != "OFF"),
-                    lastCloudBackupTimestamp = System.currentTimeMillis(),
-                    cloudBackupAccount = targetEmail,
-                    backupFrequency = frequency,
-                    backupOverWifiOnly = wifiOnly,
-                    isBackupSkipped = false
-                )
-            )
-            return@withContext Pair(true, "Backup settings saved! Periodic sync configured for $targetEmail.")
+        if (passphrase.length < 8) {
+            return@withContext Pair(false, "A backup encryption passphrase of at least 8 characters is required.")
         }
 
         try {
-            // 1. Gather all local data
-            val messages = chatMessageDao.getAllMessagesSync()
-            val matches = matchDao.getAllMatchesSync()
-            val friendshipRequests = friendshipRequestDao.getAllRequestsSync()
-            val contacts = userContactDao.getAllContactsSync()
-            val myProfile = profileDao.getProfileByIdSync("current_user")
-
-            val payload = ChatBackupPayload(
-                version = 1,
-                backupTimestamp = System.currentTimeMillis(),
-                accountEmail = targetEmail,
-                totalMessages = messages.size,
-                totalMatches = matches.size,
-                totalContacts = contacts.size,
-                messages = messages,
-                matches = matches,
-                friendshipRequests = friendshipRequests,
-                userContacts = contacts,
-                myProfileSnapshot = myProfile
-            )
-
-            val jsonStr = payload.toJsonString()
-            val localBackupFile = File(ctx.cacheDir, "current_backup.enc")
-            val isEncrypted = ChatBackupCryptoHelper.encryptJsonToFile(
-                plainJson = jsonStr,
-                targetFile = localBackupFile,
-                userSeed = targetEmail.ifBlank { "VIBESYNC_VAULT_KEY" }
-            )
-
-            if (!isEncrypted || !localBackupFile.exists()) {
-                return@withContext Pair(false, "Failed to encrypt chat data locally before upload.")
+            val snapshot = RoomDatabaseBackupHelper.createEncryptedSnapshot(appContext, passphrase)
+            val snapshotSize = snapshot.length()
+            val fileId = try {
+                GoogleDriveBackupManager(appContext).uploadBackup(snapshot, targetEmail)
+            } finally {
+                snapshot.delete()
+            }
+            if (fileId.isNullOrBlank()) {
+                return@withContext Pair(false, "Encrypted database snapshot created, but Google Drive upload failed. Check account permissions and retry.")
             }
 
-            // 2. Upload to Drive AppFolder
-            val driveManager = GoogleDriveBackupManager(ctx)
-            val fileId = driveManager.uploadBackup(localBackupFile, targetEmail)
-
-            val sizeStr = formatBytes(localBackupFile.length())
-
-            // 3. Update preferences
+            DriveBackupSecretStore.save(appContext, targetEmail, passphrase)
+            val sizeText = formatBytes(snapshotSize)
             preferencesDao.insertOrUpdate(
                 currentPrefs.copy(
-                    isGoogleCloudBackupEnabled = (frequency != "OFF"),
+                    isGoogleCloudBackupEnabled = frequency != "OFF",
                     lastCloudBackupTimestamp = System.currentTimeMillis(),
                     cloudBackupAccount = targetEmail,
                     backupFrequency = frequency,
                     backupOverWifiOnly = wifiOnly,
-                    lastBackupFileSize = sizeStr,
+                    lastBackupFileSize = sizeText,
                     isBackupSkipped = false
                 )
             )
-
-            // 4. Schedule periodic WorkManager job
             val intervalDays = when (frequency) {
                 "DAILY" -> 1
                 "WEEKLY" -> 7
                 "BI_WEEKLY" -> 15
                 else -> 0
             }
-            if (intervalDays > 0) {
-                BackupScheduler.scheduleBackup(ctx, intervalDays, wifiOnly)
-            } else {
-                BackupScheduler.cancelBackup(ctx)
-            }
+            if (intervalDays > 0) BackupScheduler.scheduleBackup(appContext, intervalDays, wifiOnly)
+            else BackupScheduler.cancelBackup(appContext)
 
-            if (fileId != null) {
-                Pair(true, "✅ Secure Drive Backup successful ($sizeStr • ${messages.size} chats & ${matches.size} matches)")
-            } else {
-                Pair(true, "Encrypted backup ready locally. WorkManager will retry uploading to Google Drive.")
-            }
+            Pair(true, "Secure Google Drive Room database backup completed ($sizeText). The SQLite snapshot is encrypted with your passphrase.")
         } catch (e: Exception) {
             android.util.Log.e("SocialConnectRepository", "performGoogleDriveBackup error: ${e.message}", e)
             Pair(false, "Backup failed: ${e.localizedMessage ?: "Unknown error"}")
@@ -2956,11 +2912,10 @@ class SocialConnectRepository(
     }
 
     suspend fun checkExistingCloudBackup(accountEmail: String): DriveBackupMetadata? = withContext(Dispatchers.IO) {
-        val ctx = context ?: return@withContext null
+        val appContext = context ?: return@withContext null
         if (accountEmail.isBlank()) return@withContext null
         try {
-            val driveManager = GoogleDriveBackupManager(ctx)
-            driveManager.checkExistingBackup(accountEmail)
+            GoogleDriveBackupManager(appContext).checkExistingBackup(accountEmail)
         } catch (e: Exception) {
             android.util.Log.w("SocialConnectRepository", "checkExistingCloudBackup warning: ${e.message}")
             null
@@ -2969,85 +2924,49 @@ class SocialConnectRepository(
 
     suspend fun restoreGoogleDriveBackup(
         accountEmail: String,
-        fileId: String? = null
+        fileId: String? = null,
+        encryptionPassphrase: String = ""
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
-        val ctx = context ?: return@withContext Pair(false, "Application context not available")
-        val targetEmail = accountEmail.ifBlank {
-            preferencesDao.getPreferencesSync()?.cloudBackupAccount ?: ""
-        }
+        val appContext = context ?: return@withContext Pair(false, "Application context is not available.")
+        val prefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
+        val targetEmail = accountEmail.ifBlank { prefs.cloudBackupAccount.ifBlank { prefs.googleEmail } }
+        if (targetEmail.isBlank()) return@withContext Pair(false, "Choose the Google Drive account containing your backup.")
 
-        if (targetEmail.isBlank()) {
-            return@withContext Pair(false, "No linked Google Account found for restore.")
+        val passphrase = encryptionPassphrase.ifBlank {
+            DriveBackupSecretStore.load(appContext, targetEmail).orEmpty()
+        }
+        if (passphrase.length < 8) {
+            return@withContext Pair(false, "Enter the same backup encryption passphrase used when this snapshot was created.")
         }
 
         try {
-            val driveManager = GoogleDriveBackupManager(ctx)
-            var targetFileId = fileId
-            if (targetFileId.isNullOrBlank()) {
-                val metadata = driveManager.checkExistingBackup(targetEmail)
-                targetFileId = metadata?.fileId
+            val drive = GoogleDriveBackupManager(appContext)
+            val id = fileId ?: drive.checkExistingBackup(targetEmail)?.fileId
+                ?: return@withContext Pair(false, "No VibeSync database backup was found in this Google Drive AppData folder.")
+            val encrypted = File(appContext.cacheDir, "vibesync_restore_${System.currentTimeMillis()}.enc")
+            val downloaded = try {
+                drive.downloadBackupFile(targetEmail, id, encrypted)
+            } finally {
+                // Keep the file after the download itself; decrypt/restore below and delete after.
             }
-
-            val targetLocalFile = File(ctx.filesDir, "restored_chats.enc")
-
-            var downloaded = false
-            if (!targetFileId.isNullOrBlank()) {
-                downloaded = driveManager.downloadBackupFile(targetEmail, targetFileId, targetLocalFile)
+            if (!downloaded || !encrypted.isFile || encrypted.length() == 0L) {
+                encrypted.delete()
+                return@withContext Pair(false, "Could not download the encrypted database from Google Drive.")
             }
-
-            // If not downloaded from Drive API, check local fallback cache
-            if (!downloaded || !targetLocalFile.exists() || targetLocalFile.length() == 0L) {
-                val cached = File(ctx.cacheDir, "current_backup.enc")
-                if (cached.exists() && cached.length() > 0) {
-                    cached.copyTo(targetLocalFile, overwrite = true)
-                    downloaded = true
-                }
+            val tables = try {
+                RoomDatabaseBackupHelper.restoreEncryptedSnapshot(appContext, encrypted, passphrase)
+            } finally {
+                encrypted.delete()
             }
-
-            if (!downloaded || !targetLocalFile.exists()) {
-                return@withContext Pair(false, "No valid backup file could be downloaded from Google Drive AppFolder.")
-            }
-
-            // Decrypt payload
-            val plainJson = ChatBackupCryptoHelper.decryptFileToJson(
-                encryptedFile = targetLocalFile,
-                userSeed = targetEmail.ifBlank { "VIBESYNC_VAULT_KEY" }
-            )
-
-            if (plainJson.isNullOrBlank()) {
-                return@withContext Pair(false, "Failed to decrypt backup. Decryption key mismatch.")
-            }
-
-            // Parse payload
-            val payload = ChatBackupPayload.fromJsonString(plainJson)
-
-            // Restore into Room database
-            if (payload.messages.isNotEmpty()) {
-                chatMessageDao.insertMessages(payload.messages)
-            }
-            if (payload.matches.isNotEmpty()) {
-                matchDao.insertMatches(payload.matches)
-            }
-            if (payload.friendshipRequests.isNotEmpty()) {
-                friendshipRequestDao.insertRequests(payload.friendshipRequests)
-            }
-            if (payload.userContacts.isNotEmpty()) {
-                userContactDao.insertContacts(payload.userContacts)
-            }
-
-            val currentPrefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
+            DriveBackupSecretStore.save(appContext, targetEmail, passphrase)
             preferencesDao.insertOrUpdate(
-                currentPrefs.copy(
-                    lastCloudBackupTimestamp = payload.backupTimestamp,
+                prefs.copy(
+                    lastCloudBackupTimestamp = System.currentTimeMillis(),
                     cloudBackupAccount = targetEmail,
                     isRestoreSkipped = false
                 )
             )
-
-            Pair(
-                true,
-                "✅ Restored ${payload.messages.size} messages, ${payload.matches.size} matches, and ${payload.userContacts.size} contacts!"
-            )
+            Pair(true, "Restored the local Room database from Google Drive ($tables tables).")
         } catch (e: Exception) {
             android.util.Log.e("SocialConnectRepository", "restoreGoogleDriveBackup error: ${e.message}", e)
             Pair(false, "Restore failed: ${e.localizedMessage ?: "Unknown error"}")

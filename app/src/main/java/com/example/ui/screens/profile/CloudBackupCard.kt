@@ -1,5 +1,18 @@
 package com.example.ui.screens.profile
 
+import android.app.Activity
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import com.example.util.backup.GoogleDriveAuthHolder
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.common.api.ApiException
+import com.google.android.gms.common.api.Scope
+import com.google.api.services.drive.DriveScopes
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -12,12 +25,16 @@ import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -32,14 +49,51 @@ import java.util.Locale
 fun CloudBackupCard(
     preferences: UserPreferencesEntity,
     onUpdatePreferences: (UserPreferencesEntity) -> Unit,
-    onSyncCloudBackup: () -> Unit,
-    onRestoreCloudBackup: () -> Unit,
+    onSyncCloudBackup: (email: String, encryptionPassphrase: String) -> Unit,
+    onRestoreCloudBackup: (email: String, encryptionPassphrase: String) -> Unit,
     onUpdateSchedule: (frequency: String, wifiOnly: Boolean) -> Unit = { _, _ -> },
     isBackupInProgress: Boolean = false,
     isRestoreInProgress: Boolean = false,
     isExpanded: Boolean,
     onToggleExpand: () -> Unit
 ) {
+    val context = LocalContext.current
+    var driveAction by remember { mutableStateOf("BACKUP") }
+    var driveAccountEmail by remember { mutableStateOf("") }
+    var encryptionPassphrase by remember { mutableStateOf("") }
+    var showPassphraseDialog by remember { mutableStateOf(false) }
+    val driveScope = remember { Scope(DriveScopes.DRIVE_APPDATA) }
+
+    val driveSignInLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            try {
+                val account = GoogleSignIn.getSignedInAccountFromIntent(result.data).getResult(ApiException::class.java)
+                val email = account.email.orEmpty()
+                if (email.isBlank() || !GoogleSignIn.hasPermissions(account, driveScope)) {
+                    Toast.makeText(context, "Google Drive AppData access was not granted.", Toast.LENGTH_LONG).show()
+                } else {
+                    driveAccountEmail = email
+                    showPassphraseDialog = true
+                }
+            } catch (error: ApiException) {
+                Toast.makeText(context, "Google Sign-In failed (${error.statusCode}). Please retry.", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    fun startDriveAction(action: String) {
+        driveAction = action
+        val account = GoogleSignIn.getLastSignedInAccount(context)
+        if (account != null && !account.email.isNullOrBlank() && GoogleSignIn.hasPermissions(account, driveScope)) {
+            driveAccountEmail = account.email.orEmpty()
+            showPassphraseDialog = true
+        } else {
+            driveSignInLauncher.launch(GoogleDriveAuthHolder.getSignInIntent(context))
+        }
+    }
+
     val backupAccount = preferences.cloudBackupAccount.ifBlank { preferences.googleEmail }
     val formattedDate = remember(preferences.lastCloudBackupTimestamp) {
         if (preferences.lastCloudBackupTimestamp > 0) {
@@ -150,7 +204,7 @@ fun CloudBackupCard(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Button(
-                    onClick = onSyncCloudBackup,
+                    onClick = { startDriveAction("BACKUP") },
                     enabled = !isBackupInProgress && !isRestoreInProgress,
                     modifier = Modifier
                         .weight(1f)
@@ -179,7 +233,7 @@ fun CloudBackupCard(
                 }
 
                 OutlinedButton(
-                    onClick = onRestoreCloudBackup,
+                    onClick = { startDriveAction("RESTORE") },
                     enabled = !isBackupInProgress && !isRestoreInProgress,
                     modifier = Modifier
                         .weight(1f)
@@ -338,5 +392,51 @@ fun CloudBackupCard(
                 }
             }
         }
+    
+    if (showPassphraseDialog) {
+        AlertDialog(
+            onDismissRequest = { showPassphraseDialog = false; encryptionPassphrase = "" },
+            title = { Text(if (driveAction == "BACKUP") "Encrypt Room database backup" else "Decrypt Room database backup") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Google Drive account: $driveAccountEmail", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        if (driveAction == "BACKUP") {
+                            "Enter at least 8 characters. Use the same passphrase to restore on another device. It is cached encrypted with Android Keystore only for scheduled backups on this install."
+                        } else {
+                            "Enter the original backup passphrase. Restore replaces matching local Room tables with this backup's data; create a fresh backup first if you need to preserve this device's current data."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = encryptionPassphrase,
+                        onValueChange = { encryptionPassphrase = it },
+                        label = { Text("Backup encryption passphrase") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth().testTag("field_drive_backup_passphrase")
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val phrase = encryptionPassphrase
+                        showPassphraseDialog = false
+                        encryptionPassphrase = ""
+                        if (driveAction == "BACKUP") onSyncCloudBackup(driveAccountEmail, phrase)
+                        else onRestoreCloudBackup(driveAccountEmail, phrase)
+                    },
+                    enabled = encryptionPassphrase.length >= 8
+                ) {
+                    Text(if (driveAction == "BACKUP") "Encrypt & Back Up" else "Decrypt & Restore")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPassphraseDialog = false; encryptionPassphrase = "" }) { Text("Cancel") }
+            }
+        )
     }
 }
