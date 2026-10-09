@@ -31,11 +31,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
+import coil.request.ImageRequest
 import com.example.data.model.UserPreferencesEntity
 import com.example.ui.theme.CoralPink
 import com.example.ui.theme.PassRed
@@ -52,11 +55,12 @@ fun ProfileHeaderSection(
     onRefreshLiveLocation: () -> Unit = {},
     onLogout: () -> Unit = {}
 ) {
+    val context = LocalContext.current
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         uri?.let {
-            val updated = preferences.copy(avatarUrl = it.toString())
+            val updated = preferences.copy(avatarUrl = it.toString(), avatarCacheVersion = System.currentTimeMillis())
             onUpdatePreferences(updated)
         }
     }
@@ -69,7 +73,7 @@ fun ProfileHeaderSection(
             if (!currentList.contains(it.toString())) {
                 currentList.add(it.toString())
                 val updatedPhotos = currentList.joinToString("|||")
-                onUpdatePreferences(preferences.copy(profilePhotos = updatedPhotos))
+                onUpdatePreferences(preferences.copy(profilePhotos = updatedPhotos, avatarCacheVersion = System.currentTimeMillis()))
             }
         }
     }
@@ -119,7 +123,14 @@ fun ProfileHeaderSection(
             ) {
                 if (preferences.avatarUrl.isNotBlank()) {
                     AsyncImage(
-                        model = preferences.avatarUrl,
+                        model = ImageRequest.Builder(context)
+                            .data(preferences.avatarUrl)
+                            .memoryCacheKey("user-avatar:${preferences.avatarUrl}:${preferences.avatarCacheVersion}")
+                            .diskCacheKey("user-avatar:${preferences.avatarUrl}:${preferences.avatarCacheVersion}")
+                            .crossfade(true)
+                            .diskCachePolicy(CachePolicy.ENABLED)
+                            .memoryCachePolicy(CachePolicy.ENABLED)
+                            .build(),
                         contentDescription = "Profile Photo - Touch to View Full",
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
@@ -234,6 +245,7 @@ fun ProfileHeaderSection(
                         val p1 = photos.getOrNull(0) ?: preferences.avatarUrl
                         PhotoThumbnailBox(
                             photoUrl = p1,
+                            avatarCacheVersion = preferences.avatarCacheVersion,
                             slotNumber = 1,
                             label = "Main",
                             modifier = Modifier.weight(1f),
@@ -247,6 +259,7 @@ fun ProfileHeaderSection(
                         val p2 = photos.getOrNull(1) ?: ""
                         PhotoThumbnailBox(
                             photoUrl = p2,
+                            avatarCacheVersion = preferences.avatarCacheVersion,
                             slotNumber = 2,
                             label = "Photo 2",
                             modifier = Modifier.weight(1f),
@@ -260,6 +273,7 @@ fun ProfileHeaderSection(
                         val p3 = photos.getOrNull(2) ?: ""
                         PhotoThumbnailBox(
                             photoUrl = p3,
+                            avatarCacheVersion = preferences.avatarCacheVersion,
                             slotNumber = 3,
                             label = "Photo 3",
                             modifier = Modifier.weight(1f),
@@ -346,6 +360,7 @@ fun ProfileHeaderSection(
 @Composable
 private fun PhotoThumbnailBox(
     photoUrl: String,
+    avatarCacheVersion: Long = 0L,
     slotNumber: Int,
     label: String,
     modifier: Modifier = Modifier,
@@ -368,7 +383,14 @@ private fun PhotoThumbnailBox(
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             if (photoUrl.isNotBlank()) {
                 AsyncImage(
-                    model = photoUrl,
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(photoUrl)
+                        .memoryCacheKey("user-avatar:$photoUrl:$avatarCacheVersion")
+                        .diskCacheKey("user-avatar:$photoUrl:$avatarCacheVersion")
+                        .crossfade(true)
+                        .diskCachePolicy(CachePolicy.ENABLED)
+                        .memoryCachePolicy(CachePolicy.ENABLED)
+                        .build(),
                     contentDescription = label,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp))
