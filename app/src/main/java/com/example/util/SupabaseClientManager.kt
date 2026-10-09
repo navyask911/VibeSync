@@ -1,6 +1,7 @@
 package com.example.util
 
 import android.util.Log
+import com.example.BuildConfig
 import com.example.data.model.ChatMessageEntity
 import com.example.data.model.ProfileEntity
 import com.example.data.model.RegisteredAccountEntity
@@ -30,9 +31,15 @@ object SupabaseClientManager {
 
     private const val TAG = "SupabaseClientManager"
 
-    const val SUPABASE_URL = "https://imhcbgpvjwersbnlgwzq.supabase.co"
-    const val SUPABASE_PUBLISHABLE_KEY = "sb_publishable_U1jQSTm-S9YNQxx7RHPl-Q_w_Up-RBe"
-    const val SUPABASE_ANON_KEY = SUPABASE_PUBLISHABLE_KEY
+    private const val DEFAULT_SUPABASE_URL = "https://imhcbgpvjwersbnlgwzq.supabase.co"
+    private const val DEFAULT_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_U1jQSTm-S9YNQxx7RHPl-Q_w_Up-RBe"
+
+    // The Secrets Gradle Plugin generates these fields from .env / .env.example.
+    // Fallbacks keep local/offline builds from crashing if a developer omits .env.
+    val SUPABASE_URL: String = BuildConfig.SUPABASE_URL.trim().ifBlank { DEFAULT_SUPABASE_URL }
+    val SUPABASE_PUBLISHABLE_KEY: String =
+        BuildConfig.SUPABASE_ANON_KEY.trim().ifBlank { DEFAULT_SUPABASE_PUBLISHABLE_KEY }
+    val SUPABASE_ANON_KEY: String = SUPABASE_PUBLISHABLE_KEY
 
     private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
