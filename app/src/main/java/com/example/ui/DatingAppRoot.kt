@@ -106,7 +106,7 @@ import androidx.compose.material.icons.outlined.Explore
 enum class DatingTab(val title: String) {
     CHATS("Chats"),
     STATUS("Stories"),
-    FRIENDS("Friends"),
+    FRIENDS("Connect"),
     FIND("Find"),
     PROFILE("Profile")
 }
@@ -583,18 +583,18 @@ fun DatingAppRoot(
                             ) {
                                 Icon(
                                     imageVector = if (currentTab == 2) Icons.Default.Groups else Icons.Outlined.Groups,
-                                    contentDescription = "Friends",
+                                    contentDescription = "Connect",
                                     modifier = Modifier.size(24.dp)
                                 )
                             }
                         },
-                        label = { Text("Friends", fontSize = 11.sp, fontWeight = if (currentTab == 2) FontWeight.Bold else FontWeight.Normal) },
+                        label = { Text("Connect", fontSize = 11.sp, fontWeight = if (currentTab == 2) FontWeight.Bold else FontWeight.Normal) },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = VibeSyncTeal,
                             selectedTextColor = VibeSyncTeal,
                             indicatorColor = VibeSyncTeal.copy(alpha = 0.2f)
                         ),
-                        modifier = Modifier.testTag("tab_friends")
+                        modifier = Modifier.testTag("tab_connect")
                     )
 
                     // Find Tab (Nearest Businesses & Local Deals Discovery)
@@ -683,27 +683,12 @@ fun DatingAppRoot(
                 2 -> DiscoverScreen(
                     candidates = candidates,
                     viewModel = viewModel,
-                    activeDatingProfile = activeDatingProfile,
-                    isOpenForDating = preferences?.isOpenForDating ?: true,
-                    onEnableOpenForDating = { viewModel.enableOpenForDating() },
-                    onOpenActiveChat = {
-                        BiometricPromptHelper.verifyBeforeEnteringChat(
-                            context = context,
-                            contextName = activeDatingProfile?.name ?: "Dating Partner",
-                            onVerified = { viewModel.openChatForActiveDatingMatch() }
-                        )
-                    },
-                    onBreakupActiveMatch = { viewModel.breakupCurrentActiveMatch() },
-                    onSwipe = { profileId, dir ->
-                        if (dir == "LIKE" || dir == "SUPER_LIKE" || dir == "PROPOSAL") {
-                            BiometricPromptHelper.verifyBeforeSwipeMatch(
-                                context = context,
-                                onVerified = { viewModel.swipe(profileId, dir) }
-                            )
-                        } else {
-                            viewModel.swipe(profileId, dir)
-                        }
-                    },
+                    activeDatingProfile = null,
+                    isOpenForDating = true,
+                    onEnableOpenForDating = {},
+                    onOpenActiveChat = {},
+                    onBreakupActiveMatch = {},
+                    onSwipe = { profileId, dir -> viewModel.swipe(profileId, dir) },
                     onRewind = { viewModel.rewind() },
                     onOpenProfileDetail = { viewModel.openProfileDetail(it) },
                     onOpenFilters = { coroutineScope.launch { pagerState.scrollToPage(4) } },
