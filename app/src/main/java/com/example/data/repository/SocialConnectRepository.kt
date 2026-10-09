@@ -761,7 +761,8 @@ class SocialConnectRepository(
         videoDurationSeconds: Int = 0,
         backgroundColorStart: Long = 0xFF00A884,
         backgroundColorEnd: Long = 0xFF128C7E,
-        privacy: String = "FRIENDS_AND_MATCHES"
+        privacy: String = "FRIENDS_AND_MATCHES",
+        backgroundMusicUri: String = ""
     ): UploadStatusResult {
         val currentPrefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
         val now = System.currentTimeMillis()
@@ -785,7 +786,24 @@ class SocialConnectRepository(
             currentVideosCount += 1
         }
 
-        // Insert Status Story locally
+        var uploadedBackgroundMusicUrl = ""
+        if (backgroundMusicUri.isNotBlank()) {
+            try {
+                val audioUri = android.net.Uri.parse(backgroundMusicUri)
+                val ownerKey = currentPrefs.verifiedMobileNumber.filter { it.isDigit() }.ifBlank { "verified-user" }
+                val extension = audioUri.lastPathSegment?.substringAfterLast('.', "audio")
+                    ?.takeIf { it.matches(Regex("[A-Za-z0-9]{1,8}")) } ?: "audio"
+                val audioRef = com.google.firebase.storage.FirebaseStorage.getInstance().reference
+                    .child("status_music/$ownerKey/${UUID.randomUUID()}.$extension")
+                audioRef.putFile(audioUri).await()
+                uploadedBackgroundMusicUrl = audioRef.downloadUrl.await().toString()
+            } catch (e: Exception) {
+                android.util.Log.w("SocialConnectRepository", "Background music upload failed: ${e.message}")
+                return UploadStatusResult.Error("Background music could not be uploaded. Please choose a readable audio file and retry.")
+            }
+        }
+
+        // Insert status story locally with its optional cloud-hosted soundtrack.
         val story = StatusStoryEntity(
             id = "story_${UUID.randomUUID().toString().take(8)}",
             userId = "USER",
@@ -802,7 +820,8 @@ class SocialConnectRepository(
             isViewed = true,
             viewsCount = 1,
             isMyStatus = true,
-            privacy = privacy
+            privacy = privacy,
+            backgroundMusicUrl = uploadedBackgroundMusicUrl
         )
         statusStoryDao.insertStory(story)
 
@@ -837,6 +856,7 @@ class SocialConnectRepository(
                     "userAvatarUrl" to story.userAvatarUrl,
                     "mediaType" to story.mediaType,
                     "mediaUrl" to story.mediaUrl,
+                    "backgroundMusicUrl" to story.backgroundMusicUrl,
                     "videoDurationSeconds" to story.videoDurationSeconds,
                     "caption" to story.caption,
                     "backgroundColorStart" to story.backgroundColorStart,
@@ -936,6 +956,7 @@ class SocialConnectRepository(
                         val userAvatarUrl = storySnap.child("userAvatarUrl").getValue(String::class.java) ?: ""
                         val mediaType = storySnap.child("mediaType").getValue(String::class.java) ?: "PHOTO"
                         val mediaUrl = storySnap.child("mediaUrl").getValue(String::class.java) ?: ""
+                        val backgroundMusicUrl = storySnap.child("backgroundMusicUrl").getValue(String::class.java) ?: ""
                         val videoDurationSeconds = storySnap.child("videoDurationSeconds").getValue(Int::class.java) ?: 0
                         val caption = storySnap.child("caption").getValue(String::class.java) ?: ""
                         val bgStart = storySnap.child("backgroundColorStart").getValue(Long::class.java) ?: 0xFF00A884
@@ -951,6 +972,7 @@ class SocialConnectRepository(
                                 userAvatarUrl = userAvatarUrl,
                                 mediaType = mediaType,
                                 mediaUrl = mediaUrl,
+                                backgroundMusicUrl = backgroundMusicUrl,
                                 videoDurationSeconds = videoDurationSeconds,
                                 caption = caption,
                                 backgroundColorStart = bgStart,
