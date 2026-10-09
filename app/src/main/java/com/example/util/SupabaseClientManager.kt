@@ -221,6 +221,9 @@ object SupabaseClientManager {
         val gender = ContactResolver.sanitizeName(if (encGender.isNotBlank()) HackFreeSecurityShield.decrypt(encGender) else "").ifBlank { "User" }
 
         val publicIdentityKey = obj.optSafeString("public_identity_key", "")
+        val avatarCacheVersion = runCatching {
+            java.time.OffsetDateTime.parse(obj.optSafeString("updated_at", "")).toInstant().toEpochMilli()
+        }.getOrDefault(0L)
 
         return ProfileEntity(
             id = rawId,
@@ -238,6 +241,7 @@ object SupabaseClientManager {
             gradientColorEnd = 0xFFFF9966,
             avatarEmoji = obj.optSafeString("avatar_emoji", "✨"),
             avatarUrl = avatarUrl,
+            avatarCacheVersion = avatarCacheVersion,
             phoneNumber = phone,
             email = email,
             publicIdentityKey = publicIdentityKey,
