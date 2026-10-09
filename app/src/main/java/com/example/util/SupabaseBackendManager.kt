@@ -32,10 +32,10 @@ import java.util.concurrent.TimeUnit
 object SupabaseBackendManager {
     private const val TAG = "SupabaseBackend"
 
-    // Default Supabase Configuration (Overridden via Secrets / BuildConfig in Production)
-    var SUPABASE_URL = "https://imhcbgpvjwersbnlgwzq.supabase.co"
-    var SUPABASE_ANON_KEY = "sb_publishable_U1jQSTm-S9YNQxx7RHPl-Q_w_Up-RBe"
-    var SUPABASE_SERVICE_KEY = "sb_publishable_U1jQSTm-S9YNQxx7RHPl-Q_w_Up-RBe"
+    // Client apps must use the publishable/anon key only; service-role keys must stay server-side.
+    var SUPABASE_URL = SupabaseClientManager.SUPABASE_URL
+    var SUPABASE_ANON_KEY = SupabaseClientManager.SUPABASE_ANON_KEY
+    var SUPABASE_SERVICE_KEY = SupabaseClientManager.SUPABASE_ANON_KEY // compatibility only; not privileged
     var CLOUDFLARE_R2_ENDPOINT = "https://media.vibesync.app"
 
     private val httpClient = OkHttpClient.Builder()
