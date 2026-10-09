@@ -44,25 +44,15 @@ import java.util.Locale
 fun InteractionsAndRequestsModal(
     pendingReceivedRequests: List<FriendshipRequestEntity>,
     pendingSentRequests: List<FriendshipRequestEntity>,
-    receivedLikes: List<ProfileEntity>,
-    allSwipes: List<SwipeEntity>,
     allProfiles: List<ProfileEntity>,
     onAcceptFriendRequest: (String) -> Unit,
     onCancelFriendRequest: (String) -> Unit,
-    onLikeBack: (ProfileEntity) -> Unit = {},
-    onOpenChat: (String) -> Unit = {},
     onDismiss: () -> Unit
 ) {
-    // 0: Received Requests, 1: Sent Requests, 2: Likes & Superlikes
+    // 0: Received connection requests, 1: Sent connection requests
     var mainTab by remember { mutableIntStateOf(0) }
-    // Inside Likes & Superlikes: 0: Received Likes, 1: Sent Likes/Superlikes
-    var likesSubTab by remember { mutableIntStateOf(0) }
 
     val profileMap = remember(allProfiles) { allProfiles.associateBy { it.id } }
-
-    val sentSwipes = remember(allSwipes) {
-        allSwipes.filter { it.direction == "LIKE" || it.direction == "SUPER_LIKE" }
-    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -115,7 +105,7 @@ fun InteractionsAndRequestsModal(
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "Friendships, Sent & Received Likes",
+                                text = "Review incoming and outgoing connection requests",
                                 fontSize = 11.5.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -145,7 +135,6 @@ fun InteractionsAndRequestsModal(
                 val tabItems = listOf(
                     Triple(0, "Received", pendingReceivedRequests.size),
                     Triple(1, "Sent", pendingSentRequests.size),
-                    Triple(2, "Likes & Stars", receivedLikes.size + sentSwipes.size)
                 )
 
                 Surface(
@@ -212,89 +201,17 @@ fun InteractionsAndRequestsModal(
                         .weight(1f)
                 ) {
                     when (mainTab) {
-                        0 -> {
-                            // Received Friend Requests
-                            ReceivedRequestsTab(
-                                requests = pendingReceivedRequests,
-                                profileMap = profileMap,
-                                onAccept = onAcceptFriendRequest,
-                                onCancel = onCancelFriendRequest
-                            )
-                        }
-                        1 -> {
-                            // Sent Friend Requests
-                            SentRequestsTab(
-                                requests = pendingSentRequests,
-                                profileMap = profileMap,
-                                onCancel = onCancelFriendRequest
-                            )
-                        }
-                        2 -> {
-                            // Likes & Superlikes (Dedicated Sub-tabs)
-                            Column(modifier = Modifier.fillMaxSize()) {
-                                // Sub-tab chips
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(bottom = 10.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    FilterChip(
-                                        selected = likesSubTab == 0,
-                                        onClick = { likesSubTab = 0 },
-                                        label = {
-                                            Text(
-                                                "Received Likes (${receivedLikes.size})",
-                                                fontWeight = if (likesSubTab == 0) FontWeight.Bold else FontWeight.Normal,
-                                                fontSize = 12.sp
-                                            )
-                                        },
-                                        leadingIcon = {
-                                            Icon(Icons.Default.Favorite, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        },
-                                        colors = FilterChipDefaults.filterChipColors(
-                                            selectedContainerColor = CoralPink.copy(alpha = 0.15f),
-                                            selectedLabelColor = CoralPink,
-                                            selectedLeadingIconColor = CoralPink
-                                        )
-                                    )
-
-                                    FilterChip(
-                                        selected = likesSubTab == 1,
-                                        onClick = { likesSubTab = 1 },
-                                        label = {
-                                            Text(
-                                                "Sent Likes (${sentSwipes.size})",
-                                                fontWeight = if (likesSubTab == 1) FontWeight.Bold else FontWeight.Normal,
-                                                fontSize = 12.sp
-                                            )
-                                        },
-                                        leadingIcon = {
-                                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        },
-                                        colors = FilterChipDefaults.filterChipColors(
-                                            selectedContainerColor = Color(0xFF00B0FF).copy(alpha = 0.15f),
-                                            selectedLabelColor = Color(0xFF00B0FF),
-                                            selectedLeadingIconColor = Color(0xFF00B0FF)
-                                        )
-                                    )
-                                }
-
-                                if (likesSubTab == 0) {
-                                    ReceivedLikesContent(
-                                        likes = receivedLikes,
-                                        onLikeBack = onLikeBack,
-                                        onOpenChat = onOpenChat
-                                    )
-                                } else {
-                                    SentLikesContent(
-                                        swipes = sentSwipes,
-                                        profileMap = profileMap,
-                                        onOpenChat = onOpenChat
-                                    )
-                                }
-                            }
-                        }
+                        0 -> ReceivedRequestsTab(
+                            requests = pendingReceivedRequests,
+                            profileMap = profileMap,
+                            onAccept = onAcceptFriendRequest,
+                            onCancel = onCancelFriendRequest
+                        )
+                        1 -> SentRequestsTab(
+                            requests = pendingSentRequests,
+                            profileMap = profileMap,
+                            onCancel = onCancelFriendRequest
+                        )
                     }
                 }
             }
@@ -502,189 +419,6 @@ private fun SentRequestsTab(
                             modifier = Modifier.height(34.dp).testTag("btn_cancel_sent_${req.id}")
                         ) {
                             Text("Cancel", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ReceivedLikesContent(
-    likes: List<ProfileEntity>,
-    onLikeBack: (ProfileEntity) -> Unit,
-    onOpenChat: (String) -> Unit
-) {
-    if (likes.isEmpty()) {
-        EmptyInteractionsView(
-            icon = Icons.Default.Favorite,
-            title = "No Incoming Likes Yet",
-            description = "Profiles who like or superlike you from Connect will appear here. You can like back to instantly start chatting!"
-        )
-    } else {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            items(likes, key = { it.id }) { prof ->
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
-                    border = BorderStroke(1.dp, CoralPink.copy(alpha = 0.3f)),
-                    modifier = Modifier.fillMaxWidth().testTag("card_received_like_${prof.id}")
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                            if (prof.avatarUrl.isNotBlank()) {
-                                AsyncImage(
-                                    model = prof.avatarUrl,
-                                    contentDescription = prof.name,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.size(46.dp).clip(CircleShape)
-                                )
-                            } else {
-                                Box(
-                                    modifier = Modifier.size(46.dp).clip(CircleShape).background(CoralPink.copy(alpha = 0.15f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(prof.avatarEmoji.ifBlank { prof.name.take(1) }, fontSize = 20.sp)
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.width(10.dp))
-
-                            Column {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(prof.name, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("${prof.age} yrs", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                                Text(
-                                    text = "Liked your profile ❤️",
-                                    fontSize = 11.5.sp,
-                                    color = CoralPink,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                if (prof.bio.isNotBlank()) {
-                                    Text(
-                                        prof.bio.take(30) + if (prof.bio.length > 30) "..." else "",
-                                        fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
-                        }
-
-                        Button(
-                            onClick = { onLikeBack(prof) },
-                            colors = ButtonDefaults.buttonColors(containerColor = CoralPink),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                            modifier = Modifier.height(36.dp).testTag("btn_like_back_${prof.id}")
-                        ) {
-                            Icon(Icons.Default.Favorite, contentDescription = null, modifier = Modifier.size(13.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Like Back", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SentLikesContent(
-    swipes: List<SwipeEntity>,
-    profileMap: Map<String, ProfileEntity>,
-    onOpenChat: (String) -> Unit
-) {
-    if (swipes.isEmpty()) {
-        EmptyInteractionsView(
-            icon = Icons.AutoMirrored.Filled.Send,
-            title = "No Sent Likes or Superlikes",
-            description = "Profiles you like (swipe right) or superlike (swipe up) in Connect will be saved here."
-        )
-    } else {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            items(swipes, key = { it.profileId + it.direction }) { swipe ->
-                val profile = profileMap[swipe.profileId]
-                val name = profile?.name ?: "VibeSync Member"
-                val avatar = profile?.avatarUrl ?: ""
-                val isSuperlike = swipe.direction == "SUPER_LIKE"
-
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
-                    border = BorderStroke(1.dp, if (isSuperlike) Color(0xFF00B0FF).copy(alpha = 0.3f) else CoralPink.copy(alpha = 0.25f)),
-                    modifier = Modifier.fillMaxWidth().testTag("card_sent_like_${swipe.profileId}")
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                            if (avatar.isNotBlank()) {
-                                AsyncImage(
-                                    model = avatar,
-                                    contentDescription = name,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.size(44.dp).clip(CircleShape)
-                                )
-                            } else {
-                                Box(
-                                    modifier = Modifier
-                                        .size(44.dp)
-                                        .clip(CircleShape)
-                                        .background((if (isSuperlike) Color(0xFF00B0FF) else CoralPink).copy(alpha = 0.15f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(name.take(1), fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.width(10.dp))
-
-                            Column {
-                                Text(name, fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = if (isSuperlike) Color(0xFF00B0FF).copy(alpha = 0.15f) else CoralPink.copy(alpha = 0.15f)
-                                    ) {
-                                        Text(
-                                            text = if (isSuperlike) "⭐ Superliked" else "❤️ Liked",
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (isSuperlike) Color(0xFF00B0FF) else CoralPink,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        Button(
-                            onClick = { onOpenChat(swipe.profileId) },
-                            colors = ButtonDefaults.buttonColors(containerColor = VibeSyncTeal),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                            modifier = Modifier.height(34.dp).testTag("btn_chat_sent_like_${swipe.profileId}")
-                        ) {
-                            Icon(Icons.Default.Chat, contentDescription = null, modifier = Modifier.size(12.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Chat", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }

@@ -196,11 +196,7 @@ fun DatingAppRoot(
     val mutualFriendsMap by viewModel.mutualFriendsMap.collectAsStateWithLifecycle()
     val pendingRequestToReview by viewModel.pendingRequestToReview.collectAsStateWithLifecycle()
     val outgoingFriendRequestNotification by viewModel.outgoingFriendRequestNotification.collectAsStateWithLifecycle()
-    val outgoingLikeNotification by viewModel.outgoingLikeNotification.collectAsStateWithLifecycle()
-    val sharedBreakupCounts by viewModel.sharedBreakupCounts.collectAsStateWithLifecycle()
     val showFriendsListDialog by viewModel.showFriendsListDialog.collectAsStateWithLifecycle()
-    val allSwipes by viewModel.allSwipes.collectAsStateWithLifecycle()
-    val pendingBreakupRequests by viewModel.pendingBreakupRequests.collectAsStateWithLifecycle()
     val selectedBusiness by viewModel.selectedBusiness.collectAsStateWithLifecycle()
     val allBusinesses by viewModel.allBusinesses.collectAsStateWithLifecycle()
     val allApiRequests by viewModel.allApiRequests.collectAsStateWithLifecycle()
@@ -285,7 +281,6 @@ fun DatingAppRoot(
             selectedDetail != null ||
             pendingRequestToReview != null ||
             outgoingFriendRequestNotification != null ||
-            outgoingLikeNotification != null ||
             showFriendsListDialog ||
             showMandatoryPermissionsDialog ||
             showPostRegistrationBackupDialog ||
@@ -372,10 +367,6 @@ fun DatingAppRoot(
 
     BackHandler(enabled = showInteractionsModal) {
         showInteractionsModal = false
-    }
-
-    BackHandler(enabled = outgoingLikeNotification != null) {
-        viewModel.dismissOutgoingLikeNotification()
     }
 
     BackHandler(enabled = outgoingFriendRequestNotification != null) {
@@ -687,15 +678,11 @@ fun DatingAppRoot(
                     onOpenFilters = { coroutineScope.launch { pagerState.scrollToPage(4) } },
                     onOpenAdmin = { viewModel.openAdminPortal() },
                     onResetData = { viewModel.resetAllData() },
-                    superLikesCount = superLikesCount,
                     mutualFriendsMap = mutualFriendsMap,
                     onOpenInteractionsModal = { showInteractionsModal = true },
                     onOpenReviewRequest = { viewModel.openFriendRequestReview(it) },
                     userPreferences = preferences,
                     onUpdatePreferences = { viewModel.updatePreferences(it) },
-                    sharedBreakupCounts = sharedBreakupCounts,
-                    pendingBreakupRequests = pendingBreakupRequests,
-                    onRequestBreakupShare = { profile -> viewModel.requestBreakupCountShare(profile.id, profile.name) }
                 )
                 3 -> com.example.ui.components.BusinessHubScreen(
                     viewModel = viewModel,
@@ -784,9 +771,6 @@ fun DatingAppRoot(
                 otherMatches = matches.filter { it.matchId != match.matchId }.mapNotNull { m ->
                     viewModel.getProfile(m.profileId)?.let { p -> Pair(m, p) }
                 },
-                isBreakupShared = profile.id in sharedBreakupCounts,
-                isBreakupPending = profile.id in pendingBreakupRequests,
-                onRequestBreakupShare = { viewModel.requestBreakupCountShare(profile.id, profile.name) }
             )
         }
     }
@@ -825,14 +809,10 @@ fun DatingAppRoot(
             mutualFriends = mutualFriendsMap[profile.id] ?: emptyList(),
             compatibility = comp,
             onDismiss = { viewModel.closeProfileDetail() },
-            onLike = { viewModel.swipe(profile.id, "LIKE") },
             onPass = { viewModel.swipe(profile.id, "PASS") },
             onAskFriendship = { viewModel.swipe(profile.id, "FRIEND_REQUEST") },
             onBlockAndReport = { reason -> viewModel.emergencyBlockAndReportUser(profile.id, null, reason) },
             onOpenReport = { prof -> viewModel.openAccountReport(prof) },
-            isBreakupShared = profile.id in sharedBreakupCounts,
-            isBreakupPending = profile.id in pendingBreakupRequests,
-            onRequestBreakupShare = { viewModel.requestBreakupCountShare(profile.id, profile.name) },
             onOpenChat = { profileId -> viewModel.startChatWithProfile(profileId) }
         )
     }
@@ -861,25 +841,6 @@ fun DatingAppRoot(
         )
     }
 
-    // Outgoing Like/SuperLike Request Simulation Dialog (When User A liked User B)
-    outgoingLikeNotification?.let { (profile, direction) ->
-        val comp = viewModel.calculateCompatibility(profile)
-        OutgoingLikeDialog(
-            profile = profile,
-            direction = direction,
-            compatibility = comp,
-            onSimulateReceive = {
-                viewModel.acceptMutualLike(profile)
-            },
-            onSimulateDeny = {
-                viewModel.denyMutualLike(profile)
-            },
-            onDismiss = {
-                viewModel.dismissOutgoingLikeNotification()
-            }
-        )
-    }
-
     // Business Profile Detail Dialog (from Deep-Links, QR scans, or Global Selection)
     selectedBusiness?.let { biz ->
         val currentBiz = allBusinesses.firstOrNull { it.id == biz.id } ?: biz
@@ -895,18 +856,9 @@ fun DatingAppRoot(
         InteractionsAndRequestsModal(
             pendingReceivedRequests = pendingFriendRequests,
             pendingSentRequests = pendingOutgoingRequests,
-            receivedLikes = likedMeProfiles,
-            allSwipes = allSwipes,
             allProfiles = allAdminProfiles,
             onAcceptFriendRequest = { reqId -> viewModel.acceptFriendship(reqId) },
             onCancelFriendRequest = { reqId -> viewModel.cancelFriendshipRequest(reqId) },
-            onLikeBack = { profile ->
-                viewModel.swipe(profile.id, "LIKE")
-            },
-            onOpenChat = { profileId ->
-                showInteractionsModal = false
-                viewModel.startChatWithProfile(profileId)
-            },
             onDismiss = { showInteractionsModal = false }
         )
     }

@@ -118,15 +118,11 @@ fun DiscoverScreen(
     onOpenFilters: () -> Unit,
     onOpenAdmin: () -> Unit = {},
     onResetData: () -> Unit,
-    superLikesCount: Int = 5,
     mutualFriendsMap: Map<String, List<ProfileEntity>> = emptyMap(),
     onOpenReviewRequest: (FriendshipRequestEntity) -> Unit = {},
     onOpenInteractionsModal: () -> Unit = {},
     userPreferences: com.example.data.model.UserPreferencesEntity? = null,
     onUpdatePreferences: (com.example.data.model.UserPreferencesEntity) -> Unit = {},
-    sharedBreakupCounts: Set<String> = emptySet(),
-    pendingBreakupRequests: Set<String> = emptySet(),
-    onRequestBreakupShare: ((ProfileEntity) -> Unit)? = null,
     viewModel: DatingViewModel? = null,
     modifier: Modifier = Modifier
 ) {
@@ -159,7 +155,7 @@ fun DiscoverScreen(
     }
 
     // Combine all request sources into a single banner list (Friendship, Like, Superlike)
-    val bannerItems = remember(pendingRequests, likedMeProfiles, dismissedRequestIds) {
+    val bannerItems = remember(pendingRequests, dismissedRequestIds) {
         val list = mutableListOf<BannerItem>()
 
         // 1. Friendship requests
@@ -691,9 +687,6 @@ fun DiscoverScreen(
                             onSwipe = {},
                             onInfoClick = {},
                             mutualFriends = mutualFriendsMap[nextProfile.id] ?: emptyList(),
-                            isBreakupShared = nextProfile.id in sharedBreakupCounts,
-                            isBreakupPending = nextProfile.id in pendingBreakupRequests,
-                            onRequestBreakupShare = { onRequestBreakupShare?.invoke(nextProfile) },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .scale(0.95f)
@@ -964,9 +957,6 @@ fun DiscoverScreen(
                                 onOpenProfileDetail(topProfile)
                             },
                             mutualFriends = mutualFriendsMap[topProfile.id] ?: emptyList(),
-                            isBreakupShared = topProfile.id in sharedBreakupCounts,
-                            isBreakupPending = topProfile.id in pendingBreakupRequests,
-                            onRequestBreakupShare = { onRequestBreakupShare?.invoke(topProfile) },
                             modifier = Modifier.fillMaxSize()
                         )
                     }

@@ -64,14 +64,10 @@ fun ProfileDetailDialog(
     profile: ProfileEntity,
     mutualFriends: List<ProfileEntity> = emptyList(),
     onDismiss: () -> Unit,
-    onLike: () -> Unit,
     onPass: () -> Unit,
     onAskFriendship: () -> Unit = {},
     onBlockAndReport: (reason: String) -> Unit = {},
     onOpenReport: ((ProfileEntity) -> Unit)? = null,
-    isBreakupShared: Boolean = false,
-    isBreakupPending: Boolean = false,
-    onRequestBreakupShare: (() -> Unit)? = null,
     onOpenChat: ((String) -> Unit)? = null,
     compatibility: MatchingManager.CompatibilityResult? = null
 ) {
@@ -252,7 +248,7 @@ fun ProfileDetailDialog(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "${profile.name}, ${profile.age} yrs",
+                            text = profile.name,
                             style = MaterialTheme.typography.headlineMedium.copy(
                                 fontWeight = FontWeight.Bold
                             )
@@ -585,7 +581,7 @@ fun ProfileDetailDialog(
                                 .testTag("btn_detail_ask_friendship")
                         ) {
                             Text(
-                                text = "Ask Friends 🤝",
+                                text = "Ask Friendship 🤝",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp,
                                 maxLines = 1,
@@ -594,40 +590,10 @@ fun ProfileDetailDialog(
                             )
                         }
 
-                        Button(
-                            onClick = {
-                                onLike()
-                                onDismiss()
-                            },
-                            shape = RoundedCornerShape(20.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = LikeGreen,
-                                contentColor = Color.White
-                            ),
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 12.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(52.dp)
-                                .testTag("btn_detail_like")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Favorite,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "Like",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                softWrap = false
-                            )
-                        }
+
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+
 
                     // Block & Report Button
                     TextButton(

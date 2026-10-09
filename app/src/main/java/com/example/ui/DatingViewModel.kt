@@ -127,9 +127,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     val candidateProfiles: StateFlow<List<ProfileEntity>> = repository.candidateProfiles
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val likedMeProfiles: StateFlow<List<ProfileEntity>> = repository.likedMeProfiles
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
     val rawMatches: StateFlow<List<MatchEntity>> = repository.allMatches
         .let { flow ->
             kotlinx.coroutines.flow.flow {
@@ -319,18 +316,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     // Outgoing friendship request notification state (User A swiped down on User B)
     private val _outgoingFriendRequestNotification = MutableStateFlow<Pair<ProfileEntity, FriendshipRequestEntity>?>(null)
     val outgoingFriendRequestNotification: StateFlow<Pair<ProfileEntity, FriendshipRequestEntity>?> = _outgoingFriendRequestNotification.asStateFlow()
-
-    // Outgoing like notification state (User A swiped right / Like on User B)
-    private val _outgoingLikeNotification = MutableStateFlow<Pair<ProfileEntity, String>?>(null)
-    val outgoingLikeNotification: StateFlow<Pair<ProfileEntity, String>?> = _outgoingLikeNotification.asStateFlow()
-
-    // State to track profiles who have shared their breakup counts with the current user
-    private val _sharedBreakupCounts = MutableStateFlow<Set<String>>(emptySet())
-    val sharedBreakupCounts: StateFlow<Set<String>> = _sharedBreakupCounts.asStateFlow()
-
-    // State to track pending breakup share requests sent to other profiles
-    private val _pendingBreakupRequests = MutableStateFlow<Set<String>>(emptySet())
-    val pendingBreakupRequests: StateFlow<Set<String>> = _pendingBreakupRequests.asStateFlow()
 
     // Dialog to view all friends list
     private val _showFriendsListDialog = MutableStateFlow(false)
@@ -840,64 +825,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             repository.acceptFriendshipRequest(request.id)
             _outgoingFriendRequestNotification.value = null
             _toastMessage.emit("🎉 ${profile.name} reviewed your bio & confirmed friendship! Friends count updated automatically.")
-        }
-    }
-
-    fun acceptMutualLike(profile: ProfileEntity) {
-        _outgoingLikeNotification.value = null
-        viewModelScope.launch {
-            val result = repository.matchDirectly(profile.id)
-            if (result != null) {
-                _activeMatchDialog.value = result
-                val prefs = userPreferences.value
-                val comp = MatchingManager.calculateProfileCompatibility(prefs, profile)
-                MatchingManager.triggerMutualMatchNotification(
-                    context = getApplication(),
-                    currentUserName = prefs?.userName ?: "You",
-                    matchedProfile = profile,
-                    compatibilityScore = comp.overallScore,
-                    sharedInterests = comp.sharedInterests
-                )
-                // Real-time Push Notification via AppNotificationManager / FCM
-                AppNotificationManager.showMatchNotification(
-                    context = getApplication(),
-                    matchId = profile.id,
-                    matchName = profile.name,
-                    matchPhotoUrl = "",
-                    age = profile.age,
-                    city = profile.city,
-                    score = comp.overallScore
-                )
-                MatchingManager.syncProfileEntityToFirestore(profile)
-                if (prefs != null) {
-                    MatchingManager.syncUserPreferencesToFirestore(prefs)
-                }
-                _toastMessage.emit("🎉 Mutual Match! ${comp.overallScore}% Chemistry with ${profile.name}. Chat window is now open!")
-            }
-        }
-    }
-
-    fun denyMutualLike(profile: ProfileEntity) {
-        _outgoingLikeNotification.value = null
-        viewModelScope.launch {
-            _toastMessage.emit("⚠️ Connection Denied: ${profile.name} chose to pass. Keep swiping to discover other matches!")
-        }
-    }
-
-    fun dismissOutgoingLikeNotification() {
-        _outgoingLikeNotification.value = null
-    }
-
-    fun requestBreakupCountShare(profileId: String, name: String) {
-        viewModelScope.launch {
-            _pendingBreakupRequests.value = _pendingBreakupRequests.value + profileId
-            _toastMessage.emit("📩 Request sent to $name to share their breakup history!")
-            
-            // Simulate other user accepting after a short delay (e.g. 1.2 seconds)
-            delay(1200)
-            _pendingBreakupRequests.value = _pendingBreakupRequests.value - profileId
-            _sharedBreakupCounts.value = _sharedBreakupCounts.value + profileId
-            _toastMessage.emit("🔓 $name approved your request! Breakup history is now unlocked.")
         }
     }
 
