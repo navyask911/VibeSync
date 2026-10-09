@@ -28,7 +28,8 @@ data class StatusStoryEntity(
     val adTargetUrl: String = "",
     val adCtaText: String = "Claim Offer ✨",
     val adBusinessId: String = "",
-    val adCampaignId: String = ""
+    val adCampaignId: String = "",
+    val backgroundMusicUrl: String = ""
 ) {
     val isExpired: Boolean
         get() = !isAd && (System.currentTimeMillis() - timestamp) > 24 * 60 * 60 * 1000L
