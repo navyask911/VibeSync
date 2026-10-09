@@ -98,23 +98,49 @@ abstract class DatingDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: DatingDatabase? = null
 
+        /**
+         * Makes schema upgrades safe for installs whose recorded version and actual columns differ.
+         * Room's destructive fallback does not recover from a migration that executes an invalid ALTER.
+         */
+        private fun tableExists(db: SupportSQLiteDatabase, table: String): Boolean {
+            return db.query(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='$table'"
+            ).use { cursor -> cursor.moveToFirst() }
+        }
+
+        private fun columnExists(db: SupportSQLiteDatabase, table: String, column: String): Boolean {
+            if (!tableExists(db, table)) return false
+            return db.query("PRAGMA table_info(`$table`)").use { cursor ->
+                val nameIndex = cursor.getColumnIndex("name")
+                var found = false
+                while (cursor.moveToNext()) {
+                    if (nameIndex >= 0 && cursor.getString(nameIndex) == column) {
+                        found = true
+                        break
+                    }
+                }
+                found
+            }
+        }
+
+        private fun addColumnIfMissing(
+            db: SupportSQLiteDatabase,
+            table: String,
+            column: String,
+            definition: String
+        ) {
+            if (tableExists(db, table) && !columnExists(db, table, column)) {
+                db.execSQL("ALTER TABLE `$table` ADD COLUMN `$column` $definition")
+            }
+        }
+
         private val MIGRATION_26_27 = object : Migration(26, 27) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                try {
-                    db.execSQL("ALTER TABLE user_preferences ADD COLUMN soundAlertsEnabled INTEGER NOT NULL DEFAULT 1")
-                } catch (_: Exception) {}
-                try {
-                    db.execSQL("ALTER TABLE user_preferences ADD COLUMN vibrationAlertsEnabled INTEGER NOT NULL DEFAULT 1")
-                } catch (_: Exception) {}
-                try {
-                    db.execSQL("ALTER TABLE user_preferences ADD COLUMN messageSoundTone TEXT NOT NULL DEFAULT 'DEFAULT'")
-                } catch (_: Exception) {}
-                try {
-                    db.execSQL("ALTER TABLE user_preferences ADD COLUMN matchSoundTone TEXT NOT NULL DEFAULT 'CELEBRATION'")
-                } catch (_: Exception) {}
-                try {
-                    db.execSQL("ALTER TABLE user_preferences ADD COLUMN callRingtone TEXT NOT NULL DEFAULT 'STANDARD_RING'")
-                } catch (_: Exception) {}
+                addColumnIfMissing(db, "user_preferences", "soundAlertsEnabled", "INTEGER NOT NULL DEFAULT 1")
+                addColumnIfMissing(db, "user_preferences", "vibrationAlertsEnabled", "INTEGER NOT NULL DEFAULT 1")
+                addColumnIfMissing(db, "user_preferences", "messageSoundTone", "TEXT NOT NULL DEFAULT 'DEFAULT'")
+                addColumnIfMissing(db, "user_preferences", "matchSoundTone", "TEXT NOT NULL DEFAULT 'CELEBRATION'")
+                addColumnIfMissing(db, "user_preferences", "callRingtone", "TEXT NOT NULL DEFAULT 'STANDARD_RING'")
             }
         }
 
@@ -193,57 +219,63 @@ abstract class DatingDatabase : RoomDatabase() {
 
         private val MIGRATION_32_33 = object : Migration(32, 33) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                try {
-                    db.execSQL("ALTER TABLE `businesses` ADD COLUMN `verificationTier` TEXT NOT NULL DEFAULT 'STANDARD'")
-                    db.execSQL("ALTER TABLE `businesses` ADD COLUMN `walletPoints` INTEGER NOT NULL DEFAULT 500")
-                    db.execSQL("ALTER TABLE `businesses` ADD COLUMN `isListingPaid` INTEGER NOT NULL DEFAULT 1")
-                    db.execSQL("ALTER TABLE `businesses` ADD COLUMN `listingPaymentTxnId` TEXT NOT NULL DEFAULT ''")
-                    db.execSQL("ALTER TABLE `businesses` ADD COLUMN `whatsappApiEnabled` INTEGER NOT NULL DEFAULT 0")
-                    db.execSQL("ALTER TABLE `businesses` ADD COLUMN `whatsappBusinessNumber` TEXT NOT NULL DEFAULT ''")
-                    db.execSQL("ALTER TABLE `businesses` ADD COLUMN `whatsappWabaId` TEXT NOT NULL DEFAULT ''")
-                    db.execSQL("ALTER TABLE `businesses` ADD COLUMN `whatsappApiKey` TEXT NOT NULL DEFAULT ''")
-                    db.execSQL("""
-                        CREATE TABLE IF NOT EXISTS `business_reviews` (
-                            `id` TEXT NOT NULL PRIMARY KEY,
-                            `businessId` TEXT NOT NULL DEFAULT '',
-                            `userId` TEXT NOT NULL DEFAULT '',
-                            `userName` TEXT NOT NULL DEFAULT '',
-                            `userAvatarEmoji` TEXT NOT NULL DEFAULT '✨',
-                            `rating` REAL NOT NULL DEFAULT 5.0,
-                            `reviewText` TEXT NOT NULL DEFAULT '',
-                            `isGpsVerifiedVisit` INTEGER NOT NULL DEFAULT 1,
-                            `checkInDistanceMeters` REAL NOT NULL DEFAULT 35.0,
-                            `createdAt` INTEGER NOT NULL DEFAULT 0
-                        )
-                    """.trimIndent())
-                } catch (_: Exception) {}
+                addColumnIfMissing(db, "businesses", "verificationTier", "TEXT NOT NULL DEFAULT 'STANDARD'")
+                addColumnIfMissing(db, "businesses", "walletPoints", "INTEGER NOT NULL DEFAULT 500")
+                addColumnIfMissing(db, "businesses", "isListingPaid", "INTEGER NOT NULL DEFAULT 1")
+                addColumnIfMissing(db, "businesses", "listingPaymentTxnId", "TEXT NOT NULL DEFAULT ''")
+                addColumnIfMissing(db, "businesses", "whatsappApiEnabled", "INTEGER NOT NULL DEFAULT 0")
+                addColumnIfMissing(db, "businesses", "whatsappBusinessNumber", "TEXT NOT NULL DEFAULT ''")
+                addColumnIfMissing(db, "businesses", "whatsappWabaId", "TEXT NOT NULL DEFAULT ''")
+                addColumnIfMissing(db, "businesses", "whatsappApiKey", "TEXT NOT NULL DEFAULT ''")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `business_reviews` (
+                        `id` TEXT NOT NULL PRIMARY KEY,
+                        `businessId` TEXT NOT NULL DEFAULT '',
+                        `userId` TEXT NOT NULL DEFAULT '',
+                        `userName` TEXT NOT NULL DEFAULT '',
+                        `userAvatarEmoji` TEXT NOT NULL DEFAULT '✨',
+                        `rating` REAL NOT NULL DEFAULT 5.0,
+                        `reviewText` TEXT NOT NULL DEFAULT '',
+                        `isGpsVerifiedVisit` INTEGER NOT NULL DEFAULT 1,
+                        `checkInDistanceMeters` REAL NOT NULL DEFAULT 35.0,
+                        `createdAt` INTEGER NOT NULL DEFAULT 0
+                    )
+                """.trimIndent())
             }
         }
 
         private val MIGRATION_33_34 = object : Migration(33, 34) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                try {
-                    db.execSQL("ALTER TABLE `businesses` ADD COLUMN `photoGalleryJson` TEXT NOT NULL DEFAULT ''")
-                } catch (_: Exception) {}
+                addColumnIfMissing(db, "businesses", "photoGalleryJson", "TEXT NOT NULL DEFAULT ''")
             }
         }
 
         private val MIGRATION_36_37 = object : Migration(36, 37) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE `user_preferences` ADD COLUMN `lastFriendRequestResetTimestamp` INTEGER NOT NULL DEFAULT 0")
-                db.execSQL("ALTER TABLE `status_stories` ADD COLUMN `backgroundMusicUrl` TEXT NOT NULL DEFAULT ''")
+                addColumnIfMissing(
+                    db,
+                    "user_preferences",
+                    "lastFriendRequestResetTimestamp",
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+                addColumnIfMissing(
+                    db,
+                    "status_stories",
+                    "backgroundMusicUrl",
+                    "TEXT NOT NULL DEFAULT ''"
+                )
             }
         }
 
         private val MIGRATION_37_38 = object : Migration(37, 38) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE `profiles` ADD COLUMN `avatarCacheVersion` INTEGER NOT NULL DEFAULT 0")
+                addColumnIfMissing(db, "profiles", "avatarCacheVersion", "INTEGER NOT NULL DEFAULT 0")
             }
         }
 
         private val MIGRATION_38_39 = object : Migration(38, 39) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE `user_preferences` ADD COLUMN `avatarCacheVersion` INTEGER NOT NULL DEFAULT 0")
+                addColumnIfMissing(db, "user_preferences", "avatarCacheVersion", "INTEGER NOT NULL DEFAULT 0")
             }
         }
 

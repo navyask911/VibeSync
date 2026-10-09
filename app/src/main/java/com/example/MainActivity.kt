@@ -19,13 +19,17 @@ class MainActivity : FragmentActivity() {
 
   private val truecallerActivityResultLauncher =
     registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-      PlatformTruecallerVerificationClient.onActivityResult(this, 0, result.resultCode, result.data)
+      runStartupStep("Truecaller activity result") {
+        PlatformTruecallerVerificationClient.onActivityResult(this, 0, result.resultCode, result.data)
+      }
     }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-    enableEdgeToEdge()
+    runStartupStep("edge-to-edge window setup") {
+      enableEdgeToEdge()
+    }
 
     // Notification channels are initialized once in VibeSyncApplication behind a guarded boundary.
     // A second, unguarded initialization here could prevent the first Activity from opening.
@@ -37,7 +41,8 @@ class MainActivity : FragmentActivity() {
     // an external identity provider must not prevent the core app shell from opening.
     runStartupStep("Truecaller launcher") {
       PlatformTruecallerVerificationClient.setActivityResultLauncher(truecallerActivityResultLauncher)
-      PlatformTruecallerVerificationClient.initialize(this)
+      // The Truecaller SDK itself initializes lazily when the user taps its login action.
+      // Keep third-party SDK startup off the critical launcher path.
     }
 
     // Handle deep link intents (e.g. vibesync://business?id={businessId}) best-effort.
@@ -62,12 +67,16 @@ class MainActivity : FragmentActivity() {
 
   override fun onResume() {
     super.onResume()
-    AppNotificationManager.setAppForegroundState(true)
+    runStartupStep("foreground notification state") {
+      AppNotificationManager.setAppForegroundState(true)
+    }
   }
 
   override fun onPause() {
     super.onPause()
-    AppNotificationManager.setAppForegroundState(false)
+    runStartupStep("background notification state") {
+      AppNotificationManager.setAppForegroundState(false)
+    }
   }
 
   override fun onStop() {
@@ -85,8 +94,8 @@ class MainActivity : FragmentActivity() {
   private inline fun runStartupStep(name: String, block: () -> Unit) {
     try {
       block()
-    } catch (e: Exception) {
-      Log.e(TAG, "$name failed; continuing app startup", e)
+    } catch (t: Throwable) {
+      Log.e(TAG, "$name failed; continuing app lifecycle", t)
     }
   }
 }
