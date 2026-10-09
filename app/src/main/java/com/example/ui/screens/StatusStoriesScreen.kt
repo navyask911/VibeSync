@@ -804,15 +804,16 @@ fun TypeAStatusComposerScreen(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
-        Box(
+        androidx.compose.foundation.layout.BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Brush.linearGradient(listOf(Color(currentBgStart), Color(currentBgEnd))))
                 .statusBarsPadding()
                 .navigationBarsPadding()
+                .imePadding()
         ) {
             Column(
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize().imePadding()
             ) {
                 // Top Action Bar
                 Row(
