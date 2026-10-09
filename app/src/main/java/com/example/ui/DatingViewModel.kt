@@ -719,7 +719,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         mediaUrl: String = "",
         backgroundColorStart: Long = 0xFF00A884,
         backgroundColorEnd: Long = 0xFF128C7E,
-        privacy: String = "FRIENDS_AND_MATCHES"
+        privacy: String = "FRIENDS_AND_MATCHES",
+        backgroundMusicUri: String = ""
     ) {
         viewModelScope.launch {
             val result = repository.uploadUserStatus(
@@ -729,7 +730,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 videoDurationSeconds = videoDurationSeconds,
                 backgroundColorStart = backgroundColorStart,
                 backgroundColorEnd = backgroundColorEnd,
-                privacy = privacy
+                privacy = privacy,
+                backgroundMusicUri = backgroundMusicUri
             )
             when (result) {
                 is SocialConnectRepository.UploadStatusResult.Success -> {
