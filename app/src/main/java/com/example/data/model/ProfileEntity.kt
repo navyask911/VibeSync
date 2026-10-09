@@ -22,6 +22,8 @@ data class ProfileEntity(
     val gradientColorEnd: Long = 0xFFFF9966,
     val avatarEmoji: String = "✨",
     val avatarUrl: String = "",
+    /** Server updated_at epoch millis, used to invalidate avatar image cache when a profile is refreshed. */
+    val avatarCacheVersion: Long = 0L,
     val isVerified: Boolean = false,
     val likedMe: Boolean = false, // Has this person already liked current user? (100% Free to view!)
     val isSuperLikedMe: Boolean = false,
