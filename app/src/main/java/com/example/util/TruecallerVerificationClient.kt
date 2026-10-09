@@ -124,7 +124,7 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
                             clearRequestState()
                             mainHandler.post {
                                 callback?.onVerificationRequired(
-                                    "Truecaller requires manual verification" +
+                                    "Complete the secure phone verification flow" +
                                         (tcOAuthError?.let { " (code ${it.errorCode})" } ?: "") +
                                         "."
                                 )
@@ -136,7 +136,7 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
                         .consentMode(TcSdkOptions.CONSENT_MODE_BOTTOMSHEET)
                         .consentHeadingOption(TcSdkOptions.SDK_CONSENT_HEADING_LOG_IN_TO)
                         .ctaText(TcSdkOptions.CTA_TEXT_CONTINUE)
-                        .sdkOptions(TcSdkOptions.OPTION_VERIFY_ONLY_TC_USERS)
+                        .sdkOptions(TcSdkOptions.OPTION_VERIFY_ALL_USERS)
                         .build()
 
                     TcSdk.init(sdkOptions)
