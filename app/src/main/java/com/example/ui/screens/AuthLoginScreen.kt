@@ -125,12 +125,22 @@ fun AuthLoginScreen(
                 style = MaterialTheme.typography.titleMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold),
                 textAlign = TextAlign.Center
             )
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Surface(modifier = Modifier.weight(1f), shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)) {
-                    Text("Made in India, for the World", modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp), textAlign = TextAlign.Center, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)) {
+                    Text(
+                        "Made in India, for the World",
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                    )
                 }
-                Surface(modifier = Modifier.weight(1f), shape = RoundedCornerShape(14.dp), color = VibeSyncTeal.copy(alpha = 0.12f)) {
-                    Text("Google Tink • E2EE", modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp), textAlign = TextAlign.Center, style = MaterialTheme.typography.labelMedium.copy(color = VibeSyncTeal, fontWeight = FontWeight.Bold))
+                Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), color = VibeSyncTeal.copy(alpha = 0.12f)) {
+                    Text(
+                        "Secured by Google Tink Cryptography (E2EE)",
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.labelMedium.copy(color = VibeSyncTeal, fontWeight = FontWeight.Bold)
+                    )
                 }
             }
             Card(
@@ -147,7 +157,7 @@ fun AuthLoginScreen(
                         Text("Secure phone verification", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
                     }
                     Text(
-                        "Continue with Truecaller for one-tap verification. If one-tap is unavailable, the supported phone-verification flow may offer a missed-call or SMS check.",
+                        "Continue with Truecaller for one-tap verification. For eligible Indian numbers without the Truecaller app, the SDK can offer drop-call or SMS verification.",
                         style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
                     )
                 }

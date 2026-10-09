@@ -111,7 +111,7 @@ fun DatingCard(
                             offsetX.animateTo(1000f, spring())
                             onSwipe("FRIEND_REQUEST")
                         } else if (offsetX.value < -swipeThreshold) {
-                            // Left swipe = DISLIKE (NOPE)
+                            // Left swipe = SKIP
                             offsetX.animateTo(-1000f, spring())
                             onSwipe("PASS")
                         } else if (offsetY.value < -swipeThreshold) {
@@ -466,36 +466,7 @@ fun DatingCard(
                             }
                         }
 
-                        // Prominent Prompt Quote Box
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                            border = androidx.compose.foundation.BorderStroke(
-                                1.dp,
-                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(10.dp)) {
-                                Text(
-                                    text = profile.promptQuestion,
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        color = MaterialTheme.colorScheme.primary,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 10.sp
-                                    )
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = profile.promptAnswer,
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        fontSize = 11.sp
-                                    ),
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
+                        // Bio, industry, and interest chips are the primary discovery details.
                     }
                 }
 
@@ -513,7 +484,7 @@ fun DatingCard(
                             .padding(horizontal = 16.dp, vertical = 6.dp)
                     ) {
                         Text(
-                            text = "NOPE",
+                            text = "SKIP",
                             color = PassRed.copy(alpha = alpha),
                             fontWeight = FontWeight.Black,
                             fontSize = 32.sp,
@@ -556,7 +527,7 @@ fun DatingCard(
                             .padding(horizontal = 18.dp, vertical = 8.dp)
                     ) {
                         Text(
-                            text = "PASS",
+                            text = "SKIP",
                             color = SuperLikeBlue.copy(alpha = alpha),
                             fontWeight = FontWeight.Black,
                             fontSize = 26.sp,

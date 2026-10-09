@@ -127,6 +127,10 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     val candidateProfiles: StateFlow<List<ProfileEntity>> = repository.candidateProfiles
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    /** Shared Room-backed profile state for chat, Connect discovery, and profile views. */
+    val allProfiles: StateFlow<List<ProfileEntity>> = repository.allProfiles
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val rawMatches: StateFlow<List<MatchEntity>> = repository.allMatches
         .let { flow ->
             kotlinx.coroutines.flow.flow {
@@ -1657,18 +1661,25 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         _adminLoginError.value = null
         _isAdminLoggedIn.value = false
         viewModelScope.launch {
-            val prefs = repository.userPreferences.first() ?: UserPreferencesEntity()
-            val expectedUser = prefs.adminUsername.ifBlank { "creator" }
-            val expectedPass = prefs.adminPassword.ifBlank { "9999" }
-            if (!user.trim().equals(expectedUser, ignoreCase = true) || pass.trim() != expectedPass) {
-                _adminLoginError.value = "Invalid administrator username or passcode."
-            } else if (com.example.util.SupabaseClientManager.isPlatformStaff()) {
-                _isAdminLoggedIn.value = true
-                _toastMessage.emit("Platform staff authorization verified.")
-            } else {
-                _adminLoginError.value = "This account is not authorized for VibeSync operations."
+            try {
+                val prefs = repository.userPreferences.first() ?: UserPreferencesEntity()
+                val expectedUser = prefs.adminUsername.trim().ifBlank { "creator" }
+                val expectedPass = prefs.adminPassword.trim().ifBlank { "9999" }
+                if (!user.trim().equals(expectedUser, ignoreCase = true) || pass.trim() != expectedPass) {
+                    _adminLoginError.value = "Invalid administrator username or passcode."
+                } else if (com.example.util.SupabaseClientManager.isPlatformStaff()) {
+                    _isAdminLoggedIn.value = true
+                    _showAdminPortal.value = true
+                    _toastMessage.emit("Platform staff authorization verified.")
+                } else {
+                    _adminLoginError.value = "Passcode accepted, but this VibeSync session is not authorized as platform staff."
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("AdminAuth", "Admin login verification failed: ${e.message}")
+                _adminLoginError.value = "Administrator verification is temporarily unavailable. Please retry."
+            } finally {
+                _adminLoginInProgress.value = false
             }
-            _adminLoginInProgress.value = false
         }
     }
 
@@ -1806,10 +1817,10 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             expiresAtEpochSeconds = expiresAtEpochSeconds
         )
 
-        // Look up the server-issued profile ID first, then try authenticated phone-hash lookup
-        // for returning accounts created by an older registration flow.
+        // Always check the verified phone as well as the gateway-issued profile ID. Older
+        // accounts can be keyed differently from the ID returned by the authentication gateway.
         val profileById = SupabaseClientManager.fetchProfileById(profileId)
-        val profileByVerifiedPhone = if (profileById == null && cleanPhone.isNotBlank()) {
+        val profileByVerifiedPhone = if (cleanPhone.isNotBlank()) {
             try {
                 SupabaseClientManager.fetchProfilesByE164Phones(listOf(cleanPhone)).firstOrNull()
             } catch (e: Exception) {
@@ -1818,19 +1829,25 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             }
         } else null
         val phoneDigits = cleanPhone.filter { it.isDigit() }
-        val localProfileByPhone = if (profileById == null && profileByVerifiedPhone == null) {
-            try {
-                database.profileDao().getAllProfilesSync().firstOrNull { candidate ->
-                    candidate.id == profileId || (
-                        phoneDigits.length >= 7 &&
-                            candidate.phoneNumber.filter { it.isDigit() }.takeLast(10) == phoneDigits.takeLast(10)
-                    )
-                }
-            } catch (_: Exception) {
-                null
+        val localProfileByPhone = try {
+            database.profileDao().getAllProfilesSync().firstOrNull { candidate ->
+                candidate.id == profileId || (
+                    phoneDigits.length >= 7 &&
+                        candidate.phoneNumber.filter { it.isDigit() }.takeLast(10) == phoneDigits.takeLast(10)
+                )
             }
-        } else null
-        val existingProfile = profileById ?: profileByVerifiedPhone ?: localProfileByPhone
+        } catch (_: Exception) {
+            null
+        }
+        fun completeness(profile: ProfileEntity): Int =
+            (if (profile.name.isNotBlank() && !profile.name.equals("VibeSync User", true)) 4 else 0) +
+                (if (profile.bio.isNotBlank()) 2 else 0) +
+                (if (profile.occupation.isNotBlank()) 1 else 0) +
+                (if (profile.avatarUrl.isNotBlank()) 2 else 0) +
+                (if (profile.getPhotoList().isNotEmpty()) 1 else 0) +
+                (if (profile.id == profileId) 3 else 0)
+        val existingProfile = listOfNotNull(profileById, profileByVerifiedPhone, localProfileByPhone)
+            .maxByOrNull { completeness(it) }
         if (existingProfile != null) {
             try {
                 database.profileDao().insertProfile(

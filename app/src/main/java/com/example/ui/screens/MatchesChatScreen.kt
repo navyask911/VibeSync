@@ -105,55 +105,23 @@ fun MatchesChatScreen(
     onRefreshContacts: () -> Unit = {},
     onOpenAdmin: () -> Unit = {},
     onOpenInteractionsModal: () -> Unit = {},
+    profiles: List<ProfileEntity> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    // Cache profile models for matches
+    // Room-backed state keeps chat avatars and labels synchronized with other profile surfaces.
     val profileMap = remember { mutableStateMapOf<String, ProfileEntity>() }
+
+    LaunchedEffect(profiles) {
+        profiles.forEach { profile -> profileMap[profile.id] = profile }
+    }
     val syncedLocalPhotos = remember { androidx.compose.runtime.mutableStateMapOf<String, String>() }
     var searchQuery by remember { mutableStateOf("") }
-    // Requested tab order: All, Unread, NEXT TO COME Contacts (Phonebook contacts & invitations here), Dating, Friends
+    // Connect-first chat filters: All, Unread, Contacts, Groups, Connect
     var selectedFilter by remember { mutableStateOf("All") }
 
-    var groups by remember {
-        mutableStateOf(
-            listOf(
-                GroupModel(
-                    id = "grp_1",
-                    name = "VibeSync Community ✨",
-                    description = "Official community hub for connecting, socializing & dating",
-                    emoji = "✨",
-                    adminName = "VibeSync Admin",
-                    members = listOf("You", "Aarav", "Priya", "Vikram", "Ananya"),
-                    lastMessage = "Welcome everyone to VibeSync group hub!",
-                    lastMessageTime = System.currentTimeMillis() - 3600_000,
-                    unreadCount = 2
-                ),
-                GroupModel(
-                    id = "grp_2",
-                    name = "Weekend Trips & Treks 🏕️",
-                    description = "Planning hikes, road trips and adventures together",
-                    emoji = "🏕️",
-                    adminName = "Vikram",
-                    members = listOf("You", "Vikram", "Rohan", "Sneha", "Kavya"),
-                    lastMessage = "Who's in for sunrise trek this Sunday?",
-                    lastMessageTime = System.currentTimeMillis() - 7200_000,
-                    unreadCount = 0
-                ),
-                GroupModel(
-                    id = "grp_3",
-                    name = "Foodies & Coffee Club ☕",
-                    description = "Café hopping and gourmet food adventures",
-                    emoji = "☕",
-                    adminName = "Ananya",
-                    members = listOf("You", "Ananya", "Priya", "Rahul"),
-                    lastMessage = "Found an amazing rooftop café in town!",
-                    lastMessageTime = System.currentTimeMillis() - 14400_000,
-                    unreadCount = 1
-                )
-            )
-        )
-    }
+    // Groups are data-driven; do not render hardcoded demo conversations.
+    var groups by remember { mutableStateOf(emptyList<GroupModel>()) }
     var activeGroup by remember { mutableStateOf<GroupModel?>(null) }
     var showCreateGroupDialog by remember { mutableStateOf(false) }
 
@@ -205,7 +173,7 @@ fun MatchesChatScreen(
             val matchesFilter = when (selectedFilter) {
                 "All" -> true
                 "Unread" -> match.hasUnread
-                "Friends" -> true
+                "Connect" -> true
                 else -> true
             }
 
@@ -424,7 +392,7 @@ fun MatchesChatScreen(
                     ChatTabModel("Unread", unreadCount, Icons.Default.MarkUnreadChatAlt),
                     ChatTabModel("Contacts", phonebookContacts.size, Icons.Default.Contacts),
                     ChatTabModel("Groups", groups.size, Icons.Default.GroupAdd),
-                    ChatTabModel("Friends", matches.size, Icons.Default.Group)
+                    ChatTabModel("Connect", matches.size, Icons.Default.Group)
                 )
 
                 Surface(
@@ -687,8 +655,8 @@ fun MatchesChatScreen(
                         )
                     }
                 }
-            } else if (selectedFilter == "Friends") {
-                // Friends Tab - Consolidates Connected Friends and Phonebook Contacts on VibeSync
+            } else if (selectedFilter == "Connect") {
+                // Connect tab - Consolidates confirmed connections and phonebook contacts
                 item {
                     Card(
                         modifier = Modifier
@@ -714,7 +682,7 @@ fun MatchesChatScreen(
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "Connected Friends & Phonebook Contacts",
+                                    text = "Connections & Phonebook Contacts",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 13.5.sp,
                                     color = Color.White
@@ -1455,67 +1423,25 @@ private fun VibeSyncConversationItem(
 
             Spacer(modifier = Modifier.height(2.dp))
 
-            // Relationship Badge / Tag
+            // Neutral connection status replaces dating-specific relationship badges.
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                if (match.status == "BROKEN_UP" || match.relationshipStatus == "MUTUAL_BROKEN_UP") {
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = Color(0xFFE53935).copy(alpha = 0.12f)
-                    ) {
-                        Text(
-                            text = "💔 Mutual Breakup (+1 Recorded)",
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFFC62828),
-                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                        )
-                    }
-                } else if (match.relationshipStatus == "COMPLICATED" || match.relationshipStatus == "NOT_MUTUAL_BREAKUP") {
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = Color(0xFFFF9800).copy(alpha = 0.15f)
-                    ) {
-                        Text(
-                            text = "⚠️ Complicated (Not Mutual Breakup)",
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFFE65100),
-                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                        )
-                    }
-                } else if (match.relationshipStatus == "IN_RELATIONSHIP") {
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = VibeSyncTeal.copy(alpha = 0.15f)
-                    ) {
-                        Text(
-                            text = "💖 Official Date Mates (Mutual)",
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = VibeSyncTeal,
-                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                        )
-                    }
-                } else {
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant
-                    ) {
-                        Text(
-                            text = "🤝 Social & Friend",
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                        )
-                    }
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (profile.isVerified) VibeSyncTeal.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Text(
+                        text = if (profile.isVerified) "Verified connection" else "Connection",
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (profile.isVerified) VibeSyncTeal else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                    )
                 }
-
                 Text(
-                    text = "• 👥 ${profile.friendsCount} friends",
+                    text = "• 👥 ${profile.friendsCount} connections",
                     fontSize = 10.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

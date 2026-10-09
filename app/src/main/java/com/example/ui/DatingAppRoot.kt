@@ -120,6 +120,7 @@ fun DatingAppRoot(
     val snackbarHostState = remember { SnackbarHostState() }
 
     val candidates by viewModel.candidateProfiles.collectAsStateWithLifecycle()
+    val allProfiles by viewModel.allProfiles.collectAsStateWithLifecycle()
     val matches by viewModel.rawMatches.collectAsStateWithLifecycle()
     val preferences by viewModel.userPreferences.collectAsStateWithLifecycle()
     val isSessionChecking by viewModel.isSessionChecking.collectAsStateWithLifecycle()
@@ -650,6 +651,7 @@ fun DatingAppRoot(
             when (page) {
                 0 -> MatchesChatScreen(
                     matches = matches,
+                    profiles = allProfiles,
                     phonebookContacts = phonebookContacts,
                     onOpenChat = { match, profile ->
                         BiometricPromptHelper.verifyBeforeEnteringChat(

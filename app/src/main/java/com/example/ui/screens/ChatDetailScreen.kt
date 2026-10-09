@@ -888,7 +888,7 @@ fun ChatDetailScreen(
                                 color = VibeSyncTeal
                             )
                             Text(
-                                text = "Phone number & address hidden. Chat safely before becoming Friends or Date Mates.",
+                                text = "Phone number and address are hidden. Connect and chat with privacy by default.",
                                 fontSize = 9.5.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,

@@ -297,21 +297,6 @@ fun DiscoverScreen(
                     )
                 }
 
-                IconButton(
-                    onClick = { showPreferencesDialog = true },
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                        .testTag("btn_discovery_filters")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Tune,
-                        contentDescription = "Preferences and Filters",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
             }
         }
 
