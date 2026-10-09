@@ -313,7 +313,7 @@ fun DiscoverScreen(
             )
         }
 
-        // Connect Feature Quick Tag ("Join with Us")
+        // Quick shortcut to browse and follow local business pages.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -327,18 +327,18 @@ fun DiscoverScreen(
                 color = Color(0xFF2E7D32).copy(alpha = 0.12f),
                 border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF2E7D32).copy(alpha = 0.4f)),
                 onClick = {
-                    businessHubInitialTab = 1
+                    businessHubInitialTab = 0
                     showBusinessHubDialog = true
                 },
-                modifier = Modifier.testTag("btn_connect_add_with_us")
+                modifier = Modifier.testTag("btn_connect_follow_businesses")
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.AddBusiness, contentDescription = null, tint = Color(0xFF2E7D32), modifier = Modifier.size(14.dp))
+                    Icon(Icons.Default.Store, contentDescription = null, tint = VibeSyncTeal, modifier = Modifier.size(14.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Join with Us 🤝", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1B5E20))
+                    Text("Follow", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = VibeSyncTeal)
                 }
             }
         }
@@ -530,19 +530,19 @@ fun DiscoverScreen(
                         // Nearest Indian Business & Partner Listings
                         val displayBusinesses = if (sortedNearestBusinesses.isNotEmpty()) sortedNearestBusinesses else emptyList()
 
-                        // Add with Us Callout Button
+                        // Dedicated directory entry for when the swipe deck is exhausted.
                         Surface(
                             shape = RoundedCornerShape(14.dp),
-                            color = Color(0xFF2E7D32).copy(alpha = 0.12f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF2E7D32).copy(alpha = 0.4f)),
+                            color = VibeSyncTeal.copy(alpha = 0.12f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, VibeSyncTeal.copy(alpha = 0.4f)),
                             onClick = {
-                                businessHubInitialTab = 1
+                                businessHubInitialTab = 0
                                 showBusinessHubDialog = true
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(bottom = 10.dp)
-                                .testTag("btn_empty_deck_add_with_us")
+                                .testTag("btn_empty_deck_follow_businesses")
                         ) {
                             Row(
                                 modifier = Modifier.padding(12.dp),
@@ -550,19 +550,19 @@ fun DiscoverScreen(
                             ) {
                                 Surface(
                                     shape = CircleShape,
-                                    color = Color(0xFF2E7D32).copy(alpha = 0.2f),
+                                    color = VibeSyncTeal.copy(alpha = 0.2f),
                                     modifier = Modifier.size(36.dp)
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
-                                        Icon(Icons.Default.AddBusiness, contentDescription = null, tint = Color(0xFF2E7D32), modifier = Modifier.size(20.dp))
+                                        Icon(Icons.Default.Store, contentDescription = null, tint = VibeSyncTeal, modifier = Modifier.size(20.dp))
                                     }
                                 }
                                 Spacer(modifier = Modifier.width(10.dp))
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text("Are you a business owner?", fontWeight = FontWeight.Bold, fontSize = 12.5.sp, color = Color(0xFF1B5E20))
-                                    Text("Create your business profile under 'Join with Us' & broadcast offers", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text("Discover local businesses", fontWeight = FontWeight.Bold, fontSize = 12.5.sp, color = VibeSyncTeal)
+                                    Text("Follow nearby business pages for updates, events and offers.", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
-                                Text("Join +", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF2E7D32))
+                                Text("Explore", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = VibeSyncTeal)
                             }
                         }
 

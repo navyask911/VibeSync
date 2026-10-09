@@ -313,7 +313,7 @@ fun ProfileDetailDialog(
                     var isPhoneAccessRequested by remember(profile.id) { mutableStateOf(false) }
                     var isPhoneRevealed by remember(profile.id) { mutableStateOf(false) }
 
-                    if (displayPhone.isNotBlank()) {
+                    if (displayPhone.isNotBlank() && isContactSaved) {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(18.dp),

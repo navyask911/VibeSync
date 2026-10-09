@@ -2,6 +2,8 @@ package com.example.ui.screens
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PhoneAndroid
@@ -29,15 +32,18 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -55,10 +61,12 @@ fun AuthLoginScreen(
     truecallerError: String? = null,
     onTruecallerRetry: () -> Unit = {},
     truecallerClient: TruecallerVerificationClient = PlatformTruecallerVerificationClient,
+    onOpenAdminPortal: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     var isLaunching by remember { mutableStateOf(false) }
+    var headerTapCount by remember { mutableIntStateOf(0) }
     var localError by remember { mutableStateOf<String?>(null) }
     val latestSuccess by rememberUpdatedState(onTruecallerProfileVerified)
     val visibleError = truecallerError ?: localError
@@ -104,17 +112,38 @@ fun AuthLoginScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Spacer(Modifier.height(12.dp))
-            Text(
-                "VibeSync",
-                style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.5).sp),
-                textAlign = TextAlign.Center
-            )
-            Text(
-                "Chat Connect  •  Business Connect",
-                style = MaterialTheme.typography.titleMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold),
-                textAlign = TextAlign.Center
-            )
+            Spacer(Modifier.height(4.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(20.dp))
+                    .clickable {
+                        headerTapCount += 1
+                        if (headerTapCount >= 7) {
+                            headerTapCount = 0
+                            onOpenAdminPortal()
+                        }
+                    }
+                    .padding(vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Image(
+                    painter = painterResource(id = com.example.R.mipmap.ic_launcher),
+                    contentDescription = "VibeSync app logo",
+                    modifier = Modifier.size(92.dp).clip(CircleShape)
+                )
+                Text(
+                    "VibeSync",
+                    style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.5).sp),
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    "Chat Connect  •  Business Connect",
+                    style = MaterialTheme.typography.titleMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold),
+                    textAlign = TextAlign.Center
+                )
+            }
             Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)) {
                     Text(

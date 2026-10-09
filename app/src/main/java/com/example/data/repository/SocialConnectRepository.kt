@@ -536,6 +536,9 @@ class SocialConnectRepository(
         } else {
             val myFriendIds = acceptedFriendships.map { if (it.senderId == "current_user") it.receiverId else it.senderId }.toSet()
             val userInterestedIn = safePrefs.userInterestedIn.trim()
+            val minPreferredAge = safePrefs.minAge.coerceIn(18, 99)
+            val maxPreferredAge = safePrefs.maxAge.coerceIn(minPreferredAge, 99)
+            val maxDistanceKm = safePrefs.maxDistanceMiles.coerceIn(5, 150).toDouble()
             val myPhoneDigits = safePrefs.verifiedMobileNumber.filter { it.isDigit() }
             val myEmail = safePrefs.googleEmail.trim().lowercase()
             val myName = safePrefs.userName.trim().lowercase()
@@ -556,16 +559,26 @@ class SocialConnectRepository(
                         !profile.isBanned &&
                         !profile.isFlaggedSpam &&
                         (if (safePrefs.userAge < 18) profile.age in 13..17 else profile.age >= 18) &&
-                        profile.age in safePrefs.minAge..safePrefs.maxAge &&
-                        profile.distanceMiles <= minOf(safePrefs.maxDistanceMiles, 100) &&
+                        profile.age in minPreferredAge..maxPreferredAge &&
+                        // The preferences UI is in kilometres; ProfileEntity stores distance in miles.
+                        (profile.distanceMiles * 1.609344) <= maxDistanceKm &&
                         (!safePrefs.onlyVerified || profile.isVerified) &&
                         (safePrefs.goalFilter == "All" || profile.relationshipGoal.contains(safePrefs.goalFilter, ignoreCase = true)) &&
                         // Gender Referral Algorithm Filter
                         when (userInterestedIn.lowercase()) {
-                            "women", "female", "woman" -> profile.gender.contains("woman", ignoreCase = true) || profile.gender.contains("female", ignoreCase = true)
-                            "men", "male", "man" -> profile.gender.contains("man", ignoreCase = true) || profile.gender.contains("male", ignoreCase = true)
-                            "other", "non-binary" -> !profile.gender.contains("man", ignoreCase = true) && !profile.gender.contains("male", ignoreCase = true) && !profile.gender.contains("woman", ignoreCase = true) && !profile.gender.contains("female", ignoreCase = true)
-                            else -> true // "Any", "All", or unselected
+                            "women", "female", "woman" ->
+                                profile.gender.contains("woman", ignoreCase = true) ||
+                                    profile.gender.contains("female", ignoreCase = true)
+                            "men", "male", "man" ->
+                                profile.gender.contains("man", ignoreCase = true) ||
+                                    profile.gender.contains("male", ignoreCase = true)
+                            "everyone", "any", "all", "", "unselected" -> true
+                            "other", "non-binary" ->
+                                !profile.gender.contains("man", ignoreCase = true) &&
+                                    !profile.gender.contains("male", ignoreCase = true) &&
+                                    !profile.gender.contains("woman", ignoreCase = true) &&
+                                    !profile.gender.contains("female", ignoreCase = true)
+                            else -> true
                         }
             }.sortedWith(
                 compareBy<ProfileEntity> { profile ->
@@ -3242,8 +3255,14 @@ class SocialConnectRepository(
         // Single authoritative path: Room -> Google Tink -> Supabase -> server-side FCM.
         appScope.launch(Dispatchers.IO) {
             try {
-                val senderIdentity = com.example.util.SupabaseClientManager.getPhoneHash(myPhone)
+                // The send RPC stores sender_id as the active VibeSync profile ID.
+                // Tink associated data must use the same sender/recipient IDs on both devices.
+                val senderIdentity = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
                 val recipientIdentity = targetProfileId
+                if (senderIdentity.isBlank()) {
+                    android.util.Log.w("SocialConnectRepository", "Message held locally: active VibeSync profile session is unavailable.")
+                    return@launch
+                }
                 val targetKey = profile.publicIdentityKey.ifBlank {
                     com.example.util.SupabaseClientManager.fetchPublicIdentityKey(recipientIdentity).orEmpty()
                 }

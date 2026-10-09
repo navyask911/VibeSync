@@ -9,7 +9,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -25,6 +27,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import com.example.data.model.UserPreferencesEntity
 import com.example.ui.theme.VibeSyncTeal
 
@@ -38,6 +41,19 @@ fun DiscoveryPreferencesCard(
     var distance by remember(preferences.maxDistanceMiles) { mutableFloatStateOf(preferences.maxDistanceMiles.coerceIn(5, 150).toFloat()) }
     var verifiedOnly by remember(preferences.onlyVerified) { mutableStateOf(preferences.onlyVerified) }
     var hideSensitiveDetails by remember(preferences.isProfileLocked) { mutableStateOf(preferences.isProfileLocked) }
+    var ageRange by remember(preferences.minAge, preferences.maxAge) {
+        val minAge = preferences.minAge.coerceIn(18, 99)
+        mutableStateOf(minAge.toFloat()..preferences.maxAge.coerceIn(minAge, 99).toFloat())
+    }
+    var genderPreference by remember(preferences.userInterestedIn) {
+        mutableStateOf(
+            when (preferences.userInterestedIn.trim().lowercase()) {
+                "women", "woman", "female" -> "Women"
+                "everyone", "all", "any", "" -> "Everyone"
+                else -> "Men"
+            }
+        )
+    }
 
     ProfileSectionDrawer(
         title = "Connection Preferences",
@@ -54,6 +70,39 @@ fun DiscoveryPreferencesCard(
                 Text("${distance.toInt()} km", color = VibeSyncTeal, fontWeight = FontWeight.Bold, fontSize = 13.sp)
             }
             Slider(value = distance, onValueChange = { distance = it }, valueRange = 5f..150f, steps = 28, modifier = Modifier.fillMaxWidth().testTag("slider_connection_radius"))
+
+            Text("Gender preference", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                listOf("Men", "Women", "Everyone").forEach { option ->
+                    FilterChip(
+                        selected = genderPreference == option,
+                        onClick = { genderPreference = option },
+                        label = { Text(option, maxLines = 1) },
+                        modifier = Modifier.weight(1f).testTag("chip_gender_${option.lowercase()}")
+                    )
+                }
+            }
+
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Age range", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Text(
+                    "${ageRange.start.roundToInt()}–${ageRange.endInclusive.roundToInt()} years",
+                    color = VibeSyncTeal,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
+                )
+            }
+            RangeSlider(
+                value = ageRange,
+                onValueChange = { ageRange = it },
+                valueRange = 18f..99f,
+                steps = 80,
+                modifier = Modifier.fillMaxWidth().testTag("slider_connection_age_range")
+            )
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Verified profiles", fontWeight = FontWeight.SemiBold)
@@ -72,6 +121,9 @@ fun DiscoveryPreferencesCard(
                 onClick = {
                     onUpdatePreferences(preferences.copy(
                         maxDistanceMiles = distance.toInt().coerceIn(5, 150),
+                        minAge = ageRange.start.roundToInt().coerceIn(18, 99),
+                        maxAge = ageRange.endInclusive.roundToInt().coerceIn(ageRange.start.roundToInt().coerceIn(18, 99), 99),
+                        userInterestedIn = genderPreference,
                         onlyVerified = verifiedOnly,
                         isProfileLocked = hideSensitiveDetails
                     ))

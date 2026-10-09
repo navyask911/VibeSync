@@ -105,6 +105,13 @@ object SupabaseBackendManager {
     }
 
     private fun startWebSocketConnection() {
+        val sessionToken = VibeSyncSessionManager.getToken().orEmpty()
+        val sessionProfileId = VibeSyncSessionManager.getProfileId().orEmpty()
+        if (sessionToken.isBlank() || sessionProfileId.isBlank()) {
+            _realtimeConnected.value = false
+            Log.i(TAG, "Waiting for an authenticated VibeSync profile session before connecting Realtime.")
+            return
+        }
         try {
             isIntentionallyClosed = false
             reconnectJob?.cancel()
@@ -118,14 +125,15 @@ object SupabaseBackendManager {
                     "/realtime/v1/websocket?apikey=$SUPABASE_ANON_KEY&v=1.0.0"
 
             val requestBuilder = Request.Builder().url(wsUrl)
-            VibeSyncSessionManager.getToken()?.let { requestBuilder.header("x-vibesync-session", it) }
+                .header("x-vibesync-session", sessionToken)
             val request = requestBuilder.build()
             realtimeWebSocket = wsHttpClient.newWebSocket(request, object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
                     _realtimeConnected.value = true
                     Log.i(TAG, "⚡ Supabase Realtime WebSocket Connected to $wsUrl!")
 
-                    // 1. Join public chat_messages channel with postgres_changes for table 'chat_messages' and broadcast enabled
+                    // Truecaller sessions are not Supabase Auth JWTs. Subscribe by the
+                    // validated session's VibeSync profile ID and ignore the deprecated messages table.
                     val joinChatMsg = JSONObject().apply {
                         put("topic", "realtime:public:chat_messages")
                         put("event", "phx_join")
@@ -134,9 +142,16 @@ object SupabaseBackendManager {
                                 put("broadcast", JSONObject().apply { put("self", true) })
                                 val changes = JSONArray().apply {
                                     put(JSONObject().apply {
-                                        put("event", "*")
+                                        put("event", "INSERT")
                                         put("schema", "public")
                                         put("table", "chat_messages")
+                                        put("filter", "receiver_id=eq.$sessionProfileId")
+                                    })
+                                    put(JSONObject().apply {
+                                        put("event", "UPDATE")
+                                        put("schema", "public")
+                                        put("table", "chat_messages")
+                                        put("filter", "sender_id=eq.$sessionProfileId")
                                     })
                                 }
                                 put("postgres_changes", changes)
@@ -147,29 +162,7 @@ object SupabaseBackendManager {
                     }
                     webSocket.send(joinChatMsg.toString())
 
-                    // 2. Join public messages channel as fallback with broadcast enabled
-                    val joinMessages = JSONObject().apply {
-                        put("topic", "realtime:public:messages")
-                        put("event", "phx_join")
-                        put("payload", JSONObject().apply {
-                            val config = JSONObject().apply {
-                                put("broadcast", JSONObject().apply { put("self", true) })
-                                val changes = JSONArray().apply {
-                                    put(JSONObject().apply {
-                                        put("event", "*")
-                                        put("schema", "public")
-                                        put("table", "messages")
-                                    })
-                                }
-                                put("postgres_changes", changes)
-                            }
-                            put("config", config)
-                        })
-                        put("ref", "join_messages")
-                    }
-                    webSocket.send(joinMessages.toString())
-
-                    // 3. Start Phoenix heartbeat every 20 seconds
+                    // Start Phoenix heartbeat every 20 seconds
                     heartbeatJob?.cancel()
                     heartbeatJob = scope.launch {
                         var hbCount = 0
@@ -223,10 +216,12 @@ object SupabaseBackendManager {
                         fun isValidRecord(rec: JSONObject?): Boolean {
                             if (rec == null) return false
                             val id = rec.optString("message_id", "").ifBlank { rec.optString("id", "").ifBlank { rec.optString("messageId", "") } }
-                            val content = rec.optString("text", "").ifBlank {
-                                rec.optString("message", "").ifBlank {
-                                    rec.optString("message_text", "").ifBlank {
-                                        rec.optString("content", "")
+                            val content = rec.optString("ciphertext", "").ifBlank {
+                                rec.optString("text", "").ifBlank {
+                                    rec.optString("message", "").ifBlank {
+                                        rec.optString("message_text", "").ifBlank {
+                                            rec.optString("content", "")
+                                        }
                                     }
                                 }
                             }.trim()

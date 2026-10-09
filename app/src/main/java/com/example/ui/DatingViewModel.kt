@@ -923,7 +923,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     return@launch
                 }
 
-                val rawText = sequenceOf("message_text", "text", "message", "content")
+                val rawText = sequenceOf("ciphertext", "message_text", "text", "message", "content")
                     .map { record.optString(it, "") }
                     .firstOrNull { it.isNotBlank() } ?: ""
                 val mediaType = record.optString("media_type", "TEXT")
@@ -969,6 +969,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
                 val prefs = repository.userPreferences.firstOrNull()
                 val currentUserPhone = prefs?.verifiedMobileNumber ?: ""
+                val currentProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
 
                 val activePair = _activeChat.value
                 val activePartnerProfile = activePair?.second
@@ -976,8 +977,11 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 val activeMatchId = activePair?.first?.matchId
 
                 // Bulletproof phone matching using PhonebookHasher
-                val isSenderMe = com.example.util.PhonebookHasher.arePhonesMatching(senderPhone, currentUserPhone) || senderPhone == "USER"
-                val isReceiverMe = com.example.util.PhonebookHasher.arePhonesMatching(receiverPhone, currentUserPhone)
+                val isSenderMe = senderPhone == currentProfileId ||
+                    com.example.util.PhonebookHasher.arePhonesMatching(senderPhone, currentUserPhone) ||
+                    senderPhone == "USER"
+                val isReceiverMe = receiverPhone == currentProfileId ||
+                    com.example.util.PhonebookHasher.arePhonesMatching(receiverPhone, currentUserPhone)
 
                 val isBelongingToActiveConversation = (activePair != null) && (
                     ((com.example.util.PhonebookHasher.arePhonesMatching(senderPhone, activePartnerPhone) && com.example.util.PhonebookHasher.arePhonesMatching(receiverPhone, currentUserPhone)) ||
@@ -1909,6 +1913,9 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         _authState.value = AuthState.AUTHENTICATED
         try {
             repository.startAllSyncsAfterLogin()
+            // This ViewModel can exist before Truecaller creates a session.
+            com.example.util.SupabaseBackendManager.disconnectRealtimeWebsocket()
+            reconnectRealtime()
         } catch (e: Exception) {
             android.util.Log.w("AuthSessionManager", "Post-login sync notice: ${e.message}")
         }

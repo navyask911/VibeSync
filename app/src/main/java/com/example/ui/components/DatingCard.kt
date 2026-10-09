@@ -174,7 +174,7 @@ fun DatingCard(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(210.dp)
+                            .height(240.dp)
                             .background(
                                 Brush.verticalGradient(
                                     colors = listOf(
@@ -394,6 +394,15 @@ fun DatingCard(
                             }
                         }
 
+                        Text(
+                            text = "${profile.age} • ${profile.gender.ifBlank { "Gender not specified" }}",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                         Text(
                             text = listOf(profile.occupation, profile.qualification).filter { it.isNotBlank() }.joinToString(" • ").ifBlank { "VibeSync member" },
                             style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.SemiBold),
