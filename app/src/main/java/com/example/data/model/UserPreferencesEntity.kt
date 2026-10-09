@@ -56,6 +56,7 @@ data class UserPreferencesEntity(
     val lastLocationUpdateTimestamp: Long = 0L,
     // Photos Upload Option (List of photo URIs/URLs)
     val avatarUrl: String = "",
+    val avatarCacheVersion: Long = 0L,
     val profilePhotos: String = "",
     val profileWallpaperUrl: String = "",
     // Relationship Ethics & Transparency
