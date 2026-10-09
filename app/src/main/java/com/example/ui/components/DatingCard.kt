@@ -87,7 +87,7 @@ fun DatingCard(
         offsetY.snapTo(0f)
     }
 
-    val photoList = remember(profile.avatarUrl, profile.id) {
+    val photoList = remember(profile.avatarUrl, profile.avatarCacheVersion, profile.id) {
         profile.getPhotoList()
     }
     var currentPhotoIndex by remember(profile.id) { androidx.compose.runtime.mutableIntStateOf(0) }
@@ -189,8 +189,8 @@ fun DatingCard(
                             SubcomposeAsyncImage(
                                 model = ImageRequest.Builder(context)
                                     .data(effectivePhoto)
-                                    .memoryCacheKey("profile-avatar:${profile.id}:$effectivePhoto")
-                                    .diskCacheKey("profile-avatar:${profile.id}:$effectivePhoto")
+                                    .memoryCacheKey("profile-avatar:${profile.id}:$effectivePhoto:${profile.avatarCacheVersion}")
+                                    .diskCacheKey("profile-avatar:${profile.id}:$effectivePhoto:${profile.avatarCacheVersion}")
                                     .crossfade(true)
                                     .diskCachePolicy(CachePolicy.ENABLED)
                                     .memoryCachePolicy(CachePolicy.ENABLED)
