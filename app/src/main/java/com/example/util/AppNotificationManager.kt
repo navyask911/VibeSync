@@ -573,7 +573,7 @@ object AppNotificationManager {
             val defaultSoundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
 
             val notification = NotificationCompat.Builder(context, channelId)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(android.R.drawable.sym_def_app_icon)
                 .setStyle(messagingStyle)
                 .setContentTitle(senderName)
                 .setContentText(displayBody)
@@ -671,7 +671,7 @@ object AppNotificationManager {
             val matchBitmap = if (matchPhotoUrl.isNotBlank()) downloadBitmap(matchPhotoUrl) else null
 
             val notificationBuilder = NotificationCompat.Builder(context, CHANNEL_ID_MATCHES)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(android.R.drawable.sym_def_app_icon)
                 .setContentTitle(title)
                 .setContentText(subtitle)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(subtitle))
@@ -752,7 +752,7 @@ object AppNotificationManager {
             val largeBitmap = if (likerPhotoUrl.isNotBlank()) downloadBitmap(likerPhotoUrl) else null
 
             val notificationBuilder = NotificationCompat.Builder(context, CHANNEL_ID_MATCHES)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(android.R.drawable.sym_def_app_icon)
                 .setContentTitle(title)
                 .setContentText(subtitle)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(subtitle))
@@ -829,7 +829,7 @@ object AppNotificationManager {
             val largeBitmap = if (likerPhotoUrl.isNotBlank()) downloadBitmap(likerPhotoUrl) else null
 
             val notificationBuilder = NotificationCompat.Builder(context, CHANNEL_ID_MATCHES)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(android.R.drawable.sym_def_app_icon)
                 .setContentTitle(title)
                 .setContentText(subtitle)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(subtitle))
@@ -906,7 +906,7 @@ object AppNotificationManager {
             val largeBitmap = if (senderPhotoUrl.isNotBlank()) downloadBitmap(senderPhotoUrl) else null
 
             val notificationBuilder = NotificationCompat.Builder(context, CHANNEL_ID_MATCHES)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(android.R.drawable.sym_def_app_icon)
                 .setContentTitle(title)
                 .setContentText(subtitle)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(subtitle))
@@ -969,7 +969,7 @@ object AppNotificationManager {
         )
 
         val updatedNotification = NotificationCompat.Builder(context, CHANNEL_ID_MESSAGES)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(android.R.drawable.sym_def_app_icon)
             .setStyle(messagingStyle)
             .setContentTitle(senderName)
             .setContentText("Sent: $replyText")

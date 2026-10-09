@@ -110,11 +110,6 @@ fun AuthLoginScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Spacer(Modifier.height(12.dp))
-            Image(
-                painter = painterResource(id = R.mipmap.ic_launcher),
-                contentDescription = "VibeSync logo",
-                modifier = Modifier.size(88.dp).clip(CircleShape)
-            )
             Text(
                 "VibeSync",
                 style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.5).sp),

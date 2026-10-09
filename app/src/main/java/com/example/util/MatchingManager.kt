@@ -594,7 +594,7 @@ object MatchingManager {
             }
 
             val notification = NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
-                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setSmallIcon(android.R.drawable.sym_def_app_icon)
                 .setContentTitle("🎉 It's a Mutual Match with ${matchedProfile.name}!")
                 .setContentText("$compatibilityScore% Chemistry! $interestSnippet")
                 .setStyle(

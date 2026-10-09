@@ -66,7 +66,6 @@ jobs:
           import json
           import os
           import re
-          import struct
           import xml.etree.ElementTree as ET
           from pathlib import Path
 
@@ -129,51 +128,35 @@ jobs:
           application = manifest.find("application")
           if application is None:
               raise SystemExit("AndroidManifest.xml is missing <application>")
-          expected_icons = {
-              "icon": "@mipmap/ic_launcher",
-              "roundIcon": "@mipmap/ic_launcher_round",
-          }
-          for attr, expected in expected_icons.items():
-              if application.attrib.get(android_ns + attr) != expected:
-                  raise SystemExit(f"Manifest android:{attr} must be {expected}")
+          if "icon" in application.attrib or "roundIcon" in application.attrib:
+              raise SystemExit("Custom launcher icon attributes must stay absent until the replacement ZIP is applied")
 
-          for name in ("ic_launcher", "ic_launcher_round"):
-              icon_xml = Path(f"app/src/main/res/mipmap-anydpi-v26/{name}.xml")
-              if not icon_xml.is_file():
-                  raise SystemExit(f"Missing adaptive icon resource: {icon_xml}")
-              icon_root = ET.parse(icon_xml).getroot()
-              foreground = icon_root.find("foreground")
-              background = icon_root.find("background")
-              if foreground is None or foreground.attrib.get(android_ns + "drawable") != "@drawable/app_icon":
-                  raise SystemExit(f"{icon_xml} does not point at the current @drawable/app_icon foreground")
-              if background is None or background.attrib.get(android_ns + "drawable") != "@drawable/ic_launcher_background":
-                  raise SystemExit(f"{icon_xml} does not point at @drawable/ic_launcher_background")
-          for resource in (
+          # The old icon set must be completely removed before replacement assets are uploaded.
+          legacy_icon_paths = [
               "app/src/main/res/drawable/app_icon.xml",
               "app/src/main/res/drawable/ic_launcher_background.xml",
-          ):
-              if not Path(resource).is_file():
-                  raise SystemExit(f"Missing launcher asset: {resource}")
+              "app/src/main/res/drawable/ic_launcher_foreground.xml",
+              "app/src/main/res/drawable/vibesync_launcher.png",
+              "app/src/main/res/drawable-nodpi/vibesync_store_graphic_512.png",
+              "app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml",
+              "app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml",
+              "app/src/main/res/mipmap-mdpi/ic_launcher.png",
+              "app/src/main/res/mipmap-mdpi/ic_launcher_round.png",
+              "app/src/main/res/mipmap-hdpi/ic_launcher.png",
+              "app/src/main/res/mipmap-hdpi/ic_launcher_round.png",
+              "app/src/main/res/mipmap-xhdpi/ic_launcher.png",
+              "app/src/main/res/mipmap-xhdpi/ic_launcher_round.png",
+              "app/src/main/res/mipmap-xxhdpi/ic_launcher.png",
+              "app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png",
+              "app/src/main/res/mipmap-xxxhdpi/ic_launcher.png",
+              "app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png",
+              "store-assets/vibesync-store-graphic-512.png",
+          ]
+          left_over = [path for path in legacy_icon_paths if Path(path).exists()]
+          if left_over:
+              raise SystemExit("Old launcher artwork still present: " + ", ".join(left_over))
 
-          # Validate both legacy raster icons as well as adaptive icons for density-qualified devices.
-          expected_pixels = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
-          png_signature = bytes((137, 80, 78, 71, 13, 10, 26, 10))
-          for density, expected_size in expected_pixels.items():
-              for icon_name in ("ic_launcher", "ic_launcher_round"):
-                  png_path = Path(f"app/src/main/res/mipmap-{density}/{icon_name}.png")
-                  if not png_path.is_file():
-                      raise SystemExit(f"Missing density-bucket launcher icon: {png_path}")
-                  data = png_path.read_bytes()
-                  if len(data) < 24 or data[:8] != png_signature:
-                      raise SystemExit(f"Invalid PNG launcher icon: {png_path}")
-                  width, height = struct.unpack(">II", data[16:24])
-                  if (width, height) != (expected_size, expected_size):
-                      raise SystemExit(
-                          f"{png_path} must be {expected_size}x{expected_size}; found {width}x{height}"
-                      )
-
-          print("App config, Google Services package, manifest mappings, adaptive icons, and all density buckets validated.")
-          PY
+          print("App config and Google Services package validated; old custom icon assets are removed pending replacement ZIP.")
 
       - name: JDK 21
         uses: actions/setup-java@v5
@@ -423,4 +406,3 @@ jobs:
             app/build/outputs/bundle/release/*.aab
             app/build/outputs/mapping/release/**
             app/build/test-results/test/**/*.xml
-            store-assets/vibesync-store-graphic-512.png
