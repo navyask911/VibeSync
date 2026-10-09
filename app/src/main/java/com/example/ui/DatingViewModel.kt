@@ -224,8 +224,9 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     init {
         // Start system network monitoring
         NetworkMonitor.getInstance().startMonitoring(application)
-        schedulePhonebookSyncWorker()
-        viewModelScope.launch {
+        // WorkManager may initialize its own Room database; initialize/enqueue away from the UI thread.
+        viewModelScope.launch(Dispatchers.IO) {
+            schedulePhonebookSyncWorker()
             repository.purgeGhostNullData()
         }
 
@@ -264,18 +265,21 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         // Truecaller verification is the sign-in authority; the verified session is device-local.
         // Firebase remains a transport/legacy compatibility boundary only.
 
-        // Initialize Supabase Realtime WebSocket for two-way chat synchronization and delivery/read receipts
-        try {
-            com.example.util.SupabaseBackendManager.connectRealtimeWebsocket(
-                onInsert = { record ->
-                    handleRealtimeChatMessageInsert(record)
-                },
-                onUpdate = { record ->
-                    handleRealtimeChatMessageUpdate(record)
-                }
-            )
-        } catch (e: Exception) {
-            android.util.Log.w("DatingViewModel", "Failed to initialize Supabase Realtime WebSocket: ${e.message}")
+        // Supabase Realtime startup may perform network/channel setup. Never run it on the
+        // main thread while the launcher screen is being composed.
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                com.example.util.SupabaseBackendManager.connectRealtimeWebsocket(
+                    onInsert = { record ->
+                        handleRealtimeChatMessageInsert(record)
+                    },
+                    onUpdate = { record ->
+                        handleRealtimeChatMessageUpdate(record)
+                    }
+                )
+            } catch (t: Throwable) {
+                android.util.Log.e("VibeSyncInit", "Safe init fallback: Supabase Realtime", t)
+            }
         }
 
         viewModelScope.launch {

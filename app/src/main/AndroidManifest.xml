@@ -57,7 +57,7 @@
     <application
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
-        android:name="com.example.VibeSyncApplication"
+        android:name=".VibeSyncApplication"
         android:allowBackup="false"
         android:usesCleartextTraffic="false"
         android:largeHeap="true"
@@ -68,7 +68,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.MyApplication">
         <activity
-            android:name="com.example.MainActivity"
+            android:name=".MainActivity"
             android:icon="@mipmap/ic_launcher"
             android:roundIcon="@mipmap/ic_launcher_round"
             android:launchMode="singleTask"

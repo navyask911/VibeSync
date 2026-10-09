@@ -72,7 +72,7 @@ import com.example.data.model.ApiCredentialRequestEntity
         LocalBusinessAnalyticsEventEntity::class,
         ApiCredentialRequestEntity::class
     ],
-    version = 39,
+    version = 40,
     exportSchema = false
 )
 abstract class DatingDatabase : RoomDatabase() {
@@ -298,6 +298,8 @@ abstract class DatingDatabase : RoomDatabase() {
                     MIGRATION_37_38,
                     MIGRATION_38_39
                 )
+                 // Intentionally omit MIGRATION_39_40: upgrading an existing v39 store forces
+                 // Room to rebuild tables from the current entity definitions if schemas drift.
                  .fallbackToDestructiveMigration()
                  .fallbackToDestructiveMigrationOnDowngrade()
                  .build()

@@ -13,43 +13,38 @@ import com.example.util.PlatformTruecallerVerificationClient
 import com.example.util.VibeSyncSessionManager
 
 class MainActivity : FragmentActivity() {
-  companion object {
-    private const val TAG = "MainActivity"
-  }
 
   private val truecallerActivityResultLauncher =
     registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-      runStartupStep("Truecaller activity result") {
+      safeInit("Truecaller activity result") {
         PlatformTruecallerVerificationClient.onActivityResult(this, 0, result.resultCode, result.data)
       }
     }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-    runStartupStep("edge-to-edge window setup") {
+
+    safeInit("window setup") {
+      window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
       enableEdgeToEdge()
     }
 
-    // Notification channels are initialized once in VibeSyncApplication behind a guarded boundary.
-    // A second, unguarded initialization here could prevent the first Activity from opening.
-    runStartupStep("session storage") {
+    // Session storage uses local preferences only; guard failures so the app shell can still render.
+    safeInit("session storage") {
       VibeSyncSessionManager.initialize(this)
     }
 
-    // Register the OAuth launcher before starting optional SDK initialization. Failure to initialize
-    // an external identity provider must not prevent the core app shell from opening.
-    runStartupStep("Truecaller launcher") {
+    // Register the Activity Result launcher, but do not initialize the Truecaller SDK at cold start.
+    // The SDK initialization stays in the explicit sign-in action.
+    safeInit("Truecaller launcher registration") {
       PlatformTruecallerVerificationClient.setActivityResultLauncher(truecallerActivityResultLauncher)
-      // The Truecaller SDK itself initializes lazily when the user taps its login action.
-      // Keep third-party SDK startup off the critical launcher path.
     }
 
-    // Handle deep link intents (e.g. vibesync://business?id={businessId}) best-effort.
-    runStartupStep("initial deep link") {
+    safeInit("initial deep link") {
       com.example.util.DeepLinkManager.handleIncomingUri(intent?.data)
     }
 
+    // No Room pre-warming or synchronous database reads/writes run in this Activity callback.
     setContent {
       MyApplicationTheme {
         DatingAppRoot()
@@ -60,43 +55,44 @@ class MainActivity : FragmentActivity() {
   override fun onNewIntent(intent: android.content.Intent) {
     super.onNewIntent(intent)
     setIntent(intent)
-    runStartupStep("new deep link") {
+    safeInit("new deep link") {
       com.example.util.DeepLinkManager.handleIncomingUri(intent.data)
     }
   }
 
   override fun onResume() {
     super.onResume()
-    runStartupStep("foreground notification state") {
+    safeInit("foreground notification state") {
       AppNotificationManager.setAppForegroundState(true)
     }
   }
 
   override fun onPause() {
     super.onPause()
-    runStartupStep("background notification state") {
+    safeInit("background notification state") {
       AppNotificationManager.setAppForegroundState(false)
     }
   }
 
   override fun onStop() {
     super.onStop()
-    AppNotificationManager.setAppForegroundState(false)
+    safeInit("stopped notification state") {
+      AppNotificationManager.setAppForegroundState(false)
+    }
   }
 
   override fun onDestroy() {
-    runStartupStep("Truecaller cleanup") {
+    safeInit("Truecaller cleanup") {
       PlatformTruecallerVerificationClient.clear()
     }
     super.onDestroy()
   }
 
-  private inline fun runStartupStep(name: String, block: () -> Unit) {
+  private inline fun safeInit(step: String, block: () -> Unit) {
     try {
       block()
     } catch (t: Throwable) {
-      Log.e(TAG, "$name failed; continuing app lifecycle", t)
+      Log.e("VibeSyncInit", "Safe init fallback: $step", t)
     }
   }
 }
-

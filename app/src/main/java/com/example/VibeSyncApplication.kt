@@ -12,42 +12,48 @@ import com.google.firebase.messaging.FirebaseMessaging
 class VibeSyncApplication : Application(), ImageLoaderFactory {
     override fun newImageLoader(): ImageLoader = CoilImageLoaderConfig.createImageLoader(this)
 
-    companion object {
-        private const val TAG = "VibeSyncApplication"
-    }
-
     override fun onCreate() {
         super.onCreate()
 
-        // Firebase boundary: FCM push notifications only.
-        try {
+        // Do not open or pre-warm Room from Application.onCreate(). Room is created lazily
+        // by the ViewModel; its queries and writes run through Room's executors.
+        safeInit("message context") {
+            com.example.util.MessageHandler.appContext = this
+        }
+
+        // Optional services must not prevent the launcher activity from appearing.
+        safeInit("Firebase FCM") {
             if (FirebaseApp.getApps(this).isEmpty()) {
                 FirebaseApp.initializeApp(this)
             }
-            FirebaseMessaging.getInstance().isAutoInitEnabled = true
-        } catch (e: Throwable) {
-            Log.w(TAG, "FCM initialization notice: ${e.message}")
+            // Respect the manifest opt-out; FCM can be enabled later by an explicit app flow.
+            FirebaseMessaging.getInstance().isAutoInitEnabled = false
         }
 
-        try {
+        safeInit("Tink keyset") {
             com.example.util.TinkCryptoManager.initTink()
             com.example.util.TinkCryptoManager.getOrCreateMyKeysetHandle(this)
-            com.example.util.MessageHandler.appContext = this
-        } catch (e: Throwable) {
-            Log.w(TAG, "Tink initialization notice: ${e.message}")
         }
 
-        try {
+        safeInit("cross-device diagnostics") {
             com.example.util.CrossDeviceDiagnosticManager.startDiagnosticListeners()
-            com.example.data.repository.SyncDiagnosticsRepository.startMonitoring()
-        } catch (e: Throwable) {
-            Log.w(TAG, "Diagnostics initialization notice: ${e.message}")
         }
 
-        try {
+        // startMonitoring performs its connectivity probe on Dispatchers.IO internally.
+        safeInit("Supabase diagnostics") {
+            com.example.data.repository.SyncDiagnosticsRepository.startMonitoring()
+        }
+
+        safeInit("notification channels") {
             AppNotificationManager.initChannels(this)
-        } catch (e: Throwable) {
-            Log.w(TAG, "Notification channel initialization notice: ${e.message}")
+        }
+    }
+
+    private inline fun safeInit(step: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (t: Throwable) {
+            Log.e("VibeSyncInit", "Safe init fallback: $step", t)
         }
     }
 }
