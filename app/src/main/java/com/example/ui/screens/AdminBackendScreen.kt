@@ -181,8 +181,8 @@ fun AdminBackendScreen(
                         OutlinedTextField(
                             value = passwordInput,
                             onValueChange = { passwordInput = it },
-                            label = { Text("Master Password") },
-                            placeholder = { Text("1234") },
+                            label = { Text("Admin Passcode") },
+                            placeholder = { Text("9999") },
                             leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = VibeSyncTealGreen) },
                             visualTransformation = PasswordVisualTransformation(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
