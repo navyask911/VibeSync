@@ -46,7 +46,7 @@ env:
 jobs:
   android-release:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -375,6 +375,17 @@ jobs:
 
           echo "Release APK signature verified; release APK/AAB files are present."
 
+      - name: Upload APK, AAB and test reports
+        uses: actions/upload-artifact@v6
+        with:
+          name: VibeSync-Android-Release
+          if-no-files-found: error
+          path: |
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/bundle/release/*.aab
+            app/build/outputs/mapping/release/**
+            app/build/test-results/test/**/*.xml
+
       - name: Release APK startup smoke test (Android emulator)
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -382,6 +393,9 @@ jobs:
           arch: x86_64
           profile: pixel_2
           target: google_apis
+          emulator-boot-timeout: 1200
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -camera-back none
+          disable-linux-hw-accel: false
           disable-animations: true
           script: |
             set -euo pipefail
@@ -409,14 +423,3 @@ jobs:
               exit 1
             fi
             echo "Release APK installed and remained alive after cold launch."
-
-      - name: Upload APK, AAB and test reports
-        uses: actions/upload-artifact@v6
-        with:
-          name: VibeSync-Android-Release
-          if-no-files-found: error
-          path: |
-            app/build/outputs/apk/release/*.apk
-            app/build/outputs/bundle/release/*.aab
-            app/build/outputs/mapping/release/**
-            app/build/test-results/test/**/*.xml
