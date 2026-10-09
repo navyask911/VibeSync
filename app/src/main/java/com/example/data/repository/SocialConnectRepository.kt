@@ -40,6 +40,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.util.UUID
 
@@ -60,6 +62,7 @@ class SocialConnectRepository(
     private val appScope: CoroutineScope = CoroutineScope(Dispatchers.IO),
     val context: Context? = null
 ) {
+    private val friendshipRequestMutex = Mutex()
     private val profileDao = database.profileDao()
     private val swipeDao = database.swipeDao()
     private val matchDao = database.matchDao()
@@ -372,37 +375,57 @@ class SocialConnectRepository(
         friendshipRequestDao.deleteRequest(requestId)
     }
 
-    suspend fun sendFriendshipRequest(targetProfileId: String): FriendshipRequestEntity {
-        val targetProfile = profileDao.getProfileByIdSync(targetProfileId)
-        val currentPrefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
+    suspend fun sendFriendshipRequest(targetProfileId: String): FriendshipRequestEntity =
+        friendshipRequestMutex.withLock {
+            val targetProfile = profileDao.getProfileByIdSync(targetProfileId)
+            val currentPrefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
+            val existing = friendshipRequestDao.findExistingFriendship("current_user", targetProfileId)
+            if (existing != null) return@withLock existing
 
-        val existing = friendshipRequestDao.findExistingFriendship("current_user", targetProfileId)
-        if (existing != null) {
-            return existing
+            val now = System.currentTimeMillis()
+            val calendar = java.util.Calendar.getInstance().apply {
+                timeInMillis = now
+                set(java.util.Calendar.HOUR_OF_DAY, 0)
+                set(java.util.Calendar.MINUTE, 0)
+                set(java.util.Calendar.SECOND, 0)
+                set(java.util.Calendar.MILLISECOND, 0)
+            }
+            val midnight = calendar.timeInMillis
+            val todayPrefs = if (currentPrefs.lastFriendRequestResetTimestamp < midnight) {
+                currentPrefs.copy(dailyFriendRequestsSent = 0, lastFriendRequestResetTimestamp = midnight)
+            } else currentPrefs
+
+            if (todayPrefs.dailyFriendRequestsSent >= 25) {
+                if (todayPrefs != currentPrefs) preferencesDao.insertOrUpdate(todayPrefs)
+                throw IllegalStateException("Daily request limit reached (25/25). Resets at midnight")
+            }
+
+            val request = FriendshipRequestEntity(
+                senderId = "current_user",
+                senderName = todayPrefs.userName,
+                senderAge = todayPrefs.userAge,
+                senderOccupation = todayPrefs.userOccupation,
+                senderCity = todayPrefs.userCity,
+                senderCountry = todayPrefs.userCountry,
+                senderCountryFlag = todayPrefs.userCountryFlag,
+                senderBio = todayPrefs.userBio,
+                senderAvatarEmoji = "☕",
+                senderColorStart = 0xFFFF5E62,
+                senderColorEnd = 0xFFFF9966,
+                senderInterests = todayPrefs.userInterests,
+                receiverId = targetProfileId,
+                receiverName = targetProfile?.name ?: "VibeSync member",
+                status = "PENDING",
+                timestamp = now,
+                isSwipeDownInitiated = true
+            )
+            friendshipRequestDao.insertRequest(request)
+            preferencesDao.insertOrUpdate(todayPrefs.copy(
+                dailyFriendRequestsSent = todayPrefs.dailyFriendRequestsSent + 1,
+                lastFriendRequestResetTimestamp = midnight
+            ))
+            request
         }
-
-        val request = FriendshipRequestEntity(
-            senderId = "current_user",
-            senderName = currentPrefs.userName,
-            senderAge = currentPrefs.userAge,
-            senderOccupation = currentPrefs.userOccupation,
-            senderCity = currentPrefs.userCity,
-            senderCountry = currentPrefs.userCountry,
-            senderCountryFlag = currentPrefs.userCountryFlag,
-            senderBio = currentPrefs.userBio,
-            senderAvatarEmoji = "☕",
-            senderColorStart = 0xFFFF5E62,
-            senderColorEnd = 0xFFFF9966,
-            senderInterests = currentPrefs.userInterests,
-            receiverId = targetProfileId,
-            receiverName = targetProfile?.name ?: "Suitor",
-            status = "PENDING",
-            timestamp = System.currentTimeMillis(),
-            isSwipeDownInitiated = true
-        )
-        friendshipRequestDao.insertRequest(request)
-        return request
-    }
 
     suspend fun acceptFriendshipRequest(requestId: String) {
         val req = friendshipRequestDao.getRequestById(requestId) ?: return
@@ -2824,7 +2847,6 @@ class SocialConnectRepository(
             currentPrefs = currentPrefs.copy(
                 dailySuperLikesSent = 0,
                 dailyLikesSent = 0,
-                dailyFriendRequestsSent = 0,
                 lastDailySwipeResetTimestamp = now
             )
             preferencesDao.insertOrUpdate(currentPrefs)
@@ -2858,21 +2880,18 @@ class SocialConnectRepository(
             val pendingOutgoingCount = friendshipRequestDao.getPendingOutgoingCountSync("current_user")
             if (pendingOutgoingCount >= 100) {
                 return MatchOutcome.FriendRequestsPendingLimitReached(
-                    message = "You have 100 pending friendship requests! Please cancel old unaccepted requests to send new ones.",
+                    message = "You have 100 pending connection requests. Cancel an old request before sending another.",
                     pendingCount = pendingOutgoingCount
                 )
             }
-            if (currentPrefs.remainingFriendRequestsToday <= 0) {
-                return MatchOutcome.QuotaExceeded("Daily limit reached: Strictly 100 Friendship Requests per day. Resets tomorrow!")
+            val request = try {
+                sendFriendshipRequest(profile.id)
+            } catch (e: IllegalStateException) {
+                return MatchOutcome.QuotaExceeded(
+                    e.message ?: "Daily request limit reached (25/25). Resets at midnight"
+                )
             }
-            currentPrefs = currentPrefs.copy(
-                dailyFriendRequestsSent = currentPrefs.dailyFriendRequestsSent + 1,
-                lastDailySwipeResetTimestamp = if (currentPrefs.lastDailySwipeResetTimestamp <= 0L) now else currentPrefs.lastDailySwipeResetTimestamp
-            )
-            preferencesDao.insertOrUpdate(currentPrefs)
-
             swipeDao.insertSwipe(SwipeEntity(profileId = profileId, direction = direction))
-            val request = sendFriendshipRequest(profile.id)
             return MatchOutcome.FriendshipRequestSent(profile, request)
         }
 
