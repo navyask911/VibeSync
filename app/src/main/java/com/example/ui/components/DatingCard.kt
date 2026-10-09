@@ -107,17 +107,17 @@ fun DatingCard(
                 onDragEnd = {
                     coroutineScope.launch {
                         if (offsetX.value > swipeThreshold) {
-                            // Right swipe = LIKE
+                            // Right swipe = ASK FRIENDSHIP
                             offsetX.animateTo(1000f, spring())
-                            onSwipe("LIKE")
+                            onSwipe("FRIEND_REQUEST")
                         } else if (offsetX.value < -swipeThreshold) {
                             // Left swipe = DISLIKE (NOPE)
                             offsetX.animateTo(-1000f, spring())
                             onSwipe("PASS")
                         } else if (offsetY.value < -swipeThreshold) {
-                            // Top swipe = SUPER LIKE
+                            // Top swipe = PASS
                             offsetY.animateTo(-1000f, spring())
-                            onSwipe("SUPER_LIKE")
+                            onSwipe("PASS")
                         } else if (offsetY.value > swipeThreshold) {
                             // Below swipe = ASK FRIENDSHIP
                             offsetY.animateTo(1000f, spring())
@@ -338,33 +338,6 @@ fun DatingCard(
                                     )
                                 }
                             }
-
-                            // Free Liked You Indicator (If this user swiped on current user!)
-                            if (profile.likedMe) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = Color(0xFFFF4757),
-                                    contentColor = Color.White
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Star,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(12.dp),
-                                            tint = Color.White
-                                        )
-                                        Spacer(modifier = Modifier.width(3.dp))
-                                        Text(
-                                            text = "★ Liked You!",
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                }
-                            }
                         }
                     }
 
@@ -427,32 +400,20 @@ fun DatingCard(
                             }
                         }
 
-                        // Occupation, Qualification & Marital Status (No location / address)
                         Text(
-                            text = "💼 ${profile.occupation} • 🎓 ${profile.qualification}",
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                color = MaterialTheme.colorScheme.onSurface,
-                                fontWeight = FontWeight.Bold
-                            ),
+                            text = listOf(profile.occupation, profile.qualification).filter { it.isNotBlank() }.joinToString(" • ").ifBlank { "VibeSync member" },
+                            style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.SemiBold),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        Text(
-                            text = "💍 ${profile.maritalStatus}",
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                                fontWeight = FontWeight.Medium
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "Looking for: ${profile.relationshipGoal}",
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.Bold
+                        if (profile.bio.isNotBlank()) {
+                            Text(
+                                text = profile.bio,
+                                style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis
                             )
-                        )
+                        }
 
                         // Mutual Friends Pill (Automatically shown to user)
                         if (mutualFriends.isNotEmpty()) {
@@ -479,79 +440,12 @@ fun DatingCard(
                             }
                         }
 
-                        // Relationship Ethics & Demographics Accountability Pill Row
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            if (isBreakupShared) {
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = Color(0xFFE53935).copy(alpha = 0.08f),
-                                    contentColor = Color(0xFFC62828)
-                                ) {
-                                    Text(
-                                        text = "💔 ${profile.breakupCount} Breakups",
-                                        fontSize = 9.5.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                                    )
-                                }
-                            } else if (isBreakupPending) {
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = Color(0xFFFFA000).copy(alpha = 0.12f),
-                                    contentColor = Color(0xFFF57C00)
-                                ) {
-                                    Text(
-                                        text = "💔 🔒 Pending...",
-                                        fontSize = 9.5.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                                    )
-                                }
-                            } else {
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
-                                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.clickable {
-                                        onRequestBreakupShare?.invoke()
-                                    }
-                                ) {
-                                    Text(
-                                        text = "💔 🔒 Private (Ask 🔓)",
-                                        fontSize = 9.5.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                                    )
-                                }
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Surface(shape = RoundedCornerShape(6.dp), color = Color(0xFF1976D2).copy(alpha = 0.08f), contentColor = Color(0xFF1565C0)) {
+                                Text("👥 ${profile.friendsCount} Connections", fontSize = 9.5.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 5.dp, vertical = 3.dp))
                             }
-
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = Color(0xFF1976D2).copy(alpha = 0.08f),
-                                contentColor = Color(0xFF1565C0)
-                            ) {
-                                Text(
-                                    text = "👥 ${profile.friendsCount} Friends",
-                                    fontSize = 9.5.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                                )
-                            }
-
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                            ) {
-                                Text(
-                                    text = "${profile.countryFlag} ${profile.country}",
-                                    fontSize = 9.5.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                                )
+                            Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurfaceVariant) {
+                                Text("${profile.countryFlag} ${profile.country}", fontSize = 9.5.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(horizontal = 5.dp, vertical = 3.dp))
                             }
                         }
 
@@ -647,7 +541,7 @@ fun DatingCard(
                             .padding(horizontal = 16.dp, vertical = 6.dp)
                     ) {
                         Text(
-                            text = "LIKE",
+                            text = "ASK FRIENDSHIP 🤝",
                             color = LikeGreen.copy(alpha = alpha),
                             fontWeight = FontWeight.Black,
                             fontSize = 32.sp,
@@ -668,7 +562,7 @@ fun DatingCard(
                             .padding(horizontal = 18.dp, vertical = 8.dp)
                     ) {
                         Text(
-                            text = "SUPER LIKE ⭐",
+                            text = "PASS",
                             color = SuperLikeBlue.copy(alpha = alpha),
                             fontWeight = FontWeight.Black,
                             fontSize = 26.sp,
