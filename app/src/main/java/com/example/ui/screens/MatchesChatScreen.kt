@@ -1396,6 +1396,7 @@ private fun VibeSyncConversationItem(
             isVerified = profile.isVerified,
             isOnline = profile.activityStatus.contains("Online", ignoreCase = true) || profile.activityStatus.contains("Active", ignoreCase = true),
             avatarUrl = syncedLocalPhotos[profile.phoneNumber.ifBlank { profile.id }] ?: profile.avatarUrl,
+            avatarCacheVersion = profile.avatarCacheVersion,
             modifier = Modifier.clickable {
                 val phone = profile.phoneNumber.ifBlank { profile.id }
                 val photoUri = com.example.util.ContactResolver.fetchContactPhotoByPhoneNumber(context, phone)
