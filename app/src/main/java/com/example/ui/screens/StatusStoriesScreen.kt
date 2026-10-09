@@ -184,6 +184,7 @@ fun StatusStoriesScreen(
     var showTopOverflowMenu by remember { mutableStateOf(false) }
     var selectedPrivacySetting by remember { mutableStateOf("MY_CONTACTS") }
     var pendingMediaUpload by remember { mutableStateOf<Triple<Uri, String, String>?>(null) } // (mediaUri, mediaType, defaultCaption)
+    var pendingAudioTrackUri by remember { mutableStateOf("") }
 
     // Automatically fetch and update the feed with new Stories from mutual contacts upon opening
     LaunchedEffect(Unit) {
@@ -521,8 +522,9 @@ fun StatusStoriesScreen(
                 showCameraAddStatusSheet = false
                 showTextStatusComposer = true
             },
-            onPostMediaStatus = { uri, caption, mediaType ->
+            onPostMediaStatus = { uri, caption, mediaType, audioUri ->
                 pendingMediaUpload = Triple(uri, mediaType, caption)
+                pendingAudioTrackUri = audioUri
                 showCameraAddStatusSheet = false
             }
         )
@@ -534,8 +536,9 @@ fun StatusStoriesScreen(
             mediaUri = uri,
             mediaType = mediaType,
             initialCaption = initialCaption,
-            onDismiss = { pendingMediaUpload = null },
-            onPostStatus = { finalCaption, bgStart, bgEnd ->
+            backgroundMusicUri = pendingAudioTrackUri,
+            onDismiss = { pendingMediaUpload = null; pendingAudioTrackUri = "" },
+            onPostStatus = { finalCaption, bgStart, bgEnd, musicUri ->
                 viewModel.uploadStatus(
                     mediaType = mediaType,
                     caption = finalCaption,
@@ -543,9 +546,11 @@ fun StatusStoriesScreen(
                     videoDurationSeconds = if (mediaType == "VIDEO") 15 else 0,
                     backgroundColorStart = bgStart,
                     backgroundColorEnd = bgEnd,
-                    privacy = selectedPrivacySetting
+                    privacy = selectedPrivacySetting,
+                    backgroundMusicUri = musicUri
                 )
                 pendingMediaUpload = null
+                pendingAudioTrackUri = ""
             }
         )
     }
@@ -1014,7 +1019,7 @@ fun TypeAStatusComposerScreen(
 fun AddStatusBottomSheet(
     onDismiss: () -> Unit,
     onSelectTextMode: () -> Unit,
-    onPostMediaStatus: (Uri, String, String) -> Unit // (uri, caption, mediaType)
+    onPostMediaStatus: (Uri, String, String, String) -> Unit // (uri, caption, mediaType, selected music URI)
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val context = LocalContext.current
@@ -1032,6 +1037,54 @@ fun AddStatusBottomSheet(
         )
     }
 
+    var selectedAudioUri by remember { mutableStateOf<Uri?>(null) }
+    var showMusicPreview by remember { mutableStateOf(false) }
+    var isAudioPrepared by remember { mutableStateOf(false) }
+    var isAudioPlaying by remember { mutableStateOf(false) }
+    var musicPlayer by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
+
+    val audioPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (_: Exception) {
+                // Some providers return transient grants; uploading still gets a chance while the sheet is open.
+            }
+            selectedAudioUri = uri
+            showMusicPreview = true
+        }
+    }
+
+    androidx.compose.runtime.DisposableEffect(selectedAudioUri) {
+        val uri = selectedAudioUri
+        val player = if (uri != null) android.media.MediaPlayer() else null
+        musicPlayer = player
+        isAudioPrepared = false
+        isAudioPlaying = false
+        if (player != null && uri != null) {
+            player.setOnPreparedListener { isAudioPrepared = true }
+            player.setOnCompletionListener {
+                isAudioPlaying = false
+                try { it.seekTo(0) } catch (_: Exception) {}
+            }
+            try {
+                player.setDataSource(context, uri)
+                player.prepareAsync()
+            } catch (e: Exception) {
+                android.util.Log.w("StatusAudioPreview", "Could not preview selected audio: ${e.message}")
+                try { player.release() } catch (_: Exception) {}
+                musicPlayer = null
+            }
+        }
+        onDispose {
+            try { player?.release() } catch (_: Exception) {}
+            if (musicPlayer === player) musicPlayer = null
+            isAudioPlaying = false
+        }
+    }
+
     // Photo/Video picker launcher from real device
     val galleryPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -1039,7 +1092,7 @@ fun AddStatusBottomSheet(
         if (uri != null) {
             val mime = context.contentResolver.getType(uri) ?: ""
             val isVid = mime.startsWith("video") || uri.toString().lowercase().contains("video")
-            onPostMediaStatus(uri, "Captured moment 📸", if (isVid) "VIDEO" else "PHOTO")
+            onPostMediaStatus(uri, "Captured moment 📸", if (isVid) "VIDEO" else "PHOTO", selectedAudioUri?.toString().orEmpty())
         }
     }
 
@@ -1052,7 +1105,7 @@ fun AddStatusBottomSheet(
             bitmap.compress(Bitmap.CompressFormat.JPEG, 90, baos)
             val base64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
             val uri = Uri.parse("data:image/jpeg;base64,$base64")
-            onPostMediaStatus(uri, "Camera story 📷", "PHOTO")
+            onPostMediaStatus(uri, "Camera story 📷", "PHOTO", selectedAudioUri?.toString().orEmpty())
         }
     }
 
@@ -1140,9 +1193,7 @@ fun AddStatusBottomSheet(
                             .size(46.dp)
                             .clip(CircleShape)
                             .background(Color(0xFFF0F2F5))
-                            .clickable {
-                                Toast.makeText(context, "Music status picker ready!", Toast.LENGTH_SHORT).show()
-                            },
+                            .clickable { audioPicker.launch(arrayOf("audio/*")) },
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -1282,7 +1333,7 @@ fun AddStatusBottomSheet(
                             modifier = Modifier
                                 .aspectRatio(1f)
                                 .clickable {
-                                    onPostMediaStatus(Uri.parse(photoUrl), "Photo status update 📸", if (isVideo) "VIDEO" else "PHOTO")
+                                    onPostMediaStatus(Uri.parse(photoUrl), "Photo status update 📸", if (isVideo) "VIDEO" else "PHOTO", selectedAudioUri?.toString().orEmpty())
                                 }
                         ) {
                             AsyncImage(
@@ -1319,6 +1370,71 @@ fun AddStatusBottomSheet(
             }
         }
     }
+
+    if (showMusicPreview && selectedAudioUri != null) {
+        ModalBottomSheet(
+            onDismissRequest = {
+                try { musicPlayer?.pause() } catch (_: Exception) {}
+                isAudioPlaying = false
+                showMusicPreview = false
+            },
+            containerColor = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 24.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(Icons.Default.MusicNote, contentDescription = null, tint = VibeSyncGreen, modifier = Modifier.size(34.dp))
+                Text("Background music preview", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    selectedAudioUri?.lastPathSegment?.substringAfterLast('/') ?: "Selected audio track",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    "Attach only audio you have permission to use, such as royalty-free or open-source tracks.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.OutlinedButton(
+                        enabled = isAudioPrepared,
+                        onClick = {
+                            val player = musicPlayer
+                            if (player != null && isAudioPrepared) {
+                                try {
+                                    if (player.isPlaying) {
+                                        player.pause()
+                                        isAudioPlaying = false
+                                    } else {
+                                        player.start()
+                                        isAudioPlaying = true
+                                    }
+                                } catch (_: Exception) {
+                                    isAudioPlaying = false
+                                }
+                            }
+                        }
+                    ) {
+                        Icon(if (isAudioPlaying) Icons.Default.VolumeMute else Icons.Default.PlayArrow, contentDescription = null)
+                        Spacer(Modifier.size(6.dp))
+                        Text(if (isAudioPlaying) "Pause preview" else if (isAudioPrepared) "Play preview" else "Loading audio…")
+                    }
+                    Button(
+                        enabled = isAudioPrepared,
+                        onClick = {
+                            try { musicPlayer?.pause() } catch (_: Exception) {}
+                            isAudioPlaying = false
+                            showMusicPreview = false
+                        }
+                    ) { Text("Use track") }
+                }
+            }
+        }
+    }
 }
 
 // Full Screen Caption & Media Preview Dialog before uploading
@@ -1327,8 +1443,9 @@ fun StatusCaptionUploadPreviewDialog(
     mediaUri: Uri?,
     mediaType: String, // "PHOTO" or "VIDEO"
     initialCaption: String = "",
+    backgroundMusicUri: String = "",
     onDismiss: () -> Unit,
-    onPostStatus: (caption: String, bgStart: Long, bgEnd: Long) -> Unit
+    onPostStatus: (caption: String, bgStart: Long, bgEnd: Long, backgroundMusicUri: String) -> Unit
 ) {
     var captionText by remember { mutableStateOf(initialCaption) }
     var activeBgIndex by remember { mutableIntStateOf(0) }
@@ -1399,6 +1516,16 @@ fun StatusCaptionUploadPreviewDialog(
                         .background(Color.Black.copy(alpha = 0.25f))
                 ) {
                     Icon(Icons.Default.Palette, contentDescription = "Change background color", tint = Color.White, modifier = Modifier.size(18.dp))
+                }
+            }
+
+            if (backgroundMusicUri.isNotBlank()) {
+                Surface(shape = RoundedCornerShape(20.dp), color = Color.Black.copy(alpha = 0.3f), modifier = Modifier.padding(horizontal = 16.dp)) {
+                    Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.MusicNote, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Background music attached", color = Color.White, style = MaterialTheme.typography.labelMedium)
+                    }
                 }
             }
 
@@ -1475,7 +1602,7 @@ fun StatusCaptionUploadPreviewDialog(
 
                     IconButton(
                         onClick = {
-                            onPostStatus(captionText, currentBgStart, currentBgEnd)
+                            onPostStatus(captionText, currentBgStart, currentBgEnd, backgroundMusicUri)
                         },
                         modifier = Modifier
                             .size(48.dp)
@@ -1506,6 +1633,27 @@ fun StatusStoryViewer(
     val context = androidx.compose.ui.platform.LocalContext.current
     var currentIndex by remember(story.id, initialIndex) { mutableIntStateOf(initialIndex) }
     val activeStory = allUserStories.getOrElse(currentIndex) { story }
+
+    androidx.compose.runtime.DisposableEffect(activeStory.id, activeStory.backgroundMusicUrl) {
+        var player: android.media.MediaPlayer? = null
+        if (activeStory.backgroundMusicUrl.isNotBlank()) {
+            try {
+                player = android.media.MediaPlayer().apply {
+                    isLooping = true
+                    setDataSource(activeStory.backgroundMusicUrl)
+                    setOnPreparedListener { mediaPlayer ->
+                        try { mediaPlayer.start() } catch (_: Exception) {}
+                    }
+                    prepareAsync()
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("StatusStoryViewer", "Background music playback unavailable: ${e.message}")
+                try { player?.release() } catch (_: Exception) {}
+                player = null
+            }
+        }
+        onDispose { try { player?.release() } catch (_: Exception) {} }
+    }
 
     // Dynamic impression tracking when an Ad Story enters the viewport
     LaunchedEffect(activeStory.id) {
