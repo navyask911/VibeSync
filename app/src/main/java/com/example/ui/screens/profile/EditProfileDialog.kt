@@ -30,10 +30,13 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
+import coil.request.ImageRequest
 import com.example.data.model.UserPreferencesEntity
 import com.example.ui.theme.CoralPink
 import com.example.ui.theme.RomanticViolet
@@ -47,6 +50,7 @@ fun EditProfileDialog(
     onUpdatePreferences: (UserPreferencesEntity) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
     var editName by remember { mutableStateOf(preferences.userName) }
     var editJob by remember { mutableStateOf(preferences.userOccupation) }
     var editQualification by remember { mutableStateOf(preferences.userQualification) }
@@ -422,6 +426,7 @@ fun EditProfileDialog(
                             userDob = preferences.userDob,   // PRESERVED MANDATORY LOCKED
                             userGender = preferences.userGender, // PRESERVED MANDATORY LOCKED
                             avatarUrl = effectiveAvatar,
+                            avatarCacheVersion = if (effectiveAvatar != preferences.avatarUrl || photoJoinedString != preferences.profilePhotos) System.currentTimeMillis() else preferences.avatarCacheVersion,
                             profilePhotos = photoJoinedString,
                             userOccupation = editJob.trim().ifBlank { preferences.userOccupation },
                             userQualification = editQualification.trim().ifBlank { preferences.userQualification },
@@ -485,7 +490,14 @@ private fun EditPhotoSlot(
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             if (photoUrl.isNotBlank()) {
                 AsyncImage(
-                    model = photoUrl,
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(photoUrl)
+                        .memoryCacheKey("user-avatar:$photoUrl:${preferences.avatarCacheVersion}")
+                        .diskCacheKey("user-avatar:$photoUrl:${preferences.avatarCacheVersion}")
+                        .crossfade(true)
+                        .diskCachePolicy(CachePolicy.ENABLED)
+                        .memoryCachePolicy(CachePolicy.ENABLED)
+                        .build(),
                     contentDescription = label,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp))
