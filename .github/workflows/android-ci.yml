@@ -65,6 +65,7 @@ jobs:
           import json
           import os
           import re
+          import struct
           import xml.etree.ElementTree as ET
           from pathlib import Path
 
@@ -153,7 +154,24 @@ jobs:
               if not Path(resource).is_file():
                   raise SystemExit(f"Missing launcher asset: {resource}")
 
-          print("App config, Google Services package, manifest icon mappings, and adaptive icon assets validated.")
+          # Validate both legacy raster icons as well as adaptive icons for density-qualified devices.
+          expected_pixels = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
+          png_signature = b"\\x89PNG\\r\\n\\x1a\\n"
+          for density, expected_size in expected_pixels.items():
+              for icon_name in ("ic_launcher", "ic_launcher_round"):
+                  png_path = Path(f"app/src/main/res/mipmap-{density}/{icon_name}.png")
+                  if not png_path.is_file():
+                      raise SystemExit(f"Missing density-bucket launcher icon: {png_path}")
+                  data = png_path.read_bytes()
+                  if len(data) < 24 or data[:8] != png_signature:
+                      raise SystemExit(f"Invalid PNG launcher icon: {png_path}")
+                  width, height = struct.unpack(">II", data[16:24])
+                  if (width, height) != (expected_size, expected_size):
+                      raise SystemExit(
+                          f"{png_path} must be {expected_size}x{expected_size}; found {width}x{height}"
+                      )
+
+          print("App config, Google Services package, manifest mappings, adaptive icons, and all density buckets validated.")
           PY
 
       - name: JDK 21
