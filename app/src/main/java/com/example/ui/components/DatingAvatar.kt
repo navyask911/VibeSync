@@ -22,6 +22,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
+import coil.request.ImageRequest
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.layout.ContentScale
 import com.example.ui.theme.VerifiedBadgeBlue
 
@@ -35,8 +38,10 @@ fun DatingAvatar(
     isVerified: Boolean = false,
     isOnline: Boolean = false,
     avatarUrl: String = "",
+    avatarCacheVersion: Long = 0L,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     Box(
         modifier = modifier.size(size),
         contentAlignment = Alignment.Center
@@ -56,7 +61,14 @@ fun DatingAvatar(
         ) {
             if (avatarUrl.isNotBlank()) {
                 AsyncImage(
-                    model = avatarUrl,
+                    model = ImageRequest.Builder(context)
+                        .data(avatarUrl)
+                        .memoryCacheKey("profile-avatar:$avatarUrl:$avatarCacheVersion")
+                        .diskCacheKey("profile-avatar:$avatarUrl:$avatarCacheVersion")
+                        .crossfade(true)
+                        .diskCachePolicy(CachePolicy.ENABLED)
+                        .memoryCachePolicy(CachePolicy.ENABLED)
+                        .build(),
                     contentDescription = "$name's profile photo",
                     modifier = Modifier.size(size),
                     contentScale = ContentScale.Crop
