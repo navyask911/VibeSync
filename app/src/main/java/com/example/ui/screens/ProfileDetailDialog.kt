@@ -158,7 +158,8 @@ fun ProfileDetailDialog(
                                         colorEnd = profile.gradientColorEnd,
                                         size = 120.dp,
                                         isVerified = profile.isVerified,
-                                        avatarUrl = ""
+                                        avatarUrl = "",
+                                        avatarCacheVersion = profile.avatarCacheVersion
                                     )
                                 }
                             }
@@ -190,7 +191,8 @@ fun ProfileDetailDialog(
                                 colorEnd = profile.gradientColorEnd,
                                 size = 120.dp,
                                 isVerified = profile.isVerified,
-                                avatarUrl = profile.avatarUrl
+                                avatarUrl = profile.avatarUrl,
+                                avatarCacheVersion = profile.avatarCacheVersion
                             )
                         }
                     }
