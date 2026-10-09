@@ -72,7 +72,7 @@ import com.example.data.model.ApiCredentialRequestEntity
         LocalBusinessAnalyticsEventEntity::class,
         ApiCredentialRequestEntity::class
     ],
-    version = 40,
+    version = 41,
     exportSchema = false
 )
 abstract class DatingDatabase : RoomDatabase() {

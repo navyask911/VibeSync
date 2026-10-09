@@ -10,43 +10,42 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
 
 class VibeSyncApplication : Application(), ImageLoaderFactory {
-    override fun newImageLoader(): ImageLoader = CoilImageLoaderConfig.createImageLoader(this)
+    override fun newImageLoader(): ImageLoader {
+        return try {
+            CoilImageLoaderConfig.createImageLoader(this)
+        } catch (t: Throwable) {
+            Log.e("VibeSyncInit", "Safe init fallback: Coil image loader", t)
+            ImageLoader.Builder(this).build()
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
-
-        // Do not open or pre-warm Room from Application.onCreate(). Room is created lazily
-        // by the ViewModel; its queries and writes run through Room's executors.
         safeInit("message context") {
-            com.example.util.MessageHandler.appContext = this
+            com.example.util.MessageHandler.appContext = applicationContext
         }
 
-        // Optional services must not prevent the launcher activity from appearing.
-        safeInit("Firebase FCM") {
-            if (FirebaseApp.getApps(this).isEmpty()) {
-                FirebaseApp.initializeApp(this)
+        // Optional SDKs, keystore access and notification channel builders must not be on
+        // the critical process-start path. Initialize them only after onCreate has returned.
+        Thread({
+            safeInit("Firebase FCM") {
+                if (FirebaseApp.getApps(this).isEmpty()) FirebaseApp.initializeApp(this)
+                FirebaseMessaging.getInstance().isAutoInitEnabled = false
             }
-            // Respect the manifest opt-out; FCM can be enabled later by an explicit app flow.
-            FirebaseMessaging.getInstance().isAutoInitEnabled = false
-        }
-
-        safeInit("Tink keyset") {
-            com.example.util.TinkCryptoManager.initTink()
-            com.example.util.TinkCryptoManager.getOrCreateMyKeysetHandle(this)
-        }
-
-        safeInit("cross-device diagnostics") {
-            com.example.util.CrossDeviceDiagnosticManager.startDiagnosticListeners()
-        }
-
-        // startMonitoring performs its connectivity probe on Dispatchers.IO internally.
-        safeInit("Supabase diagnostics") {
-            com.example.data.repository.SyncDiagnosticsRepository.startMonitoring()
-        }
-
-        safeInit("notification channels") {
-            AppNotificationManager.initChannels(this)
-        }
+            safeInit("Tink keyset") {
+                com.example.util.TinkCryptoManager.initTink()
+                com.example.util.TinkCryptoManager.getOrCreateMyKeysetHandle(applicationContext)
+            }
+            safeInit("cross-device diagnostics") {
+                com.example.util.CrossDeviceDiagnosticManager.startDiagnosticListeners()
+            }
+            safeInit("Supabase diagnostics") {
+                com.example.data.repository.SyncDiagnosticsRepository.startMonitoring()
+            }
+            safeInit("notification channels") {
+                AppNotificationManager.initChannels(applicationContext)
+            }
+        }, "VibeSync-DeferredInit").start()
     }
 
     private inline fun safeInit(step: String, block: () -> Unit) {

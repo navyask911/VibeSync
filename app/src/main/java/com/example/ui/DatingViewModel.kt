@@ -222,16 +222,22 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     val selectedChannel: StateFlow<ChannelEntity?> = _selectedChannel.asStateFlow()
 
     init {
-        // Start system network monitoring
-        NetworkMonitor.getInstance().startMonitoring(application)
+        // Register connectivity callbacks off the first-render path.
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                NetworkMonitor.getInstance().startMonitoring(application)
+            } catch (t: Throwable) {
+                android.util.Log.e("VibeSyncInit", "Safe init fallback: network monitor", t)
+            }
+        }
         // WorkManager may initialize its own Room database; initialize/enqueue away from the UI thread.
         viewModelScope.launch(Dispatchers.IO) {
             schedulePhonebookSyncWorker()
             repository.purgeGhostNullData()
         }
 
-        // Initialize Auth State with 2500ms safety timeout on local storage
-        viewModelScope.launch {
+        // Session validation touches encrypted preferences / AndroidKeyStore: use IO.
+        viewModelScope.launch(Dispatchers.IO) {
             try {
                 val prefs = kotlinx.coroutines.withTimeoutOrNull(2500L) {
                     repository.userPreferences.firstOrNull()
@@ -282,7 +288,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
 
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             repository.userPreferences.collectLatest { prefs ->
                 if (prefs != null && prefs.isLoggedIn) {
                     val userId = if (prefs.verifiedMobileNumber.isNotBlank()) {

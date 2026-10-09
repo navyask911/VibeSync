@@ -1,9 +1,11 @@
 package com.example
 
+import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.FragmentActivity
 import com.example.ui.DatingAppRoot
@@ -13,13 +15,7 @@ import com.example.util.PlatformTruecallerVerificationClient
 import com.example.util.VibeSyncSessionManager
 
 class MainActivity : FragmentActivity() {
-
-  private val truecallerActivityResultLauncher =
-    registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-      safeInit("Truecaller activity result") {
-        PlatformTruecallerVerificationClient.onActivityResult(this, 0, result.resultCode, result.data)
-      }
-    }
+  private lateinit var truecallerActivityResultLauncher: ActivityResultLauncher<Intent>
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -29,30 +25,41 @@ class MainActivity : FragmentActivity() {
       enableEdgeToEdge()
     }
 
-    // Session storage uses local preferences only; guard failures so the app shell can still render.
-    safeInit("session storage") {
-      VibeSyncSessionManager.initialize(this)
+    safeInit("Truecaller launcher registration") {
+      truecallerActivityResultLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+          safeInit("Truecaller activity result") {
+            PlatformTruecallerVerificationClient.onActivityResult(this, 0, result.resultCode, result.data)
+          }
+        }
+      PlatformTruecallerVerificationClient.setActivityResultLauncher(truecallerActivityResultLauncher)
+      // Truecaller SDK initialization is deferred to the explicit user sign-in flow.
     }
 
-    // Register the Activity Result launcher, but do not initialize the Truecaller SDK at cold start.
-    // The SDK initialization stays in the explicit sign-in action.
-    safeInit("Truecaller launcher registration") {
-      PlatformTruecallerVerificationClient.setActivityResultLauncher(truecallerActivityResultLauncher)
+    safeInit("session bootstrap scheduling") {
+      Thread({
+        safeInit("session storage") {
+          VibeSyncSessionManager.initialize(applicationContext)
+        }
+      }, "VibeSync-SessionInit").start()
     }
 
     safeInit("initial deep link") {
       com.example.util.DeepLinkManager.handleIncomingUri(intent?.data)
     }
 
-    // No Room pre-warming or synchronous database reads/writes run in this Activity callback.
-    setContent {
-      MyApplicationTheme {
-        DatingAppRoot()
+    // No Room prewarm, synchronous database operation, WorkManager startup or realtime channel
+    // initialization is performed inside the Activity's cold-start callback.
+    safeInit("Compose app shell") {
+      setContent {
+        MyApplicationTheme {
+          DatingAppRoot()
+        }
       }
     }
   }
 
-  override fun onNewIntent(intent: android.content.Intent) {
+  override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
     setIntent(intent)
     safeInit("new deep link") {
