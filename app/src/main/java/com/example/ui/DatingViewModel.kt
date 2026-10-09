@@ -764,71 +764,24 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun swipe(profileId: String, direction: String) {
-        val currentDatingMatch = userPreferences.value?.activeDatingMatchId
-        if (currentDatingMatch != null && (direction == "LIKE" || direction == "SUPER_LIKE")) {
-            val partnerName = activeDatingMatchProfile.value?.name ?: "your partner"
-            viewModelScope.launch {
-                _toastMessage.emit("🔒 Devotion Lock Active: Committed to $partnerName. No multiple dating lock-ins allowed!")
-            }
-            return
+        val action = when (direction.uppercase()) {
+            "PASS", "NOPE", "DISMISS" -> "PASS"
+            "FRIEND_REQUEST", "ASK_FRIENDSHIP", "CONNECT", "LIKE", "SUPER_LIKE", "PROPOSAL" -> "FRIEND_REQUEST"
+            else -> "FRIEND_REQUEST"
         }
-
-        if (direction == "SUPER_LIKE") {
-            if (_superLikesCount.value <= 0) {
-                _superLikesCount.value = 5
-                viewModelScope.launch {
-                    _toastMessage.emit("⭐ 5 Daily Super Likes replenished!")
-                }
-            } else {
-                _superLikesCount.value -= 1
-            }
-        }
-
-        if (direction == "LIKE" || direction == "SUPER_LIKE") {
-            viewModelScope.launch {
-                val profile = repository.getProfileSync(profileId)
-                val outcome = repository.swipe(profileId, direction)
-                if (outcome is MatchOutcome.QuotaExceeded) {
-                    _toastMessage.emit("⚠️ ${outcome.message}")
-                    if (direction == "SUPER_LIKE") {
-                        _superLikesCount.value += 1
-                    }
-                } else if (profile != null) {
-                    _outgoingLikeNotification.value = Pair(profile, direction)
-                }
-                if (outcome is MatchOutcome.MutualMatch) {
-                    _activeMatchDialog.value = outcome
-                }
-            }
-            return
-        }
-
         viewModelScope.launch {
-            val outcome = repository.swipe(profileId, direction)
-            when (outcome) {
-                is MatchOutcome.MutualMatch -> {
-                    _activeMatchDialog.value = outcome
-                }
+            when (val outcome = repository.swipe(profileId, action)) {
                 is MatchOutcome.FriendshipRequestSent -> {
                     _outgoingFriendRequestNotification.value = Pair(outcome.profile, outcome.request)
-                    _toastMessage.emit("🤝 Friendship request sent to ${outcome.profile.name}! Notified to view your profile & bio to confirm.")
+                    _toastMessage.emit("Friendship request sent to ${outcome.profile.name}.")
                 }
-                is MatchOutcome.SuperLiked -> {
-                    _toastMessage.emit("Super Liked! ⭐")
-                }
-                is MatchOutcome.Liked -> {
-                    // Normal like
-                }
-                is MatchOutcome.Passed -> {
-                    // Normal pass
-                }
-                is MatchOutcome.QuotaExceeded -> {
-                    _toastMessage.emit("⚠️ ${outcome.message}")
-                }
+                is MatchOutcome.Passed -> Unit
+                is MatchOutcome.QuotaExceeded -> _toastMessage.emit(outcome.message)
                 is MatchOutcome.FriendRequestsPendingLimitReached -> {
-                    _toastMessage.emit("⚠️ ${outcome.message}")
+                    _toastMessage.emit(outcome.message)
                     _showFriendsListDialog.value = true
                 }
+                else -> Unit
             }
         }
     }
@@ -1880,12 +1833,15 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         _adminLoginInProgress.value = true
         _adminLoginError.value = null
         _isAdminLoggedIn.value = false
-
         viewModelScope.launch {
-            val authorized = com.example.util.SupabaseClientManager.isPlatformStaff()
-            if (authorized) {
+            val prefs = repository.userPreferences.first() ?: UserPreferencesEntity()
+            val expectedUser = prefs.adminUsername.ifBlank { "creator" }
+            val expectedPass = prefs.adminPassword.ifBlank { "9999" }
+            if (user.trim() != expectedUser || pass.trim() != expectedPass) {
+                _adminLoginError.value = "Invalid administrator username or passcode."
+            } else if (com.example.util.SupabaseClientManager.isPlatformStaff()) {
                 _isAdminLoggedIn.value = true
-                _toastMessage.emit("Platform staff authorization verified 🛡️")
+                _toastMessage.emit("Platform staff authorization verified.")
             } else {
                 _adminLoginError.value = "This account is not authorized for VibeSync operations."
             }
@@ -2018,14 +1974,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             .filter { it.isNotBlank() }
             .joinToString(" ")
         val current = repository.userPreferences.first() ?: UserPreferencesEntity()
-        val updated = current.copy(
-            userName = suggestedName.ifBlank { current.userName },
-            avatarUrl = avatarUrl.trim().ifBlank { current.avatarUrl },
-            isLoggedIn = true,
-            verifiedMobileNumber = cleanPhone,
-            isMobileVerified = true,
-            loginTimestamp = System.currentTimeMillis()
-        )
+
         UserSessionManager.saveVerifiedSession(
             context = getApplication(),
             phoneNumber = cleanPhone,
@@ -2034,6 +1983,42 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             expiresAtEpochSeconds = expiresAtEpochSeconds
         )
 
+        // Returners are looked up by their verified server-issued profile ID; never trust a local-only identity.
+        val existingProfile = SupabaseClientManager.fetchProfileById(profileId)
+        if (existingProfile != null) {
+            try {
+                database.profileDao().insertProfile(
+                    existingProfile.copy(
+                        phoneNumber = cleanPhone,
+                        avatarUrl = existingProfile.avatarUrl.ifBlank { avatarUrl.trim() }
+                    )
+                )
+            } catch (e: Exception) {
+                android.util.Log.w("AuthSessionManager", "Could not restore verified profile to Room: ${e.message}")
+            }
+        }
+
+        val restoredAvatar = existingProfile?.avatarUrl?.ifBlank { avatarUrl.trim() }
+            ?: avatarUrl.trim().ifBlank { current.avatarUrl }
+        val updated = current.copy(
+            userName = existingProfile?.name?.ifBlank { suggestedName } ?: suggestedName.ifBlank { current.userName },
+            userAge = existingProfile?.age ?: current.userAge,
+            userOccupation = existingProfile?.occupation?.ifBlank { current.userOccupation } ?: current.userOccupation,
+            userCity = existingProfile?.city?.ifBlank { current.userCity } ?: current.userCity,
+            userBio = existingProfile?.bio?.ifBlank { current.userBio } ?: current.userBio,
+            userGender = existingProfile?.gender?.ifBlank { current.userGender } ?: current.userGender,
+            userCountry = existingProfile?.country?.ifBlank { current.userCountry } ?: current.userCountry,
+            userCountryFlag = existingProfile?.countryFlag?.ifBlank { current.userCountryFlag } ?: current.userCountryFlag,
+            userPlace = existingProfile?.place?.ifBlank { current.userPlace } ?: current.userPlace,
+            userQualification = existingProfile?.qualification?.ifBlank { current.userQualification } ?: current.userQualification,
+            avatarUrl = restoredAvatar,
+            profilePhotos = existingProfile?.getPhotoList()?.joinToString("|||")?.ifBlank { current.profilePhotos } ?: current.profilePhotos,
+            isProfileCompleted = existingProfile != null || current.isProfileCompleted,
+            isLoggedIn = true,
+            verifiedMobileNumber = cleanPhone,
+            isMobileVerified = true,
+            loginTimestamp = System.currentTimeMillis()
+        )
         // The VibeSync session now exists, so register the current FCM token immediately.
         try {
             FirebaseMessaging.getInstance().token
