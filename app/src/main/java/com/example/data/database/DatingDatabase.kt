@@ -72,7 +72,7 @@ import com.example.data.model.ApiCredentialRequestEntity
         LocalBusinessAnalyticsEventEntity::class,
         ApiCredentialRequestEntity::class
     ],
-    version = 36,
+    version = 37,
     exportSchema = false
 )
 abstract class DatingDatabase : RoomDatabase() {
@@ -228,6 +228,12 @@ abstract class DatingDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_36_37 = object : Migration(36, 37) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `user_preferences` ADD COLUMN `lastFriendRequestResetTimestamp` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getDatabase(context: Context): DatingDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -242,7 +248,8 @@ abstract class DatingDatabase : RoomDatabase() {
                     MIGRATION_30_31,
                     MIGRATION_31_32,
                     MIGRATION_32_33,
-                    MIGRATION_33_34
+                    MIGRATION_33_34,
+                    MIGRATION_36_37
                 )
                  .fallbackToDestructiveMigration()
                  .fallbackToDestructiveMigrationOnDowngrade()
