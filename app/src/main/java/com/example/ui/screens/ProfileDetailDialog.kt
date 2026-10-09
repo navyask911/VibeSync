@@ -119,6 +119,8 @@ fun ProfileDetailDialog(
                         SubcomposeAsyncImage(
                             model = ImageRequest.Builder(context)
                                 .data(activePhoto)
+                                .memoryCacheKey("profile-avatar:${profile.id}:$activePhoto:${profile.avatarCacheVersion}")
+                                .diskCacheKey("profile-avatar:${profile.id}:$activePhoto:${profile.avatarCacheVersion}")
                                 .crossfade(true)
                                 .diskCachePolicy(CachePolicy.ENABLED)
                                 .memoryCachePolicy(CachePolicy.ENABLED)
