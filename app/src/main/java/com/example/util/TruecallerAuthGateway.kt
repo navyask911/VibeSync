@@ -10,6 +10,7 @@ import org.json.JSONObject
 data class VerifiedTruecallerIdentity(
     val phone: String,
     val profileId: String,
+    val accessToken: String,
     val sessionToken: String,
     val expiresAtEpochSeconds: Long,
     val firstName: String,
@@ -34,7 +35,7 @@ object TruecallerAuthGateway {
                 }.toString()
 
                 val request = Request.Builder()
-                    .url("${SupabaseClientManager.SUPABASE_URL}/functions/v1/vibesync-truecaller-auth")
+                    .url("${SupabaseClientManager.SUPABASE_URL}/functions/v1/verify-truecaller")
                     .addHeader("apikey", SupabaseClientManager.SUPABASE_PUBLISHABLE_KEY)
                     .addHeader("Authorization", "Bearer ${SupabaseClientManager.SUPABASE_PUBLISHABLE_KEY}")
                     .addHeader("Content-Type", "application/json")
@@ -58,9 +59,11 @@ object TruecallerAuthGateway {
 
                     val phone = root.optString("phone", "").trim()
                     val profileId = root.optString("profile_id", "").trim()
+                    val accessToken = root.optString("access_token", "").trim()
                     val sessionToken = root.optString("session_token", "").trim()
                     val expiresAt = root.optLong("expires_at", 0L)
-                    if (phone.isBlank() || profileId.isBlank() || sessionToken.isBlank() || expiresAt <= 0L) {
+                    if (phone.isBlank() || profileId.isBlank() || accessToken.isBlank() ||
+                        sessionToken.isBlank() || expiresAt <= 0L) {
                         return@withContext Result.failure(
                             IllegalStateException("Truecaller gateway returned an incomplete VibeSync session")
                         )
@@ -70,6 +73,7 @@ object TruecallerAuthGateway {
                         VerifiedTruecallerIdentity(
                             phone = phone,
                             profileId = profileId,
+                            accessToken = accessToken,
                             sessionToken = sessionToken,
                             expiresAtEpochSeconds = expiresAt,
                             firstName = root.optString("first_name", "").trim(),

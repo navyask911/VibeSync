@@ -55,7 +55,8 @@ object UserSessionManager {
         phoneNumber: String,
         sessionToken: String,
         profileId: String,
-        expiresAtEpochSeconds: Long
+        expiresAtEpochSeconds: Long,
+        accessToken: String = ""
     ) {
         try {
             val publicKeyset = TinkCryptoManager.getMyPublicKeysetJson(context)
@@ -73,7 +74,8 @@ object UserSessionManager {
                 sessionToken = sessionToken,
                 profileId = profileId,
                 phoneNumber = phoneNumber,
-                expiresAtEpochSeconds = expiresAtEpochSeconds
+                expiresAtEpochSeconds = expiresAtEpochSeconds,
+                accessToken = accessToken
             )
             Log.i(TAG, "Saved local Truecaller verification state and encrypted VibeSync session.")
         } catch (e: Exception) {

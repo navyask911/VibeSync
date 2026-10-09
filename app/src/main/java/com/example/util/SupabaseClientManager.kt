@@ -130,7 +130,7 @@ object SupabaseClientManager {
         val builder = Request.Builder()
             .url(url)
             .addHeader("apikey", SUPABASE_PUBLISHABLE_KEY)
-            .addHeader("Authorization", "Bearer ${SUPABASE_PUBLISHABLE_KEY}")
+            .addHeader("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_PUBLISHABLE_KEY)}")
             .addHeader("Content-Type", "application/json")
         VibeSyncSessionManager.getToken()?.let { builder.addHeader("x-vibesync-session", it) }
 

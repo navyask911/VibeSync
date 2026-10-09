@@ -37,7 +37,8 @@ object VibeSyncSessionManager {
         val sessionToken: String,
         val profileId: String,
         val phoneNumber: String,
-        val expiresAtEpochSeconds: Long
+        val expiresAtEpochSeconds: Long,
+        val accessToken: String = ""
     )
 
     @Volatile private var cachedSession: Session? = null
@@ -105,17 +106,19 @@ object VibeSyncSessionManager {
         sessionToken: String,
         profileId: String,
         phoneNumber: String,
-        expiresAtEpochSeconds: Long
+        expiresAtEpochSeconds: Long,
+        accessToken: String = ""
     ) {
         require(sessionToken.isNotBlank() && profileId.isNotBlank() && expiresAtEpochSeconds > 0L) {
             "Valid VibeSync session is required"
         }
-        val session = Session(sessionToken, profileId, phoneNumber.trim(), expiresAtEpochSeconds)
+        val session = Session(sessionToken, profileId, phoneNumber.trim(), expiresAtEpochSeconds, accessToken.trim())
         val payload = JSONObject().apply {
             put("session_token", session.sessionToken)
             put("profile_id", session.profileId)
             put("phone_number", session.phoneNumber)
             put("expires_at", session.expiresAtEpochSeconds)
+            put("access_token", session.accessToken)
         }.toString()
         prefs(context).edit().putString(SESSION_KEY, encrypt(payload)).apply()
         cachedSession = session
@@ -134,6 +137,13 @@ object VibeSyncSessionManager {
     fun getProfileId(context: Context? = appContext): String? =
         getSession(context)?.profileId?.takeIf { it.isNotBlank() }
 
+    /** Signed Supabase JWT used for PostgREST and Realtime Authorization: Bearer. */
+    fun getAccessToken(context: Context? = appContext): String? =
+        getSession(context)?.accessToken?.takeIf { it.isNotBlank() }
+
+    fun getAuthorizationToken(fallback: String, context: Context? = appContext): String =
+        getAccessToken(context) ?: fallback
+
     fun hasValidSession(context: Context? = appContext): Boolean =
         getSession(context) != null
 
@@ -150,7 +160,8 @@ object VibeSyncSessionManager {
                 sessionToken = json.optString("session_token", ""),
                 profileId = json.optString("profile_id", ""),
                 phoneNumber = json.optString("phone_number", ""),
-                expiresAtEpochSeconds = json.optLong("expires_at", 0L)
+                expiresAtEpochSeconds = json.optLong("expires_at", 0L),
+                accessToken = json.optString("access_token", "")
             )
         } catch (e: Throwable) {
             Log.w(TAG, "Corrupt VibeSync session discarded: ${e.message}")
@@ -255,7 +266,7 @@ object VibeSyncSessionManager {
             val request = okhttp3.Request.Builder()
                 .url("${SupabaseClientManager.SUPABASE_URL}/functions/v1/vibesync-delete-account")
                 .header("apikey", SupabaseClientManager.SUPABASE_PUBLISHABLE_KEY)
-                .header("Authorization", "Bearer ${SupabaseClientManager.SUPABASE_PUBLISHABLE_KEY}")
+                .header("Authorization", "Bearer ${getAuthorizationToken(SupabaseClientManager.SUPABASE_PUBLISHABLE_KEY, context)}")
                 .header("x-vibesync-session", token)
                 .header("Content-Type", "application/json")
                 .post("{}".toRequestBody(bodyType))

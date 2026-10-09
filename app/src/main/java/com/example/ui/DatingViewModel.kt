@@ -1818,6 +1818,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         phone: String,
         profileId: String,
         sessionToken: String,
+        accessToken: String,
         expiresAtEpochSeconds: Long,
         firstName: String = "",
         lastName: String = "",
@@ -1834,7 +1835,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             phoneNumber = cleanPhone,
             sessionToken = sessionToken,
             profileId = profileId,
-            expiresAtEpochSeconds = expiresAtEpochSeconds
+            expiresAtEpochSeconds = expiresAtEpochSeconds,
+            accessToken = accessToken
         )
 
         // Always check the verified phone as well as the gateway-issued profile ID. Older
@@ -1954,6 +1956,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     phone = identity.phone,
                     profileId = identity.profileId,
                     sessionToken = identity.sessionToken,
+                    accessToken = identity.accessToken,
                     expiresAtEpochSeconds = identity.expiresAtEpochSeconds,
                     firstName = identity.firstName,
                     lastName = identity.lastName,

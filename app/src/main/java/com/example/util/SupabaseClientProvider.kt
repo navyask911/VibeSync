@@ -42,8 +42,10 @@ object SupabaseClientProvider {
         val builder = Request.Builder()
             .url(url)
             .addHeader("apikey", SUPABASE_ANON_KEY)
-            .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
+            .addHeader("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_ANON_KEY)}")
             .addHeader("Content-Type", "application/json")
+
+        VibeSyncSessionManager.getToken()?.let { builder.addHeader("x-vibesync-session", it) }
 
         if (preferHeader != null) {
             builder.addHeader("Prefer", preferHeader)

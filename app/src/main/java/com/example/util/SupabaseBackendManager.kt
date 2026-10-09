@@ -106,6 +106,7 @@ object SupabaseBackendManager {
 
     private fun startWebSocketConnection() {
         val sessionToken = VibeSyncSessionManager.getToken().orEmpty()
+        val accessJwt = VibeSyncSessionManager.getAccessToken().orEmpty()
         val sessionProfileId = VibeSyncSessionManager.getProfileId().orEmpty()
         if (sessionToken.isBlank() || sessionProfileId.isBlank()) {
             _realtimeConnected.value = false
@@ -125,6 +126,8 @@ object SupabaseBackendManager {
                     "/realtime/v1/websocket?apikey=$SUPABASE_ANON_KEY&v=1.0.0"
 
             val requestBuilder = Request.Builder().url(wsUrl)
+                .header("apikey", SUPABASE_ANON_KEY)
+                .header("Authorization", "Bearer ${if (accessJwt.isNotBlank()) accessJwt else SUPABASE_ANON_KEY}")
                 .header("x-vibesync-session", sessionToken)
             val request = requestBuilder.build()
             realtimeWebSocket = wsHttpClient.newWebSocket(request, object : WebSocketListener() {
@@ -138,6 +141,7 @@ object SupabaseBackendManager {
                         put("topic", "realtime:public:chat_messages")
                         put("event", "phx_join")
                         put("payload", JSONObject().apply {
+                            if (accessJwt.isNotBlank()) put("access_token", accessJwt)
                             val config = JSONObject().apply {
                                 put("broadcast", JSONObject().apply { put("self", true) })
                                 val changes = JSONArray().apply {
@@ -447,7 +451,7 @@ object SupabaseBackendManager {
             val request = Request.Builder()
                 .url("$SUPABASE_URL/rest/v1/rpc/delete_encrypted_message")
                 .header("apikey", SUPABASE_ANON_KEY)
-                .header("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_ANON_KEY)}")
                 .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
                 .header("Content-Type", "application/json")
                 .post(body)
@@ -487,7 +491,7 @@ object SupabaseBackendManager {
             val request = Request.Builder()
                 .url("$SUPABASE_URL/rest/v1/chat_messages?select=message_id&match_id=eq.$encodedMatchId&is_read=eq.false&limit=100")
                 .header("apikey", SUPABASE_ANON_KEY)
-                .header("Authorization", "Bearer ${SUPABASE_ANON_KEY}")
+                .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_ANON_KEY)}")
                 .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
                 .get()
                 .build()
@@ -528,7 +532,7 @@ object SupabaseBackendManager {
             val request = Request.Builder()
                 .url("$SUPABASE_URL/rest/v1/rpc/ack_message_read")
                 .header("apikey", SUPABASE_ANON_KEY)
-                .header("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_ANON_KEY)}")
                 .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
                 .header("Content-Type", "application/json")
                 .post(body)
@@ -558,7 +562,7 @@ object SupabaseBackendManager {
             val request = Request.Builder()
                 .url("$SUPABASE_URL/rest/v1/rpc/ack_message_delivery")
                 .header("apikey", SUPABASE_ANON_KEY)
-                .header("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_ANON_KEY)}")
                 .header("x-vibesync-session", accessToken)
                 .header("Content-Type", "application/json")
                 .post(body)
@@ -598,7 +602,7 @@ object SupabaseBackendManager {
                 val request = Request.Builder()
                     .url("$SUPABASE_URL/rest/v1/rpc/get_public_identity_key_by_phone_hash")
                     .header("apikey", SUPABASE_ANON_KEY)
-                    .header("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                    .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_ANON_KEY)}")
                     .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
                     .header("Content-Type", "application/json")
                     .post(body)
@@ -650,7 +654,7 @@ object SupabaseBackendManager {
             val request = Request.Builder()
                 .url("$SUPABASE_URL/functions/v1/send-message")
                 .header("x-api-key", apiKey)
-                .header("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_ANON_KEY)}")
                 .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
                 .header("Content-Type", "application/json")
                 .post(body)
@@ -674,7 +678,7 @@ object SupabaseBackendManager {
         try {
             val request = Request.Builder()
                 .url("$SUPABASE_URL/functions/v1/get-r2-upload-url?file=$fileName")
-                .header("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_ANON_KEY)}")
                 .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
                 .get()
                 .build()
