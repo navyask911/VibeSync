@@ -448,14 +448,14 @@ fun BusinessDashboardScreen(
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                         BusinessSuiteActionCard(
-                            title = "Manage Store",
+                            title = "Manage Store / Catalog",
                             subtitle = "Catalog & profile",
                             icon = Icons.Default.Store,
                             modifier = Modifier.weight(1f),
                             onClick = { selectedAction = "catalog" }
                         )
                         BusinessSuiteActionCard(
-                            title = "Verification",
+                            title = "Verification Badge",
                             subtitle = com.example.data.model.VerificationTier.fromId(venue.verificationTier).badgeLabel,
                             icon = Icons.Default.Check,
                             modifier = Modifier.weight(1f),
@@ -464,7 +464,7 @@ fun BusinessDashboardScreen(
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                         BusinessSuiteActionCard(
-                            title = "Promotions",
+                            title = "Direct Promotions",
                             subtitle = "Offers & campaigns",
                             icon = Icons.Default.LocalOffer,
                             modifier = Modifier.weight(1f),
