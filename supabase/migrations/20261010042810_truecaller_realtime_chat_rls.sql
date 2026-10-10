@@ -12,8 +12,7 @@ set search_path = pg_catalog, public
 as $$
   select coalesce(
     nullif(current_setting('request.jwt.claim.sub', true), ''),
-    nullif((nullif(current_setting('request.jwt.claims', true), '')::jsonb)->>'sub', ''),
-    public.vibesync_current_profile_id()
+    nullif((nullif(current_setting('request.jwt.claims', true), '')::jsonb)->>'sub', '')
   );
 $$;
 
