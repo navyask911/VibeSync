@@ -52,6 +52,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -171,17 +172,28 @@ fun AuthLoginScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(3.dp)
                 ) {
-                    Image(
-                        painter = painterResource(id = com.example.R.drawable.ic_launcher_foreground),
-                        contentDescription = "VibeSync app logo",
-                        modifier = Modifier.size(52.dp).clip(RoundedCornerShape(15.dp))
-                    )
+                    Surface(
+                        modifier = Modifier
+                            .size(112.dp)
+                            .shadow(10.dp, RoundedCornerShape(28.dp))
+                            .clip(RoundedCornerShape(28.dp)),
+                        shape = RoundedCornerShape(28.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 2.dp
+                    ) {
+                        Image(
+                            painter = painterResource(id = com.example.R.drawable.ic_launcher_foreground),
+                            contentDescription = "VibeSync app logo",
+                            modifier = Modifier.fillMaxSize().padding(12.dp)
+                        )
+                    }
                     Text(
                         text = "VibeSync",
                         style = MaterialTheme.typography.headlineLarge.copy(
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 29.sp,
-                            letterSpacing = (-0.6).sp
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 32.sp,
+                            letterSpacing = (-0.8).sp,
+                            lineHeight = 38.sp
                         ),
                         textAlign = TextAlign.Center
                     )
@@ -189,7 +201,8 @@ fun AuthLoginScreen(
                         text = "Connect locally. Grow your business.",
                         style = MaterialTheme.typography.bodyMedium.copy(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 13.sp
+                            fontSize = 14.sp,
+                            letterSpacing = 0.1.sp
                         ),
                         textAlign = TextAlign.Center
                     )
