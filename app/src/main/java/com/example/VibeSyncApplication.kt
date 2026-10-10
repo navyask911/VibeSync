@@ -24,8 +24,15 @@ class VibeSyncApplication : Application(), ImageLoaderFactory {
         safeInit("message context") {
             com.example.util.MessageHandler.appContext = applicationContext
         }
-        // Recover any PENDING Room outbox rows every time the process starts.
+        // Recover outbox state on startup. A session-change callback below re-runs the sweep
+        // after Truecaller session restore/login finishes asynchronously.
         com.example.service.PendingMessageSyncScheduler.enqueueAllPending(applicationContext)
+        com.example.util.VibeSyncSessionManager.addSessionChangeListener { session ->
+            if (session != null) {
+                com.example.service.PendingMessageSyncScheduler.enqueueAllPending(applicationContext)
+                com.example.service.AppFirebaseMessagingService.refreshAndRegisterToken(applicationContext)
+            }
+        }
 
         // Optional SDKs, keystore access and notification channel builders must not be on
         // the critical process-start path. Initialize them only after onCreate has returned.
@@ -33,6 +40,9 @@ class VibeSyncApplication : Application(), ImageLoaderFactory {
             safeInit("Firebase FCM") {
                 if (FirebaseApp.getApps(this).isEmpty()) FirebaseApp.initializeApp(this)
                 FirebaseMessaging.getInstance().isAutoInitEnabled = false
+                // Explicit token retrieval remains supported with auto-init disabled; if the
+                // session is not restored yet, the session-change listener retries after login.
+                com.example.service.AppFirebaseMessagingService.refreshAndRegisterToken(applicationContext)
             }
             safeInit("Tink keyset") {
                 com.example.util.TinkCryptoManager.initTink()
