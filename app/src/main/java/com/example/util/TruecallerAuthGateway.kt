@@ -73,7 +73,7 @@ object TruecallerAuthGateway {
                         )
                     }
 
-                    val phone = root.optString("phone", "").trim()
+                    val phone = normalizeVerifiedPhone(root.optString("phone", ""))
                     val profileId = root.optString("profile_id", "").trim()
                     val accessToken = root.optString("access_jwt", "").trim().ifBlank {
                         root.optString("access_token", "").trim()
@@ -133,4 +133,17 @@ object TruecallerAuthGateway {
                 Result.failure(e)
             }
         }
+
+    private fun normalizeVerifiedPhone(rawValue: String): String {
+        val raw = rawValue.trim()
+        val digits = raw.filter(Char::isDigit)
+        if (digits.length < 10 || digits.length > 15) return ""
+        return when {
+            raw.startsWith("+") -> "+$digits"
+            digits.length == 10 -> "+91$digits"
+            digits.length == 11 && digits.startsWith("0") -> "+91${digits.drop(1)}"
+            digits.length == 12 && digits.startsWith("91") -> "+$digits"
+            else -> "+$digits"
+        }
+    }
 }
