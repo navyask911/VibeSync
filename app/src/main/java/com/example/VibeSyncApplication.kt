@@ -24,6 +24,8 @@ class VibeSyncApplication : Application(), ImageLoaderFactory {
         safeInit("message context") {
             com.example.util.MessageHandler.appContext = applicationContext
         }
+        // Recover any PENDING Room outbox rows every time the process starts.
+        com.example.service.PendingMessageSyncScheduler.enqueueAllPending(applicationContext)
 
         // Optional SDKs, keystore access and notification channel builders must not be on
         // the critical process-start path. Initialize them only after onCreate has returned.
