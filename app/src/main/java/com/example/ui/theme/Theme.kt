@@ -18,7 +18,7 @@ data class AppAccentPalette(
 
 /** Exactly nine user-selectable light and creamy pastel palettes. */
 val AppAccentPalettes = listOf(
-    AppAccentPalette("CREAM_BUTTER", "Cream Butter", "#F5E6B3", CreamButterAccent, "#FFF9E6", CreamButterBackground),
+    AppAccentPalette("CREAM_BUTTER", "Executive Indigo", "#6366F1", CreamButterAccent, "#EEF2FF", CreamButterBackground),
     AppAccentPalette("SOFT_MINT_CREAM", "Soft Mint Cream", "#C8E6C9", SoftMintCreamAccent, "#E8F5E9", SoftMintCreamBackground),
     AppAccentPalette("PEACH_CREAM", "Peach Cream", "#FFE0B2", PeachCreamAccent, "#FFF3E0", PeachCreamBackground),
     AppAccentPalette("LAVENDER_MIST", "Lavender Mist", "#E1BEE7", LavenderMistAccent, "#F3E5F5", LavenderMistBackground),
@@ -29,18 +29,18 @@ val AppAccentPalettes = listOf(
     AppAccentPalette("WARM_VANILLA", "Warm Vanilla", "#FFF9C4", WarmVanillaAccent, "#FFFDE7", WarmVanillaBackground)
 )
 
-private val ThemeLightCanvas = Color(0xFFF4F5F7)
+private val ThemeLightCanvas = Color(0xFFF8FAFC)
 private val ThemeLightCard = Color(0xFFFFFFFF)
-private val ThemeLightInput = Color(0xFFEAECEF)
-private val ThemeLightBorder = Color(0xFFE1E4EA)
-private val ThemeLightTextPrimary = PastelTextPrimary
+private val ThemeLightInput = Color(0xFFF1F5F9)
+private val ThemeLightBorder = Color(0xFFE2E8F0)
+private val ThemeLightTextPrimary = Color(0xFF0F172A)
 private val ThemeLightTextSecondary = Color(0xFF64748B)
-private val ThemeDarkCanvas = Color(0xFF090A0F)
-private val ThemeDarkCard = Color(0xFF181B22)
-private val ThemeDarkInput = Color(0xFF101217)
-private val ThemeDarkBorder = Color(0xFF232730)
-private val ThemeDarkTextPrimary = Color(0xFFFFFFFF)
-private val ThemeDarkTextSecondary = Color(0xFF767E8C)
+private val ThemeDarkCanvas = Color(0xFF0F172A)
+private val ThemeDarkCard = Color(0xFF1E293B)
+private val ThemeDarkInput = Color(0xFF111827)
+private val ThemeDarkBorder = Color(0xFF334155)
+private val ThemeDarkTextPrimary = Color(0xFFF8FAFC)
+private val ThemeDarkTextSecondary = Color(0xFF94A3B8)
 
 @Composable
 fun MyApplicationTheme(
@@ -68,14 +68,14 @@ fun MyApplicationTheme(
     }
     val palette = AppAccentPalettes.firstOrNull { it.id == resolvedAccentId } ?: AppAccentPalettes.first()
     val accent = palette.color
-    val foreground = if (isDark) ThemeDarkTextPrimary else PastelTextPrimary
+    val foreground = if (isDark) ThemeDarkTextPrimary else ThemeLightTextPrimary
     val colorScheme = if (isDark) {
         darkColorScheme(
-            primary = accent, onPrimary = PastelTextPrimary,
+            primary = accent, onPrimary = Color(0xFFFFFFFF),
             primaryContainer = accent, onPrimaryContainer = PastelTextPrimary,
-            secondary = accent, onSecondary = PastelTextPrimary,
+            secondary = accent, onSecondary = Color(0xFFFFFFFF),
             secondaryContainer = ThemeDarkInput, onSecondaryContainer = ThemeDarkTextPrimary,
-            tertiary = accent, onTertiary = PastelTextPrimary,
+            tertiary = accent, onTertiary = Color(0xFFFFFFFF),
             background = ThemeDarkCanvas, onBackground = ThemeDarkTextPrimary,
             surface = ThemeDarkCard, onSurface = ThemeDarkTextPrimary,
             surfaceVariant = ThemeDarkInput, onSurfaceVariant = ThemeDarkTextSecondary,
@@ -83,11 +83,11 @@ fun MyApplicationTheme(
         )
     } else {
         lightColorScheme(
-            primary = accent, onPrimary = PastelTextPrimary,
-            primaryContainer = palette.background, onPrimaryContainer = PastelTextPrimary,
-            secondary = accent, onSecondary = PastelTextPrimary,
-            secondaryContainer = palette.background, onSecondaryContainer = PastelTextPrimary,
-            tertiary = accent, onTertiary = PastelTextPrimary,
+            primary = accent, onPrimary = Color(0xFFFFFFFF),
+            primaryContainer = palette.background, onPrimaryContainer = ThemeLightTextPrimary,
+            secondary = accent, onSecondary = Color(0xFFFFFFFF),
+            secondaryContainer = palette.background, onSecondaryContainer = ThemeLightTextPrimary,
+            tertiary = accent, onTertiary = Color(0xFFFFFFFF),
             background = ThemeLightCanvas, onBackground = foreground,
             surface = ThemeLightCard, onSurface = foreground,
             surfaceVariant = palette.background, onSurfaceVariant = ThemeLightTextSecondary,
