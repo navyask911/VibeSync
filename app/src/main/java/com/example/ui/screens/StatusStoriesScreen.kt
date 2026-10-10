@@ -1478,7 +1478,8 @@ fun StatusCaptionUploadPreviewDialog(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Brush.linearGradient(listOf(Color(currentBgStart), Color(currentBgEnd))))
-                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .statusBarsPadding()
+                .navigationBarsPadding()
                 .imePadding(),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
