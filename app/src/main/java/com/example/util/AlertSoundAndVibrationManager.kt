@@ -2,12 +2,8 @@ package com.example.util
 
 import android.content.Context
 import android.media.AudioAttributes
-import android.media.AudioManager
 import android.media.Ringtone
 import android.media.RingtoneManager
-import android.media.ToneGenerator
-import android.os.Handler
-import android.os.Looper
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -24,7 +20,6 @@ object AlertSoundAndVibrationManager {
     private const val TAG = "AlertSoundVibManager"
     private var activePreviewRingtone: Ringtone? = null
     private val activeRingtones = linkedSetOf<Ringtone>()
-    private val activeToneGenerators = linkedSetOf<ToneGenerator>()
     private val audioLock = Any()
 
     /**
@@ -54,42 +49,28 @@ object AlertSoundAndVibrationManager {
         soundTone: String = "DEFAULT"
     ) {
         if (soundTone.equals("SILENT", ignoreCase = true)) return
+        playSelectedSystemSound(context, NotificationSoundPreferences.cachedSoundUri(context), isHighPriority)
+    }
 
+    fun playSelectedSystemSound(context: Context, selectedUri: String? = null, isHighPriority: Boolean = false) {
+        if (selectedUri == NotificationSoundPreferences.SILENT_URI) return
+        val parsedUri = selectedUri?.takeIf { it.isNotBlank() }
+            ?.let { runCatching { android.net.Uri.parse(it) }.getOrNull() }
+        val soundUri = parsedUri ?: RingtoneManager.getDefaultUri(
+            if (isHighPriority) RingtoneManager.TYPE_RINGTONE else RingtoneManager.TYPE_NOTIFICATION
+        ) ?: return
         try {
-            when (soundTone.uppercase()) {
-                "CLASSIC_CHIME" -> playToneSequence(ToneGenerator.TONE_PROP_BEEP, 120, 80)
-                "CRYSTAL_DROP" -> playToneSequence(ToneGenerator.TONE_PROP_ACK, 100, 70)
-                "WHISTLE_BREEZE" -> playToneSequence(ToneGenerator.TONE_PROP_PROMPT, 140, 90)
-                "GENTLE_VIBE" -> playToneSequence(ToneGenerator.TONE_CDMA_PIP, 100, 60)
-                "COSMIC_MATCH" -> playToneSequence(ToneGenerator.TONE_SUP_RINGTONE, 250, 100)
-                "SWEET_BELL" -> playToneSequence(ToneGenerator.TONE_PROP_BEEP2, 180, 85)
-                "DIGITAL_WAVE" -> playToneSequence(ToneGenerator.TONE_CDMA_HIGH_PBX_L, 200, 80)
-                "MARIMBA" -> playToneSequence(ToneGenerator.TONE_CDMA_ALERT_NETWORK_LITE, 220, 85)
-                else -> {
-                    // Default system notification or ringtone
-                    val soundUri = RingtoneManager.getDefaultUri(
-                        if (isHighPriority || soundTone.uppercase() == "STANDARD_RING") {
-                            RingtoneManager.TYPE_RINGTONE
-                        } else {
-                            RingtoneManager.TYPE_NOTIFICATION
-                        }
-                    )
-                    val ringtone = RingtoneManager.getRingtone(context.applicationContext, soundUri)
-                    if (ringtone != null) {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) ringtone.isLooping = false
-                        synchronized(audioLock) {
-                            activeRingtones.add(ringtone)
-                            activePreviewRingtone = ringtone
-                        }
-                        ringtone.play()
-                    } else {
-                        playToneSequence(ToneGenerator.TONE_PROP_BEEP, 150, 80)
-                    }
+            val ringtone = RingtoneManager.getRingtone(context.applicationContext, soundUri)
+            if (ringtone != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) ringtone.isLooping = false
+                synchronized(audioLock) {
+                    activeRingtones.add(ringtone)
+                    activePreviewRingtone = ringtone
                 }
+                ringtone.play()
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Error playing notification sound: ${e.message}")
-            playToneSequence(ToneGenerator.TONE_CDMA_PIP, 120, 70)
+            Log.w(TAG, "Unable to play selected Android system sound: ${e.message}")
         }
     }
 
@@ -101,10 +82,10 @@ object AlertSoundAndVibrationManager {
         if (toneOptionKey.equals("SILENT", ignoreCase = true)) return
 
         try {
-            playNotificationTone(
+            playSelectedSystemSound(
                 context = context,
-                isHighPriority = toneOptionKey in listOf("STANDARD_RING", "CELEBRATION", "COSMIC_MATCH"),
-                soundTone = toneOptionKey
+                selectedUri = NotificationSoundPreferences.cachedSoundUri(context),
+                isHighPriority = toneOptionKey in listOf("STANDARD_RING", "CELEBRATION", "COSMIC_MATCH")
             )
             triggerVibration(context, isHighPriority = false)
         } catch (e: Exception) {
@@ -132,30 +113,12 @@ object AlertSoundAndVibrationManager {
 
     private fun stopActiveAudio() {
         val ringtones: List<Ringtone>
-        val generators: List<ToneGenerator>
         synchronized(audioLock) {
             ringtones = activeRingtones.toList()
             activeRingtones.clear()
             activePreviewRingtone = null
-            generators = activeToneGenerators.toList()
-            activeToneGenerators.clear()
         }
         ringtones.forEach { try { it.stop() } catch (_: Exception) {} }
-        generators.forEach { try { it.stopTone(); it.release() } catch (_: Exception) {} }
-    }
-
-    private fun playToneSequence(toneType: Int, durationMs: Int, volume: Int) {
-        try {
-            val toneGen = ToneGenerator(AudioManager.STREAM_NOTIFICATION, volume)
-            synchronized(audioLock) { activeToneGenerators.add(toneGen) }
-            toneGen.startTone(toneType, durationMs)
-            Handler(Looper.getMainLooper()).postDelayed({
-                synchronized(audioLock) { activeToneGenerators.remove(toneGen) }
-                try { toneGen.release() } catch (_: Exception) {}
-            }, durationMs.toLong() + 100L)
-        } catch (e: Exception) {
-            Log.w(TAG, "ToneGenerator execution failed: ${e.message}")
-        }
     }
 
     /**

@@ -66,9 +66,12 @@ object AppNotificationManager {
     private const val TAG = "AppNotificationManager"
 
     // Channel IDs
-    const val CHANNEL_ID_MATCHES = "channel_vibe_matches_v3"
-    const val CHANNEL_ID_MESSAGES = "channel_vibe_messages_v3"
-    const val CHANNEL_ID_VIBESYNC_MESSAGES = "vibesync_messages"
+    @Volatile var CHANNEL_ID_MATCHES = "channel_vibe_matches_v4_default"
+        private set
+    @Volatile var CHANNEL_ID_MESSAGES = "channel_vibe_messages_v4_default"
+        private set
+    @Volatile var CHANNEL_ID_VIBESYNC_MESSAGES = "vibesync_messages_v4_default"
+        private set
     const val CHANNEL_ID_ALERTS = "channel_vibe_alerts_v3"
     const val CHANNEL_ID_OTP = "channel_vibe_otp_v3"
 
@@ -182,7 +185,13 @@ object AppNotificationManager {
             val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 ?: return
 
-            val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            val selectedSound = NotificationSoundPreferences.cachedSoundUri(context)
+            val soundUri = when {
+                selectedSound == NotificationSoundPreferences.SILENT_URI -> null
+                !selectedSound.isNullOrBlank() -> runCatching { Uri.parse(selectedSound) }.getOrNull()
+                else -> RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            }
+            updateSoundChannelIds(selectedSound)
             val audioAttributes = AudioAttributes.Builder()
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .setUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_INSTANT)
@@ -267,6 +276,23 @@ object AppNotificationManager {
             )
             Log.d(TAG, "VibeSync-style notification channels initialized successfully")
         }
+    }
+
+    fun updateNotificationSound(context: Context, selectedUri: String?) {
+        NotificationSoundPreferences.cacheSoundUri(context, selectedUri)
+        updateSoundChannelIds(selectedUri)
+        initChannels(context.applicationContext)
+    }
+
+    private fun updateSoundChannelIds(selectedUri: String?) {
+        val suffix = when {
+            selectedUri == NotificationSoundPreferences.SILENT_URI -> "silent"
+            selectedUri.isNullOrBlank() -> "default"
+            else -> selectedUri.hashCode().toUInt().toString(16)
+        }
+        CHANNEL_ID_MESSAGES = "channel_vibe_messages_v4_${suffix}"
+        CHANNEL_ID_VIBESYNC_MESSAGES = "vibesync_messages_v4_${suffix}"
+        CHANNEL_ID_MATCHES = "channel_vibe_matches_v4_${suffix}"
     }
 
     /**
