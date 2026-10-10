@@ -270,10 +270,12 @@ object SupabaseClientManager {
                     "aac" -> "audio/aac"
                     else -> "application/octet-stream"
                 }
-            val bytes = context.contentResolver.openInputStream(mediaUri)?.use { it.readBytes() }
-                ?: throw IllegalArgumentException("Selected story media could not be read.")
-            if (bytes.isEmpty()) throw IllegalArgumentException("Selected story media is empty.")
-            if (bytes.size > 100 * 1024 * 1024) throw IllegalArgumentException("Story media must be smaller than 100 MB.")
+            val maxBytes = 100L * 1024L * 1024L
+            val declaredLength = runCatching {
+                context.contentResolver.openAssetFileDescriptor(mediaUri, "r")?.use { it.length } ?: -1L
+            }.getOrDefault(-1L)
+            if (declaredLength == 0L) throw IllegalArgumentException("Selected story media is empty.")
+            if (declaredLength > maxBytes) throw IllegalArgumentException("Story media must be smaller than 100 MB.")
 
             val extension = when (contentType.lowercase()) {
                 "image/jpeg" -> "jpg"
@@ -290,13 +292,37 @@ object SupabaseClientManager {
             val encodedPath = Uri.encode(objectPath, "/")
             val uploadUrl = "$SUPABASE_URL/storage/v1/object/status-media/$encodedPath"
             val sessionToken = VibeSyncSessionManager.getToken().orEmpty()
+            val streamingBody = object : okhttp3.RequestBody() {
+                override fun contentType(): okhttp3.MediaType = contentType.toMediaType()
+                override fun contentLength(): Long = declaredLength
+
+                override fun writeTo(sink: okio.BufferedSink) {
+                    val input = context.contentResolver.openInputStream(mediaUri)
+                        ?: throw IllegalArgumentException("Selected story media could not be opened.")
+                    input.use { stream ->
+                        val buffer = ByteArray(16 * 1024)
+                        var total = 0L
+                        while (true) {
+                            val count = stream.read(buffer)
+                            if (count < 0) break
+                            if (count == 0) continue
+                            total += count
+                            if (total > maxBytes) {
+                                throw IllegalArgumentException("Story media must be smaller than 100 MB.")
+                            }
+                            sink.write(buffer, 0, count)
+                        }
+                        if (total == 0L) throw IllegalArgumentException("Selected story media is empty.")
+                    }
+                }
+            }
             val request = Request.Builder()
                 .url(uploadUrl)
                 .header("apikey", SUPABASE_PUBLISHABLE_KEY)
                 .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_PUBLISHABLE_KEY)}")
                 .apply { if (sessionToken.isNotBlank()) header("x-vibesync-session", sessionToken) }
                 .header("Content-Type", contentType)
-                .post(bytes.toRequestBody(contentType.toMediaType()))
+                .post(streamingBody)
                 .build()
             httpClient.newCall(request).execute().use { response ->
                 val responseBody = response.body?.string().orEmpty()
