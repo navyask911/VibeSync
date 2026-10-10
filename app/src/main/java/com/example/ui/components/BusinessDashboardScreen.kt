@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -127,305 +128,269 @@ fun BusinessDashboardScreen(
     onNavigateBack: () -> Unit
 ) {
     val context = LocalContext.current
-    var selectedTimeframe by remember { mutableStateOf("This Week") } // "Today", "This Week", "This Month", "All Time"
-    var selectedMetricTab by remember { mutableIntStateOf(0) } // 0: Traffic & Footfall, 1: Engagement & Leads, 2: Popular Menu
-    var showExportDialog by remember { mutableStateOf(false) }
+    var selectedTimeframe by remember { mutableStateOf("This Week") }
     var venueSearchQuery by remember { mutableStateOf("") }
-    var venueSearchActive by remember { mutableStateOf(false) }
+    var showFilterOptions by remember { mutableStateOf(false) }
+    var verifiedOnly by remember { mutableStateOf(false) }
+    var showExportDialog by remember { mutableStateOf(false) }
+    var selectedAction by remember { mutableStateOf<String?>(null) }
+    var localAnalytics by remember {
+        mutableStateOf(com.example.data.model.LocalBusinessAnalyticsEntity(business_id = venue.id))
+    }
 
-    // Pure Local Room SQLite Analytics (Requirement 5: Bound to businessId, 0 Supabase Weight)
-    var localAnalytics by remember { mutableStateOf(com.example.data.model.LocalBusinessAnalyticsEntity(business_id = venue.id)) }
-    
     LaunchedEffect(venue.id, selectedTimeframe) {
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            val db = com.example.data.database.DatingDatabase.getDatabase(context)
+            val database = com.example.data.database.DatingDatabase.getDatabase(context)
             val now = System.currentTimeMillis()
             val sinceTimestamp = when (selectedTimeframe) {
-                "Today" -> {
-                    val cal = java.util.Calendar.getInstance().apply {
-                        set(java.util.Calendar.HOUR_OF_DAY, 0)
-                        set(java.util.Calendar.MINUTE, 0)
-                        set(java.util.Calendar.SECOND, 0)
-                        set(java.util.Calendar.MILLISECOND, 0)
-                    }
-                    cal.timeInMillis
-                }
-                "This Week" -> now - (7L * 24 * 60 * 60 * 1000)
-                "This Month" -> now - (30L * 24 * 60 * 60 * 1000)
+                "Today" -> java.util.Calendar.getInstance().apply {
+                    set(java.util.Calendar.HOUR_OF_DAY, 0)
+                    set(java.util.Calendar.MINUTE, 0)
+                    set(java.util.Calendar.SECOND, 0)
+                    set(java.util.Calendar.MILLISECOND, 0)
+                }.timeInMillis
+                "This Week" -> now - 7L * 24 * 60 * 60 * 1000
+                "This Month" -> now - 30L * 24 * 60 * 60 * 1000
                 else -> 0L
             }
-            
-            val analyticsDao = db.localBusinessAnalyticsDao()
-            val primaryTotal = analyticsDao.getAnalyticsByBusinessId(venue.id)
-            
-            if (sinceTimestamp == 0L) {
-                val views = analyticsDao.countAllEvents(venue.id, "VIEW")
-                val visits = analyticsDao.countAllEvents(venue.id, "VISIT")
-                val navigations = analyticsDao.countAllEvents(venue.id, "NAVIGATION")
-                val inquiries = analyticsDao.countAllEvents(venue.id, "INQUIRY")
-                localAnalytics = com.example.data.model.LocalBusinessAnalyticsEntity(
-                    business_id = venue.id,
-                    views_count = views.coerceAtLeast(primaryTotal?.views_count ?: 0),
-                    visits_count = visits.coerceAtLeast(primaryTotal?.visits_count ?: 0),
-                    navigations_count = navigations.coerceAtLeast(primaryTotal?.navigations_count ?: 0),
-                    inquiries_count = inquiries.coerceAtLeast(primaryTotal?.inquiries_count ?: 0),
-                    updated_at = now
-                )
-            } else {
-                val views = analyticsDao.countEventsSince(venue.id, "VIEW", sinceTimestamp)
-                val visits = analyticsDao.countEventsSince(venue.id, "VISIT", sinceTimestamp)
-                val navigations = analyticsDao.countEventsSince(venue.id, "NAVIGATION", sinceTimestamp)
-                val inquiries = analyticsDao.countEventsSince(venue.id, "INQUIRY", sinceTimestamp)
-                localAnalytics = com.example.data.model.LocalBusinessAnalyticsEntity(
-                    business_id = venue.id,
-                    views_count = views,
-                    visits_count = visits,
-                    navigations_count = navigations,
-                    inquiries_count = inquiries,
-                    updated_at = now
-                )
-            }
+            val dao = database.localBusinessAnalyticsDao()
+            val stored = dao.getAnalyticsByBusinessId(venue.id)
+            val views = if (sinceTimestamp == 0L) dao.countAllEvents(venue.id, "VIEW")
+                else dao.countEventsSince(venue.id, "VIEW", sinceTimestamp)
+            val visits = if (sinceTimestamp == 0L) dao.countAllEvents(venue.id, "VISIT")
+                else dao.countEventsSince(venue.id, "VISIT", sinceTimestamp)
+            val navigations = if (sinceTimestamp == 0L) dao.countAllEvents(venue.id, "NAVIGATION")
+                else dao.countEventsSince(venue.id, "NAVIGATION", sinceTimestamp)
+            val inquiries = if (sinceTimestamp == 0L) dao.countAllEvents(venue.id, "INQUIRY")
+                else dao.countEventsSince(venue.id, "INQUIRY", sinceTimestamp)
+            localAnalytics = com.example.data.model.LocalBusinessAnalyticsEntity(
+                business_id = venue.id,
+                views_count = if (sinceTimestamp == 0L) views.coerceAtLeast(stored?.views_count ?: 0) else views,
+                visits_count = if (sinceTimestamp == 0L) visits.coerceAtLeast(stored?.visits_count ?: 0) else visits,
+                navigations_count = if (sinceTimestamp == 0L) navigations.coerceAtLeast(stored?.navigations_count ?: 0) else navigations,
+                inquiries_count = if (sinceTimestamp == 0L) inquiries.coerceAtLeast(stored?.inquiries_count ?: 0) else inquiries,
+                updated_at = now
+            )
         }
     }
 
-    val analyticsMap by BusinessHubSyncManager.realtimeAnalytics.collectAsState()
-    val currentAnalytics = analyticsMap[venue.id] ?: remember(venue.id) {
-        BusinessHubSyncManager.getAnalyticsForVenue(venue.id, venue.name)
+    val exportAnalytics = remember(venue.id, localAnalytics) {
+        VenueAnalyticsData(
+            venueId = venue.id,
+            venueName = venue.name,
+            totalImpressions = localAnalytics.views_count,
+            totalVisitors = localAnalytics.visits_count,
+            activeBrowsingNow = 0,
+            directionRequests = localAnalytics.navigations_count,
+            callInquiries = localAnalytics.inquiries_count,
+            couponRedemptions = 0,
+            storyViews = 0,
+            avgDwellMinutes = 0,
+            growthRatePercentage = 0.0
+        )
     }
-
-    // Live Pulse animation
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-    val pulseAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.3f,
-        targetValue = 1.0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1000, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulseAlpha"
-    )
 
     if (showExportDialog) {
         ExportReportDialog(
             venue = venue,
-            analytics = currentAnalytics,
+            analytics = exportAnalytics,
             onDismiss = { showExportDialog = false }
         )
     }
 
+    if (selectedAction != null) {
+        val title: String
+        val detail: String
+        when (selectedAction) {
+            "catalog" -> {
+                title = "Manage Store / Catalog"
+                detail = buildString {
+                    append(venue.name)
+                    append("\n")
+                    append(venue.category)
+                    append("\n")
+                    append(venue.address.ifBlank { venue.city })
+                    append("\n\n")
+                    append("Store profile includes ${venue.photosList.size} photo(s), contact details, offers and listing information.")
+                }
+            }
+            "verification" -> {
+                title = "Verification Badge"
+                detail = "${venue.tierEnum.title}\nCurrent status: ${if (venue.isVerified) "Verified" else "Pending verification"}\nBusiness name: ${venue.name}"
+            }
+            "promotions" -> {
+                title = "Direct Promotions"
+                detail = venue.activeOfferSummary.ifBlank { "No active promotion is configured for this business yet." }
+            }
+            else -> {
+                title = "Business Analytics"
+                detail = "Profile views: ${localAnalytics.views_count}\nConnects: ${localAnalytics.visits_count + localAnalytics.navigations_count}\nInquiries: ${localAnalytics.inquiries_count}\nPeriod: $selectedTimeframe"
+            }
+        }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { selectedAction = null },
+            title = { Text(title, fontWeight = FontWeight.Bold) },
+            text = { Text(detail, color = MaterialTheme.colorScheme.onSurfaceVariant) },
+            confirmButton = {
+                Button(onClick = { selectedAction = null }) { Text("Done") }
+            },
+            containerColor = MaterialTheme.colorScheme.surface,
+            titleContentColor = MaterialTheme.colorScheme.onSurface
+        )
+    }
+
+    val filteredVenues = allVenues.filter { candidate ->
+        (!verifiedOnly || candidate.isVerified) &&
+            (venueSearchQuery.isBlank() ||
+                candidate.name.contains(venueSearchQuery.trim(), ignoreCase = true) ||
+                candidate.address.contains(venueSearchQuery.trim(), ignoreCase = true) ||
+                candidate.category.contains(venueSearchQuery.trim(), ignoreCase = true))
+    }
+    val connectCount = localAnalytics.visits_count + localAnalytics.navigations_count
+    val microValues = listOf(
+        localAnalytics.views_count.coerceAtLeast(0),
+        connectCount.coerceAtLeast(0),
+        localAnalytics.inquiries_count.coerceAtLeast(0)
+    )
+
     Scaffold(
+        modifier = Modifier.testTag("business_dashboard_screen"),
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             Surface(
-                color = Color(0xFF10131B),
-                shadowElevation = 8.dp
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .statusBarsPadding()
+                        .padding(horizontal = 18.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(
-                                onClick = onNavigateBack,
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .background(Color(0xFF1A1F2C), CircleShape)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "Back",
-                                    tint = Color.White
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = "Business Intelligence",
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 18.sp
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = Color(0xFF00E5FF).copy(alpha = 0.15f),
-                                        border = BorderStroke(1.dp, Color(0xFF00E5FF).copy(alpha = 0.5f))
-                                    ) {
-                                        Text(
-                                            text = "LIVE CLOUD",
-                                            color = Color(0xFF00E5FF),
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.ExtraBold,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
-                                    }
-                                }
-                                Surface(color = Color(0xFFFFF9E6), shape = RoundedCornerShape(8.dp)) {
-                                    Text(
-                                        text = venue.name,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = Color(0xFF1E1E1E),
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
-                                    )
-                                }
-                            }
+                        IconButton(onClick = onNavigateBack) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = MaterialTheme.colorScheme.onSurface
+                            )
                         }
-
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            // Quick Export Button
-                            IconButton(
-                                onClick = { showExportDialog = true },
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .background(Color(0xFF1E2330), CircleShape)
-                                    .testTag("btn_export_report_top")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Download,
-                                    contentDescription = "Export Report",
-                                    tint = Color(0xFF00E5FF),
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.width(8.dp))
-
-                            // Live pulse badge
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = Color(0xFF14241C),
-                                border = BorderStroke(1.dp, LikeGreen.copy(alpha = 0.5f))
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(8.dp)
-                                            .clip(CircleShape)
-                                            .background(LikeGreen.copy(alpha = pulseAlpha))
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = "${currentAnalytics.activeBrowsingNow} Live",
-                                        color = LikeGreen,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp
-                                    )
-                                }
-                            }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Business Suite",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                venue.name,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
-                    }
-
-                    OutlinedTextField(
-                        value = venueSearchQuery,
-                        onValueChange = { venueSearchQuery = it },
-                        modifier = Modifier.fillMaxWidth().height(52.dp).padding(top = 0.dp)
-                            .testTag("input_business_suite_search"),
-                        placeholder = { Text("Search businesses", maxLines = 1) },
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                        singleLine = true,
-                        maxLines = 1,
-                        shape = RoundedCornerShape(18.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color(0xFF00E5FF),
-                            unfocusedBorderColor = Color(0xFF2E384D),
-                            focusedContainerColor = Color(0xFF1E2330),
-                            unfocusedContainerColor = Color(0xFF1E2330)
-                        )
-                    )
-                    if (venueSearchQuery.isNotBlank()) {
-                        val matchedVenues = allVenues.filter {
-                            it.name.contains(venueSearchQuery.trim(), ignoreCase = true)
-                        }.take(5)
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            if (matchedVenues.isEmpty()) {
-                                Text(
-                                    "No matching businesses",
-                                    color = Color(0xFF8A99AD),
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
-                                )
-                            } else {
-                                matchedVenues.forEach { candidate ->
-                                    Surface(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 2.dp)
-                                            .clickable {
-                                                onSelectVenue(candidate)
-                                                venueSearchQuery = candidate.name
-                                            },
-                                        color = Color(0xFFFFF9E6),
-                                        shape = RoundedCornerShape(10.dp)
-                                    ) {
-                                        Text(
-                                            text = candidate.name,
-                                            style = MaterialTheme.typography.titleMedium,
-                                            color = Color(0xFF1E1E1E),
-                                            fontWeight = FontWeight.Bold,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Venue Selector Row (if multiple venues available)
-                    if (allVenues.size > 1) {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.fillMaxWidth()
+                        IconButton(
+                            onClick = { showExportDialog = true },
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .testTag("btn_export_report_top")
                         ) {
-                            items(allVenues) { v ->
-                                val isSelected = v.id == venue.id
-                                Surface(
-                                    shape = RoundedCornerShape(16.dp),
-                                    color = if (isSelected) Color(0xFF00E5FF).copy(alpha = 0.2f) else Color(0xFF1E2330),
-                                    border = BorderStroke(1.dp, if (isSelected) Color(0xFF00E5FF) else Color(0xFF2E384D)),
-                                    modifier = Modifier.clickable { onSelectVenue(v) }
-                                ) {
-                                    Text(
-                                        text = v.name,
-                                        color = if (isSelected) Color(0xFF00E5FF) else Color.White,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                        fontSize = 12.sp,
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                                    )
+                            Icon(
+                                Icons.Default.Download,
+                                contentDescription = "Export report",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .padding(horizontal = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Search,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedTextField(
+                            value = venueSearchQuery,
+                            onValueChange = { venueSearchQuery = it },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("input_business_suite_search"),
+                            placeholder = { Text("Search businesses", maxLines = 1) },
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Color.Transparent,
+                                unfocusedBorderColor = Color.Transparent,
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                                unfocusedTextColor = MaterialTheme.colorScheme.onSurface
+                            )
+                        )
+                        IconButton(onClick = { showFilterOptions = !showFilterOptions }) {
+                            Icon(
+                                Icons.Default.Star,
+                                contentDescription = "Filter businesses",
+                                tint = if (verifiedOnly) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    if (showFilterOptions) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            FilterChip(
+                                selected = verifiedOnly,
+                                onClick = { verifiedOnly = !verifiedOnly },
+                                label = { Text("Verified only") },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
                                 }
-                            }
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            TextButtonLikeReset(onClick = {
+                                verifiedOnly = false
+                                venueSearchQuery = ""
+                            })
                         }
                     }
                 }
             }
-        },
-        containerColor = Color(0xFF0B0D14)
-    ) { paddingValues ->
+        }
+    ) { innerPadding ->
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues)
-                .testTag("business_dashboard_screen"),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(innerPadding),
+            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(22.dp)
         ) {
-            // Section 1: Timeframe & Metric Tabs Selector
             item {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    // Timeframe filter chips
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        "Overview",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Text(
+                        "$selectedTimeframe · ${venue.category}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -433,366 +398,139 @@ fun BusinessDashboardScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         listOf("Today", "This Week", "This Month", "All Time").forEach { timeframe ->
-                            val isSelected = selectedTimeframe == timeframe
                             FilterChip(
-                                selected = isSelected,
+                                selected = selectedTimeframe == timeframe,
                                 onClick = { selectedTimeframe = timeframe },
-                                label = { Text(timeframe, fontSize = 12.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = Color(0xFF00E5FF),
-                                    selectedLabelColor = Color.Black,
-                                    containerColor = Color(0xFF161B26),
-                                    labelColor = Color(0xFF8A99AD)
-                                ),
-                                border = FilterChipDefaults.filterChipBorder(
-                                    enabled = true,
-                                    selected = isSelected,
-                                    borderColor = Color(0xFF283144),
-                                    selectedBorderColor = Color(0xFF00E5FF)
-                                )
+                                label = { Text(timeframe) }
                             )
                         }
                     }
-
-                    // Key Metric Highlights Grid (Bound to local Room SQLite metrics for venue.id)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        MetricKpiCard(
-                            title = "Total Views",
-                            value = formatNumber(localAnalytics.views_count),
-                            growth = "+${currentAnalytics.growthRatePercentage}%",
-                            icon = Icons.Default.Visibility,
-                            iconColor = Color(0xFF00E5FF),
-                            modifier = Modifier.weight(1f)
-                        )
-                        MetricKpiCard(
-                            title = "Profile Visits",
-                            value = formatNumber(localAnalytics.visits_count),
-                            growth = "Verified visits",
-                            icon = Icons.Default.People,
-                            iconColor = LikeGreen,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        MetricKpiCard(
-                            title = "Map Navigations",
-                            value = formatNumber(localAnalytics.navigations_count),
-                            growth = "High intent",
-                            icon = Icons.Default.Directions,
-                            iconColor = Color(0xFFFFB300),
-                            modifier = Modifier.weight(1f)
-                        )
-                        MetricKpiCard(
-                            title = "Direct Inquiries",
-                            value = formatNumber(localAnalytics.inquiries_count),
-                            growth = "Avg dwell ${currentAnalytics.avgDwellMinutes}m",
-                            icon = Icons.Default.Call,
-                            iconColor = Color(0xFFFF007A),
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
                 }
             }
 
-            // Section 2: Primary Visual Tabs
             item {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = Color(0xFF141923),
-                    border = BorderStroke(1.dp, Color(0xFF242C3D))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(9.dp)
                 ) {
-                    PrimaryTabRow(
-                        selectedTabIndex = selectedMetricTab,
-                        containerColor = Color.Transparent,
-                        contentColor = Color(0xFF00E5FF)
-                    ) {
-                        Tab(
-                            selected = selectedMetricTab == 0,
-                            onClick = { selectedMetricTab = 0 },
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.ShowChart, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Traffic Trend", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
+                    ExecutiveMetricCard(
+                        title = "Profile Views",
+                        value = formatExecutiveMetric(localAnalytics.views_count),
+                        icon = Icons.Default.Visibility,
+                        values = microValues,
+                        modifier = Modifier.weight(1f)
+                    )
+                    ExecutiveMetricCard(
+                        title = "Connects",
+                        value = formatExecutiveMetric(connectCount),
+                        icon = Icons.Default.People,
+                        values = microValues,
+                        modifier = Modifier.weight(1f)
+                    )
+                    ExecutiveMetricCard(
+                        title = "Inquiries",
+                        value = formatExecutiveMetric(localAnalytics.inquiries_count),
+                        icon = Icons.Default.Call,
+                        values = microValues,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        "Action deck",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                        BusinessSuiteActionCard(
+                            title = "Manage Store",
+                            subtitle = "Catalog & profile",
+                            icon = Icons.Default.Store,
+                            modifier = Modifier.weight(1f),
+                            onClick = { selectedAction = "catalog" }
                         )
-                        Tab(
-                            selected = selectedMetricTab == 1,
-                            onClick = { selectedMetricTab = 1 },
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.TrendingUp, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Engagement", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
+                        BusinessSuiteActionCard(
+                            title = "Verification",
+                            subtitle = venue.tierEnum.badgeLabel,
+                            icon = Icons.Default.Check,
+                            modifier = Modifier.weight(1f),
+                            onClick = { selectedAction = "verification" }
                         )
-                        Tab(
-                            selected = selectedMetricTab == 2,
-                            onClick = { selectedMetricTab = 2 },
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Restaurant, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Menu & Revenue", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                        BusinessSuiteActionCard(
+                            title = "Promotions",
+                            subtitle = "Offers & campaigns",
+                            icon = Icons.Default.LocalOffer,
+                            modifier = Modifier.weight(1f),
+                            onClick = { selectedAction = "promotions" }
+                        )
+                        BusinessSuiteActionCard(
+                            title = "Analytics",
+                            subtitle = "Performance report",
+                            icon = Icons.Default.ShowChart,
+                            modifier = Modifier.weight(1f),
+                            onClick = { selectedAction = "analytics" }
                         )
                     }
                 }
             }
 
-            // Section 3: Interactive Graphs & Visualizations
-            when (selectedMetricTab) {
-                0 -> {
-                    // TAB 0: Venue Traffic & Hourly Peak Volume
-                    item {
-                        Card(
-                            shape = RoundedCornerShape(20.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF141923)),
-                            border = BorderStroke(1.dp, Color(0xFF242C3D)),
-                            modifier = Modifier.fillMaxWidth()
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        "Business profile",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        shape = RoundedCornerShape(20.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(18.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Column(modifier = Modifier.padding(18.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
+                            Text(
+                                venue.name,
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                venue.address.ifBlank { venue.city },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.secondaryContainer
                                 ) {
-                                    Column {
-                                        Text(
-                                            text = "Venue Traffic & Visitor Peaks",
-                                            color = Color.White,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 15.sp
-                                        )
-                                        Text(
-                                            text = "Hourly visitor density with touch scrubbing",
-                                            color = Color(0xFF8A99AD),
-                                            fontSize = 11.sp
-                                        )
-                                    }
-
+                                    Text(
+                                        venue.category,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        style = MaterialTheme.typography.labelMedium
+                                    )
+                                }
+                                if (venue.isVerified) {
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
-                                        color = Color(0xFF00E5FF).copy(alpha = 0.1f)
+                                        color = MaterialTheme.colorScheme.primaryContainer
                                     ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Icon(Icons.Default.TrendingUp, contentDescription = null, tint = Color(0xFF00E5FF), modifier = Modifier.size(14.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Peak 8 PM", color = Color(0xFF00E5FF), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                        }
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.height(18.dp))
-
-                                // Recharts / D3-style Custom Area Graph in Jetpack Compose
-                                SmoothAreaTrafficChart(
-                                    points = currentAnalytics.hourlyTraffic,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(200.dp)
-                                )
-
-                                Spacer(modifier = Modifier.height(14.dp))
-
-                                // Graph Legends
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.Center,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(10.dp)
-                                                .clip(CircleShape)
-                                                .background(Color(0xFF00E5FF))
+                                        Text(
+                                            "Verified",
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            style = MaterialTheme.typography.labelMedium
                                         )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Active Visitors", color = Color.White, fontSize = 11.sp)
-                                    }
-                                    Spacer(modifier = Modifier.width(20.dp))
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(10.dp)
-                                                .clip(CircleShape)
-                                                .background(Color(0xFFFF007A))
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Date Couples", color = Color.White, fontSize = 11.sp)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                1 -> {
-                    // TAB 1: User Engagement & Conversion Funnel
-                    item {
-                        Card(
-                            shape = RoundedCornerShape(20.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF141923)),
-                            border = BorderStroke(1.dp, Color(0xFF242C3D)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(18.dp)) {
-                                Text(
-                                    text = "Weekly Engagement & Lead Conversion",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp
-                                )
-                                Text(
-                                    text = "Impressions vs Actions taken (directions, calls & coupons)",
-                                    color = Color(0xFF8A99AD),
-                                    fontSize = 11.sp
-                                )
-
-                                Spacer(modifier = Modifier.height(18.dp))
-
-                                // D3-style Animated Multi-Bar Chart
-                                EngagementBarChart(
-                                    dailyData = currentAnalytics.dailyEngagement,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(210.dp)
-                                )
-
-                                Spacer(modifier = Modifier.height(14.dp))
-
-                                // Conversion metrics summary
-                                Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = Color(0xFF1B2230),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(12.dp),
-                                        horizontalArrangement = Arrangement.SpaceAround
-                                    ) {
-                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                            Text("Story Views", color = Color(0xFF8A99AD), fontSize = 11.sp)
-                                            Text("${currentAnalytics.storyViews}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                        }
-                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                            Text("Coupons Claimed", color = Color(0xFF8A99AD), fontSize = 11.sp)
-                                            Text("${currentAnalytics.couponRedemptions}", color = LikeGreen, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                        }
-                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                            Text("Lead Conv Rate", color = Color(0xFF8A99AD), fontSize = 11.sp)
-                                            Text("14.8%", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                2 -> {
-                    // TAB 2: Popular Menu Items & Revenue Share
-                    item {
-                        Card(
-                            shape = RoundedCornerShape(20.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF141923)),
-                            border = BorderStroke(1.dp, Color(0xFF242C3D)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(18.dp)) {
-                                Text(
-                                    text = "Popular Dishes & Category Revenue",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp
-                                )
-                                Text(
-                                    text = "Revenue distribution and top ordered date specials",
-                                    color = Color(0xFF8A99AD),
-                                    fontSize = 11.sp
-                                )
-
-                                Spacer(modifier = Modifier.height(18.dp))
-
-                                // Interactive Donut / Pie Chart
-                                PopularMenuItemsDonutChart(
-                                    categories = currentAnalytics.categoryBreakdown,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(180.dp)
-                                )
-
-                                Spacer(modifier = Modifier.height(16.dp))
-
-                                Text(
-                                    text = "Top Selling Menu Items",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-
-                                currentAnalytics.popularMenuItems.forEach { item ->
-                                    Surface(
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = Color(0xFF1A202C),
-                                        border = BorderStroke(1.dp, Color(0xFF283144)),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 4.dp)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(10.dp),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(
-                                                    text = item.itemName,
-                                                    color = Color.White,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    fontSize = 13.sp
-                                                )
-                                                Text(
-                                                    text = "${item.category} • ₹${item.price.toInt()}",
-                                                    color = Color(0xFF8A99AD),
-                                                    fontSize = 11.sp
-                                                )
-                                            }
-
-                                            Column(horizontalAlignment = Alignment.End) {
-                                                Text(
-                                                    text = "${item.ordersCount} orders",
-                                                    color = Color(0xFF00E5FF),
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontSize = 12.sp
-                                                )
-                                                Text(
-                                                    text = "₹${formatNumber(item.revenue.toInt())}",
-                                                    color = LikeGreen,
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Medium
-                                                )
-                                            }
-                                        }
                                     }
                                 }
                             }
@@ -801,186 +539,60 @@ fun BusinessDashboardScreen(
                 }
             }
 
-            // Section 4: Export Performance Reports (Offline Records)
-            item {
-                Card(
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF131826)),
-                    border = BorderStroke(1.dp, Color(0xFF00E5FF).copy(alpha = 0.35f)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("export_performance_report_card")
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(18.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = Color(0xFF00E5FF).copy(alpha = 0.15f),
-                                    modifier = Modifier.size(38.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = Icons.Default.Download,
-                                            contentDescription = null,
-                                            tint = Color(0xFF00E5FF),
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
-                                }
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column {
-                                    Text(
-                                        text = "Export Offline Reports",
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 14.sp
-                                    )
-                                    Text(
-                                        text = "Store official records & spreadsheets on device",
-                                        color = Color(0xFF8A99AD),
-                                        fontSize = 11.sp
-                                    )
-                                }
-                            }
-
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = Color(0xFF1E2638)
-                            ) {
-                                Text(
-                                    text = "OFFLINE READY",
-                                    color = Color(0xFF00E5FF),
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
+            if (allVenues.isNotEmpty()) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text(
-                            text = "Download complete audit reports containing hourly customer footfall, lead conversions, and top-selling menu items with total revenue.",
-                            color = Color(0xFFB0BDD0),
-                            fontSize = 12.sp,
-                            lineHeight = 16.sp
+                            if (venueSearchQuery.isBlank()) "Your businesses" else "Search results",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onBackground
                         )
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            // Export PDF Button
-                            Button(
-                                onClick = {
-                                    val pdfFile = VenueReportExporter.exportPdfReport(context, venue, currentAnalytics)
-                                    if (pdfFile != null) {
-                                        Toast.makeText(context, "PDF Report generated! Opening share/save...", Toast.LENGTH_SHORT).show()
-                                        VenueReportExporter.shareReportFile(context, pdfFile, "application/pdf", "${venue.name} Performance Report (PDF)")
-                                    } else {
-                                        Toast.makeText(context, "Failed to generate PDF report", Toast.LENGTH_SHORT).show()
-                                    }
-                                },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(46.dp)
-                                    .testTag("btn_export_pdf_direct"),
-                                shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE91E63))
-                            ) {
-                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("PDF Report (A4)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            }
-
-                            // Export CSV Button
-                            OutlinedButton(
-                                onClick = {
-                                    val csvFile = VenueReportExporter.exportCsvReport(context, venue, currentAnalytics)
-                                    if (csvFile != null) {
-                                        Toast.makeText(context, "CSV Spreadsheet generated! Opening share/save...", Toast.LENGTH_SHORT).show()
-                                        VenueReportExporter.shareReportFile(context, csvFile, "text/csv", "${venue.name} Analytics (CSV)")
-                                    } else {
-                                        Toast.makeText(context, "Failed to generate CSV report", Toast.LENGTH_SHORT).show()
-                                    }
-                                },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(46.dp)
-                                    .testTag("btn_export_csv_direct"),
-                                shape = RoundedCornerShape(12.dp),
-                                border = BorderStroke(1.dp, Color(0xFF00E5FF)),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF00E5FF))
-                            ) {
-                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("CSV Data (Excel)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        val itemsToShow = filteredVenues.ifEmpty {
+                            if (venueSearchQuery.isBlank() && !verifiedOnly) listOf(venue) else emptyList()
+                        }
+                        if (itemsToShow.isEmpty()) {
+                            Text(
+                                "No businesses match these filters.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            itemsToShow.distinctBy { it.id }.forEach { candidate ->
+                                BusinessDirectoryRow(
+                                    venue = candidate,
+                                    selected = candidate.id == venue.id,
+                                    onOpen = { onSelectVenue(candidate) }
+                                )
                             }
                         }
                     }
                 }
             }
 
-            // Section 5: Live Simulation Action & Refresh
             item {
                 Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = Color(0xFF141A26),
-                    border = BorderStroke(1.dp, Color(0xFF263044))
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text("Real-Time Firestore Sync", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text("Auto-synced with Cloud Firestore collection `venue_analytics`", color = Color(0xFF8A99AD), fontSize = 11.sp)
-                            }
-                            Icon(Icons.Default.Refresh, contentDescription = null, tint = Color(0xFF00E5FF), modifier = Modifier.size(18.dp))
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("Export performance", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                            Text(
+                                "Download a clean summary for this business.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = {
-                                    BusinessHubSyncManager.recordVenueInteraction(venue.id, venue.name, "impression")
-                                },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(10.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF00E5FF))
-                            ) {
-                                Text("+1 Live View", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-
-                            Button(
-                                onClick = {
-                                    BusinessHubSyncManager.recordVenueInteraction(venue.id, venue.name, "visitor")
-                                },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(10.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF), contentColor = Color.Black)
-                            ) {
-                                Text("+1 Lead Check-in", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
+                        Button(onClick = { showExportDialog = true }) {
+                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Export")
                         }
                     }
                 }
@@ -988,6 +600,168 @@ fun BusinessDashboardScreen(
         }
     }
 }
+
+@Composable
+private fun ExecutiveMetricCard(
+    title: String,
+    value: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    values: List<Int>,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier,
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(9.dp)
+        ) {
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
+            Text(
+                title,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                value,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().height(24.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                val maxValue = (values.maxOrNull() ?: 0).coerceAtLeast(1)
+                values.forEach { count ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height((5f + (count.coerceAtLeast(0).toFloat() / maxValue.toFloat()) * 18f).dp)
+                            .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = if (count > 0) 0.82f else 0.18f))
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BusinessSuiteActionCard(
+    title: String,
+    subtitle: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = modifier.clickable(onClick = onClick),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                modifier = Modifier.size(38.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                }
+            }
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun BusinessDirectoryRow(
+    venue: BusinessEntity,
+    selected: Boolean,
+    onOpen: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(
+            1.dp,
+            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)
+            else MaterialTheme.colorScheme.outlineVariant
+        )
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.size(46.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(venue.logoEmoji, style = MaterialTheme.typography.titleLarge)
+                }
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    venue.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    venue.address.ifBlank { venue.city },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Button(
+                onClick = onOpen,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) { Text(if (selected) "Selected" else "Open") }
+        }
+    }
+}
+
+@Composable
+private fun TextButtonLikeReset(onClick: () -> Unit) {
+    androidx.compose.material3.TextButton(onClick = onClick) {
+        Text("Reset", color = MaterialTheme.colorScheme.primary)
+    }
+}
+
+private fun formatExecutiveMetric(value: Int): String =
+    NumberFormat.getNumberInstance(Locale.getDefault()).format(value.coerceAtLeast(0))
 
 /**
  * Metric KPI Card with growth badge
