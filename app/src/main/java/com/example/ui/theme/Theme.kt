@@ -72,7 +72,7 @@ fun MyApplicationTheme(
     val colorScheme = if (isDark) {
         darkColorScheme(
             primary = accent, onPrimary = Color(0xFFFFFFFF),
-            primaryContainer = accent, onPrimaryContainer = PastelTextPrimary,
+            primaryContainer = accent, onPrimaryContainer = Color(0xFFFFFFFF),
             secondary = accent, onSecondary = Color(0xFFFFFFFF),
             secondaryContainer = ThemeDarkInput, onSecondaryContainer = ThemeDarkTextPrimary,
             tertiary = accent, onTertiary = Color(0xFFFFFFFF),
