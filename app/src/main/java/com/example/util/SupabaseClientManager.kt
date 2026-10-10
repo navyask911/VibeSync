@@ -1,10 +1,13 @@
 package com.example.util
 
+import android.content.Context
+import android.net.Uri
 import android.util.Log
 import com.example.BuildConfig
 import com.example.data.model.ChatMessageEntity
 import com.example.data.model.ProfileEntity
 import com.example.data.model.RegisteredAccountEntity
+import com.example.data.model.StatusStoryEntity
 import com.example.security.HackFreeSecurityShield
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -236,6 +239,234 @@ object SupabaseClientManager {
             }
         } catch (t: Throwable) {
             Log.w("VibeSyncChat", "Diagnostic row cleanup exception: ${t.message}")
+            false
+        }
+    }
+
+
+    data class StatusMediaUpload(val objectPath: String, val signedUrl: String, val contentType: String)
+
+    /**
+     * Uploads story media into a private Supabase Storage bucket. Object access is governed by
+     * the corresponding status_stories row and participant-aware storage RLS, not a public bucket.
+     */
+    suspend fun uploadStatusMedia(
+        context: Context,
+        mediaUri: Uri,
+        profileId: String,
+        storyId: String
+    ): Result<StatusMediaUpload> = withContext(Dispatchers.IO) {
+        try {
+            require(profileId.isNotBlank() && storyId.isNotBlank()) { "Verified profile ID is required for story upload." }
+            val contentType = context.contentResolver.getType(mediaUri)
+                ?: when (mediaUri.lastPathSegment?.substringAfterLast('.', "").orEmpty().lowercase()) {
+                    "jpg", "jpeg" -> "image/jpeg"
+                    "png" -> "image/png"
+                    "webp" -> "image/webp"
+                    "mp4", "m4v" -> "video/mp4"
+                    "mov" -> "video/quicktime"
+                    "mp3" -> "audio/mpeg"
+                    "m4a" -> "audio/mp4"
+                    "aac" -> "audio/aac"
+                    else -> "application/octet-stream"
+                }
+            val bytes = context.contentResolver.openInputStream(mediaUri)?.use { it.readBytes() }
+                ?: throw IllegalArgumentException("Selected story media could not be read.")
+            if (bytes.isEmpty()) throw IllegalArgumentException("Selected story media is empty.")
+            if (bytes.size > 100 * 1024 * 1024) throw IllegalArgumentException("Story media must be smaller than 100 MB.")
+
+            val extension = when (contentType.lowercase()) {
+                "image/jpeg" -> "jpg"
+                "image/png" -> "png"
+                "image/webp" -> "webp"
+                "video/mp4" -> "mp4"
+                "video/quicktime" -> "mov"
+                "audio/mpeg" -> "mp3"
+                "audio/mp4" -> "m4a"
+                "audio/aac" -> "aac"
+                else -> mediaUri.lastPathSegment?.substringAfterLast('.', "")?.takeIf { it.matches(Regex("[A-Za-z0-9]{1,8}")) } ?: "bin"
+            }
+            val objectPath = "${profileId}/${storyId}.$extension"
+            val encodedPath = Uri.encode(objectPath, "/")
+            val uploadUrl = "$SUPABASE_URL/storage/v1/object/status-media/$encodedPath"
+            val sessionToken = VibeSyncSessionManager.getToken().orEmpty()
+            val request = Request.Builder()
+                .url(uploadUrl)
+                .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+                .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_PUBLISHABLE_KEY)}")
+                .apply { if (sessionToken.isNotBlank()) header("x-vibesync-session", sessionToken) }
+                .header("Content-Type", contentType)
+                .post(bytes.toRequestBody(contentType.toMediaType()))
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    throw IllegalStateException("Supabase Storage upload failed HTTP ${response.code}: ${responseBody.take(350)}")
+                }
+            }
+            val signedUrl = createSignedStatusMediaUrl(objectPath).getOrElse { throw it }
+            Result.success(StatusMediaUpload(objectPath, signedUrl, contentType))
+        } catch (t: Throwable) {
+            Log.e("VibeSyncStories", "Story media upload failed: ${t.javaClass.simpleName}: ${t.message}", t)
+            Result.failure(t)
+        }
+    }
+
+    suspend fun createSignedStatusMediaUrl(objectPath: String): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            if (objectPath.isBlank()) return@withContext Result.failure(IllegalArgumentException("Story media path is blank."))
+            if (objectPath.startsWith("https://") || objectPath.startsWith("http://")) return@withContext Result.success(objectPath)
+            val encodedPath = Uri.encode(objectPath, "/")
+            val body = JSONObject().put("expiresIn", 86400).toString()
+            val request = Request.Builder()
+                .url("$SUPABASE_URL/storage/v1/object/sign/status-media/$encodedPath")
+                .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+                .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_PUBLISHABLE_KEY)}")
+                .apply { VibeSyncSessionManager.getToken()?.let { header("x-vibesync-session", it) } }
+                .header("Content-Type", "application/json")
+                .post(body.toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(IllegalStateException("Story media signing failed HTTP ${response.code}: ${responseBody.take(300)}"))
+                }
+                val signed = JSONObject(responseBody).optString("signedURL", "")
+                    .ifBlank { JSONObject(responseBody).optString("signedUrl", "") }
+                if (signed.isBlank()) return@withContext Result.failure(IllegalStateException("Supabase Storage returned no signed URL."))
+                val url = if (signed.startsWith("http://") || signed.startsWith("https://")) signed
+                    else "$SUPABASE_URL/storage/v1" + (if (signed.startsWith("/")) signed else "/$signed")
+                Result.success(url)
+            }
+        } catch (t: Throwable) {
+            Log.e("VibeSyncStories", "Story media signing failed: ${t.message}", t)
+            Result.failure(t)
+        }
+    }
+
+    /** Stores metadata only after the media is available in storage; RLS checks the active session. */
+    suspend fun upsertStatusStoryRemote(
+        story: StatusStoryEntity,
+        mediaObjectPath: String,
+        backgroundMusicObjectPath: String,
+        allowedViewerProfileIds: List<String>,
+        profileId: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            if (profileId.isBlank() || profileId != story.userId) {
+                return@withContext Result.failure(IllegalStateException("Story owner does not match the active VibeSync profile."))
+            }
+            val now = System.currentTimeMillis()
+            val payload = JSONObject().apply {
+                put("id", story.id)
+                put("userId", profileId)
+                put("userName", story.userName)
+                put("userEmoji", story.userAvatarEmoji)
+                put("userAvatarUrl", story.userAvatarUrl)
+                put("mediaType", story.mediaType)
+                put("mediaUrl", mediaObjectPath)
+                put("backgroundMusicUrl", backgroundMusicObjectPath)
+                put("videoDurationSeconds", story.videoDurationSeconds)
+                put("captionText", story.caption)
+                put("backgroundColorStart", story.backgroundColorStart)
+                put("backgroundColorEnd", story.backgroundColorEnd)
+                put("createdAt", story.timestamp)
+                put("expiresAt", now + 24L * 60L * 60L * 1000L)
+                put("privacy", story.privacy)
+                put("allowedViewerProfileIds", JSONArray(allowedViewerProfileIds.distinct().filter { it.isNotBlank() && it != profileId }))
+            }.toString()
+            val request = buildRequest("status_stories", "POST", payload, preferHeader = "return=minimal")
+            httpClient.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(IllegalStateException("Story metadata insert failed HTTP ${response.code}: ${responseBody.take(400)}"))
+                }
+            }
+            Result.success(Unit)
+        } catch (t: Throwable) {
+            Log.e("VibeSyncStories", "Story metadata insert failed: ${t.javaClass.simpleName}: ${t.message}", t)
+            Result.failure(t)
+        }
+    }
+
+    /** Only rows allowed by status_stories RLS are returned; expired rows are filtered again client-side. */
+    suspend fun fetchActiveStatusStories(profileId: String): Result<List<StatusStoryEntity>> = withContext(Dispatchers.IO) {
+        try {
+            if (profileId.isBlank()) return@withContext Result.failure(IllegalStateException("Current VibeSync profile ID is missing."))
+            val now = System.currentTimeMillis()
+            val cutoff = now - 24L * 60L * 60L * 1000L
+            val endpoint = "status_stories?select=id,userId,userName,userEmoji,userAvatarUrl,mediaType,mediaUrl,backgroundMusicUrl,videoDurationSeconds,captionText,backgroundColorStart,backgroundColorEnd,createdAt,expiresAt,privacy,allowedViewerProfileIds&createdAt=gte.$cutoff&expiresAt=gt.$now&order=createdAt.desc&limit=100"
+            val request = buildRequest(endpoint, "GET")
+            val stories = mutableListOf<StatusStoryEntity>()
+            httpClient.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(IllegalStateException("Active story fetch failed HTTP ${response.code}: ${responseBody.take(400)}"))
+                }
+                val rows = JSONArray(responseBody)
+                for (i in 0 until rows.length()) {
+                    val obj = rows.optJSONObject(i) ?: continue
+                    val id = obj.optSafeString("id")
+                    val userId = obj.optSafeString("userId")
+                    val timestamp = obj.optLong("createdAt", 0L)
+                    val expiresAt = obj.optLong("expiresAt", 0L)
+                    if (id.isBlank() || userId.isBlank() || timestamp < cutoff || expiresAt <= now) continue
+                    val rawMediaPath = obj.optSafeString("mediaUrl")
+                    val rawMusicPath = obj.optSafeString("backgroundMusicUrl")
+                    val mediaUrl = if (rawMediaPath.isNotBlank() && !rawMediaPath.startsWith("http")) {
+                        createSignedStatusMediaUrl(rawMediaPath).getOrElse {
+                            Log.w("VibeSyncStories", "Could not sign media for story $id: ${it.message}")
+                            ""
+                        }
+                    } else rawMediaPath
+                    val musicUrl = if (rawMusicPath.isNotBlank() && !rawMusicPath.startsWith("http")) {
+                        createSignedStatusMediaUrl(rawMusicPath).getOrElse { "" }
+                    } else rawMusicPath
+                    val isAdmittedViewer = userId == profileId ||
+                        obj.optString("privacy", "FRIENDS_AND_MATCHES") in setOf("EVERYONE", "ALL_NETWORK") ||
+                        run {
+                            val viewers = obj.optJSONArray("allowedViewerProfileIds") ?: JSONArray()
+                            (0 until viewers.length()).any { viewers.optString(it) == profileId }
+                        }
+                    if (!isAdmittedViewer) continue
+                    stories.add(StatusStoryEntity(
+                        id = id,
+                        userId = userId,
+                        userName = obj.optSafeString("userName", "Friend"),
+                        userAvatarEmoji = obj.optSafeString("userEmoji", "✨"),
+                        userAvatarUrl = obj.optSafeString("userAvatarUrl"),
+                        mediaType = obj.optSafeString("mediaType", "PHOTO"),
+                        mediaUrl = mediaUrl,
+                        backgroundMusicUrl = musicUrl,
+                        videoDurationSeconds = obj.optInt("videoDurationSeconds", 0),
+                        caption = obj.optSafeString("captionText"),
+                        backgroundColorStart = obj.optLong("backgroundColorStart", 0xFF00A884),
+                        backgroundColorEnd = obj.optLong("backgroundColorEnd", 0xFF128C7E),
+                        timestamp = timestamp,
+                        isMyStatus = userId == profileId,
+                        privacy = obj.optSafeString("privacy", "FRIENDS_AND_MATCHES")
+                    ))
+                }
+            }
+            Result.success(stories)
+        } catch (t: Throwable) {
+            Log.e("VibeSyncStories", "Active story fetch failed: ${t.javaClass.simpleName}: ${t.message}", t)
+            Result.failure(t)
+        }
+    }
+
+    suspend fun deleteStatusStoryRemote(storyId: String, profileId: String): Boolean = withContext(Dispatchers.IO) {
+        if (storyId.isBlank() || profileId.isBlank()) return@withContext false
+        try {
+            val safeId = java.net.URLEncoder.encode(storyId, "UTF-8")
+            val safeProfile = java.net.URLEncoder.encode(profileId, "UTF-8")
+            val request = buildRequest("status_stories?id=eq.$safeId&userId=eq.$safeProfile", "DELETE", preferHeader = "return=minimal")
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) Log.w("VibeSyncStories", "Story delete HTTP ${response.code}: ${response.body?.string()?.take(250)}")
+                response.isSuccessful
+            }
+        } catch (t: Throwable) {
+            Log.w("VibeSyncStories", "Story delete notice: ${t.message}", t)
             false
         }
     }
