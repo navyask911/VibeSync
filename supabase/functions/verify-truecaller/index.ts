@@ -261,6 +261,8 @@ Deno.serve(async (req: Request) => {
       verified: true,
       phone: identity.phone,
       profile_id: profileId,
+      // Canonical VibeSync session field; keep access_token for older clients.
+      access_jwt: jwt,
       access_token: jwt,
       token_type: "Bearer",
       expires_in: SESSION_TTL_SECONDS,
