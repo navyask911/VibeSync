@@ -1010,6 +1010,21 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         }
                     }
                 }
+
+                // Recover delivery/read ticks even though the sender cannot decrypt recipient-key ciphertext.
+                val deliveryStates = com.example.util.SupabaseClientManager
+                    .fetchMessageDeliveryStatesForMatch(remoteMatchId)
+                for (state in deliveryStates) {
+                    if (!state.senderId.equals(senderProfileId, ignoreCase = true)) continue
+                    when {
+                        state.isRead -> database.chatMessageDao().markMessageAsRead(state.messageId)
+                        state.isDelivered -> database.chatMessageDao().markMessageAsDelivered(state.messageId)
+                        else -> database.chatMessageDao().markOutboxSentToServerIfPending(
+                            state.messageId,
+                            System.currentTimeMillis()
+                        )
+                    }
+                }
             } catch (e: Exception) {
                 android.util.Log.w("DatingViewModel", "openChat fetch remote messages error: ${e.message}")
             }
