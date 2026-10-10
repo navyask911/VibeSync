@@ -149,7 +149,7 @@ fun AuthLoginScreen(
                 Image(
                     painter = painterResource(id = com.example.R.drawable.ic_launcher_foreground),
                     contentDescription = "VibeSync app logo",
-                    modifier = Modifier.size(70.dp).clip(RoundedCornerShape(18.dp))
+                    modifier = Modifier.size(58.dp).clip(RoundedCornerShape(16.dp))
                 )
                 Text(
                     text = "VibeSync",
@@ -170,44 +170,57 @@ fun AuthLoginScreen(
                 )
             }
 
-            Spacer(Modifier.height(22.dp))
+            Spacer(Modifier.height(10.dp))
 
             Surface(
-                shape = CircleShape,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("login_india_trust_badge"),
+                shape = RoundedCornerShape(14.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                modifier = Modifier.testTag("login_privacy_badge")
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Lock,
-                        contentDescription = "Privacy",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(17.dp)
-                    )
+                    Text("🇮🇳", fontSize = 18.sp)
+                    Spacer(Modifier.size(8.dp))
                     Text(
-                        text = "End-to-End Encrypted • Zero-Knowledge Privacy",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 12.sp
-                        ),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = "Made in India, for the World",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 }
             }
 
-            Spacer(Modifier.height(34.dp))
+            Spacer(Modifier.height(10.dp))
+
+            LoginValueCard(
+                icon = "🛡️",
+                title = "Google Tink • End-to-End Encryption",
+                description = "Client-side encryption helps keep private chats and business records confidential.",
+                testTag = "login_encryption_card"
+            )
+
+            Spacer(Modifier.height(10.dp))
+
+            LoginValueCard(
+                icon = "📇",
+                title = "Zero-Knowledge Contact Discovery",
+                description = "Matches mutual contacts on-device via secure cryptographic hashes without uploading your address book.",
+                testTag = "login_contact_discovery_card"
+            )
+
+            Spacer(Modifier.height(16.dp))
 
             Button(
                 onClick = { launchVerification() },
                 enabled = !isLaunching,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp)
+                    .height(54.dp)
                     .testTag(if (hasError) "btn_retry_truecaller" else "btn_truecaller_one_tap_main"),
                 shape = CircleShape,
                 elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp, pressedElevation = 1.dp),
@@ -341,6 +354,57 @@ fun AuthLoginScreen(
                             Text("Got it")
                         }
                     }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LoginValueCard(
+    icon: String,
+    title: String,
+    description: String,
+    testTag: String
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(testTag),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        tonalElevation = 1.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            Text(
+                text = icon,
+                fontSize = 22.sp,
+                modifier = Modifier.padding(top = 1.dp)
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
