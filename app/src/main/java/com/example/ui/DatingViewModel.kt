@@ -964,7 +964,51 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 ).ifBlank { match.matchId }
                 val remoteMsgs = com.example.util.SupabaseClientManager.fetchMessagesForMatch(remoteMatchId, myPhone, partnerPhone)
                 for (rm in remoteMsgs) {
-                    repository.insertReceivedChatMessage(rm.copy(matchId = match.matchId), rm.senderId, myPhone)
+                    val isFromMe = rm.senderId.equals(senderProfileId, ignoreCase = true)
+                    if (isFromMe) {
+                        // Reconcile a server-committed send whose HTTP response or UPDATE event was missed.
+                        database.chatMessageDao().markOutboxSentToServerIfPending(
+                            rm.messageId,
+                            System.currentTimeMillis()
+                        )
+                        if (rm.isRead) {
+                            database.chatMessageDao().markMessageAsRead(rm.messageId)
+                        } else if (rm.isDelivered) {
+                            database.chatMessageDao().markMessageAsDelivered(rm.messageId)
+                        }
+                    }
+
+                    val localMessage = rm.copy(
+                        matchId = match.matchId,
+                        senderId = if (isFromMe) "USER" else rm.senderId,
+                        // This loop runs when the recipient opens this chat; record that the incoming
+                        // row reached this device even if the previous WebSocket INSERT was missed.
+                        isDelivered = if (isFromMe) rm.isDelivered else true,
+                        isRead = if (isFromMe) rm.isRead else true,
+                        deliveryState = when {
+                            !isFromMe -> "READ"
+                            rm.isRead -> "READ"
+                            rm.isDelivered -> "DELIVERED"
+                            else -> "SENT_TO_SERVER"
+                        }
+                    )
+                    repository.insertReceivedChatMessage(localMessage, rm.senderId, myPhone)
+
+                    // A device returning from offline/background may fetch its message before its
+                    // Realtime listener sees the INSERT. Commit the same delivery ACK on catch-up.
+                    if (!isFromMe && !rm.isDelivered) {
+                        val acked = com.example.util.SupabaseBackendManager.markMessageDelivered(
+                            rm.messageId,
+                            rm.senderId,
+                            senderProfileId
+                        )
+                        if (!acked) {
+                            android.util.Log.w(
+                                "VibeSyncChat",
+                                "Catch-up delivery ACK failed for ${rm.messageId}; it will be retried on the next sync."
+                            )
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 android.util.Log.w("DatingViewModel", "openChat fetch remote messages error: ${e.message}")
