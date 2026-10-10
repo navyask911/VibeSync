@@ -599,8 +599,8 @@ private fun calculateDistanceKm(
     endLatitude: Double,
     endLongitude: Double
 ): Double? {
-    if (startLatitude == 0.0 || startLongitude == 0.0 ||
-        endLatitude == 0.0 || endLongitude == 0.0
+    if ((startLatitude == 0.0 && startLongitude == 0.0) ||
+        (endLatitude == 0.0 && endLongitude == 0.0)
     ) return null
     if (startLatitude !in -90.0..90.0 || endLatitude !in -90.0..90.0 ||
         startLongitude !in -180.0..180.0 || endLongitude !in -180.0..180.0
