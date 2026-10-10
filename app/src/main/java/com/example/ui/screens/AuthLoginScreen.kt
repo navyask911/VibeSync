@@ -126,10 +126,8 @@ fun AuthLoginScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 22.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+                .padding(horizontal = 24.dp, vertical = 18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Spacer(Modifier.height(2.dp))
 
@@ -146,29 +144,33 @@ fun AuthLoginScreen(
                     }
                     .padding(vertical = 8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Image(
                     painter = painterResource(id = com.example.R.drawable.ic_launcher_foreground),
                     contentDescription = "VibeSync app logo",
-                    modifier = Modifier.size(84.dp).clip(CircleShape)
+                    modifier = Modifier.size(70.dp).clip(RoundedCornerShape(18.dp))
                 )
                 Text(
                     text = "VibeSync",
                     style = MaterialTheme.typography.headlineLarge.copy(
-                        fontWeight = FontWeight.ExtraBold,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 31.sp,
                         letterSpacing = (-0.6).sp
                     ),
                     textAlign = TextAlign.Center
                 )
                 Text(
                     text = "Connect locally. Grow your business.",
-                    style = MaterialTheme.typography.bodyLarge.copy(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 14.sp
                     ),
                     textAlign = TextAlign.Center
                 )
             }
+
+            Spacer(Modifier.height(22.dp))
 
             Surface(
                 shape = CircleShape,
@@ -188,21 +190,24 @@ fun AuthLoginScreen(
                         modifier = Modifier.size(17.dp)
                     )
                     Text(
-                        text = "End-to-End Encrypted • Zero-Knowledge",
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        text = "End-to-End Encrypted • Zero-Knowledge Privacy",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.sp
+                        ),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
-            Spacer(Modifier.height(2.dp))
+            Spacer(Modifier.height(34.dp))
 
             Button(
                 onClick = { launchVerification() },
                 enabled = !isLaunching,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(58.dp)
+                    .height(56.dp)
                     .testTag(if (hasError) "btn_retry_truecaller" else "btn_truecaller_one_tap_main"),
                 shape = CircleShape,
                 elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp, pressedElevation = 1.dp),
@@ -221,15 +226,19 @@ fun AuthLoginScreen(
                     Icon(
                         imageVector = if (hasError) Icons.Default.Refresh else Icons.Default.PhoneAndroid,
                         contentDescription = null,
-                        modifier = Modifier.size(21.dp)
+                        modifier = Modifier.size(20.dp)
                     )
+                    if (!hasError && !isLaunching) {
+                        Spacer(Modifier.size(7.dp))
+                        Text("⚡", fontSize = 16.sp)
+                    }
                 }
                 Spacer(Modifier.size(10.dp))
                 Text(
                     text = when {
                         isLaunching -> "Starting secure sign-in…"
                         hasError -> "Retry Truecaller sign-in"
-                        else -> "⚡ Fast Sign-In with Truecaller"
+                        else -> "Continue with Truecaller"
                     },
                     fontWeight = FontWeight.Bold,
                     fontSize = 15.sp
@@ -252,6 +261,8 @@ fun AuthLoginScreen(
                 }
             }
 
+            Spacer(Modifier.height(if (hasError) 12.dp else 18.dp))
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -266,21 +277,25 @@ fun AuthLoginScreen(
                 Box(Modifier.weight(1f).height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
             }
 
+            Spacer(Modifier.height(4.dp))
+
             TextButton(
                 onClick = { showAlternatePhoneHelp = true },
                 modifier = Modifier.testTag("btn_use_another_phone"),
-                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.primary)
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             ) {
                 Text(
                     text = "Use another phone number",
-                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium)
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
                 )
             }
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.weight(1f))
 
             val legalLink = buildAnnotatedString {
-                append("By continuing, you agree to our ")
+                append("By continuing, you agree to our\n")
                 pushStringAnnotation(tag = "legal", annotation = "open_terms")
                 withStyle(
                     SpanStyle(
@@ -289,7 +304,7 @@ fun AuthLoginScreen(
                         textDecoration = TextDecoration.Underline
                     )
                 ) {
-                    append("Terms & Privacy Policy")
+                    append("Terms of Service and Privacy Policy")
                 }
                 pop()
             }
@@ -298,7 +313,8 @@ fun AuthLoginScreen(
                 modifier = Modifier.fillMaxWidth().testTag("login_terms_privacy_link"),
                 style = MaterialTheme.typography.bodySmall.copy(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center
+                    textAlign = TextAlign.Center,
+                    lineHeight = 18.sp
                 ),
                 onClick = { offset ->
                     legalLink.getStringAnnotations("legal", offset, offset)
