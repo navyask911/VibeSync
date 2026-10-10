@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - vibesync-hardening-2026-10-07
+      - fix/release-startup-icons-ci
     paths:
       - 'supabase/functions/vibesync-fcm-dispatch/**'
       - '.github/workflows/deploy-supabase-fcm-dispatch.yml'
