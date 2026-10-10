@@ -179,28 +179,30 @@ object VibeSyncSessionManager {
         return String(cipher.doFinal(raw.copyOfRange(12, raw.size)), StandardCharsets.UTF_8)
     }
 
-    private fun decrypt(value: String, context: Context): String? = try {
-        when {
-            value.startsWith(FALLBACK_PREFIX) -> {
-                val secret = fallbackKey(context, createIfMissing = false) ?: return null
-                decryptWithKey(value.removePrefix(FALLBACK_PREFIX), secret)
+    private fun decrypt(value: String, context: Context): String? {
+        return try {
+            when {
+                value.startsWith(FALLBACK_PREFIX) -> {
+                    val secret = fallbackKey(context, createIfMissing = false) ?: return null
+                    decryptWithKey(value.removePrefix(FALLBACK_PREFIX), secret)
+                }
+                value.startsWith(KEYSTORE_PREFIX) -> {
+                    val secret = existingKeyOrNull() ?: return null
+                    decryptWithKey(value.removePrefix(KEYSTORE_PREFIX), secret)
+                }
+                else -> {
+                    // Legacy session blobs were raw Base64 AES-GCM payloads.
+                    val secret = existingKeyOrNull() ?: return null
+                    decryptWithKey(value, secret)
+                }
             }
-            value.startsWith(KEYSTORE_PREFIX) -> {
-                val secret = existingKeyOrNull() ?: return null
-                decryptWithKey(value.removePrefix(KEYSTORE_PREFIX), secret)
-            }
-            else -> {
-                // Legacy session blobs were raw Base64 AES-GCM payloads.
-                val secret = existingKeyOrNull() ?: return null
-                decryptWithKey(value, secret)
-            }
+        } catch (e: AEADBadTagException) {
+            Log.w(TAG, "Encrypted session authentication failed (key or payload mismatch).")
+            null
+        } catch (e: Throwable) {
+            Log.w(TAG, "Encrypted VibeSync session could not be opened: ${e.javaClass.simpleName}")
+            null
         }
-    } catch (e: AEADBadTagException) {
-        Log.w(TAG, "Encrypted session authentication failed (key or payload mismatch).")
-        null
-    } catch (e: Throwable) {
-        Log.w(TAG, "Encrypted VibeSync session could not be opened: ${e.javaClass.simpleName}")
-        null
     }
 
     private fun encodeSession(session: Session): String =
