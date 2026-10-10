@@ -922,6 +922,56 @@ object SupabaseClientManager {
         }
     }
 
+    data class ChatDeliveryState(
+        val messageId: String,
+        val senderId: String,
+        val isDelivered: Boolean,
+        val isRead: Boolean
+    )
+
+    /**
+     * Metadata-only catch-up for the sender's ticks. A sender cannot decrypt ciphertext encrypted
+     * to the recipient's public key, so delivery/read state must be fetched independently of content.
+     */
+    suspend fun fetchMessageDeliveryStatesForMatch(canonicalMatchId: String): List<ChatDeliveryState> =
+        withContext(Dispatchers.IO) {
+            if (canonicalMatchId.isBlank()) return@withContext emptyList()
+            try {
+                val safeMatch = java.net.URLEncoder.encode(canonicalMatchId, "UTF-8")
+                val request = buildRequest(
+                    endpoint = "chat_messages?select=message_id,sender_id,is_delivered,is_read&match_id=eq.$safeMatch&order=timestamp.asc",
+                    method = "GET"
+                )
+                httpClient.newCall(request).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        Log.w("VibeSyncChat", "Delivery-state catch-up failed HTTP ${response.code}: ${body.take(300)}")
+                        return@withContext emptyList()
+                    }
+                    val rows = JSONArray(body)
+                    buildList {
+                        for (index in 0 until rows.length()) {
+                            val row = rows.optJSONObject(index) ?: continue
+                            val messageId = row.optSafeString("message_id")
+                            val senderId = row.optSafeString("sender_id")
+                            if (messageId.isBlank() || senderId.isBlank()) continue
+                            add(
+                                ChatDeliveryState(
+                                    messageId = messageId,
+                                    senderId = senderId,
+                                    isDelivered = row.optBoolean("is_delivered", false),
+                                    isRead = row.optBoolean("is_read", false)
+                                )
+                            )
+                        }
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.w("VibeSyncChat", "Delivery-state catch-up exception: ${t.message}", t)
+                emptyList()
+            }
+        }
+
     /**
      * Fetch messages for match/conversation from public.chat_messages with decryption and phone matching.
      */
