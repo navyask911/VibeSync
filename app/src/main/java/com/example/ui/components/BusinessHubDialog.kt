@@ -1323,15 +1323,18 @@ private fun BusinessListItemCard(
                     Text(business.logoEmoji, fontSize = 20.sp)
                     Spacer(modifier = Modifier.width(6.dp))
                     Column {
-                        Text(
-                            text = business.name,
-                            fontFamily = FontFamily.Serif,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
-                            color = Color.White,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Surface(color = Color(0xFFFFF9E6), shape = RoundedCornerShape(8.dp)) {
+                            Text(
+                                text = business.name,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                color = Color(0xFF1E1E1E),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
+                            )
+                        }
                         Text(
                             text = "${business.category} • ${business.city}",
                             fontSize = 10.sp,
@@ -2308,7 +2311,15 @@ private fun MyBusinessesTab(
                             Text(biz.logoEmoji, fontSize = 28.sp)
                             Spacer(modifier = Modifier.width(10.dp))
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(biz.name, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                Text(
+                                    text = biz.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = Color(0xFF1E1E1E),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 16.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                                 Text("${biz.category} • ${biz.city}", fontFamily = FontFamily.Serif, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Column(horizontalAlignment = Alignment.End) {
