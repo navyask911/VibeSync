@@ -29,7 +29,7 @@ object TruecallerAuthGateway {
                 require(profile.state.isNotBlank()) { "Missing Truecaller state" }
 
                 val body = JSONObject().apply {
-                    put("authorization_code", profile.authorizationCode)
+                    put("code", profile.authorizationCode)
                     put("code_verifier", profile.codeVerifier)
                     put("state", profile.state)
                 }.toString()
@@ -46,7 +46,7 @@ object TruecallerAuthGateway {
                     val responseBody = response.body?.string().orEmpty()
                     if (!response.isSuccessful) {
                         return@withContext Result.failure(
-                            IllegalStateException("Truecaller verification gateway failed (HTTP ${response.code})")
+                            IllegalStateException("Truecaller verification gateway failed (HTTP ${response.code}): ${responseBody.take(500)}")
                         )
                     }
 
