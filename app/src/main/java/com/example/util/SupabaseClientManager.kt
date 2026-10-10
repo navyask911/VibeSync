@@ -244,6 +244,8 @@ object SupabaseClientManager {
         val gender = ContactResolver.sanitizeName(if (encGender.isNotBlank()) HackFreeSecurityShield.decrypt(encGender) else "").ifBlank { "User" }
 
         val publicIdentityKey = obj.optSafeString("public_identity_key", "")
+        val latitude = obj.optDouble("latitude", 0.0).takeIf { it in -90.0..90.0 } ?: 0.0
+        val longitude = obj.optDouble("longitude", 0.0).takeIf { it in -180.0..180.0 } ?: 0.0
         val avatarCacheVersion = runCatching {
             java.time.OffsetDateTime.parse(obj.optSafeString("updated_at", "")).toInstant().toEpochMilli()
         }.getOrDefault(0L)
@@ -255,6 +257,8 @@ object SupabaseClientManager {
             occupation = occupation,
             city = city,
             distanceMiles = 1,
+            latitude = latitude,
+            longitude = longitude,
             bio = bio,
             interests = "Friendship, Chat",
             relationshipGoal = "Connection",
@@ -300,6 +304,9 @@ object SupabaseClientManager {
                 put("age", profile.age)
                 put("gender", ContactResolver.sanitizeName(profile.gender, "User"))
                 put("city", ContactResolver.sanitizeName(profile.city, "Online"))
+                put("latitude", profile.latitude)
+                put("longitude", profile.longitude)
+                put("location_visibility", profile.locationVisibility.ifBlank { "NO_ONE" })
                 put("country", ContactResolver.sanitizeName(profile.country, "United States"))
                 put("country_flag", profile.countryFlag.ifBlank { "🌐" })
                 put("place", ContactResolver.sanitizeName(profile.place))
@@ -340,7 +347,7 @@ object SupabaseClientManager {
         try {
             val safeLimit = limit.coerceIn(1, 50)
             val request = buildRequest(
-                endpoint = "vibesync_profiles_public?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key&order=updated_at.desc&limit=$safeLimit",
+                endpoint = "vibesync_profiles_public?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key,latitude,longitude&order=updated_at.desc&limit=$safeLimit",
                 method = "GET"
             )
 
@@ -373,7 +380,7 @@ object SupabaseClientManager {
         try {
             val encodedId = java.net.URLEncoder.encode(profileId, Charsets.UTF_8.name())
             val request = buildRequest(
-                endpoint = "vibesync_profiles_public?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key&id=eq.$encodedId&limit=1",
+                endpoint = "vibesync_profiles_public?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key,latitude,longitude&id=eq.$encodedId&limit=1",
                 method = "GET"
             )
             httpClient.newCall(request).execute().use { response ->
