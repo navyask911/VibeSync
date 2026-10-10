@@ -3095,7 +3095,8 @@ class SocialConnectRepository(
             timestamp = System.currentTimeMillis(),
             isEncrypted = true,
             isDelivered = false,
-            isRead = false
+            isRead = false,
+            deliveryState = "PENDING"
         )
         chatMessageDao.insertMessage(userMsg)
         messageDao.insertMessage(userMsg.toLocalMessage())
@@ -3106,72 +3107,20 @@ class SocialConnectRepository(
             hasUnread = false
         )
 
-        // Single authoritative path: Room -> Google Tink -> Supabase -> server-side FCM.
-        appScope.launch(Dispatchers.IO) {
-            try {
-                // The send RPC stores sender_id as the active VibeSync profile ID.
-                // Tink associated data must use the same sender/recipient IDs on both devices.
-                val senderIdentity = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
-                val recipientIdentity = targetProfileId
-                if (senderIdentity.isBlank()) {
-                    android.util.Log.w("SocialConnectRepository", "Message held locally: active VibeSync profile session is unavailable.")
-                    return@launch
-                }
-                val targetKey = profile.publicIdentityKey.ifBlank {
-                    com.example.util.SupabaseClientManager.fetchPublicIdentityKey(recipientIdentity).orEmpty()
-                }
-                if (targetKey.isBlank()) {
-                    android.util.Log.w("SocialConnectRepository", "Message held locally: recipient Tink public key unavailable.")
-                    return@launch
-                }
-                val cipherText = com.example.util.TinkCryptoManager.encryptForRecipient(
-                    recipientPublicKeysetJson = targetKey,
-                    rawText = text,
-                    senderPhone = senderIdentity,
-                    receiverPhone = recipientIdentity
-                )
-                if (!cipherText.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
-                    android.util.Log.e("SocialConnectRepository", "Message rejected: Tink encryption failed.")
-                    return@launch
-                }
-                val canonicalMatchId = com.example.util.SupabaseClientManager.canonicalChatMatchId(senderIdentity, recipientIdentity)
-                if (canonicalMatchId.isBlank()) {
-                    android.util.Log.e("VibeSyncChat", "SEND rejected: sender/recipient cannot form a canonical match ID.")
-                    return@launch
-                }
-                val networkMsg = userMsg.copy(
-                    matchId = canonicalMatchId,
-                    text = cipherText,
-                    isEncrypted = true,
-                    isDelivered = false,
-                    isRead = false
-                )
-                var success = false
-                repeat(2) { attempt ->
-                    android.util.Log.i(
-                        "VibeSyncChat",
-                        "SEND attempt=${attempt + 1}/2 table=public.chat_messages rpc=send_encrypted_message messageId=$clientMsgId."
-                    )
-                    success = com.example.util.SupabaseClientManager.upsertChatMessage(
-                        msg = networkMsg,
-                        senderIdentity = senderIdentity,
-                        receiverIdentity = recipientIdentity,
-                        recipientProfileId = recipientIdentity
-                    )
-                    if (!success && attempt == 0) kotlinx.coroutines.delay(600L)
-                }
-                if (!success) {
-                    android.util.Log.e("VibeSyncChat", "STATUS: FAIL - message $clientMsgId remains local; Supabase RPC did not commit after retry.")
-                    android.util.Log.w("SocialConnectRepository", "Encrypted chat insert failed for $clientMsgId")
-                } else {
-                    android.util.Log.i("VibeSyncChat", "STATUS: PASS - remote insert acknowledged for message $clientMsgId.")
-                }
-            } catch (e: Exception) {
-                android.util.Log.w("SocialConnectRepository", "Encrypted message dispatch error: " + e.message)
-            }
+        // Durable outbox: Room persists first, then a unique WorkManager request retries until
+        // Supabase confirms the message_id upsert. The queued work survives offline periods and restarts.
+        val queueContext = context
+        if (queueContext != null) {
+            com.example.service.PendingMessageSyncScheduler.enqueue(queueContext, clientMsgId)
+        } else {
+            android.util.Log.e(
+                "VibeSyncChat",
+                "Message $clientMsgId is persisted as PENDING, but repository context is unavailable; " +
+                    "the application-start outbox sweep will enqueue it."
+            )
         }
 
-        // No Firebase database copy or listener is started. FCM is server-side notification transport.
+
     }
 
     suspend fun editMessage(messageId: String, newText: String): Boolean {
