@@ -1478,7 +1478,8 @@ fun StatusCaptionUploadPreviewDialog(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Brush.linearGradient(listOf(Color(currentBgStart), Color(currentBgEnd))))
-                .statusBarsPadding(),
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .imePadding(),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
             // Top Header: Back button, Title & Color palette picker
@@ -1574,17 +1575,13 @@ fun StatusCaptionUploadPreviewDialog(
 
             // Bottom Caption Bar & Upload Send Button with safe area edge-to-edge window insets
             Surface(
-                color = Color.Black.copy(alpha = 0.75f),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .windowInsetsPadding(WindowInsets.ime)
-                    .windowInsetsPadding(WindowInsets.navigationBars)
+                color = Color(0xF20B1220),
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 12.dp)
-                        .padding(bottom = 12.dp),
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
