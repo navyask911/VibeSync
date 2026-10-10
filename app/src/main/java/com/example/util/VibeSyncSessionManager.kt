@@ -117,6 +117,7 @@ object VibeSyncSessionManager {
         }
     }
 
+    @Synchronized
     fun initialize(context: Context) {
         val app = context.applicationContext
         appContext = app
@@ -188,7 +189,12 @@ object VibeSyncSessionManager {
     private fun load(context: Context): Session? {
         val blob = prefs(context).getString(SESSION_KEY, null) ?: return null
         val session = try {
-            val json = decrypt(blob)?.let(::JSONObject) ?: return null
+            val decoded = decrypt(blob)
+            if (decoded == null) {
+                Log.w(TAG, "Stored session could not be decrypted; retaining it for explicit recovery/logout.")
+                return null
+            }
+            val json = JSONObject(decoded)
             Session(
                 sessionToken = json.optString("session_token", ""),
                 profileId = json.optString("profile_id", ""),
@@ -204,16 +210,55 @@ object VibeSyncSessionManager {
         }
         cachedSession = session?.takeIf(::isValid)
         appContext = context.applicationContext
-        if (session != null && cachedSession == null) clear(context)
+        if (session != null && cachedSession == null) {
+            Log.w(
+                TAG,
+                "Stored session is incomplete or expired; leaving persisted credentials untouched. " +
+                    "A session is cleared only by explicit logout or a confirmed backend revocation."
+            )
+        }
         return cachedSession
     }
 
     fun clear(context: Context) {
         val app = context.applicationContext
-        prefs(app).edit().remove(SESSION_KEY).commit()
+        val persisted = prefs(app).edit().remove(SESSION_KEY).commit()
+        if (!persisted) {
+            Log.e(TAG, "Could not persist local session removal.")
+        }
         cachedSession = null
         appContext = app
         notifySessionChanged(null)
+    }
+
+    /**
+     * Invalidate credentials only for a backend 401 that explicitly indicates the VibeSync
+     * session/JWT is unauthenticated, invalid, expired, or revoked. Ordinary API errors do not
+     * delete local login state.
+     */
+    fun invalidateForBackendUnauthorized(httpStatus: Int, responseBody: String): Boolean {
+        if (httpStatus != 401) return false
+        val detail = responseBody.lowercase()
+        val confirmedSessionRejection = listOf(
+            "unauthenticated",
+            "unauthorized",
+            "session revoked",
+            "session_revoked",
+            "session invalid",
+            "invalid session",
+            "session expired",
+            "jwt expired",
+            "jwt is expired",
+            "invalid jwt",
+            "jwt is invalid",
+            "invalid_token",
+            "token revoked"
+        ).any(detail::contains)
+        if (!confirmedSessionRejection) return false
+        val context = appContext ?: return false
+        Log.w(TAG, "Backend returned a session/JWT 401; invalidating cached VibeSync credentials.")
+        clear(context)
+        return true
     }
 
     /**
