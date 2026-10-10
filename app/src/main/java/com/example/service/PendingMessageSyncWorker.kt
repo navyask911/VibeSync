@@ -143,7 +143,10 @@ class PendingMessageSyncWorker(
                 msg = remoteMessage,
                 senderIdentity = senderProfileId,
                 receiverIdentity = recipientProfileId,
-                recipientProfileId = recipientProfileId
+                recipientProfileId = recipientProfileId,
+                // Firebase/FCM is not a delivery dependency: Postgres Realtime serves active peers,
+                // and the periodic inbox worker catches up peers whose socket was unavailable.
+                dispatchPush = false
             )
             if (!committed) {
                 return@withContext retryWith("rpc/send_encrypted_message returned failure; see VibeSyncChat logs.")
