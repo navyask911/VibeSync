@@ -2,6 +2,10 @@ package com.example.util
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.IOException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import javax.net.ssl.SSLException
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -45,8 +49,19 @@ object TruecallerAuthGateway {
                 SupabaseClientManager.httpClient.newCall(request).execute().use { response ->
                     val responseBody = response.body?.string().orEmpty()
                     if (!response.isSuccessful) {
+                        val serverDetail = try {
+                            val errorJson = JSONObject(responseBody)
+                            val error = errorJson.optString("error", "").trim()
+                            val detail = errorJson.optString("detail", "").trim()
+                            listOf(error, detail).filter { it.isNotBlank() }.joinToString(": ")
+                                .ifBlank { responseBody }
+                        } catch (_: Exception) {
+                            responseBody
+                        }
                         return@withContext Result.failure(
-                            IllegalStateException("Truecaller verification gateway failed (HTTP ${response.code}): ${responseBody.take(500)}")
+                            IllegalStateException(
+                                "Truecaller verification gateway failed (HTTP ${response.code}): ${serverDetail.take(500)}"
+                            )
                         )
                     }
 
@@ -82,6 +97,34 @@ object TruecallerAuthGateway {
                         )
                     )
                 }
+            } catch (e: UnknownHostException) {
+                Result.failure(
+                    IllegalStateException(
+                        "Network/DNS failure contacting the VibeSync verification service. Check internet connectivity, Private DNS, or VPN settings, then retry. (${e.message.orEmpty()})",
+                        e
+                    )
+                )
+            } catch (e: SocketTimeoutException) {
+                Result.failure(
+                    IllegalStateException(
+                        "Timed out connecting to the VibeSync verification service. Check your connection and retry.",
+                        e
+                    )
+                )
+            } catch (e: SSLException) {
+                Result.failure(
+                    IllegalStateException(
+                        "Secure HTTPS connection to the VibeSync verification service failed: ${e.message.orEmpty()}",
+                        e
+                    )
+                )
+            } catch (e: IOException) {
+                Result.failure(
+                    IllegalStateException(
+                        "Network connection to the VibeSync verification service failed: ${e.message.orEmpty()}",
+                        e
+                    )
+                )
             } catch (e: Throwable) {
                 Result.failure(e)
             }
