@@ -1,5 +1,11 @@
 package com.example.ui.components
 
+import android.app.Activity
+import android.content.Intent
+import android.media.RingtoneManager
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -36,6 +42,12 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,6 +59,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.UserPreferencesEntity
 import com.example.util.AlertSoundAndVibrationManager
+import com.example.util.AppNotificationManager
+import com.example.util.NotificationSoundPreferences
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 
 @Composable
 fun AppSoundsNotificationCard(
@@ -56,6 +72,64 @@ fun AppSoundsNotificationCard(
     onToggleExpand: () -> Unit
 ) {
     val context = LocalContext.current
+    val appContext = context.applicationContext
+    val scope = rememberCoroutineScope()
+    var selectedSoundUri by remember { mutableStateOf(NotificationSoundPreferences.cachedSoundUri(context)) }
+    var soundLabel by remember { mutableStateOf("Android default") }
+
+    LaunchedEffect(appContext) {
+        NotificationSoundPreferences.soundUriFlow(appContext).collect { stored ->
+            selectedSoundUri = stored
+            soundLabel = when (stored) {
+                NotificationSoundPreferences.SILENT_URI -> "Silent"
+                null, "" -> "Android default"
+                else -> runCatching {
+                    RingtoneManager.getRingtone(context, Uri.parse(stored))?.getTitle(context)
+                }.getOrNull()?.takeIf { it.isNotBlank() } ?: "Selected system sound"
+            }
+        }
+    }
+
+    val soundPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val pickedUri: Uri? = result.data?.let { data ->
+                @Suppress("DEPRECATION")
+                if (android.os.Build.VERSION.SDK_INT >= 33) {
+                    data.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI, Uri::class.java)
+                } else {
+                    data.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+                }
+            }
+            val storedUri = pickedUri?.toString() ?: NotificationSoundPreferences.SILENT_URI
+            scope.launch {
+                runCatching {
+                    NotificationSoundPreferences.saveSoundUri(appContext, storedUri)
+                    AppNotificationManager.updateNotificationSound(appContext, storedUri)
+                    selectedSoundUri = storedUri
+                }.onFailure {
+                    android.util.Log.w("AppSoundsSettings", "Unable to persist chosen system sound: ${it.message}")
+                }
+            }
+        }
+    }
+
+    val currentUri = selectedSoundUri
+        ?.takeIf { it.isNotBlank() && it != NotificationSoundPreferences.SILENT_URI }
+        ?.let { Uri.parse(it) }
+    val pickerIntent = remember(currentUri) {
+        Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+            putExtra(
+                RingtoneManager.EXTRA_RINGTONE_TYPE,
+                RingtoneManager.TYPE_NOTIFICATION or RingtoneManager.TYPE_RINGTONE
+            )
+            putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+            putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, true)
+            putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, currentUri)
+        }
+    }
+
     DisposableEffect(Unit) {
         onDispose { AlertSoundAndVibrationManager.stopAllSounds(context) }
     }
@@ -101,7 +175,7 @@ fun AppSoundsNotificationCard(
                     Spacer(modifier = Modifier.width(10.dp))
                     Column {
                         Text(
-                            text = "🔔 App Sounds & Call Ringtone Settings",
+                            text = "🔔 Notifications & System Sound",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 15.sp
@@ -109,7 +183,7 @@ fun AppSoundsNotificationCard(
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "Set custom alert sounds for messages, calls & matches",
+                            text = "Choose a sound installed on your Android device",
                             style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -181,65 +255,48 @@ fun AppSoundsNotificationCard(
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    // 1. Incoming Chat Message Tone Selector
-                    SoundCategorySection(
-                        title = "💬 Incoming Message Alert Tone",
-                        selectedToneKey = preferences.messageSoundTone,
-                        options = listOf(
-                            SoundOption("DEFAULT", "Default System Chime"),
-                            SoundOption("CLASSIC_CHIME", "Classic Chime"),
-                            SoundOption("CRYSTAL_DROP", "Crystal Drop"),
-                            SoundOption("WHISTLE_BREEZE", "Whistle Breeze"),
-                            SoundOption("GENTLE_VIBE", "Gentle Vibe"),
-                            SoundOption("SILENT", "Silent (No Sound)")
-                        ),
-                        onSelectTone = { toneKey ->
-                            onUpdatePreferences(preferences.copy(messageSoundTone = toneKey))
-                        },
-                        onPreviewSound = { toneKey ->
-                            AlertSoundAndVibrationManager.playPreviewSound(context, toneKey)
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                "Android System Notification Sound",
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                soundLabel,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Button(
+                                onClick = { soundPickerLauncher.launch(pickerIntent) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Choose system sound or ringtone")
+                            }
+                            if (selectedSoundUri != NotificationSoundPreferences.SILENT_URI) {
+                                Button(
+                                    onClick = {
+                                        AlertSoundAndVibrationManager.playSelectedSystemSound(appContext, selectedSoundUri)
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Preview selected sound")
+                                }
+                            }
+                            Text(
+                                "VibeSync uses sounds provided by Android. Selecting Silent disables notification-channel audio. Android may let you override each channel's sound in system settings.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // 2. Mutual Match Celebration Sound
-                    SoundCategorySection(
-                        title = "✨ Mutual Match & Like Alert Sound",
-                        selectedToneKey = preferences.matchSoundTone,
-                        options = listOf(
-                            SoundOption("CELEBRATION", "Celebration Pulse"),
-                            SoundOption("COSMIC_MATCH", "Cosmic Match Chime"),
-                            SoundOption("SWEET_BELL", "Sweet Bell"),
-                            SoundOption("SILENT", "Silent (No Sound)")
-                        ),
-                        onSelectTone = { toneKey ->
-                            onUpdatePreferences(preferences.copy(matchSoundTone = toneKey))
-                        },
-                        onPreviewSound = { toneKey ->
-                            AlertSoundAndVibrationManager.playPreviewSound(context, toneKey)
-                        }
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // 3. Voice & Video Call Ringtone
-                    SoundCategorySection(
-                        title = "📞 Voice & Video Call Ringtone",
-                        selectedToneKey = preferences.callRingtone,
-                        options = listOf(
-                            SoundOption("STANDARD_RING", "Standard Phone Ring"),
-                            SoundOption("DIGITAL_WAVE", "Digital Wave Tone"),
-                            SoundOption("MARIMBA", "Marimba Tone"),
-                            SoundOption("SILENT", "Silent (No Ringtone)")
-                        ),
-                        onSelectTone = { toneKey ->
-                            onUpdatePreferences(preferences.copy(callRingtone = toneKey))
-                        },
-                        onPreviewSound = { toneKey ->
-                            AlertSoundAndVibrationManager.playPreviewSound(context, toneKey)
-                        }
-                    )
+                    }
                 }
             }
         }
