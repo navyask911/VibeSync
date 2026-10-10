@@ -55,11 +55,18 @@ function normalizePhone(value: unknown): { e164: string; last10: string; candida
   else e164 = "+" + digits;
   const internationalDigits = e164.slice(1);
   const last10 = internationalDigits.slice(-10);
-  const candidates = Array.from(new Set([
-    e164, internationalDigits, "+" + digits, digits,
-    "+91" + last10, "91" + last10, last10, "0" + last10,
-  ]));
-  return { e164, last10, candidates };
+  const candidateSet = new Set([e164, internationalDigits, "+" + digits, digits]);
+  // Only add ten-digit / trunk-prefix aliases for normalized Indian (+91) numbers.
+  // Do not let a non-Indian international number collide with an Indian admin's last ten digits.
+  if (e164.startsWith("+91") && internationalDigits.length === 12) {
+    [
+      "+91" + last10,
+      "91" + last10,
+      last10,
+      "0" + last10,
+    ].forEach((candidate) => candidateSet.add(candidate));
+  }
+  return { e164, last10, candidates: Array.from(candidateSet) };
 }
 
 async function sha256Hex(value: string): Promise<string> {
