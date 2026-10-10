@@ -44,7 +44,10 @@ data class ChatMessageEntity(
     @ColumnInfo(defaultValue = "''")
     val lastSyncError: String = "",
     @ColumnInfo(defaultValue = "0")
-    val lastSyncAttemptAt: Long = 0L
+    val lastSyncAttemptAt: Long = 0L,
+    /** Profile that created the outbox row; prevents retries crossing account switches. */
+    @ColumnInfo(defaultValue = "")
+    val outboxOwnerProfileId: String = ""
 ) {
     @androidx.room.Ignore
     val senderUid: String = senderId
