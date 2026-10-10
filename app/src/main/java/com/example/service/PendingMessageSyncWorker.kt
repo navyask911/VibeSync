@@ -243,6 +243,18 @@ class PendingMessageInboxSyncWorker(
                         }
                     }
                 }
+
+                // Sender-side catch-up requires metadata only: sender cannot decrypt ciphertext encrypted
+                // to the recipient's key, but it can safely reconcile is_delivered/is_read in Room.
+                val deliveryStates = SupabaseClientManager.fetchMessageDeliveryStatesForMatch(canonicalMatchId)
+                for (state in deliveryStates) {
+                    if (!state.senderId.equals(myProfileId, ignoreCase = true)) continue
+                    when {
+                        state.isRead -> chatDao.markMessageAsRead(state.messageId)
+                        state.isDelivered -> chatDao.markMessageAsDelivered(state.messageId)
+                        else -> chatDao.markOutboxSentToServerIfPending(state.messageId, System.currentTimeMillis())
+                    }
+                }
             }
             Log.i(
                 TAG,
