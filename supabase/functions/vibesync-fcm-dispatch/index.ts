@@ -220,13 +220,14 @@ async function dispatchStoredMessage(
   try {
     for (const row of tokens) {
       try {
+        // FCM is a wake-up signal only. Message ciphertext stays in Supabase and is fetched
+        // by the recipient's authenticated sync worker; never put encrypted chat content in push data.
         await sendFcm(sa, row.fcm_token, {
-          type: "NEW_E2EE_MESSAGE",
+          type: "CHAT_SYNC_WAKEUP",
           message_id: String(message.message_id),
           match_id: String(message.match_id ?? ""),
           sender_id: String(message.sender_id),
           receiver_id: String(message.receiver_id),
-          ciphertext: message.ciphertext,
           media_type: String(message.media_type ?? "TEXT"),
         });
         delivered++;
