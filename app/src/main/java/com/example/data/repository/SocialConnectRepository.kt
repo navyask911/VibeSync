@@ -3096,7 +3096,8 @@ class SocialConnectRepository(
             isEncrypted = true,
             isDelivered = false,
             isRead = false,
-            deliveryState = "PENDING"
+            deliveryState = "PENDING",
+            outboxOwnerProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty().trim()
         )
         chatMessageDao.insertMessage(userMsg)
         messageDao.insertMessage(userMsg.toLocalMessage())
