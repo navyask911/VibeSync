@@ -12,7 +12,7 @@ import androidx.compose.ui.platform.LocalContext
 
 data class AppAppearance(
     val themeMode: String = "LIGHT",
-    val accentColor: String = "ELECTRIC_BLUE"
+    val accentColor: String = "CREAM_BUTTER"
 )
 
 /**
@@ -26,16 +26,16 @@ object AppPreferences {
 
     private val validModes = setOf("LIGHT", "DARK", "SYSTEM")
     private val validAccents = setOf(
-        "ELECTRIC_BLUE", "EMERALD_GREEN", "DEEP_PURPLE", "SUNSET_CORAL"
+        "CREAM_BUTTER", "SOFT_MINT_CREAM", "PEACH_CREAM", "LAVENDER_MIST", "PALE_AQUA", "ROSE_CREAM", "ALMOND_BISQUE", "PALE_SAGE", "WARM_VANILLA"
     )
 
     fun getAppearance(context: Context): AppAppearance {
         val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
         val mode = preferences.getString(KEY_THEME_MODE, "LIGHT")?.uppercase()
-        val accent = preferences.getString(KEY_ACCENT_COLOR, "ELECTRIC_BLUE")?.uppercase()
+        val accent = preferences.getString(KEY_ACCENT_COLOR, "CREAM_BUTTER")?.uppercase()
         return AppAppearance(
             themeMode = mode?.takeIf { it in validModes } ?: "LIGHT",
-            accentColor = accent?.takeIf { it in validAccents } ?: "ELECTRIC_BLUE"
+            accentColor = accent?.takeIf { it in validAccents } ?: "CREAM_BUTTER"
         )
     }
 

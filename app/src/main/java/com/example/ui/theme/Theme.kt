@@ -11,23 +11,30 @@ data class AppAccentPalette(
     val id: String,
     val name: String,
     val hex: String,
-    val color: Color
+    val color: Color,
+    val backgroundHex: String,
+    val background: Color
 )
 
+/** Exactly nine user-selectable light and creamy pastel palettes. */
 val AppAccentPalettes = listOf(
-    AppAccentPalette("ELECTRIC_BLUE", "Electric Blue", "#2A82F6", Color(0xFF2A82F6)),
-    AppAccentPalette("EMERALD_GREEN", "Emerald", "#10B981", Color(0xFF10B981)),
-    AppAccentPalette("DEEP_PURPLE", "Deep Purple", "#8B5CF6", Color(0xFF8B5CF6)),
-    AppAccentPalette("SUNSET_CORAL", "Sunset Coral", "#F97316", Color(0xFFF97316))
+    AppAccentPalette("CREAM_BUTTER", "Cream Butter", "#F5E6B3", CreamButterAccent, "#FFF9E6", CreamButterBackground),
+    AppAccentPalette("SOFT_MINT_CREAM", "Soft Mint Cream", "#C8E6C9", SoftMintCreamAccent, "#E8F5E9", SoftMintCreamBackground),
+    AppAccentPalette("PEACH_CREAM", "Peach Cream", "#FFE0B2", PeachCreamAccent, "#FFF3E0", PeachCreamBackground),
+    AppAccentPalette("LAVENDER_MIST", "Lavender Mist", "#E1BEE7", LavenderMistAccent, "#F3E5F5", LavenderMistBackground),
+    AppAccentPalette("PALE_AQUA", "Pale Aqua / Soft Sky", "#B3E5FC", PaleAquaAccent, "#E1F5FE", PaleAquaBackground),
+    AppAccentPalette("ROSE_CREAM", "Rose Cream", "#F8BBD0", RoseCreamAccent, "#FCE4EC", RoseCreamBackground),
+    AppAccentPalette("ALMOND_BISQUE", "Almond Bisque", "#F5DEB3", AlmondBisqueAccent, "#FDF5E6", AlmondBisqueBackground),
+    AppAccentPalette("PALE_SAGE", "Pale Sage", "#B2DFDB", PaleSageAccent, "#E0F2F1", PaleSageBackground),
+    AppAccentPalette("WARM_VANILLA", "Warm Vanilla", "#FFF9C4", WarmVanillaAccent, "#FFFDE7", WarmVanillaBackground)
 )
 
 private val ThemeLightCanvas = Color(0xFFF4F5F7)
 private val ThemeLightCard = Color(0xFFFFFFFF)
 private val ThemeLightInput = Color(0xFFEAECEF)
 private val ThemeLightBorder = Color(0xFFE1E4EA)
-private val ThemeLightTextPrimary = Color(0xFF0F172A)
+private val ThemeLightTextPrimary = PastelTextPrimary
 private val ThemeLightTextSecondary = Color(0xFF64748B)
-
 private val ThemeDarkCanvas = Color(0xFF090A0F)
 private val ThemeDarkCard = Color(0xFF181B22)
 private val ThemeDarkInput = Color(0xFF101217)
@@ -37,20 +44,19 @@ private val ThemeDarkTextSecondary = Color(0xFF767E8C)
 
 @Composable
 fun MyApplicationTheme(
-    // presetId is retained for compatibility with legacy previews/callers.
     presetId: String? = null,
     themeMode: String = "LIGHT",
-    accentColor: String = "ELECTRIC_BLUE",
+    accentColor: String = "CREAM_BUTTER",
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val legacyPreset = when (presetId?.uppercase()) {
-        "PURE_LIGHT" -> "LIGHT" to "ELECTRIC_BLUE"
-        "MIDNIGHT_DARK" -> "DARK" to "ELECTRIC_BLUE"
-        "SUNLIGHT_GOLD" -> "LIGHT" to "SUNSET_CORAL"
-        "AFTERNOON_AZURE" -> "LIGHT" to "ELECTRIC_BLUE"
-        "EVENING_SUNSET" -> "DARK" to "SUNSET_CORAL"
+        "PURE_LIGHT" -> "LIGHT" to "CREAM_BUTTER"
+        "MIDNIGHT_DARK" -> "DARK" to "CREAM_BUTTER"
+        "SUNLIGHT_GOLD" -> "LIGHT" to "WARM_VANILLA"
+        "AFTERNOON_AZURE" -> "LIGHT" to "PALE_AQUA"
+        "EVENING_SUNSET" -> "DARK" to "PEACH_CREAM"
         else -> null
     }
     val resolvedMode = (legacyPreset?.first ?: themeMode).uppercase()
@@ -60,56 +66,33 @@ fun MyApplicationTheme(
         "SYSTEM" -> darkTheme
         else -> false
     }
-    val accent = AppAccentPalettes.firstOrNull { it.id == resolvedAccentId }?.color
-        ?: AppAccentPalettes.first().color
-
+    val palette = AppAccentPalettes.firstOrNull { it.id == resolvedAccentId } ?: AppAccentPalettes.first()
+    val accent = palette.color
+    val foreground = if (isDark) ThemeDarkTextPrimary else PastelTextPrimary
     val colorScheme = if (isDark) {
         darkColorScheme(
-            primary = accent,
-            onPrimary = Color.White,
-            primaryContainer = accent.copy(alpha = 0.22f),
-            onPrimaryContainer = ThemeDarkTextPrimary,
-            secondary = accent,
-            onSecondary = Color.White,
-            secondaryContainer = ThemeDarkInput,
-            onSecondaryContainer = ThemeDarkTextPrimary,
-            tertiary = accent,
-            onTertiary = Color.White,
-            background = ThemeDarkCanvas,
-            onBackground = ThemeDarkTextPrimary,
-            surface = ThemeDarkCard,
-            onSurface = ThemeDarkTextPrimary,
-            surfaceVariant = ThemeDarkInput,
-            onSurfaceVariant = ThemeDarkTextSecondary,
-            outline = ThemeDarkBorder,
-            outlineVariant = ThemeDarkBorder
+            primary = accent, onPrimary = PastelTextPrimary,
+            primaryContainer = accent, onPrimaryContainer = PastelTextPrimary,
+            secondary = accent, onSecondary = PastelTextPrimary,
+            secondaryContainer = ThemeDarkInput, onSecondaryContainer = ThemeDarkTextPrimary,
+            tertiary = accent, onTertiary = PastelTextPrimary,
+            background = ThemeDarkCanvas, onBackground = ThemeDarkTextPrimary,
+            surface = ThemeDarkCard, onSurface = ThemeDarkTextPrimary,
+            surfaceVariant = ThemeDarkInput, onSurfaceVariant = ThemeDarkTextSecondary,
+            outline = ThemeDarkBorder, outlineVariant = ThemeDarkBorder
         )
     } else {
         lightColorScheme(
-            primary = accent,
-            onPrimary = Color.White,
-            primaryContainer = accent.copy(alpha = 0.14f),
-            onPrimaryContainer = ThemeLightTextPrimary,
-            secondary = accent,
-            onSecondary = Color.White,
-            secondaryContainer = ThemeLightInput,
-            onSecondaryContainer = ThemeLightTextPrimary,
-            tertiary = accent,
-            onTertiary = Color.White,
-            background = ThemeLightCanvas,
-            onBackground = ThemeLightTextPrimary,
-            surface = ThemeLightCard,
-            onSurface = ThemeLightTextPrimary,
-            surfaceVariant = ThemeLightInput,
-            onSurfaceVariant = ThemeLightTextSecondary,
-            outline = ThemeLightBorder,
-            outlineVariant = ThemeLightBorder
+            primary = accent, onPrimary = PastelTextPrimary,
+            primaryContainer = palette.background, onPrimaryContainer = PastelTextPrimary,
+            secondary = accent, onSecondary = PastelTextPrimary,
+            secondaryContainer = palette.background, onSecondaryContainer = PastelTextPrimary,
+            tertiary = accent, onTertiary = PastelTextPrimary,
+            background = ThemeLightCanvas, onBackground = foreground,
+            surface = ThemeLightCard, onSurface = foreground,
+            surfaceVariant = palette.background, onSurfaceVariant = ThemeLightTextSecondary,
+            outline = ThemeLightBorder, outlineVariant = ThemeLightBorder
         )
     }
-
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        content = content
-    )
+    MaterialTheme(colorScheme = colorScheme, typography = Typography, content = content)
 }

@@ -51,3 +51,27 @@ val TextDark = Color(0xFF111B21)
 val TextMuted = Color(0xFF8696A0)
 val VerifiedBadgeBlue = Color(0xFF00A884)
 
+
+
+// Nine light, creamy pastel theme accents. Each palette pairs a light canvas with a
+// slightly deeper pastel accent; use dark charcoal/slate text for readable labels.
+val CreamButterBackground = Color(0xFFFFF9E6)
+val CreamButterAccent = Color(0xFFF5E6B3)
+val SoftMintCreamBackground = Color(0xFFE8F5E9)
+val SoftMintCreamAccent = Color(0xFFC8E6C9)
+val PeachCreamBackground = Color(0xFFFFF3E0)
+val PeachCreamAccent = Color(0xFFFFE0B2)
+val LavenderMistBackground = Color(0xFFF3E5F5)
+val LavenderMistAccent = Color(0xFFE1BEE7)
+val PaleAquaBackground = Color(0xFFE1F5FE)
+val PaleAquaAccent = Color(0xFFB3E5FC)
+val RoseCreamBackground = Color(0xFFFCE4EC)
+val RoseCreamAccent = Color(0xFFF8BBD0)
+val AlmondBisqueBackground = Color(0xFFFDF5E6)
+val AlmondBisqueAccent = Color(0xFFF5DEB3)
+val PaleSageBackground = Color(0xFFE0F2F1)
+val PaleSageAccent = Color(0xFFB2DFDB)
+val WarmVanillaBackground = Color(0xFFFFFDE7)
+val WarmVanillaAccent = Color(0xFFFFF9C4)
+val PastelTextPrimary = Color(0xFF1C1B1F)
+val PastelTextSecondary = Color(0xFF2B2D42)

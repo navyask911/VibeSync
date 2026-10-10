@@ -104,7 +104,7 @@ fun AppThemeCard(
                             modifier = Modifier
                                 .size(34.dp)
                                 .clip(CircleShape)
-                                .background(accent.color)
+                                .background(accent.background)
                                 .border(
                                     width = if (selected) 3.dp else 1.dp,
                                     color = if (selected) MaterialTheme.colorScheme.onSurface
@@ -129,7 +129,7 @@ fun AppThemeCard(
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = accent.hex,
+                            text = "${accent.backgroundHex} / ${accent.hex}",
                             fontSize = 9.sp,
                             maxLines = 1,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
