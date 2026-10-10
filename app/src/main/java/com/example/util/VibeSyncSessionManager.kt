@@ -244,7 +244,6 @@ object VibeSyncSessionManager {
             "unauthorized",
             "session revoked",
             "session_revoked",
-            "session_revoked",
             "session invalid",
             "session_invalid",
             "invalid session",
