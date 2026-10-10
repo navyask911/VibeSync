@@ -218,6 +218,7 @@ fun BusinessCard(
                     .fillMaxWidth()
                     .align(Alignment.BottomCenter)
                     .padding(horizontal = 20.dp, vertical = 18.dp)
+                    .padding(bottom = 64.dp)
             ) {
                 // Category Chip & Follower count
                 Row(
@@ -269,17 +270,23 @@ fun BusinessCard(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // Business Name
-                Text(
-                    text = business.name,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontFamily = androidx.compose.ui.text.font.FontFamily.Serif,
-                    letterSpacing = 0.5.sp,
-                    color = Color.White,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                // Business name uses charcoal bold text on a light label for reliable contrast.
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFFFFF9E6)
+                ) {
+                    Text(
+                        text = business.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF1E1E1E),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
+                }
 
                 // Tagline
                 if (business.tagline.isNotBlank()) {
@@ -402,28 +409,28 @@ fun BusinessCard(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .align(Alignment.CenterHorizontally)
-                        .testTag("partner_rank_footer"),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically
+            }
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
+                    .testTag("partner_rank_footer"),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    color = Color(0xFF1C1B1F).copy(alpha = 0.82f),
+                    shape = RoundedCornerShape(50.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
                 ) {
-                    Surface(
-                        color = Color(0xFF1C1B1F).copy(alpha = 0.78f),
-                        shape = RoundedCornerShape(50.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
-                    ) {
-                        Text(
-                            text = "Partner Rank • ${business.tierEnum}",
-                            color = Color.White,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                        )
-                    }
+                    Text(
+                        text = "Partner Rank • ${business.tierEnum}",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
                 }
             }
         }

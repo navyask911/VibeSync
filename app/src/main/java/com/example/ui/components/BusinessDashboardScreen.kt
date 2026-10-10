@@ -266,14 +266,17 @@ fun BusinessDashboardScreen(
                                         )
                                     }
                                 }
-                                Text(
-                                    text = venue.name,
-                                    color = Color.White,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                                Surface(color = Color(0xFFFFF9E6), shape = RoundedCornerShape(8.dp)) {
+                                    Text(
+                                        text = venue.name,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = Color(0xFF1E1E1E),
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                    )
+                                }
                             }
                         }
 
@@ -1461,12 +1464,15 @@ fun ExportReportDialog(
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 17.sp
                             )
-                            Text(
-                                text = venue.name,
-                                color = Color.White,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                            Surface(color = Color(0xFFFFF9E6), shape = RoundedCornerShape(6.dp)) {
+                                Text(
+                                    text = venue.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = Color(0xFF1E1E1E),
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                                )
+                            }
                         }
                     }
 

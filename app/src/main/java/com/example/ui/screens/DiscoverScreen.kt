@@ -45,6 +45,8 @@ import com.example.ui.components.BusinessProfileDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -133,6 +135,7 @@ fun DiscoverScreen(
     var showPreferencesDialog by remember { mutableStateOf(false) }
     var dismissedRequestIds by rememberSaveable { mutableStateOf(setOf<String>()) }
     var followedBusinessIds by rememberSaveable { mutableStateOf(setOf<String>()) }
+    var businessSearchQuery by rememberSaveable { mutableStateOf("") }
 
     val pendingFriendRequestsState = viewModel?.pendingFriendRequests?.collectAsState()
     val pendingRequests = pendingFriendRequestsState?.value ?: emptyList()
@@ -529,8 +532,31 @@ fun DiscoverScreen(
                             textAlign = TextAlign.Start
                         )
 
+                        OutlinedTextField(
+                            value = businessSearchQuery,
+                            onValueChange = { businessSearchQuery = it },
+                            modifier = Modifier.fillMaxWidth().height(52.dp).testTag("input_find_business_search"),
+                            placeholder = { Text("Search businesses and venues", maxLines = 1) },
+                            leadingIcon = { Icon(Icons.Default.Launch, contentDescription = "Search businesses") },
+                            singleLine = true,
+                            maxLines = 1,
+                            shape = RoundedCornerShape(16.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = VibeSyncTeal,
+                                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                                focusedContainerColor = MaterialTheme.colorScheme.surface,
+                                unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                            )
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+
                         // Nearest Indian Business & Partner Listings
-                        val displayBusinesses = if (sortedNearestBusinesses.isNotEmpty()) sortedNearestBusinesses else emptyList()
+                        val displayBusinesses = sortedNearestBusinesses.filter { biz ->
+                            businessSearchQuery.isBlank() ||
+                                biz.name.contains(businessSearchQuery.trim(), ignoreCase = true) ||
+                                biz.category.contains(businessSearchQuery.trim(), ignoreCase = true) ||
+                                biz.city.contains(businessSearchQuery.trim(), ignoreCase = true)
+                        }
 
                         // Dedicated directory entry for when the swipe deck is exhausted.
                         Surface(
