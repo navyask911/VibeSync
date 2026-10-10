@@ -2,6 +2,7 @@ package com.example.util
 
 import android.content.Context
 import android.util.Log
+import com.example.BuildConfig
 import com.example.data.model.ChatMessageEntity
 import com.example.data.model.ProfileEntity
 import kotlinx.coroutines.CoroutineScope
@@ -71,6 +72,15 @@ object SupabaseBackendManager {
     @Volatile private var realtimeWebSocket: WebSocket? = null
     @Volatile private var realtimeConnecting = false
     @Volatile private var sessionListenerRegistered = false
+    @Volatile private var forceAnonHandshakeNext = false
+    @Volatile private var lastHandshakeUsedAnon = false
+    @Volatile private var waitingForSessionChangeAfter401 = false
+    @Volatile private var lastRejectedAccessToken: String? = null
+    @Volatile private var reconnectAttempt = 0
+    @Volatile private var realtimeAuthSocket: WebSocket? = null
+    @Volatile private var realtimeAuthToken: String? = null
+    @Volatile private var realtimeSubscriptionSocket: WebSocket? = null
+    @Volatile private var realtimeSubscribedProfileId: String? = null
 
     // Callbacks for incoming realtime events
     @Volatile private var onInsertCallback: ((JSONObject) -> Unit)? = null
@@ -85,8 +95,18 @@ object SupabaseBackendManager {
         } else {
             scope.launch {
                 isIntentionallyClosed = false
-                if (onInsertCallback != null && !_realtimeConnected.value && !realtimeConnecting) {
-                    Log.i(TAG, "Complete VibeSync session became available; starting Realtime automatically.")
+                waitingForSessionChangeAfter401 = false
+                if (lastRejectedAccessToken != session.accessToken) {
+                    lastRejectedAccessToken = null
+                    reconnectAttempt = 0
+                }
+                val openSocket = realtimeWebSocket
+                if (_realtimeConnected.value && openSocket != null) {
+                    // A newly verified session can be applied to the existing anonymous socket
+                    // without cycling the HTTP upgrade or losing the realtime transport.
+                    authenticateRealtimeSocket(openSocket, session)
+                } else if (onInsertCallback != null && !realtimeConnecting) {
+                    Log.i(TAG, "Fresh VibeSync session available; starting Realtime automatically.")
                     startWebSocketConnection()
                 }
             }
@@ -140,72 +160,73 @@ object SupabaseBackendManager {
             Log.d(TAG, "Supabase Realtime connection already active or opening")
             return
         }
-        val sessionToken = VibeSyncSessionManager.getToken().orEmpty()
-        val accessJwt = VibeSyncSessionManager.getAccessToken().orEmpty()
-        val sessionProfileId = VibeSyncSessionManager.getProfileId().orEmpty()
-        if (sessionToken.isBlank() || sessionProfileId.isBlank() || accessJwt.isBlank()) {
+
+        // getSession() only returns credentials that have not expired. It also re-reads the
+        // encrypted store when there is no valid in-memory session.
+        val session = VibeSyncSessionManager.getSession()
+        val sessionToken = session?.sessionToken.orEmpty()
+        val accessJwt = session?.accessToken.orEmpty()
+        val anonKey = BuildConfig.SUPABASE_ANON_KEY.trim()
+            .ifBlank { SUPABASE_ANON_KEY.trim() }
+            .ifBlank { SupabaseClientManager.SUPABASE_ANON_KEY.trim() }
+        if (anonKey.isBlank()) {
             _realtimeConnected.value = false
-            Log.i(
-                TAG,
-                "Realtime waiting for a complete VibeSync session (sessionTokenPresent=${sessionToken.isNotBlank()}, " +
-                    "accessJwtPresent=${accessJwt.isNotBlank()}, profileIdPresent=${sessionProfileId.isNotBlank()})."
-            )
+            Log.e(TAG, "Realtime cannot connect because the Supabase anon/publishable key is empty.")
             return
         }
+
+        // An expired/absent session must not block the initial anonymous WebSocket handshake.
+        // On a 401, retry once via anon, then apply a subsequently verified session with setAuth.
+        val useAnonForHandshake = accessJwt.isBlank() ||
+            (forceAnonHandshakeNext && accessJwt == lastRejectedAccessToken)
+        forceAnonHandshakeNext = false
+        lastHandshakeUsedAnon = useAnonForHandshake
+        val handshakeBearer = if (useAnonForHandshake) anonKey else accessJwt
+
         try {
             isIntentionallyClosed = false
             reconnectJob?.cancel()
             val oldSocket = realtimeWebSocket
             realtimeWebSocket = null
+            resetRealtimeSocketAuthState(oldSocket)
             try {
                 oldSocket?.close(1000, "Reconnecting")
             } catch (_: Exception) {}
 
-            val wsUrl = SUPABASE_URL.replace("https://", "wss://").replace("http://", "ws://") +
-                    "/realtime/v1/websocket?apikey=$SUPABASE_ANON_KEY&v=1.0.0"
+            val wsBase = SUPABASE_URL.trimEnd('/')
+                .replaceFirst("https://", "wss://")
+                .replaceFirst("http://", "ws://")
+            val encodedAnonKey = java.net.URLEncoder.encode(anonKey, "UTF-8")
+            val wsUrl = "$wsBase/realtime/v1/websocket?apikey=$encodedAnonKey&vsn=1.0.0"
 
             val requestBuilder = Request.Builder().url(wsUrl)
-                .header("apikey", SUPABASE_ANON_KEY)
-                .header("Authorization", "Bearer $accessJwt")
-                .header("x-vibesync-session", sessionToken)
+                .header("apikey", anonKey)
+                .header("Authorization", "Bearer $handshakeBearer")
+            if (sessionToken.isNotBlank()) {
+                requestBuilder.header("x-vibesync-session", sessionToken)
+            }
             val request = requestBuilder.build()
             realtimeConnecting = true
             realtimeWebSocket = wsHttpClient.newWebSocket(request, object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
                     realtimeConnecting = false
                     _realtimeConnected.value = true
-                    Log.i(TAG, "Supabase Realtime WebSocket transport opened; awaiting chat subscription acknowledgement.")
+                    reconnectAttempt = 0
+                    Log.i(
+                        TAG,
+                        "Supabase Realtime WebSocket transport opened (anonHandshake=$useAnonForHandshake); " +
+                            "applying active VibeSync credentials when available."
+                    )
 
-                    // Truecaller sessions are not Supabase Auth JWTs. Subscribe by the
-                    // validated session's VibeSync profile ID and ignore the deprecated messages table.
-                    val joinChatMsg = JSONObject().apply {
-                        put("topic", "realtime:public:chat_messages")
-                        put("event", "phx_join")
-                        put("payload", JSONObject().apply {
-                            put("access_token", accessJwt)
-                            val config = JSONObject().apply {
-                                put("broadcast", JSONObject().apply { put("self", true) })
-                                val changes = JSONArray().apply {
-                                    put(JSONObject().apply {
-                                        put("event", "INSERT")
-                                        put("schema", "public")
-                                        put("table", "chat_messages")
-                                        put("filter", "receiver_id=eq.$sessionProfileId")
-                                    })
-                                    put(JSONObject().apply {
-                                        put("event", "UPDATE")
-                                        put("schema", "public")
-                                        put("table", "chat_messages")
-                                        put("filter", "sender_id=eq.$sessionProfileId")
-                                    })
-                                }
-                                put("postgres_changes", changes)
-                            }
-                            put("config", config)
-                        })
-                        put("ref", "join_chat_messages")
+                    // Supabase Realtime supports setAuth on an already-open socket. An anonymous
+                    // handshake is therefore safe while a session is being restored or re-verified.
+                    val activeSession = VibeSyncSessionManager.getSession()
+                    if (activeSession != null && activeSession.accessToken != lastRejectedAccessToken) {
+                        authenticateRealtimeSocket(webSocket, activeSession)
+                    } else {
+                        waitingForSessionChangeAfter401 = activeSession != null
+                        Log.i(TAG, "Realtime socket is open anonymously; waiting for fresh verified session credentials before subscribing.")
                     }
-                    webSocket.send(joinChatMsg.toString())
 
                     // Start Phoenix heartbeat every 20 seconds
                     heartbeatJob?.cancel()
@@ -244,13 +265,17 @@ object SupabaseBackendManager {
                             if (status.equals("ok", ignoreCase = true)) {
                                 Log.i(
                                     TAG,
-                                    "Supabase Realtime chat subscription confirmed for profile=$sessionProfileId " +
+                                    "Supabase Realtime chat subscription confirmed for profile=${VibeSyncSessionManager.getProfileId().orEmpty()} " +
                                         "(INSERT receiver_id, UPDATE sender_id)."
                                 )
                             } else {
-                                _realtimeConnected.value = false
-                                Log.e(TAG, "Supabase Realtime chat subscription rejected: status=$status detail=$detail")
-                                webSocket.close(4001, "chat subscription rejected")
+                                // Do not close/reconnect in a tight loop for a channel-level auth
+                                // rejection. Keep the transport alive and wait for a changed session,
+                                // which will call authenticateRealtimeSocket() again.
+                                realtimeSubscriptionSocket = null
+                                realtimeSubscribedProfileId = null
+                                waitingForSessionChangeAfter401 = true
+                                Log.e(TAG, "Supabase Realtime chat subscription rejected: status=$status detail=$detail; waiting for fresh session credentials.")
                             }
                             return
                         }
@@ -368,28 +393,57 @@ object SupabaseBackendManager {
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                     if (realtimeWebSocket === webSocket) realtimeWebSocket = null
+                    resetRealtimeSocketAuthState(webSocket)
                     realtimeConnecting = false
                     _realtimeConnected.value = false
                     heartbeatJob?.cancel()
                     Log.i(TAG, "Supabase Realtime disconnected: $reason ($code)")
-                    if (!isIntentionallyClosed) {
+                    if (!isIntentionallyClosed && !waitingForSessionChangeAfter401) {
                         scheduleReconnect()
                     }
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: okhttp3.Response?) {
                     if (realtimeWebSocket === webSocket) realtimeWebSocket = null
+                    resetRealtimeSocketAuthState(webSocket)
                     realtimeConnecting = false
                     _realtimeConnected.value = false
                     heartbeatJob?.cancel()
                     val msg = t.message ?: "Connection closed"
-                    if (isIntentionallyClosed || msg.contains("Socket closed", ignoreCase = true) || (t is java.net.SocketException && msg.contains("closed", ignoreCase = true))) {
-                        Log.i(TAG, "Supabase Realtime WebSocket closed gracefully ($msg)")
+                    val httpCode = response?.code
+                    if (httpCode == 401) {
+                        // Re-read the currently valid session before retrying. If the same access
+                        // JWT was rejected, the next handshake uses the anon key; setAuth only
+                        // receives a different token after a fresh session is saved/restored.
+                        val refreshedSession = VibeSyncSessionManager.getSession()
+                        if (!lastHandshakeUsedAnon) {
+                            lastRejectedAccessToken = handshakeBearer
+                            forceAnonHandshakeNext = true
+                            waitingForSessionChangeAfter401 = false
+                            Log.w(TAG, "Realtime handshake returned HTTP 401; checked session credentials and will retry with an anon handshake before setAuth.")
+                            if (!isIntentionallyClosed) scheduleReconnect()
+                        } else if (
+                            refreshedSession != null &&
+                            refreshedSession.accessToken.isNotBlank() &&
+                            refreshedSession.accessToken != lastRejectedAccessToken
+                        ) {
+                            forceAnonHandshakeNext = false
+                            waitingForSessionChangeAfter401 = false
+                            Log.w(TAG, "Realtime anon handshake returned HTTP 401; a different valid session token is available, retrying with refreshed credentials.")
+                            if (!isIntentionallyClosed) scheduleReconnect()
+                        } else {
+                            waitingForSessionChangeAfter401 = true
+                            Log.e(TAG, "Realtime handshake returned HTTP 401 after anon fallback; reconnect paused until fresh session credentials are supplied.")
+                        }
                     } else {
-                        Log.w(TAG, "Supabase Realtime WebSocket disconnected: $msg, scheduling reconnect...")
-                    }
-                    if (!isIntentionallyClosed) {
-                        scheduleReconnect()
+                        if (isIntentionallyClosed || msg.contains("Socket closed", ignoreCase = true) || (t is java.net.SocketException && msg.contains("closed", ignoreCase = true))) {
+                            Log.i(TAG, "Supabase Realtime WebSocket closed gracefully ($msg)")
+                        } else {
+                            Log.w(TAG, "Supabase Realtime WebSocket disconnected: $msg, scheduling reconnect...")
+                        }
+                        if (!isIntentionallyClosed && !waitingForSessionChangeAfter401) {
+                            scheduleReconnect()
+                        }
                     }
                 }
             })
@@ -404,14 +458,108 @@ object SupabaseBackendManager {
     }
 
     private fun scheduleReconnect() {
-        if (isIntentionallyClosed) return
+        if (isIntentionallyClosed || waitingForSessionChangeAfter401) return
         reconnectJob?.cancel()
+        reconnectAttempt = (reconnectAttempt + 1).coerceAtMost(5)
+        val backoffMs = minOf(5000L * (1L shl (reconnectAttempt - 1)), 60000L)
         reconnectJob = scope.launch {
-            delay(5000L)
-            if (!isIntentionallyClosed && !_realtimeConnected.value) {
-                Log.i(TAG, "Attempting Supabase Realtime reconnection...")
+            delay(backoffMs)
+            if (!isIntentionallyClosed && !_realtimeConnected.value && !waitingForSessionChangeAfter401) {
+                // Refresh the local view of credentials immediately before each retry.
+                VibeSyncSessionManager.getSession()
+                Log.i(TAG, "Attempting Supabase Realtime reconnection after ${backoffMs}ms backoff...")
                 startWebSocketConnection()
             }
+        }
+    }
+
+    private fun resetRealtimeSocketAuthState(socket: WebSocket?) {
+        if (socket == null || realtimeAuthSocket === socket) {
+            realtimeAuthSocket = null
+            realtimeAuthToken = null
+        }
+        if (socket == null || realtimeSubscriptionSocket === socket) {
+            realtimeSubscriptionSocket = null
+            realtimeSubscribedProfileId = null
+        }
+    }
+
+    /**
+     * Applies a valid session to an open Realtime socket using Supabase's Phoenix access_token
+     * event (the SDK's setAuth equivalent), then joins the user's chat_messages change feed.
+     */
+    @Synchronized
+    private fun authenticateRealtimeSocket(
+        webSocket: WebSocket,
+        session: VibeSyncSessionManager.Session
+    ) {
+        if (isIntentionallyClosed || realtimeWebSocket !== webSocket) return
+        val accessToken = session.accessToken.trim()
+        val profileId = session.profileId.trim()
+        val sessionToken = session.sessionToken.trim()
+        val nowSeconds = System.currentTimeMillis() / 1000L
+        if (accessToken.isBlank() || profileId.isBlank() || sessionToken.isBlank() ||
+            session.expiresAtEpochSeconds <= nowSeconds
+        ) {
+            Log.i(TAG, "Not applying incomplete or expired Realtime session credentials.")
+            return
+        }
+        if (accessToken == lastRejectedAccessToken) {
+            waitingForSessionChangeAfter401 = true
+            Log.w(TAG, "Not reusing a JWT rejected by the Realtime handshake; waiting for fresh session credentials.")
+            return
+        }
+
+        if (realtimeAuthSocket !== webSocket || realtimeAuthToken != accessToken) {
+            val setAuthMessage = JSONObject().apply {
+                put("topic", "phoenix")
+                put("event", "access_token")
+                put("payload", JSONObject().put("access_token", accessToken))
+                put("ref", "set_auth_${System.currentTimeMillis()}")
+            }
+            if (!webSocket.send(setAuthMessage.toString())) {
+                Log.w(TAG, "Realtime setAuth message could not be queued.")
+                return
+            }
+            realtimeAuthSocket = webSocket
+            realtimeAuthToken = accessToken
+            Log.i(TAG, "Applied refreshed VibeSync JWT to the open Realtime socket.")
+        }
+
+        if (realtimeSubscriptionSocket === webSocket && realtimeSubscribedProfileId == profileId) return
+
+        val joinChatMsg = JSONObject().apply {
+            put("topic", "realtime:public:chat_messages")
+            put("event", "phx_join")
+            put("payload", JSONObject().apply {
+                put("access_token", accessToken)
+                val config = JSONObject().apply {
+                    put("broadcast", JSONObject().put("self", true))
+                    val changes = JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("event", "INSERT")
+                            put("schema", "public")
+                            put("table", "chat_messages")
+                            put("filter", "receiver_id=eq.$profileId")
+                        })
+                        put(JSONObject().apply {
+                            put("event", "UPDATE")
+                            put("schema", "public")
+                            put("table", "chat_messages")
+                            put("filter", "sender_id=eq.$profileId")
+                        })
+                    }
+                    put("postgres_changes", changes)
+                }
+                put("config", config)
+            })
+            put("ref", "join_chat_messages")
+        }
+        if (webSocket.send(joinChatMsg.toString())) {
+            realtimeSubscriptionSocket = webSocket
+            realtimeSubscribedProfileId = profileId
+        } else {
+            Log.w(TAG, "Realtime chat subscription join could not be queued.")
         }
     }
 
@@ -426,8 +574,12 @@ object SupabaseBackendManager {
             reconnectJob = null
             heartbeatJob?.cancel()
             heartbeatJob = null
+            waitingForSessionChangeAfter401 = false
+            forceAnonHandshakeNext = false
+            reconnectAttempt = 0
             val socket = realtimeWebSocket
             realtimeWebSocket = null
+            resetRealtimeSocketAuthState(socket)
             _realtimeConnected.value = false
             socket?.close(1000, "App backgrounded")
             Log.i(TAG, "🔌 Disconnected Supabase Realtime WebSocket (App Backgrounded)")
