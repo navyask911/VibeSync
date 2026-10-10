@@ -768,15 +768,17 @@ class SocialConnectRepository(
     }
 
     suspend fun deleteStatusStory(storyId: String) = withContext(Dispatchers.IO) {
+        val profileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
+        if (profileId.isBlank()) {
+            android.util.Log.w("VibeSyncStories", "Remote story delete skipped: verified session unavailable.")
+            return@withContext
+        }
+        val removedRemote = com.example.util.SupabaseClientManager.deleteStatusStoryRemote(storyId, profileId)
+        if (!removedRemote) {
+            android.util.Log.w("VibeSyncStories", "Supabase story delete was not acknowledged for $storyId.")
+            return@withContext
+        }
         statusStoryDao.deleteStory(storyId)
-        try {
-            val currentPrefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
-            val myPhone = currentPrefs.verifiedMobileNumber.filter { it.isDigit() }
-            if (myPhone.isNotBlank()) {
-                val db = com.google.firebase.database.FirebaseDatabase.getInstance()
-                db.getReference("stories").child(myPhone).child(storyId).removeValue()
-            }
-        } catch (_: Exception) {}
     }
 
     sealed class UploadStatusResult {
@@ -794,55 +796,102 @@ class SocialConnectRepository(
         backgroundColorEnd: Long = 0xFF128C7E,
         privacy: String = "FRIENDS_AND_MATCHES",
         backgroundMusicUri: String = ""
-    ): UploadStatusResult {
+    ): UploadStatusResult = withContext(Dispatchers.IO) {
         val currentPrefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
+        val profileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
+        if (profileId.isBlank()) {
+            return@withContext UploadStatusResult.Error("Sign in with Truecaller before publishing a story.")
+        }
+        if (mediaType !in setOf("PHOTO", "VIDEO")) {
+            return@withContext UploadStatusResult.Error("Unsupported story media type.")
+        }
+        if (mediaUrl.isBlank()) {
+            return@withContext UploadStatusResult.Error("Choose a photo or video before publishing.")
+        }
+
         val now = System.currentTimeMillis()
         val isNewDay = (now - currentPrefs.lastDailyQuotaResetTimestamp) > (24 * 60 * 60 * 1000L)
-
         var currentPhotosCount = if (isNewDay) 0 else currentPrefs.dailyPhotosUploaded
         var currentVideosCount = if (isNewDay) 0 else currentPrefs.dailyVideosUploaded
 
         if (mediaType == "PHOTO") {
             if (currentPhotosCount >= 5) {
-                return UploadStatusResult.LimitExceeded("Daily limit reached: Maximum 5 pictures per day.")
+                return@withContext UploadStatusResult.LimitExceeded("Daily limit reached: Maximum 5 pictures per day.")
             }
             currentPhotosCount += 1
-        } else if (mediaType == "VIDEO") {
+        } else {
             if (videoDurationSeconds > 60 || videoDurationSeconds <= 0) {
-                return UploadStatusResult.Error("Video duration must be below 60 seconds (1-60s).")
+                return@withContext UploadStatusResult.Error("Video duration must be between 1 and 60 seconds.")
             }
             if (currentVideosCount >= 1) {
-                return UploadStatusResult.LimitExceeded("Daily limit reached: Maximum 1 video (<60s) per day.")
+                return@withContext UploadStatusResult.LimitExceeded("Daily limit reached: Maximum 1 video per day.")
             }
             currentVideosCount += 1
         }
 
-        var uploadedBackgroundMusicUrl = ""
+        val storyId = "story_${UUID.randomUUID().toString().take(8)}"
+        val context = context ?: return@withContext UploadStatusResult.Error("Media upload context is unavailable.")
+        val mediaObjectPath: String
+        val displayMediaUrl: String
+        if (mediaUrl.startsWith("https://", ignoreCase = true) || mediaUrl.startsWith("http://", ignoreCase = true)) {
+            mediaObjectPath = mediaUrl
+            displayMediaUrl = mediaUrl
+        } else {
+            val uploaded = com.example.util.SupabaseClientManager.uploadStatusMedia(
+                context = context,
+                mediaUri = android.net.Uri.parse(mediaUrl),
+                profileId = profileId,
+                storyId = storyId
+            ).getOrElse {
+                return@withContext UploadStatusResult.Error("Story media upload failed: ${it.message ?: "storage error"}")
+            }
+            mediaObjectPath = uploaded.objectPath
+            displayMediaUrl = uploaded.signedUrl
+        }
+
+        var backgroundMusicObjectPath = ""
+        var displayBackgroundMusicUrl = ""
         if (backgroundMusicUri.isNotBlank()) {
-            try {
-                val audioUri = android.net.Uri.parse(backgroundMusicUri)
-                val ownerKey = currentPrefs.verifiedMobileNumber.filter { it.isDigit() }.ifBlank { "verified-user" }
-                val extension = audioUri.lastPathSegment?.substringAfterLast('.', "audio")
-                    ?.takeIf { it.matches(Regex("[A-Za-z0-9]{1,8}")) } ?: "audio"
-                val audioRef = com.google.firebase.storage.FirebaseStorage.getInstance().reference
-                    .child("status_music/$ownerKey/${UUID.randomUUID()}.$extension")
-                audioRef.putFile(audioUri).await()
-                uploadedBackgroundMusicUrl = audioRef.downloadUrl.await().toString()
-            } catch (e: Exception) {
-                android.util.Log.w("SocialConnectRepository", "Background music upload failed: ${e.message}")
-                return UploadStatusResult.Error("Background music could not be uploaded. Please choose a readable audio file and retry.")
+            if (backgroundMusicUri.startsWith("https://", ignoreCase = true) ||
+                backgroundMusicUri.startsWith("http://", ignoreCase = true)
+            ) {
+                backgroundMusicObjectPath = backgroundMusicUri
+                displayBackgroundMusicUrl = backgroundMusicUri
+            } else {
+                val uploadedMusic = com.example.util.SupabaseClientManager.uploadStatusMedia(
+                    context = context,
+                    mediaUri = android.net.Uri.parse(backgroundMusicUri),
+                    profileId = profileId,
+                    storyId = "${storyId}_music"
+                ).getOrElse {
+                    return@withContext UploadStatusResult.Error("Background music upload failed: ${it.message ?: "storage error"}")
+                }
+                backgroundMusicObjectPath = uploadedMusic.objectPath
+                displayBackgroundMusicUrl = uploadedMusic.signedUrl
             }
         }
 
-        // Insert status story locally with its optional cloud-hosted soundtrack.
+        val isPublicStory = privacy.uppercase() in setOf("EVERYONE", "ALL_NETWORK")
+        val contactProfileIds = if (isPublicStory) {
+            emptyList()
+        } else {
+            val fromMatchedContacts = runCatching {
+                database.matchedContactDao().getAllMatchedContacts()
+                    .mapNotNull { it.vibeSyncUserId.trim().takeIf(String::isNotBlank) }
+            }.getOrDefault(emptyList())
+            val fromMatches = matchDao.getAllMatchesSync()
+                .mapNotNull { it.profileId.trim().takeIf(String::isNotBlank) }
+            (fromMatchedContacts + fromMatches).distinct().filter { it != profileId }
+        }
+
         val story = StatusStoryEntity(
-            id = "story_${UUID.randomUUID().toString().take(8)}",
-            userId = "USER",
+            id = storyId,
+            userId = profileId,
             userName = currentPrefs.userName.ifBlank { "You" },
             userAvatarEmoji = "✨",
             userAvatarUrl = currentPrefs.avatarUrl,
             mediaType = mediaType,
-            mediaUrl = mediaUrl,
+            mediaUrl = displayMediaUrl,
             videoDurationSeconds = if (mediaType == "VIDEO") videoDurationSeconds else 0,
             caption = caption.trim(),
             backgroundColorStart = backgroundColorStart,
@@ -852,57 +901,21 @@ class SocialConnectRepository(
             viewsCount = 1,
             isMyStatus = true,
             privacy = privacy,
-            backgroundMusicUrl = uploadedBackgroundMusicUrl
+            backgroundMusicUrl = displayBackgroundMusicUrl
         )
-        statusStoryDao.insertStory(story)
 
-        // Publish to Firebase Realtime Database for mutual contact automatic discovery & sync
-        try {
-            val myPhone = currentPrefs.verifiedMobileNumber.filter { it.isDigit() }
-            if (myPhone.isNotBlank()) {
-                val db = com.google.firebase.database.FirebaseDatabase.getInstance()
-                // Collect User's contacts to verify mutual contact visibility
-                val contacts = userContactDao.getAllContactsSync()
-                val matches = matchDao.getAllMatchesSync()
-                val matchedContacts = database.matchedContactDao().getAllMatchedContacts()
-                val mySavedPhones = mutableSetOf<String>()
-                for (c in contacts) {
-                    val digits = c.phoneNumber.filter { it.isDigit() }
-                    if (digits.length >= 7) mySavedPhones.add(if (digits.length >= 10) digits.takeLast(10) else digits)
-                }
-                for (mc in matchedContacts) {
-                    val digits = mc.phoneNumber.filter { it.isDigit() }
-                    if (digits.length >= 7) mySavedPhones.add(if (digits.length >= 10) digits.takeLast(10) else digits)
-                }
-                for (m in matches) {
-                    val digits = m.profileId.filter { it.isDigit() }
-                    if (digits.length >= 7) mySavedPhones.add(if (digits.length >= 10) digits.takeLast(10) else digits)
-                }
-
-                val storyMap = hashMapOf<String, Any>(
-                    "id" to story.id,
-                    "userId" to myPhone,
-                    "userName" to story.userName,
-                    "userAvatarEmoji" to story.userAvatarEmoji,
-                    "userAvatarUrl" to story.userAvatarUrl,
-                    "mediaType" to story.mediaType,
-                    "mediaUrl" to story.mediaUrl,
-                    "backgroundMusicUrl" to story.backgroundMusicUrl,
-                    "videoDurationSeconds" to story.videoDurationSeconds,
-                    "caption" to story.caption,
-                    "backgroundColorStart" to story.backgroundColorStart,
-                    "backgroundColorEnd" to story.backgroundColorEnd,
-                    "timestamp" to story.timestamp,
-                    "privacy" to privacy,
-                    "savedPhones" to mySavedPhones.toList()
-                )
-                db.getReference("stories").child(myPhone).child(story.id).setValue(storyMap)
-            }
-        } catch (e: Exception) {
-            android.util.Log.w("SocialConnectRepository", "Story cloud broadcast notice: ${e.message}")
+        val remoteResult = com.example.util.SupabaseClientManager.upsertStatusStoryRemote(
+            story = story,
+            mediaObjectPath = mediaObjectPath,
+            backgroundMusicObjectPath = backgroundMusicObjectPath,
+            allowedViewerProfileIds = contactProfileIds,
+            profileId = profileId
+        )
+        remoteResult.getOrElse {
+            return@withContext UploadStatusResult.Error("Supabase could not publish this story: ${it.message ?: "metadata insert failed"}")
         }
 
-        // Update preferences with new daily count
+        statusStoryDao.insertStory(story)
         preferencesDao.insertOrUpdate(
             currentPrefs.copy(
                 dailyPhotosUploaded = currentPhotosCount,
@@ -910,123 +923,45 @@ class SocialConnectRepository(
                 lastDailyQuotaResetTimestamp = if (isNewDay) now else currentPrefs.lastDailyQuotaResetTimestamp
             )
         )
-
-        return UploadStatusResult.Success
+        android.util.Log.i("VibeSyncStories", "Published Supabase story $storyId for profile $profileId.")
+        UploadStatusResult.Success
     }
 
     suspend fun syncMutualFriendsStories() = withContext(Dispatchers.IO) {
         try {
-            val currentPrefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
-            val myPhone = currentPrefs.verifiedMobileNumber.filter { it.isDigit() }
+            val profileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
+            if (profileId.isBlank()) {
+                android.util.Log.w("VibeSyncStories", "Story sync deferred: verified profile session is unavailable.")
+                return@withContext
+            }
+
             val now = System.currentTimeMillis()
-
-            // 1. Gather all local contacts (phonebook, matches, matched contacts)
-            val contacts = userContactDao.getAllContactsSync()
-            val matches = matchDao.getAllMatchesSync()
-            val matchedContacts = database.matchedContactDao().getAllMatchedContacts()
-            val contactPhones = mutableSetOf<String>()
-            for (c in contacts) {
-                val digits = c.phoneNumber.filter { it.isDigit() }
-                if (digits.length >= 7) contactPhones.add(if (digits.length >= 10) digits.takeLast(10) else digits)
+            val cutoff = now - 24L * 60L * 60L * 1000L
+            val result = com.example.util.SupabaseClientManager.fetchActiveStatusStories(profileId)
+            val remoteStories = result.getOrElse {
+                android.util.Log.e("VibeSyncStories", "Supabase story fetch failed: ${it.message}", it)
+                return@withContext
             }
-            for (mc in matchedContacts) {
-                val digits = mc.phoneNumber.filter { it.isDigit() }
-                if (digits.length >= 7) contactPhones.add(if (digits.length >= 10) digits.takeLast(10) else digits)
-            }
-            for (m in matches) {
-                val digits = m.profileId.filter { it.isDigit() }
-                if (digits.length >= 7) contactPhones.add(if (digits.length >= 10) digits.takeLast(10) else digits)
-            }
+            val existingById = statusStoryDao.getAllStoriesSync().associateBy { it.id }
+            statusStoryDao.deleteExpiredStories(cutoff)
+            statusStoryDao.clearFriendsStories()
 
-            // 2. Fetch remote stories from Firebase Realtime Database
-            val db = com.google.firebase.database.FirebaseDatabase.getInstance()
-            val storiesRef = db.getReference("stories")
-            val snapshot = storiesRef.get().await()
-
-            val fetchedStories = mutableListOf<StatusStoryEntity>()
-            for (userNode in snapshot.children) {
-                val posterPhone = userNode.key ?: continue
-                val posterDigits = posterPhone.filter { it.isDigit() }
-                val isMyOwn = (myPhone.isNotBlank() && posterDigits.endsWith(myPhone.takeLast(10)))
-                if (isMyOwn) continue
-
-                // Check mutual contact / phonebook presence
-                val userBHasPoster = contactPhones.any { it.endsWith(posterDigits.takeLast(10)) || posterDigits.endsWith(it) }
-
-                for (storySnap in userNode.children) {
-                    val id = storySnap.child("id").getValue(String::class.java) ?: storySnap.key ?: continue
-                    val timestamp = storySnap.child("timestamp").getValue(Long::class.java) ?: now
-                    if (now - timestamp > 24 * 60 * 60 * 1000L) continue // Discard expired stories
-
-                    val privacy = storySnap.child("privacy").getValue(String::class.java) ?: "MY_CONTACTS"
-
-                    val posterSavedPhones = storySnap.child("savedPhones").children.mapNotNull { it.getValue(String::class.java) }
-                    val posterHasUserB = if (posterSavedPhones.isNotEmpty() && myPhone.length >= 7) {
-                        val myDigits = if (myPhone.length >= 10) myPhone.takeLast(10) else myPhone
-                        posterSavedPhones.any { it.endsWith(myDigits) || myDigits.endsWith(it) }
-                    } else {
-                        true
-                    }
-
-                    // Both users have each other saved in their phone books/contacts:
-                    val isMutualContact = userBHasPoster && posterHasUserB
-
-                    // Dynamic filtering based on the posting user's privacy control settings:
-                    // "EVERYONE" / "ALL_NETWORK": Visible to everyone
-                    // "MY_CONTACTS" / "FRIENDS_AND_MATCHES": Visible only to mutual phonebook / chat contacts
-                    // "SELECTED_CONTACTS": Visible only if mutual contact
-                    val isVisible = when (privacy) {
-                        "EVERYONE", "ALL_NETWORK" -> true
-                        "SELECTED_CONTACTS" -> isMutualContact
-                        else -> isMutualContact // "MY_CONTACTS", "FRIENDS_AND_MATCHES"
-                    }
-
-                    if (isVisible) {
-                        val userName = storySnap.child("userName").getValue(String::class.java) ?: "Friend"
-                        val userAvatarEmoji = storySnap.child("userAvatarEmoji").getValue(String::class.java) ?: "✨"
-                        val userAvatarUrl = storySnap.child("userAvatarUrl").getValue(String::class.java) ?: ""
-                        val mediaType = storySnap.child("mediaType").getValue(String::class.java) ?: "PHOTO"
-                        val mediaUrl = storySnap.child("mediaUrl").getValue(String::class.java) ?: ""
-                        val backgroundMusicUrl = storySnap.child("backgroundMusicUrl").getValue(String::class.java) ?: ""
-                        val videoDurationSeconds = storySnap.child("videoDurationSeconds").getValue(Int::class.java) ?: 0
-                        val caption = storySnap.child("caption").getValue(String::class.java) ?: ""
-                        val bgStart = storySnap.child("backgroundColorStart").getValue(Long::class.java) ?: 0xFF00A884
-                        val bgEnd = storySnap.child("backgroundColorEnd").getValue(Long::class.java) ?: 0xFF128C7E
-
-                        val existing = statusStoryDao.getStoryById(id)
-                        fetchedStories.add(
-                            StatusStoryEntity(
-                                id = id,
-                                userId = posterPhone,
-                                userName = userName,
-                                userAvatarEmoji = userAvatarEmoji,
-                                userAvatarUrl = userAvatarUrl,
-                                mediaType = mediaType,
-                                mediaUrl = mediaUrl,
-                                backgroundMusicUrl = backgroundMusicUrl,
-                                videoDurationSeconds = videoDurationSeconds,
-                                caption = caption,
-                                backgroundColorStart = bgStart,
-                                backgroundColorEnd = bgEnd,
-                                timestamp = timestamp,
-                                isViewed = existing?.isViewed ?: false,
-                                viewsCount = existing?.viewsCount ?: 1,
-                                likesCount = existing?.likesCount ?: 0,
-                                isLikedByMe = existing?.isLikedByMe ?: false,
-                                isMyStatus = false,
-                                privacy = privacy
-                            )
-                        )
-                    }
+            val storiesToCache = remoteStories
+                .filter { it.timestamp >= cutoff && !it.isExpired }
+                .map { remote ->
+                    val existing = existingById[remote.id]
+                    remote.copy(
+                        isMyStatus = remote.userId == profileId,
+                        isViewed = existing?.isViewed ?: false,
+                        viewsCount = existing?.viewsCount ?: 1,
+                        likesCount = existing?.likesCount ?: 0,
+                        isLikedByMe = existing?.isLikedByMe ?: false
+                    )
                 }
-            }
-
-            if (fetchedStories.isNotEmpty()) {
-                statusStoryDao.insertStories(fetchedStories)
-                android.util.Log.i("SocialConnectRepository", "Synced ${fetchedStories.size} mutual contact stories from cloud.")
-            }
+            if (storiesToCache.isNotEmpty()) statusStoryDao.insertStories(storiesToCache)
+            android.util.Log.i("VibeSyncStories", "Supabase active story sync completed: ${storiesToCache.size} rows.")
         } catch (e: Exception) {
-            android.util.Log.w("SocialConnectRepository", "Story sync notice: ${e.message}")
+            android.util.Log.e("VibeSyncStories", "Supabase story sync failed: ${e.message}", e)
         }
     }
 
