@@ -1931,8 +1931,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         _authState.value = AuthState.AUTHENTICATED
         try {
             repository.startAllSyncsAfterLogin()
-            // This ViewModel can exist before Truecaller creates a session.
-            com.example.util.SupabaseBackendManager.disconnectRealtimeWebsocket()
+            // Saving the session notifies Realtime directly. This call remains as a
+            // safety net for a ViewModel created after session restoration.
             reconnectRealtime()
         } catch (e: Exception) {
             android.util.Log.w("AuthSessionManager", "Post-login sync notice: ${e.message}")
@@ -1952,23 +1952,33 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(Dispatchers.IO) {
             val result = com.example.util.TruecallerAuthGateway.verify(profile)
             result.onSuccess { identity ->
-                finalizeTruecallerAuthenticatedSession(
-                    phone = identity.phone,
-                    profileId = identity.profileId,
-                    sessionToken = identity.sessionToken,
-                    accessToken = identity.accessToken,
-                    expiresAtEpochSeconds = identity.expiresAtEpochSeconds,
-                    firstName = identity.firstName,
-                    lastName = identity.lastName,
-                    avatarUrl = identity.avatarUrl
-                )
-                _toastMessage.emit(
-                    if (identity.firstName.isNotBlank()) {
-                        "Verified instantly with Truecaller. Welcome ${identity.firstName}!"
-                    } else {
-                        "Verified instantly with Truecaller."
-                    }
-                )
+                try {
+                    finalizeTruecallerAuthenticatedSession(
+                        phone = identity.phone,
+                        profileId = identity.profileId,
+                        sessionToken = identity.sessionToken,
+                        accessToken = identity.accessToken,
+                        expiresAtEpochSeconds = identity.expiresAtEpochSeconds,
+                        firstName = identity.firstName,
+                        lastName = identity.lastName,
+                        avatarUrl = identity.avatarUrl
+                    )
+                    _toastMessage.emit(
+                        if (identity.firstName.isNotBlank()) {
+                            "Verified instantly with Truecaller. Welcome ${identity.firstName}!"
+                        } else {
+                            "Verified instantly with Truecaller."
+                        }
+                    )
+                } catch (e: Exception) {
+                    android.util.Log.e(
+                        "TruecallerAuthFlow",
+                        "Truecaller verification succeeded but local session finalization failed: ${e.message}",
+                        e
+                    )
+                    _truecallerError.value =
+                        "Truecaller verified this account, but VibeSync could not save the secure local session. Check device storage and retry."
+                }
             }.onFailure { error ->
                 val detail = error.message?.trim().orEmpty()
                 android.util.Log.w("TruecallerAuthFlow", "Truecaller verification gateway failed: ${detail}", error)
