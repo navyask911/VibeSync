@@ -236,35 +236,85 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             repository.purgeGhostNullData()
         }
 
-        // Session validation touches encrypted preferences / AndroidKeyStore: use IO.
+        // The encrypted Truecaller session is the authentication source of truth.
+        // Keep AuthState.INITIALIZING (and therefore the splash screen) until the local
+        // session has been restored and checked. Room preferences are used to hydrate the
+        // UI, but a late/missing preferences emission must never send a valid session to login.
         viewModelScope.launch(Dispatchers.IO) {
+            var restoredSession: com.example.util.VibeSyncSessionManager.Session? = null
             try {
-                val prefs = kotlinx.coroutines.withTimeoutOrNull(2500L) {
-                    repository.userPreferences.firstOrNull()
+                val app = getApplication<Application>()
+                com.example.util.VibeSyncSessionManager.initialize(app)
+                restoredSession = com.example.util.VibeSyncSessionManager.getSession(app)
+
+                // Wrap the nullable Room emission so "no row" can be distinguished from a
+                // timeout. Never overwrite an existing profile row just because Room is slow.
+                val prefsRead = kotlinx.coroutines.withTimeoutOrNull(
+                    if (restoredSession != null) 10_000L else 2_500L
+                ) {
+                    repository.userPreferences.map { value -> value to true }.first()
                 }
-                val hasVibeSyncSession = com.example.util.VibeSyncSessionManager.hasValidSession(getApplication())
-                if (prefs != null && prefs.isLoggedIn && prefs.userName.isNotBlank() && hasVibeSyncSession) {
-                    val thirtyDaysMillis = 30L * 24 * 60 * 60 * 1000L
-                    val isExpired = prefs.loginTimestamp > 0L && (System.currentTimeMillis() - prefs.loginTimestamp) > thirtyDaysMillis
-                    if (!isExpired) {
-                        android.util.Log.i("AuthSessionManager", "[AUTH STATE] Session valid: userName=${prefs.userName}")
-                        _authState.value = AuthState.AUTHENTICATED
-                    } else {
-                        com.example.util.VibeSyncSessionManager.clear(getApplication())
-                        _authState.value = AuthState.UNAUTHENTICATED
+                val prefs = prefsRead?.first
+
+                if (restoredSession != null) {
+                    val now = System.currentTimeMillis()
+                    val restoredPhone = restoredSession.phoneNumber.ifBlank {
+                        prefs?.verifiedMobileNumber.orEmpty()
                     }
+                    if (prefs != null) {
+                        val hydrated = prefs.copy(
+                            isLoggedIn = true,
+                            verifiedMobileNumber = restoredPhone.ifBlank { prefs.verifiedMobileNumber },
+                            isMobileVerified = true,
+                            loginTimestamp = if (prefs.loginTimestamp > 0L) prefs.loginTimestamp else now
+                        )
+                        if (hydrated != prefs) repository.updatePreferences(hydrated)
+                    } else if (prefsRead != null) {
+                        // The Room flow explicitly emitted "no preferences row". Recreate a
+                        // minimal authenticated row without falsely marking registration complete.
+                        repository.updatePreferences(
+                            UserPreferencesEntity(
+                                isLoggedIn = true,
+                                verifiedMobileNumber = restoredPhone,
+                                isMobileVerified = true,
+                                loginTimestamp = now
+                            )
+                        )
+                    }
+
+                    _activeMobile.value = restoredPhone
+                    // Respect an unexpired server session across app exits. A local 30-day
+                    // timestamp or MPIN gate must not turn a valid Truecaller session into login.
+                    _isMpinUnlocked.value = true
+                    _authState.value = AuthState.AUTHENTICATED
+                    android.util.Log.i(
+                        "AuthSessionManager",
+                        "Restored valid encrypted VibeSync session (profilePresent=true, accessJwtPresent=true)."
+                    )
                 } else {
-                    if (prefs?.isLoggedIn == true && !hasVibeSyncSession) {
-                        com.example.util.UserSessionManager.clearVerifiedSession(getApplication())
-                    }
+                    // No complete, unexpired session is available. Leave saved credentials and
+                    // user data untouched; re-authentication can occur without destructive cleanup.
                     _authState.value = AuthState.UNAUTHENTICATED
+                    android.util.Log.i("AuthSessionManager", "No valid cached VibeSync session; sign-in is required.")
                 }
             } catch (e: Exception) {
-                android.util.Log.e("AuthSessionManager", "Error or timeout reading auth storage: ${e.message}", e)
-                try {
-                    com.example.util.UserSessionManager.sanitizeCorruptedStorageAndCache(getApplication())
-                } catch (_: Exception) {}
-                _authState.value = AuthState.UNAUTHENTICATED
+                android.util.Log.e(
+                    "AuthSessionManager",
+                    "Session bootstrap issue (local credentials preserved): ${e.message}",
+                    e
+                )
+                // A Room timeout or temporary AndroidKeyStore error is not proof of revocation.
+                // Never sanitize the database or wipe session credentials on a startup exception.
+                val fallbackSession = restoredSession ?: runCatching {
+                    com.example.util.VibeSyncSessionManager.getSession(getApplication())
+                }.getOrNull()
+                if (fallbackSession != null) {
+                    _activeMobile.value = fallbackSession.phoneNumber
+                    _isMpinUnlocked.value = true
+                    _authState.value = AuthState.AUTHENTICATED
+                } else {
+                    _authState.value = AuthState.UNAUTHENTICATED
+                }
             }
         }
 
