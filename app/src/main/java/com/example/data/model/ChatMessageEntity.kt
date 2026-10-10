@@ -1,6 +1,7 @@
 package com.example.data.model
 
 import androidx.compose.runtime.Immutable
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
@@ -36,9 +37,13 @@ data class ChatMessageEntity(
     val isDeletedForMe: Boolean = false,
     val isForwarded: Boolean = false,
     /** PENDING -> SENT_TO_SERVER -> DELIVERED -> READ. Existing rows migrate to SENT_TO_SERVER. */
+    @ColumnInfo(defaultValue = "'SENT_TO_SERVER'")
     val deliveryState: String = "SENT_TO_SERVER",
+    @ColumnInfo(defaultValue = "0")
     val syncAttempts: Int = 0,
+    @ColumnInfo(defaultValue = "''")
     val lastSyncError: String = "",
+    @ColumnInfo(defaultValue = "0")
     val lastSyncAttemptAt: Long = 0L
 ) {
     @androidx.room.Ignore
