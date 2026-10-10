@@ -83,6 +83,17 @@ class PendingMessageSyncWorker(
                 return@withContext retryWith("VibeSync session is incomplete or expired.")
             }
 
+            val expectedOwner = message.outboxOwnerProfileId.trim()
+            if (expectedOwner.isBlank()) {
+                Log.e(TAG, "Refusing to send legacy pending row $messageId without its original owner identity.")
+                return@withContext Result.failure()
+            }
+            if (!session.profileId.trim().equals(expectedOwner, ignoreCase = true)) {
+                // Do not ever send a previous account's queued content with the currently signed-in user's session.
+                Log.w(TAG, "Holding outbox row $messageId for original owner $expectedOwner; active profile differs.")
+                return@withContext Result.failure()
+            }
+
             val localMatch = db.matchDao().getMatchByIdSync(message.matchId)
                 ?: return@withContext retryWith("Local conversation is not available yet.")
             val senderProfileId = session.profileId.trim()
@@ -317,10 +328,15 @@ object PendingMessageSyncScheduler {
         sweepScope.launch {
             try {
                 val appContext = context.applicationContext
+                val activeProfileId = VibeSyncSessionManager.getProfileId(appContext).orEmpty().trim()
+                if (activeProfileId.isBlank()) {
+                    Log.i(TAG, "Startup outbox sweep deferred until a verified VibeSync profile is restored.")
+                    return@launch
+                }
                 val pending = DatingDatabase.getDatabase(appContext).chatMessageDao()
-                    .getPendingOutgoingMessages()
+                    .getPendingOutgoingMessagesForOwner(activeProfileId)
                 pending.forEach { enqueue(appContext, it.messageId) }
-                Log.i(TAG, "Startup outbox sweep found ${pending.size} pending message(s).")
+                Log.i(TAG, "Startup outbox sweep found ${pending.size} pending message(s) for the active profile.")
             } catch (t: Throwable) {
                 Log.e(TAG, "Startup outbox sweep failed; pending rows remain in Room for the next launch.", t)
             }
