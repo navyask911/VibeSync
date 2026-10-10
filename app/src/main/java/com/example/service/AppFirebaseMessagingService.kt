@@ -107,7 +107,7 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                         AppNotificationManager.showMessageNotification(
                             context = applicationContext,
                             senderId = senderOrMatchId,
-                            senderName = name,
+                            senderName = data["sender_name"] ?: "VibeSync",
                             messageText = "You have a new secure message",
                             senderPhotoUrl = photoUrl,
                             mediaType = mediaType,
