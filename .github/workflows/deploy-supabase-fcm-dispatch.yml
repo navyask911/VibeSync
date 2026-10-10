@@ -55,6 +55,10 @@ jobs:
             try {
               const account = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
               if (!account.client_email || !account.private_key || !account.project_id) process.exit(2);
+              if (account.project_id !== "vibesync-chat-social-connect") {
+                console.error("FIREBASE_SERVICE_ACCOUNT belongs to a different Google Cloud project.");
+                process.exit(3);
+              }
             } catch (_) {
               process.exit(2);
             }
