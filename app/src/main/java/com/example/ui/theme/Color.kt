@@ -41,22 +41,23 @@ val RewindGold = Color(0xFFFFA801)
 val BoostPurple = Color(0xFF8854D0)
 
 // Surfaces & Neutrals
-val DarkCanvas = Color(0xFF111B21)
-val DarkCardSurface = Color(0xFF202C33)
-val DarkSurfaceVariant = Color(0xFF2A3942)
-val PureWhite = Color(0xFFFFFFFF)
-val OffWhite = Color(0xFFF7F8FA)
-val SoftGrayBorder = Color(0xFF2A3942)
-val TextDark = Color(0xFF111B21)
-val TextMuted = Color(0xFF8696A0)
-val VerifiedBadgeBlue = Color(0xFF00A884)
+val DarkCanvas = Color(0xFF0F172A)
+val DarkCardSurface = Color(0xFF1E293B)
+val DarkSurfaceVariant = Color(0xFF334155)
+val PureWhite = Color(0xFFF8FAFC)
+val OffWhite = Color(0xFFF8FAFC)
+val SoftGrayBorder = Color(0xFF334155)
+val TextDark = Color(0xFF0F172A)
+val TextMuted = Color(0xFF94A3B8)
+val VerifiedBadgeBlue = Color(0xFF6366F1)
 
 
 
 // Nine light, creamy pastel theme accents. Each palette pairs a light canvas with a
 // slightly deeper pastel accent; use dark charcoal/slate text for readable labels.
-val CreamButterBackground = Color(0xFFFFF9E6)
-val CreamButterAccent = Color(0xFFF5E6B3)
+// Keep the CREAM_BUTTER ID for saved preferences; present it as Executive Indigo.
+val CreamButterBackground = Color(0xFFEEF2FF)
+val CreamButterAccent = Color(0xFF6366F1)
 val SoftMintCreamBackground = Color(0xFFE8F5E9)
 val SoftMintCreamAccent = Color(0xFFC8E6C9)
 val PeachCreamBackground = Color(0xFFFFF3E0)
