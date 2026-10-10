@@ -386,7 +386,7 @@ private fun VibeSyncLegalDialog(onDismiss: () -> Unit) {
                     LegalSection("5. Availability, Warranties & Liability",
                         "The App is provided on an “AS IS” and “AS AVAILABLE” basis. We work to maintain reliable service and security, but third-party outages, device loss, internet disruptions and software defects can affect availability. To the extent permitted by law, VibeSync disclaims indirect or consequential damages. Nothing in these Terms limits rights or liability that cannot lawfully be excluded.")
                     LegalSection("6. Grievance Redressal",
-                        "Grievance Officer: Navya N\nOrganization: VibeSync Technologies\nPlatform: VibeSync Technologies, Bengaluru, Karnataka, India")
+                        "Grievance Officer: Navya N\nDesignation: Grievance & Compliance Officer\nOrganization: VibeSync Technologies\nPlatform: VibeSync Technologies, Bengaluru, Karnataka, India")
                     val grievanceEmail = buildAnnotatedString {
                         append("Official grievance email: ")
                         pushStringAnnotation(tag = "email", annotation = "mailto:vibesyncrotechnologies@gmail.com")
@@ -410,7 +410,7 @@ private fun VibeSyncLegalDialog(onDismiss: () -> Unit) {
                         }
                     )
                     Text(
-                        text = "Complaints, privacy questions and reports can be sent to this address. Response timelines are subject to applicable law and the nature of the request.",
+                        text = "Complaints, privacy questions and reports can be sent to this address. Notices will be acknowledged within 24 hours and addressed within 15 days where required by applicable law.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
