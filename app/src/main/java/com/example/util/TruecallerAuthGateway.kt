@@ -74,7 +74,9 @@ object TruecallerAuthGateway {
 
                     val phone = root.optString("phone", "").trim()
                     val profileId = root.optString("profile_id", "").trim()
-                    val accessToken = root.optString("access_jwt", root.optString("access_token", "")).trim()
+                    val accessToken = root.optString("access_jwt", "").trim().ifBlank {
+                        root.optString("access_token", "").trim()
+                    }
                     val sessionToken = root.optString("session_token", "").trim()
                     val expiresAt = root.optLong("expires_at", 0L)
                     if (phone.isBlank() || profileId.isBlank() || accessToken.isBlank() ||
