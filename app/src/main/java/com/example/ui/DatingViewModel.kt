@@ -2482,7 +2482,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
     init {
         MatchingManager.createNotificationChannels(getApplication())
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val currentPrefs = repository.userPreferences.first()
             if (currentPrefs != null && currentPrefs.isLoggedIn) {
                 // Initial local setup without continuous polling
@@ -2495,10 +2495,14 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     name = currentPrefs.userName,
                     isFaceVerified = currentPrefs.isFaceVerified
                 )
-                // Auto-unlock interval: if MPIN is not set, or if verified within the 7-day interval, auto-unlock session!
+                // A valid signed VibeSync session survives process death; don't relock it
+                // because a local MPIN timestamp crossed an arbitrary seven-day interval.
+                val hasValidVibeSyncSession = runCatching {
+                    com.example.util.VibeSyncSessionManager.hasValidSession(getApplication())
+                }.getOrDefault(false)
                 val sevenDaysMillis = 7L * 24 * 60 * 60 * 1000L
                 val isWithinInterval = (System.currentTimeMillis() - currentPrefs.lastMpinVerifiedTimestamp) < sevenDaysMillis
-                if (!currentPrefs.isMpinSet || isWithinInterval) {
+                if (hasValidVibeSyncSession || !currentPrefs.isMpinSet || isWithinInterval) {
                     _isMpinUnlocked.value = true
                 }
             } else {
