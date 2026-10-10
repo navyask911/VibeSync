@@ -357,20 +357,27 @@ fun BusinessDashboardScreen(
                                 )
                             } else {
                                 matchedVenues.forEach { candidate ->
-                                    Text(
-                                        text = candidate.name,
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
+                                    Surface(
                                         modifier = Modifier
                                             .fillMaxWidth()
+                                            .padding(vertical = 2.dp)
                                             .clickable {
                                                 onSelectVenue(candidate)
                                                 venueSearchQuery = candidate.name
-                                            }
-                                            .padding(horizontal = 12.dp, vertical = 8.dp)
-                                    )
+                                            },
+                                        color = Color(0xFFFFF9E6),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Text(
+                                            text = candidate.name,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = Color(0xFF1E1E1E),
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                        )
+                                    }
                                 }
                             }
                         }

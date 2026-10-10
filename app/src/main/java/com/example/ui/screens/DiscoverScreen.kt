@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Launch
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
@@ -537,7 +538,7 @@ fun DiscoverScreen(
                             onValueChange = { businessSearchQuery = it },
                             modifier = Modifier.fillMaxWidth().height(52.dp).testTag("input_find_business_search"),
                             placeholder = { Text("Search businesses and venues", maxLines = 1) },
-                            leadingIcon = { Icon(Icons.Default.Launch, contentDescription = "Search businesses") },
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search businesses") },
                             singleLine = true,
                             maxLines = 1,
                             shape = RoundedCornerShape(16.dp),
