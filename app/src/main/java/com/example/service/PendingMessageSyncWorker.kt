@@ -6,12 +6,16 @@ import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
+import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.example.data.database.DatingDatabase
+import com.example.data.repository.SocialConnectRepository
+import com.example.util.SupabaseBackendManager
 import com.example.util.SupabaseClientManager
 import com.example.util.TinkCryptoManager
 import com.example.util.VibeSyncSessionManager
@@ -164,6 +168,100 @@ class PendingMessageSyncWorker(
     }
 }
 
+/**
+ * Pull-based inbox recovery for installations with no push wake-up provider.
+ *
+ * WorkManager runs at its platform-scheduled interval (15 minutes minimum) while network is
+ * available. It fetches each locally known conversation, caches remote messages, and ACKs incoming
+ * messages whose Realtime INSERT was missed while the app was backgrounded or disconnected.
+ * This is eventual sync, not an instant push notification.
+ */
+class PendingMessageInboxSyncWorker(
+    appContext: Context,
+    params: WorkerParameters
+) : CoroutineWorker(appContext, params) {
+
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        try {
+            val database = DatingDatabase.getDatabase(applicationContext)
+            val session = VibeSyncSessionManager.getSession(applicationContext)
+                ?: return@withContext Result.success()
+            val myProfileId = session.profileId.trim()
+            if (myProfileId.isBlank()) return@withContext Result.success()
+
+            val repository = SocialConnectRepository(database, context = applicationContext)
+            val chatDao = database.chatMessageDao()
+            val matches = database.matchDao().getAllMatchesSync()
+            var checkedConversations = 0
+            var syncedMessages = 0
+            var ackFailures = 0
+
+            for (match in matches) {
+                val peerProfileId = match.profileId.trim()
+                if (peerProfileId.isBlank() || peerProfileId.equals(myProfileId, ignoreCase = true)) continue
+                val canonicalMatchId = SupabaseClientManager.canonicalChatMatchId(myProfileId, peerProfileId)
+                if (canonicalMatchId.isBlank()) continue
+                checkedConversations++
+
+                val remoteMessages = SupabaseClientManager.fetchMessagesForMatch(
+                    matchId = canonicalMatchId,
+                    currentUserPhone = session.phoneNumber,
+                    partnerPhone = peerProfileId
+                )
+                for (remote in remoteMessages) {
+                    val isFromMe = remote.senderId.equals(myProfileId, ignoreCase = true)
+                    if (isFromMe) {
+                        // Recover a server commit when the sender lost the HTTP response/Realtime UPDATE.
+                        chatDao.markOutboxSentToServerIfPending(remote.messageId, System.currentTimeMillis())
+                        if (remote.isRead) chatDao.markMessageAsRead(remote.messageId)
+                        else if (remote.isDelivered) chatDao.markMessageAsDelivered(remote.messageId)
+                    }
+
+                    val local = remote.copy(
+                        matchId = match.matchId,
+                        senderId = if (isFromMe) "USER" else remote.senderId,
+                        isDelivered = if (isFromMe) remote.isDelivered else true,
+                        deliveryState = when {
+                            remote.isRead -> "READ"
+                            !isFromMe -> "DELIVERED"
+                            remote.isDelivered -> "DELIVERED"
+                            else -> "SENT_TO_SERVER"
+                        }
+                    )
+                    repository.insertReceivedChatMessage(local, remote.senderId, peerProfileId)
+                    syncedMessages++
+
+                    if (!isFromMe && !remote.isDelivered) {
+                        val acked = SupabaseBackendManager.markMessageDelivered(
+                            remote.messageId,
+                            remote.senderId,
+                            myProfileId
+                        )
+                        if (!acked) {
+                            ackFailures++
+                            Log.w(TAG, "Background inbox delivery ACK failed for ${remote.messageId}; periodic sync will retry.")
+                        }
+                    }
+                }
+            }
+            Log.i(
+                TAG,
+                "Inbox pull finished: conversations=$checkedConversations rows=$syncedMessages ackFailures=$ackFailures."
+            )
+            Result.success()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (t: Throwable) {
+            Log.e(TAG, "Inbox pull failed; a future constrained run will retry: ${t.message}", t)
+            Result.retry()
+        }
+    }
+
+    companion object {
+        private const val TAG = "VibeSyncInbox"
+    }
+}
+
 /** Unique retryable work per Room message. WorkManager tracks connectivity and process lifetime. */
 object PendingMessageSyncScheduler {
     private const val TAG = "VibeSyncOutbox"
@@ -198,8 +296,9 @@ object PendingMessageSyncScheduler {
         }
     }
 
-    /** Recover durable rows on process start; WorkManager resumes queued work when network returns. */
+    /** Recover outbox rows and schedule pull-based inbox recovery on process start. */
     fun enqueueAllPending(context: Context) {
+        ensureInboxSync(context)
         sweepScope.launch {
             try {
                 val appContext = context.applicationContext
@@ -210,6 +309,27 @@ object PendingMessageSyncScheduler {
             } catch (t: Throwable) {
                 Log.e(TAG, "Startup outbox sweep failed; pending rows remain in Room for the next launch.", t)
             }
+        }
+    }
+
+    /** Periodic inbox pull is the no-FCM fallback; Android may defer its execution under Doze. */
+    fun ensureInboxSync(context: Context) {
+        try {
+            val request = PeriodicWorkRequestBuilder<PendingMessageInboxSyncWorker>(15L, TimeUnit.MINUTES)
+                .setConstraints(
+                    Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build()
+                )
+                .addTag("VibeSyncInbox")
+                .build()
+            WorkManager.getInstance(context.applicationContext).enqueueUniquePeriodicWork(
+                "vibesync-chat-inbox-pull",
+                ExistingPeriodicWorkPolicy.KEEP,
+                request
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "Could not schedule periodic inbox sync.", t)
         }
     }
 }
