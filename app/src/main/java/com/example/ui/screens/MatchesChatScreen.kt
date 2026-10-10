@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MarkUnreadChatAlt
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Sms
@@ -53,6 +54,8 @@ import com.example.ui.components.DatingAvatar
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -103,6 +106,7 @@ fun MatchesChatScreen(
     onSelectChatContact: (PhoneContact) -> Unit = {},
     onInviteContact: (PhoneContact) -> Unit = {},
     onRefreshContacts: () -> Unit = {},
+    onOpenProfile: () -> Unit = {},
     onOpenAdmin: () -> Unit = {},
     onOpenInteractionsModal: () -> Unit = {},
     profiles: List<ProfileEntity> = emptyList(),
@@ -117,6 +121,7 @@ fun MatchesChatScreen(
     }
     val syncedLocalPhotos = remember { androidx.compose.runtime.mutableStateMapOf<String, String>() }
     var searchQuery by remember { mutableStateOf("") }
+    var showTopBarMenu by remember { mutableStateOf(false) }
     // Connect-first chat filters: All, Unread, Contacts, Groups, Connect
     var selectedFilter by remember { mutableStateOf("All") }
 
@@ -286,21 +291,6 @@ fun MatchesChatScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(
-                            onClick = onOpenPhonebook,
-                            modifier = Modifier
-                                .size(36.dp)
-                                .testTag("btn_open_contacts_top")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.PersonAdd,
-                                contentDescription = "New Chat / Contacts",
-                                tint = VibeSyncTeal,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-
-
-                        IconButton(
                             onClick = { showSyncDiagDialog = true },
                             modifier = Modifier
                                 .size(36.dp)
@@ -340,6 +330,38 @@ fun MatchesChatScreen(
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(20.dp)
                             )
+                        }
+                        Box {
+                            IconButton(
+                                onClick = { showTopBarMenu = true },
+                                modifier = Modifier.size(36.dp).testTag("btn_more_menu_chat")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = "Profile and settings menu",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showTopBarMenu,
+                                onDismissRequest = { showTopBarMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Profile") },
+                                    onClick = {
+                                        showTopBarMenu = false
+                                        onOpenProfile()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Settings") },
+                                    onClick = {
+                                        showTopBarMenu = false
+                                        onOpenProfile()
+                                    }
+                                )
+                            }
                         }
                     }
                 }

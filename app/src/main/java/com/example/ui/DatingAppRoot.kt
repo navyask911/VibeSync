@@ -507,7 +507,8 @@ fun DatingAppRoot(
                     tonalElevation = 8.dp,
                     modifier = Modifier
                         .windowInsetsPadding(WindowInsets.navigationBars)
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                        .height(58.dp)
                         .clip(RoundedCornerShape(24.dp))
                         .testTag("dating_bottom_nav")
                 ) {
@@ -613,25 +614,6 @@ fun DatingAppRoot(
                         modifier = Modifier.testTag("tab_find")
                     )
 
-                    // Profile Tab
-                    NavigationBarItem(
-                        selected = currentTab == 4,
-                        onClick = { coroutineScope.launch { pagerState.scrollToPage(4) } },
-                        icon = {
-                            Icon(
-                                imageVector = if (currentTab == 4) Icons.Default.Person else Icons.Outlined.Person,
-                                contentDescription = "Profile",
-                                modifier = Modifier.size(24.dp)
-                            )
-                        },
-                        label = { Text("Profile", fontSize = 11.sp, fontWeight = if (currentTab == 4) FontWeight.Bold else FontWeight.Normal) },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
-                        ),
-                        modifier = Modifier.testTag("tab_profile")
-                    )
                 }
             }
         }
@@ -671,6 +653,7 @@ fun DatingAppRoot(
                     onSelectChatContact = { contact -> viewModel.startChatWithContact(contact) },
                     onInviteContact = { contact -> viewModel.openInviteContactDialog(contact) },
                     onRefreshContacts = { viewModel.loadPhonebookContacts() },
+                    onOpenProfile = { coroutineScope.launch { pagerState.scrollToPage(4) } },
                     onOpenAdmin = { viewModel.openAdminPortal() },
                     onOpenInteractionsModal = { showInteractionsModal = true }
                 )

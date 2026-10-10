@@ -61,7 +61,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.DockedSearchBar
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -72,6 +72,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -267,8 +268,9 @@ fun BusinessDashboardScreen(
                                 }
                                 Text(
                                     text = venue.name,
-                                    color = Color(0xFF8A99AD),
-                                    fontSize = 12.sp,
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -322,34 +324,51 @@ fun BusinessDashboardScreen(
                         }
                     }
 
-                    DockedSearchBar(
-                        query = venueSearchQuery,
-                        onQueryChange = { venueSearchQuery = it },
-                        onSearch = { query ->
-                            venueSearchQuery = query.trim()
-                            venueSearchActive = false
-                        },
-                        active = venueSearchActive,
-                        onActiveChange = { venueSearchActive = it },
-                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-                        placeholder = { Text("Search businesses") },
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }
-                    ) {
+                    OutlinedTextField(
+                        value = venueSearchQuery,
+                        onValueChange = { venueSearchQuery = it },
+                        modifier = Modifier.fillMaxWidth().height(52.dp).padding(top = 0.dp)
+                            .testTag("input_business_suite_search"),
+                        placeholder = { Text("Search businesses", maxLines = 1) },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                        singleLine = true,
+                        maxLines = 1,
+                        shape = RoundedCornerShape(18.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF00E5FF),
+                            unfocusedBorderColor = Color(0xFF2E384D),
+                            focusedContainerColor = Color(0xFF1E2330),
+                            unfocusedContainerColor = Color(0xFF1E2330)
+                        )
+                    )
+                    if (venueSearchQuery.isNotBlank()) {
                         val matchedVenues = allVenues.filter {
                             it.name.contains(venueSearchQuery.trim(), ignoreCase = true)
-                        }
-                        if (matchedVenues.isEmpty()) {
-                            ListItem(headlineContent = { Text("No matching businesses") })
-                        } else {
-                            matchedVenues.forEach { candidate ->
-                                ListItem(
-                                    headlineContent = { Text(candidate.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                                    modifier = Modifier.clickable {
-                                        onSelectVenue(candidate)
-                                        venueSearchQuery = candidate.name
-                                        venueSearchActive = false
-                                    }
+                        }.take(5)
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            if (matchedVenues.isEmpty()) {
+                                Text(
+                                    "No matching businesses",
+                                    color = Color(0xFF8A99AD),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
                                 )
+                            } else {
+                                matchedVenues.forEach { candidate ->
+                                    Text(
+                                        text = candidate.name,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                onSelectVenue(candidate)
+                                                venueSearchQuery = candidate.name
+                                            }
+                                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -1444,8 +1463,9 @@ fun ExportReportDialog(
                             )
                             Text(
                                 text = venue.name,
-                                color = Color(0xFF8A99AD),
-                                fontSize = 12.sp
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
                             )
                         }
                     }

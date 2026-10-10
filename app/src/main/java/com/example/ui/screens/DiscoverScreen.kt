@@ -611,9 +611,10 @@ fun DiscoverScreen(
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             Text(
                                                 text = biz.name,
+                                                style = MaterialTheme.typography.titleMedium,
                                                 fontWeight = FontWeight.Bold,
                                                 fontSize = 12.5.sp,
-                                                color = MaterialTheme.colorScheme.onSurface
+                                                color = Color(0xFF1E1E1E)
                                             )
                                             if (biz.isVerified) {
                                                 Spacer(modifier = Modifier.width(4.dp))
