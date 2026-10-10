@@ -134,6 +134,7 @@ async function fetchTruecallerUserInfo(accessToken: string) {
   return {
     phone: phone.e164,
     last10: phone.last10,
+    phoneCandidates: phone.candidates,
     firstName: String(profile.given_name ?? "").slice(0, 80),
     lastName: String(profile.family_name ?? "").slice(0, 80),
     avatarUrl: String(profile.picture ?? "").slice(0, 2048),
