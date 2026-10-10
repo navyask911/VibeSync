@@ -443,7 +443,12 @@ object AppNotificationManager {
     }
 
     private fun syncTokenToRegistry(context: Context, tokenToSync: String) {
-        Log.d(TAG, "Skipping Supabase device-token registry; FCM remains the notification transport boundary.")
+        // Keep one session-bound registration path for refreshed and explicitly requested tokens.
+        // The server stores one row per profile/device token in public.device_tokens.
+        com.example.service.AppFirebaseMessagingService.registerTokenForCurrentSession(
+            context.applicationContext,
+            tokenToSync
+        )
     }
 
     fun getCachedFcmToken(): String = currentFcmToken.orEmpty()
