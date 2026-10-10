@@ -68,11 +68,39 @@ object SupabaseBackendManager {
     private val _agentQueueCount = MutableStateFlow(0)
     val agentQueueCount: StateFlow<Int> = _agentQueueCount.asStateFlow()
 
-    private var realtimeWebSocket: WebSocket? = null
+    @Volatile private var realtimeWebSocket: WebSocket? = null
+    @Volatile private var realtimeConnecting = false
+    @Volatile private var sessionListenerRegistered = false
 
     // Callbacks for incoming realtime events
-    private var onInsertCallback: ((JSONObject) -> Unit)? = null
-    private var onUpdateCallback: ((JSONObject) -> Unit)? = null
+    @Volatile private var onInsertCallback: ((JSONObject) -> Unit)? = null
+    @Volatile private var onUpdateCallback: ((JSONObject) -> Unit)? = null
+
+    // A ViewModel can ask for Realtime before MainActivity's off-main session restore finishes.
+    // SessionManager notifies this listener after restore/save so credentials arriving later
+    // trigger a connection without requiring an app restart.
+    private val sessionChangeListener: (VibeSyncSessionManager.Session?) -> Unit = { session ->
+        if (session == null) {
+            if (realtimeWebSocket != null) disconnectRealtimeWebsocket()
+        } else {
+            scope.launch {
+                isIntentionallyClosed = false
+                if (onInsertCallback != null && !_realtimeConnected.value && !realtimeConnecting) {
+                    Log.i(TAG, "Complete VibeSync session became available; starting Realtime automatically.")
+                    startWebSocketConnection()
+                }
+            }
+        }
+    }
+
+    private fun registerSessionChangeListener() {
+        if (sessionListenerRegistered) return
+        synchronized(this) {
+            if (sessionListenerRegistered) return
+            VibeSyncSessionManager.addSessionChangeListener(sessionChangeListener)
+            sessionListenerRegistered = true
+        }
+    }
 
     fun initialize(context: Context, url: String? = null, anonKey: String? = null) {
         if (!url.isNullOrBlank()) SUPABASE_URL = url
@@ -90,6 +118,7 @@ object SupabaseBackendManager {
         onInsertCallback = onInsert
         onUpdateCallback = onUpdate
         isIntentionallyClosed = false
+        registerSessionChangeListener()
         if (_realtimeConnected.value && realtimeWebSocket != null) {
             Log.d(TAG, "Supabase Realtime WebSocket already connected")
             return
@@ -104,7 +133,13 @@ object SupabaseBackendManager {
         connectRealtimeWebsocket(onInsert = onMessageReceived, onUpdate = onMessageReceived)
     }
 
+    @Synchronized
     private fun startWebSocketConnection() {
+        if (isIntentionallyClosed) return
+        if (_realtimeConnected.value || realtimeConnecting) {
+            Log.d(TAG, "Supabase Realtime connection already active or opening")
+            return
+        }
         val sessionToken = VibeSyncSessionManager.getToken().orEmpty()
         val accessJwt = VibeSyncSessionManager.getAccessToken().orEmpty()
         val sessionProfileId = VibeSyncSessionManager.getProfileId().orEmpty()
@@ -134,8 +169,10 @@ object SupabaseBackendManager {
                 .header("Authorization", "Bearer $accessJwt")
                 .header("x-vibesync-session", sessionToken)
             val request = requestBuilder.build()
+            realtimeConnecting = true
             realtimeWebSocket = wsHttpClient.newWebSocket(request, object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
+                    realtimeConnecting = false
                     _realtimeConnected.value = true
                     Log.i(TAG, "Supabase Realtime WebSocket transport opened; awaiting chat subscription acknowledgement.")
 
@@ -330,6 +367,8 @@ object SupabaseBackendManager {
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    if (realtimeWebSocket === webSocket) realtimeWebSocket = null
+                    realtimeConnecting = false
                     _realtimeConnected.value = false
                     heartbeatJob?.cancel()
                     Log.i(TAG, "Supabase Realtime disconnected: $reason ($code)")
@@ -339,6 +378,8 @@ object SupabaseBackendManager {
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: okhttp3.Response?) {
+                    if (realtimeWebSocket === webSocket) realtimeWebSocket = null
+                    realtimeConnecting = false
                     _realtimeConnected.value = false
                     heartbeatJob?.cancel()
                     val msg = t.message ?: "Connection closed"
@@ -353,6 +394,8 @@ object SupabaseBackendManager {
                 }
             })
         } catch (e: Exception) {
+            realtimeConnecting = false
+            realtimeWebSocket = null
             Log.w(TAG, "Notice initializing Supabase WebSocket: ${e.message}")
             if (!isIntentionallyClosed) {
                 scheduleReconnect()
