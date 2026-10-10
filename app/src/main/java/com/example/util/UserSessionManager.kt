@@ -10,43 +10,27 @@ object UserSessionManager {
 
     fun clearStaleAuthSessions(context: Context) {
         try {
-            Log.i(TAG, "Purging stale / corrupted local verification state")
-            val sp: SharedPreferences = context.getSharedPreferences(PREFS_AUTH_SESSION, Context.MODE_PRIVATE)
-            sp.edit().clear().apply()
-
-            VibeSyncSessionManager.clear(context)
-
-            // Also clear default shared preferences auth keys if any exist
+            // Clear only obsolete transient/legacy keys. Do not touch the current encrypted
+            // VibeSync session here: startup storage issues are not proof of logout/revocation.
+            Log.i(TAG, "Cleaning legacy auth markers while preserving the encrypted VibeSync session")
             val defaultSp = context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE)
             defaultSp.edit()
                 .remove("pending_auth_token")
                 .remove("stale_session_token")
                 .apply()
-
         } catch (e: Exception) {
-            Log.w(TAG, "Error purging auth sessions: ${e.message}")
+            Log.w(TAG, "Error cleaning legacy auth markers: ${e.message}")
         }
     }
 
     fun sanitizeCorruptedStorageAndCache(context: Context) {
         try {
-            Log.w(TAG, "Sanitizing corrupted local storage & app cache keys...")
+            // Recovery is deliberately non-destructive. A failed preferences/keystore read must
+            // not wipe the secure session, the user's profile, or the Room database.
+            Log.w(TAG, "Running non-destructive local auth recovery")
             clearStaleAuthSessions(context)
-            val defaultSp = context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE)
-            defaultSp.edit().clear().apply()
-
-            // Delete corrupted database file if unreadable/locked to prevent cold-launch hangs
-            try {
-                val dbFile = context.getDatabasePath("dating_app.db")
-                if (dbFile.exists()) {
-                    context.deleteDatabase("dating_app.db")
-                    Log.i(TAG, "Successfully purged corrupted dating_app.db database file.")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error purging corrupted database file: ${e.message}", e)
-            }
         } catch (e: Exception) {
-            Log.e(TAG, "Error sanitizing corrupted storage: ${e.message}", e)
+            Log.e(TAG, "Error cleaning legacy auth markers: ${e.message}", e)
         }
     }
 
