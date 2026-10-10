@@ -955,11 +955,16 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             // Mark all past incoming messages as read both locally and in public.chat_messages
             repository.markMatchAsRead(match.matchId, myPhone, partnerPhone)
 
-            // Immediately query and load all past messages from public.chat_messages where both participants match
+            // Remote conversation IDs are canonical across devices; Room keeps its local match key.
             try {
-                val remoteMsgs = com.example.util.SupabaseClientManager.fetchMessagesForMatch(match.matchId, myPhone, partnerPhone)
+                val senderProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
+                val remoteMatchId = com.example.util.SupabaseClientManager.canonicalChatMatchId(
+                    senderProfileId.ifBlank { myPhone },
+                    resolvedProfile.id.ifBlank { partnerPhone }
+                ).ifBlank { match.matchId }
+                val remoteMsgs = com.example.util.SupabaseClientManager.fetchMessagesForMatch(remoteMatchId, myPhone, partnerPhone)
                 for (rm in remoteMsgs) {
-                    repository.insertReceivedChatMessage(rm, rm.senderId, myPhone)
+                    repository.insertReceivedChatMessage(rm.copy(matchId = match.matchId), rm.senderId, myPhone)
                 }
             } catch (e: Exception) {
                 android.util.Log.w("DatingViewModel", "openChat fetch remote messages error: ${e.message}")
@@ -995,6 +1000,25 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     .firstOrNull { it.isNotBlank() } ?: ""
                 val mediaType = record.optString("media_type", "TEXT")
                 val mediaUrl = record.optString("media_url", "")
+
+                // Diagnostic rows are never displayed; the receiving device ACKs the Realtime INSERT.
+                if (mediaType.equals("DIAGNOSTIC", ignoreCase = true)) {
+                    val myProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
+                    val receiverId = record.optString("receiver_id", "")
+                    if (msgId.isNotBlank() && myProfileId.isNotBlank() && receiverId == myProfileId) {
+                        val acked = com.example.util.SupabaseBackendManager.markMessageDelivered(
+                            msgId,
+                            record.optString("sender_id", ""),
+                            receiverId
+                        )
+                        if (acked) {
+                            android.util.Log.i("VibeSyncChatTest", "[VibeSyncChatTest] RECEIVED: diagnostic INSERT reached recipient and delivery ACK committed.")
+                        } else {
+                            android.util.Log.e("VibeSyncChatTest", "[VibeSyncChatTest] STATUS: FAIL - recipient saw diagnostic INSERT but delivery ACK failed.")
+                        }
+                    }
+                    return@launch
+                }
 
                 val msgType = record.optString("type", "CHAT_MESSAGE").ifBlank {
                     record.optString("msg_type", "CHAT_MESSAGE")
@@ -1042,6 +1066,9 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 val activePartnerProfile = activePair?.second
                 val activePartnerPhone = activePartnerProfile?.phoneNumber ?: (activePair?.first?.profileId ?: "")
                 val activeMatchId = activePair?.first?.matchId
+                val canonicalActiveMatchId = if (currentProfileId.isNotBlank() && activePartnerProfile != null) {
+                    com.example.util.SupabaseClientManager.canonicalChatMatchId(currentProfileId, activePartnerProfile.id)
+                } else ""
 
                 // Bulletproof phone matching using PhonebookHasher
                 val isSenderMe = senderPhone == currentProfileId ||
@@ -1053,7 +1080,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 val isBelongingToActiveConversation = (activePair != null) && (
                     ((com.example.util.PhonebookHasher.arePhonesMatching(senderPhone, activePartnerPhone) && com.example.util.PhonebookHasher.arePhonesMatching(receiverPhone, currentUserPhone)) ||
                      (com.example.util.PhonebookHasher.arePhonesMatching(senderPhone, currentUserPhone) && com.example.util.PhonebookHasher.arePhonesMatching(receiverPhone, activePartnerPhone))) ||
-                    (recordMatchId.isNotBlank() && recordMatchId == activeMatchId)
+                    (recordMatchId.isNotBlank() && (recordMatchId == activeMatchId || recordMatchId == canonicalActiveMatchId))
                 )
 
                 // For sender's own message broadcast echo:
@@ -1068,8 +1095,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     val normReceiver = com.example.util.PhonebookHasher.normalizeToE164(receiverPhone)
 
                     val targetMatchId = when {
-                        recordMatchId.isNotBlank() -> recordMatchId
                         isBelongingToActiveConversation && activeMatchId != null -> activeMatchId
+                        recordMatchId.isNotBlank() -> recordMatchId
                         normSender.isNotBlank() -> "match_$normSender"
                         else -> "match_$senderPhone"
                     }
@@ -1141,7 +1168,11 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
                     // If user is currently in active chat with the sender, immediately mark as read on backend and locally
                     if (shouldMarkRead) {
-                        com.example.util.SupabaseBackendManager.markMessagesAsRead(currentUserPhone, senderPhone, activeMatchId)
+                        com.example.util.SupabaseBackendManager.markMessagesAsRead(
+                            currentUserPhone,
+                            senderPhone,
+                            recordMatchId.ifBlank { canonicalActiveMatchId }
+                        )
                         repository.markMatchAsRead(targetMatchId, currentUserPhone, senderPhone)
                     }
                 }
@@ -1282,6 +1313,159 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         _activeChat.value = null
         _currentMatchId.value = null
         com.example.util.AppNotificationManager.clearActiveChatSession()
+    }
+
+    /**
+     * End-to-end diagnostic for an online peer. The encrypted DIAGNOSTIC row is not rendered or pushed;
+     * the peer's Realtime INSERT handler ACKs it, allowing this device to verify delivery in Postgres.
+     */
+    fun runChatDiagnostics(peerUserId: String) {
+        val peerProfileId = peerUserId.trim()
+        val logTag = "VibeSyncChatTest"
+        if (peerProfileId.isBlank()) {
+            android.util.Log.e(logTag, "[VibeSyncChatTest] STATUS: FAIL - Step 0 failed: peerUserId is blank.")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            var diagnosticMessageId = ""
+            var senderProfileId = ""
+            var canonicalMatchId = ""
+            var currentStep = 1
+            fun result(pass: Boolean, step: Int, detail: String) {
+                val status = if (pass) "PASS" else "FAIL"
+                val line = "[VibeSyncChatTest] STATUS: " + status + " - Step " + step +
+                    (if (pass) ":" else " failed:") + " " + detail
+                if (pass) android.util.Log.i(logTag, line) else android.util.Log.e(logTag, line)
+            }
+            try {
+                val session = com.example.util.VibeSyncSessionManager.getSession()
+                senderProfileId = session?.profileId?.trim().orEmpty()
+                if (session == null || senderProfileId.isBlank() || session.sessionToken.isBlank() ||
+                    session.accessToken.isBlank() || session.expiresAtEpochSeconds <= System.currentTimeMillis() / 1000L
+                ) {
+                    result(false, 1, "no complete, unexpired Truecaller/Supabase session (profile/token/JWT/expiry check failed).")
+                    return@launch
+                }
+                val sessionProbe = com.example.util.SupabaseClientManager.verifyChatSession(senderProfileId)
+                if (sessionProbe.isFailure) {
+                    result(false, 1, "Supabase session probe failed: " + (sessionProbe.exceptionOrNull()?.message ?: "unknown error"))
+                    return@launch
+                }
+                result(true, 1, "valid bearer JWT and x-vibesync-session resolve to the current profile.")
+
+                currentStep = 2
+                val recipientKey = com.example.util.SupabaseClientManager.fetchPublicIdentityKey(peerProfileId)
+                if (recipientKey.isNullOrBlank()) {
+                    result(false, 2, "recipient public Tink key is unavailable; no test row was written.")
+                    return@launch
+                }
+                canonicalMatchId = com.example.util.SupabaseClientManager.canonicalChatMatchId(senderProfileId, peerProfileId)
+                if (canonicalMatchId.isBlank()) {
+                    result(false, 2, "sender and peer IDs cannot form a canonical match_id.")
+                    return@launch
+                }
+
+                // Join before inserting so the subscription is active before the test row commits.
+                com.example.util.SupabaseBackendManager.connectRealtimeWebsocket(
+                    onInsert = { record -> handleRealtimeChatMessageInsert(record) },
+                    onUpdate = { record -> handleRealtimeChatMessageUpdate(record) }
+                )
+                val realtimeSubscribed = kotlinx.coroutines.withTimeoutOrNull(12_000L) {
+                    com.example.util.SupabaseBackendManager.realtimeSubscriptionStatus.first { it == "SUBSCRIBED" }
+                } != null
+
+                diagnosticMessageId = "diag_" + java.util.UUID.randomUUID().toString()
+                val diagnosticPlaintext = "VIBESYNC_DIAGNOSTIC:" + diagnosticMessageId
+                val diagnosticCiphertext = com.example.util.TinkCryptoManager.encryptForRecipient(
+                    recipientPublicKeysetJson = recipientKey,
+                    rawText = diagnosticPlaintext,
+                    senderPhone = senderProfileId,
+                    receiverPhone = peerProfileId
+                )
+                if (!diagnosticCiphertext.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
+                    result(false, 2, "Tink failed to create the encrypted diagnostic payload.")
+                    return@launch
+                }
+                val diagnosticMessage = ChatMessageEntity(
+                    messageId = diagnosticMessageId,
+                    matchId = canonicalMatchId,
+                    senderId = senderProfileId,
+                    text = diagnosticCiphertext,
+                    timestamp = System.currentTimeMillis(),
+                    isDelivered = false,
+                    isRead = false,
+                    isEncrypted = true,
+                    mediaType = "DIAGNOSTIC"
+                )
+                val inserted = com.example.util.SupabaseClientManager.upsertChatMessage(
+                    msg = diagnosticMessage,
+                    senderIdentity = senderProfileId,
+                    receiverIdentity = peerProfileId,
+                    recipientProfileId = peerProfileId,
+                    dispatchPush = false,
+                    broadcastRealtime = false
+                )
+                if (!inserted) {
+                    result(false, 2, "rpc/send_encrypted_message failed; inspect VibeSyncChat HTTP/SQL error above.")
+                    return@launch
+                }
+                result(true, 2, "encrypted ping committed through rpc/send_encrypted_message to public.chat_messages (media_type=DIAGNOSTIC).")
+
+                currentStep = 3
+                var readBack: org.json.JSONObject? = null
+                repeat(5) {
+                    if (readBack == null) {
+                        readBack = com.example.util.SupabaseClientManager.fetchChatMessageDiagnosticRow(diagnosticMessageId)
+                        if (readBack == null) kotlinx.coroutines.delay(350L)
+                    }
+                }
+                val row = readBack
+                if (row == null) {
+                    result(false, 3, "insert returned success but SELECT could not read the committed message row.")
+                    return@launch
+                }
+                val rowMatches = row.optString("sender_id") == senderProfileId &&
+                    row.optString("receiver_id") == peerProfileId &&
+                    row.optString("match_id") == canonicalMatchId &&
+                    row.optString("media_type") == "DIAGNOSTIC"
+                if (!rowMatches) {
+                    result(false, 3, "SELECT returned a row with mismatched sender/recipient/match/media_type fields.")
+                    return@launch
+                }
+                result(true, 3, "SELECT read the committed row back with matching sender_id, receiver_id, match_id and media_type.")
+
+                currentStep = 4
+                if (realtimeSubscribed) {
+                    result(true, 4, com.example.util.SupabaseBackendManager.CHAT_REALTIME_TOPIC + " reached SUBSCRIBED before insertion.")
+                } else {
+                    result(false, 4, com.example.util.SupabaseBackendManager.CHAT_REALTIME_TOPIC +
+                        " status did not reach SUBSCRIBED (current=" +
+                        com.example.util.SupabaseBackendManager.realtimeSubscriptionStatus.value + ").")
+                }
+
+                currentStep = 5
+                var delivered = row.optBoolean("is_delivered", false)
+                val deadline = System.currentTimeMillis() + 15_000L
+                while (!delivered && System.currentTimeMillis() < deadline) {
+                    kotlinx.coroutines.delay(1_000L)
+                    val refreshed = com.example.util.SupabaseClientManager.fetchChatMessageDiagnosticRow(diagnosticMessageId)
+                    if (refreshed != null) delivered = refreshed.optBoolean("is_delivered", false)
+                }
+                if (delivered) {
+                    result(true, 5, "recipient device received the Realtime INSERT and set is_delivered=true in Postgres.")
+                } else {
+                    result(false, 5, "no recipient delivery ACK in 15s; keep Phone B online/unlocked and check its VibeSyncChatTest/VibeSyncChat Logcat.")
+                }
+            } catch (t: Throwable) {
+                result(false, currentStep, t.javaClass.simpleName + ": " + (t.message ?: "unknown error"))
+            } finally {
+                if (diagnosticMessageId.isNotBlank() && senderProfileId.isNotBlank()) {
+                    val removed = com.example.util.SupabaseClientManager.deleteChatDiagnosticRow(diagnosticMessageId, senderProfileId)
+                    android.util.Log.i(logTag, "[VibeSyncChatTest] cleanup " + (if (removed) "PASS" else "NOTICE") +
+                        ": diagnostic row " + (if (removed) "removed" else "could not be removed automatically") + ".")
+                }
+            }
+        }
     }
 
     fun sendMessage(

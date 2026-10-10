@@ -32,6 +32,7 @@ import java.util.concurrent.TimeUnit
  */
 object SupabaseBackendManager {
     private const val TAG = "SupabaseBackend"
+    const val CHAT_REALTIME_TOPIC = "realtime:public:chat_messages"
 
     // Client apps must use the publishable/anon key only; service-role keys must stay server-side.
     var SUPABASE_URL = SupabaseClientManager.SUPABASE_URL
@@ -65,6 +66,9 @@ object SupabaseBackendManager {
     // Realtime Connection & Status Flow
     private val _realtimeConnected = MutableStateFlow(false)
     val realtimeConnected: StateFlow<Boolean> = _realtimeConnected.asStateFlow()
+    private val _realtimeSubscriptionStatus = MutableStateFlow("DISCONNECTED")
+    /** SUBSCRIBED is set only after Phoenix confirms the postgres_changes join. */
+    val realtimeSubscriptionStatus: StateFlow<String> = _realtimeSubscriptionStatus.asStateFlow()
 
     private val _agentQueueCount = MutableStateFlow(0)
     val agentQueueCount: StateFlow<Int> = _agentQueueCount.asStateFlow()
@@ -182,6 +186,7 @@ object SupabaseBackendManager {
         forceAnonHandshakeNext = false
         lastHandshakeUsedAnon = useAnonForHandshake
         val handshakeBearer = if (useAnonForHandshake) anonKey else accessJwt
+        _realtimeSubscriptionStatus.value = "CONNECTING"
 
         try {
             isIntentionallyClosed = false
@@ -211,6 +216,7 @@ object SupabaseBackendManager {
                 override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
                     realtimeConnecting = false
                     _realtimeConnected.value = true
+                    _realtimeSubscriptionStatus.value = "CONNECTED"
                     reconnectAttempt = 0
                     Log.i(
                         TAG,
@@ -225,6 +231,7 @@ object SupabaseBackendManager {
                         authenticateRealtimeSocket(webSocket, activeSession)
                     } else {
                         waitingForSessionChangeAfter401 = activeSession != null
+                        _realtimeSubscriptionStatus.value = "WAITING_FOR_SESSION"
                         Log.i(TAG, "Realtime socket is open anonymously; waiting for fresh verified session credentials before subscribing.")
                     }
 
@@ -263,12 +270,14 @@ object SupabaseBackendManager {
                             val status = payload.optString("status", "unknown")
                             val detail = payload.optJSONObject("response")?.toString()?.take(700).orEmpty()
                             if (status.equals("ok", ignoreCase = true)) {
+                                _realtimeSubscriptionStatus.value = "SUBSCRIBED"
                                 Log.i(
                                     TAG,
                                     "Supabase Realtime chat subscription confirmed for profile=${VibeSyncSessionManager.getProfileId().orEmpty()} " +
                                         "(INSERT receiver_id, UPDATE sender_id)."
                                 )
                             } else {
+                                _realtimeSubscriptionStatus.value = "REJECTED"
                                 // Do not close/reconnect in a tight loop for a channel-level auth
                                 // rejection. Keep the transport alive and wait for a changed session,
                                 // which will call authenticateRealtimeSocket() again.
@@ -396,6 +405,7 @@ object SupabaseBackendManager {
                     resetRealtimeSocketAuthState(webSocket)
                     realtimeConnecting = false
                     _realtimeConnected.value = false
+                    _realtimeSubscriptionStatus.value = "DISCONNECTED"
                     heartbeatJob?.cancel()
                     Log.i(TAG, "Supabase Realtime disconnected: $reason ($code)")
                     if (!isIntentionallyClosed && !waitingForSessionChangeAfter401) {
@@ -408,6 +418,7 @@ object SupabaseBackendManager {
                     resetRealtimeSocketAuthState(webSocket)
                     realtimeConnecting = false
                     _realtimeConnected.value = false
+                    _realtimeSubscriptionStatus.value = "DISCONNECTED"
                     heartbeatJob?.cancel()
                     val msg = t.message ?: "Connection closed"
                     val httpCode = response?.code
@@ -450,6 +461,7 @@ object SupabaseBackendManager {
         } catch (e: Exception) {
             realtimeConnecting = false
             realtimeWebSocket = null
+            _realtimeSubscriptionStatus.value = "ERROR"
             Log.w(TAG, "Notice initializing Supabase WebSocket: ${e.message}")
             if (!isIntentionallyClosed) {
                 scheduleReconnect()
@@ -528,8 +540,9 @@ object SupabaseBackendManager {
 
         if (realtimeSubscriptionSocket === webSocket && realtimeSubscribedProfileId == profileId) return
 
+        _realtimeSubscriptionStatus.value = "SUBSCRIBING"
         val joinChatMsg = JSONObject().apply {
-            put("topic", "realtime:public:chat_messages")
+            put("topic", CHAT_REALTIME_TOPIC)
             put("event", "phx_join")
             put("payload", JSONObject().apply {
                 put("access_token", accessToken)
@@ -559,6 +572,7 @@ object SupabaseBackendManager {
             realtimeSubscriptionSocket = webSocket
             realtimeSubscribedProfileId = profileId
         } else {
+            _realtimeSubscriptionStatus.value = "ERROR"
             Log.w(TAG, "Realtime chat subscription join could not be queued.")
         }
     }
@@ -581,6 +595,7 @@ object SupabaseBackendManager {
             realtimeWebSocket = null
             resetRealtimeSocketAuthState(socket)
             _realtimeConnected.value = false
+            _realtimeSubscriptionStatus.value = "DISCONNECTED"
             socket?.close(1000, "App backgrounded")
             Log.i(TAG, "🔌 Disconnected Supabase Realtime WebSocket (App Backgrounded)")
         } catch (e: Exception) {
@@ -594,7 +609,7 @@ object SupabaseBackendManager {
     fun broadcastChatMessage(record: JSONObject) {
         try {
             val broadcastMsg = JSONObject().apply {
-                put("topic", "realtime:public:chat_messages")
+                put("topic", CHAT_REALTIME_TOPIC)
                 put("event", "broadcast")
                 put("payload", JSONObject().apply {
                     put("type", "INSERT")
@@ -839,7 +854,7 @@ object SupabaseBackendManager {
     private fun broadcastUpdateStatus(record: JSONObject) {
         try {
             val broadcastMsg = JSONObject().apply {
-                put("topic", "realtime:public:chat_messages")
+                put("topic", CHAT_REALTIME_TOPIC)
                 put("event", "broadcast")
                 put("payload", JSONObject().apply {
                     put("type", "UPDATE")

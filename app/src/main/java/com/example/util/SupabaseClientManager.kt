@@ -164,6 +164,82 @@ object SupabaseClientManager {
         return builder.build()
     }
 
+    /** A stable remote conversation key independent of which participant computes it. */
+    fun canonicalChatMatchId(profileA: String, profileB: String): String {
+        val a = profileA.trim().lowercase(java.util.Locale.ROOT)
+        val b = profileB.trim().lowercase(java.util.Locale.ROOT)
+        if (a.isBlank() || b.isBlank() || a == b) return ""
+        return listOf(a, b).sorted().joinToString("_")
+    }
+
+    /** Validate the bearer accepted by PostgREST and the opaque VibeSync session header. */
+    suspend fun verifyChatSession(profileId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        if (profileId.isBlank()) return@withContext Result.failure(IllegalStateException("Profile ID is missing."))
+        try {
+            val request = buildRequest("rpc/vibesync_current_profile_id", "POST", "{}")
+            httpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty().trim()
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(IllegalStateException("session validation HTTP ${response.code}: ${body.take(300)}"))
+                }
+                val resolvedProfileId = body.trim('"')
+                if (resolvedProfileId != profileId) {
+                    return@withContext Result.failure(IllegalStateException("session header resolved to a different or empty profile (HTTP ${response.code})."))
+                }
+                Log.i("VibeSyncChat", "Session probe passed; bearer accepted and session profile resolved.")
+                Result.success(Unit)
+            }
+        } catch (t: Throwable) {
+            Result.failure(IllegalStateException("session validation request failed: ${t.javaClass.simpleName}: ${t.message}", t))
+        }
+    }
+
+    /** Read one encrypted message row back through the same authenticated PostgREST client. */
+    suspend fun fetchChatMessageDiagnosticRow(messageId: String): JSONObject? = withContext(Dispatchers.IO) {
+        if (messageId.isBlank()) return@withContext null
+        try {
+            val safeId = java.net.URLEncoder.encode(messageId, "UTF-8")
+            val request = buildRequest(
+                "chat_messages?select=message_id,match_id,sender_id,receiver_id,is_delivered,media_type&message_id=eq.$safeId&limit=1",
+                "GET"
+            )
+            httpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    Log.e("VibeSyncChat", "Read-back failed HTTP ${response.code}: ${body.take(350)}")
+                    return@withContext null
+                }
+                JSONArray(body).optJSONObject(0)
+            }
+        } catch (t: Throwable) {
+            Log.e("VibeSyncChat", "Read-back exception: ${t.javaClass.simpleName}: ${t.message}", t)
+            null
+        }
+    }
+
+    /** Remove the diagnostic-only row so a connectivity check does not leave chat history behind. */
+    suspend fun deleteChatDiagnosticRow(messageId: String, senderProfileId: String): Boolean = withContext(Dispatchers.IO) {
+        if (messageId.isBlank() || senderProfileId.isBlank()) return@withContext false
+        try {
+            val safeId = java.net.URLEncoder.encode(messageId, "UTF-8")
+            val safeSender = java.net.URLEncoder.encode(senderProfileId, "UTF-8")
+            val request = buildRequest(
+                "chat_messages?message_id=eq.$safeId&sender_id=eq.$safeSender",
+                "DELETE",
+                preferHeader = "return=minimal"
+            )
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.w("VibeSyncChat", "Diagnostic row cleanup failed HTTP ${response.code}: ${response.body?.string()?.take(250)}")
+                }
+                response.isSuccessful
+            }
+        } catch (t: Throwable) {
+            Log.w("VibeSyncChat", "Diagnostic row cleanup exception: ${t.message}")
+            false
+        }
+    }
+
     fun JSONObject.optSafeString(key: String, fallback: String = ""): String {
         if (this.isNull(key)) return fallback
         val raw = this.optString(key, fallback)
@@ -493,7 +569,9 @@ object SupabaseClientManager {
         msg: ChatMessageEntity,
         senderIdentity: String = "",
         receiverIdentity: String = "",
-        recipientProfileId: String = receiverIdentity
+        recipientProfileId: String = receiverIdentity,
+        dispatchPush: Boolean = true,
+        broadcastRealtime: Boolean = true
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             val recipient = recipientProfileId.ifBlank { receiverIdentity }
@@ -514,7 +592,9 @@ object SupabaseClientManager {
             val request = buildRequest("rpc/send_encrypted_message", "POST", json.toString())
             httpClient.newCall(request).execute().use { response ->
                 val success = response.isSuccessful
+                val responseBody = response.body?.string().orEmpty()
                 if (success) {
+                    Log.i("VibeSyncChat", "SEND committed HTTP ${response.code}; table=public.chat_messages messageId=${msg.messageId}.")
                     val broadcast = JSONObject().apply {
                         put("type", "NEW_E2EE_MESSAGE")
                         put("message_id", msg.messageId)
@@ -524,15 +604,17 @@ object SupabaseClientManager {
                         put("ciphertext", ciphertext)
                         put("media_type", msg.mediaType)
                     }
-                    SupabaseBackendManager.broadcastChatMessage(broadcast)
-                    // Push delivery is server-side FCM transport; failure never rolls back the message.
-                    dispatchEncryptedMessagePush(msg.messageId)
+                    if (broadcastRealtime) SupabaseBackendManager.broadcastChatMessage(broadcast)
+                    // Push is notification transport only; diagnostic rows deliberately skip push.
+                    if (dispatchPush) dispatchEncryptedMessagePush(msg.messageId)
                 } else {
-                    Log.w(TAG, "Encrypted chat RPC failed HTTP ${response.code}: ${response.body?.string()?.take(200)}")
+                    Log.e("VibeSyncChat", "SEND failed HTTP ${response.code} for rpc/send_encrypted_message: ${responseBody.take(500)}")
+                    Log.w(TAG, "Encrypted chat RPC failed HTTP ${response.code}: ${responseBody.take(200)}")
                 }
                 success
             }
         } catch (e: Throwable) {
+            Log.e("VibeSyncChat", "SEND exception in rpc/send_encrypted_message: ${e.javaClass.simpleName}: ${e.message}", e)
             Log.w(TAG, "Encrypted chat RPC notice: ${e.message}")
             false
         }

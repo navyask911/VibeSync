@@ -3199,20 +3199,37 @@ class SocialConnectRepository(
                     android.util.Log.e("SocialConnectRepository", "Message rejected: Tink encryption failed.")
                     return@launch
                 }
+                val canonicalMatchId = com.example.util.SupabaseClientManager.canonicalChatMatchId(senderIdentity, recipientIdentity)
+                if (canonicalMatchId.isBlank()) {
+                    android.util.Log.e("VibeSyncChat", "SEND rejected: sender/recipient cannot form a canonical match ID.")
+                    return@launch
+                }
                 val networkMsg = userMsg.copy(
+                    matchId = canonicalMatchId,
                     text = cipherText,
                     isEncrypted = true,
                     isDelivered = false,
                     isRead = false
                 )
-                val success = com.example.util.SupabaseClientManager.upsertChatMessage(
-                    msg = networkMsg,
-                    senderIdentity = senderIdentity,
-                    receiverIdentity = recipientIdentity,
-                    recipientProfileId = recipientIdentity
-                )
+                var success = false
+                repeat(2) { attempt ->
+                    android.util.Log.i(
+                        "VibeSyncChat",
+                        "SEND attempt=${attempt + 1}/2 table=public.chat_messages rpc=send_encrypted_message messageId=$clientMsgId."
+                    )
+                    success = com.example.util.SupabaseClientManager.upsertChatMessage(
+                        msg = networkMsg,
+                        senderIdentity = senderIdentity,
+                        receiverIdentity = recipientIdentity,
+                        recipientProfileId = recipientIdentity
+                    )
+                    if (!success && attempt == 0) kotlinx.coroutines.delay(600L)
+                }
                 if (!success) {
-                    android.util.Log.w("SocialConnectRepository", "Encrypted chat insert failed for " + clientMsgId)
+                    android.util.Log.e("VibeSyncChat", "STATUS: FAIL - message $clientMsgId remains local; Supabase RPC did not commit after retry.")
+                    android.util.Log.w("SocialConnectRepository", "Encrypted chat insert failed for $clientMsgId")
+                } else {
+                    android.util.Log.i("VibeSyncChat", "STATUS: PASS - remote insert acknowledged for message $clientMsgId.")
                 }
             } catch (e: Exception) {
                 android.util.Log.w("SocialConnectRepository", "Encrypted message dispatch error: " + e.message)
