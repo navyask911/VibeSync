@@ -114,21 +114,22 @@ fun VerificationBadgeRequestCard() {
                 enabled = !submitting && applicantEmail.isNotBlank(),
                 modifier = Modifier.fillMaxWidth()
             ) { Text(if (submitting) "Submitting…" else "Submit email and request") }
+            val currentRequestId = requestId
             status?.let {
                 Text(
-                    it + if (requestId != null) " Request ID: $requestId. Payment stays PENDING until receipt is checked; returning from UPI cannot mark it paid automatically." else "",
-                    color = if (requestId != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                    it + if (currentRequestId != null) " Request ID: $currentRequestId. Payment stays PENDING until receipt is checked; returning from UPI cannot mark it paid automatically." else "",
+                    color = if (currentRequestId != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall
                 )
             }
-            if (requestId != null) {
+            if (currentRequestId != null) {
                 Button(
                     onClick = {
                         val amount = tiers.firstOrNull { it.tier == selectedTier }?.annualFeeRupees ?: 199
                         val paymentUri = UpiPaymentManager.generateUpiPayUri(
                             amount = amount.toString(),
-                            note = "VibeSync $selectedTier verification $requestId",
-                            txnRef = requestId.replace("-", "").take(20)
+                            note = "VibeSync $selectedTier verification $currentRequestId",
+                            txnRef = currentRequestId.replace("-", "").take(20)
                         )
                         try {
                             context.startActivity(UpiPaymentManager.launchUpiAppIntent(context, null, paymentUri))
