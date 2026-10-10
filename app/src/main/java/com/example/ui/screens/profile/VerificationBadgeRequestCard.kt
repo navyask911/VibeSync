@@ -1,5 +1,6 @@
 package com.example.ui.screens.profile
 
+import android.content.Intent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -31,13 +32,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import com.example.util.SupabaseClientManager
+import com.example.util.UpiPaymentManager
 import kotlinx.coroutines.launch
 
 private data class BadgeTierOption(val tier: String, val name: String, val annualFeeRupees: Int)
 
 @Composable
 fun VerificationBadgeRequestCard() {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var applicantEmail by remember { mutableStateOf("") }
     var selectedTier by remember { mutableStateOf("BLUE") }
@@ -100,7 +104,7 @@ fun VerificationBadgeRequestCard() {
                         val result = SupabaseClientManager.submitVerificationBadgeRequest(selectedTier, applicantEmail)
                         result.onSuccess {
                             requestId = it
-                            status = "Request recorded. Payment status is PENDING."
+                            status = "Request recorded. Continue to payment using the button below."
                         }.onFailure {
                             status = it.message ?: "Could not submit the request."
                         }
@@ -112,9 +116,32 @@ fun VerificationBadgeRequestCard() {
             ) { Text(if (submitting) "Submitting…" else "Submit email and request") }
             status?.let {
                 Text(
-                    it + if (requestId != null) " Request ID: $requestId. Payment and email/document verification are not automated in this app yet." else "",
+                    it + if (requestId != null) " Request ID: $requestId. Payment stays PENDING until receipt is checked; returning from UPI cannot mark it paid automatically." else "",
                     color = if (requestId != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall
+                )
+            }
+            if (requestId != null) {
+                Button(
+                    onClick = {
+                        val amount = tiers.firstOrNull { it.tier == selectedTier }?.annualFeeRupees ?: 199
+                        val paymentUri = UpiPaymentManager.generateUpiPayUri(
+                            amount = amount.toString(),
+                            note = "VibeSync $selectedTier verification $requestId",
+                            txnRef = requestId.replace("-", "").take(20)
+                        )
+                        try {
+                            context.startActivity(UpiPaymentManager.launchUpiAppIntent(context, null, paymentUri))
+                        } catch (_: Exception) {
+                            status = "Request saved, but Android could not open a UPI app. Payment remains PENDING."
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Continue to UPI payment") }
+                Text(
+                    "Only pay if the displayed payee matches VibeSync's verified merchant account. Badge status changes only after an administrator confirms payment and documents.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
