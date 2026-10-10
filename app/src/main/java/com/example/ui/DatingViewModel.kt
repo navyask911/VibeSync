@@ -1156,7 +1156,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         replyToText = replyToText,
                         replyToSender = replyToSender,
                         isForwarded = isForwarded,
-                        isEncrypted = true
+                        isEncrypted = true,
+                        deliveryState = if (shouldMarkRead) "READ" else "DELIVERED"
                     )
 
                     // Immediately insert successfully decrypted plaintext entities into Room on Dispatchers.IO
