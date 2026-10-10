@@ -27,3 +27,18 @@
 # for those libraries.
 -dontwarn javax.annotation.**
 -dontwarn org.codehaus.mojo.animal_sniffer.IgnoreJRERequirement
+
+
+# Google Tink cryptographic classes used by local message/session encryption.
+-keep class com.google.crypto.tink.** { *; }
+-dontwarn com.google.crypto.tink.**
+
+# Truecaller SDK callback and partner model classes.
+-keep class com.truecaller.android.sdk.** { *; }
+-dontwarn com.truecaller.android.sdk.**
+
+# Supabase DTOs and kotlinx.serialization-annotated fields (including future SDK usage).
+-keep class io.github.jan.supabase.** { *; }
+-keepclassmembers class * {
+    @kotlinx.serialization.SerialName <fields>;
+}

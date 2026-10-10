@@ -365,8 +365,16 @@ fun ChatDetailScreen(
     var selectedChatColorHex by remember {
         mutableStateOf(com.example.util.ChatColorPreferences.getSelectedColorHex(context))
     }
-    val chatTextColor = remember(selectedChatColorHex) {
-        com.example.util.ChatColorPreferences.parseColor(selectedChatColorHex)
+    val chatTextColor = remember(selectedChatColorHex, MaterialTheme.colorScheme.onSurface) {
+        if (selectedChatColorHex.equals(
+                com.example.util.ChatColorPreferences.DEFAULT_COLOR_HEX,
+                ignoreCase = true
+            )
+        ) {
+            MaterialTheme.colorScheme.onSurface
+        } else {
+            com.example.util.ChatColorPreferences.parseColor(selectedChatColorHex)
+        }
     }
     var showE2eeDetailsDialog by remember { mutableStateOf(false) }
     var e2eeVisualizerTab by remember { mutableStateOf("FINGERPRINT") } // "FINGERPRINT", "EXPLAINER", "SCANNER"
@@ -3692,6 +3700,7 @@ private fun VibeSyncChatBubble(
 ) {
     val timeFormat = remember { SimpleDateFormat("h:mm a", Locale.getDefault()) }
     val formattedTime = remember(message.timestamp) { timeFormat.format(Date(message.timestamp)) }
+    val bubbleTextColor = if (isOutgoing) MaterialTheme.colorScheme.onPrimary else chatTextColor
 
     if (message.senderId.equals("SYSTEM", ignoreCase = true)) {
         Box(
@@ -3728,9 +3737,9 @@ private fun VibeSyncChatBubble(
             } else {
                 RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 4.dp, bottomEnd = 16.dp)
             },
-            color = if (isOutgoing) Color(0xFFE7FFDB) else Color.White,
+            color = if (isOutgoing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
             shadowElevation = if (isOutgoing) 0.5.dp else 1.dp,
-            border = if (isOutgoing) null else BorderStroke(0.5.dp, Color(0xFFE2E8F0)),
+            border = if (isOutgoing) null else BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline),
             modifier = Modifier
                 .widthIn(min = 72.dp, max = maxBubbleWidth)
                 .combinedClickable(
@@ -3798,7 +3807,7 @@ private fun VibeSyncChatBubble(
                                     fontSize = 11.5.sp,
                                     fontWeight = FontWeight.Medium,
                                     maxLines = 1,
-                                    color = chatTextColor.copy(alpha = 0.85f)
+                                    color = bubbleTextColor.copy(alpha = 0.85f)
                                 )
                             }
                         }
@@ -3920,7 +3929,7 @@ private fun VibeSyncChatBubble(
                                     Spacer(modifier = Modifier.height(6.dp))
                                     Text(
                                         text = userCaption,
-                                        color = chatTextColor,
+                                        color = bubbleTextColor,
                                         fontSize = 15.sp,
                                         fontWeight = FontWeight.Medium,
                                         lineHeight = 20.sp,
@@ -4024,7 +4033,7 @@ private fun VibeSyncChatBubble(
                                     Spacer(modifier = Modifier.height(6.dp))
                                     Text(
                                         text = userCaption,
-                                        color = chatTextColor,
+                                        color = bubbleTextColor,
                                         fontSize = 15.sp,
                                         fontWeight = FontWeight.Medium,
                                         lineHeight = 20.sp,
@@ -4087,7 +4096,7 @@ private fun VibeSyncChatBubble(
                                                     text = if (message.mediaType == "LIVE_LOCATION") "🔴 Live Sharing" else "Google Maps Pin",
                                                     fontSize = 10.sp,
                                                     fontWeight = FontWeight.Bold,
-                                                    color = chatTextColor
+                                                    color = bubbleTextColor
                                                 )
                                             }
                                         }
@@ -4099,7 +4108,7 @@ private fun VibeSyncChatBubble(
                                     text = message.text,
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Medium,
-                                    color = chatTextColor,
+                                    color = bubbleTextColor,
                                     lineHeight = 18.sp
                                 )
                                 Spacer(modifier = Modifier.height(6.dp))
@@ -4146,7 +4155,7 @@ private fun VibeSyncChatBubble(
                                 Icon(Icons.Default.Person, contentDescription = null, tint = Color(0xFF1B72E8), modifier = Modifier.size(28.dp))
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = chatTextColor)
+                                    Text(name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = bubbleTextColor)
                                     if (phone.isNotBlank()) {
                                         Text(phone, fontSize = 11.sp, fontWeight = FontWeight.Medium, color = Color(0xFF64748B))
                                     }
@@ -4175,7 +4184,7 @@ private fun VibeSyncChatBubble(
                                 Icon(Icons.Default.Description, contentDescription = null, tint = Color(0xFF5E35B1), modifier = Modifier.size(28.dp))
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(message.text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = chatTextColor, maxLines = 1)
+                                    Text(message.text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = bubbleTextColor, maxLines = 1)
                                     Text("Encrypted Attachment File", fontSize = 10.sp, fontWeight = FontWeight.Medium, color = Color(0xFF64748B))
                                 }
                                 IconButton(
@@ -4206,7 +4215,7 @@ private fun VibeSyncChatBubble(
                                     Text("POLL", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Color(0xFFFFA000))
                                 }
                                 Spacer(modifier = Modifier.height(4.dp))
-                                Text(lines.firstOrNull() ?: "Poll Question", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = chatTextColor)
+                                Text(lines.firstOrNull() ?: "Poll Question", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = bubbleTextColor)
                                 Spacer(modifier = Modifier.height(6.dp))
                                 lines.drop(1).forEach { opt ->
                                     var voted by remember { mutableStateOf(false) }
@@ -4224,7 +4233,7 @@ private fun VibeSyncChatBubble(
                                         ) {
                                             RadioButton(selected = voted, onClick = { voted = !voted }, modifier = Modifier.size(16.dp))
                                             Spacer(modifier = Modifier.width(8.dp))
-                                            Text(opt, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = chatTextColor, modifier = Modifier.weight(1f))
+                                            Text(opt, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = bubbleTextColor, modifier = Modifier.weight(1f))
                                             if (voted) {
                                                 Text("1 vote", fontSize = 10.sp, color = Color(0xFFFFA000), fontWeight = FontWeight.Bold)
                                             }
@@ -4254,7 +4263,7 @@ private fun VibeSyncChatBubble(
                                 Icon(Icons.Default.Event, contentDescription = null, tint = Color(0xFFE91E63), modifier = Modifier.size(28.dp))
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Column {
-                                    Text(message.text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = chatTextColor)
+                                    Text(message.text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = bubbleTextColor)
                                     Text("Shared Event • Reminder Set", fontSize = 10.sp, fontWeight = FontWeight.Medium, color = Color(0xFF64748B))
                                 }
                             }
@@ -4301,7 +4310,7 @@ private fun VibeSyncChatBubble(
                                         text = if (isPlaying) "Playing voice note..." else "Voice note (${message.voiceDurationSeconds}s)",
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Medium,
-                                        color = chatTextColor
+                                        color = bubbleTextColor
                                     )
                                     Text(
                                         text = if (isPlaying) "▶ ▕▌▏▐▌▕▌▏▐▌▕▌▏▐▌" else "||| | |||| | ||| ||||",
@@ -4352,7 +4361,7 @@ private fun VibeSyncChatBubble(
                                     style = MaterialTheme.typography.bodyMedium.copy(
                                         fontWeight = FontWeight.Medium
                                     ),
-                                    color = chatTextColor,
+                                    color = bubbleTextColor,
                                     fontSize = 15.sp,
                                     lineHeight = 20.sp
                                 )

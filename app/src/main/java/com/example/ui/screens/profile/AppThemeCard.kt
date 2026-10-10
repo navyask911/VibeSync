@@ -15,14 +15,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.UserPreferencesEntity
-import com.example.ui.theme.AppThemeOption
-import com.example.ui.theme.AppThemeOptions
-import com.example.ui.theme.VibeSyncTeal
+import com.example.ui.theme.AppAccentPalettes
+import com.example.util.AppPreferences
+import com.example.util.rememberAppAppearance
 
 @Composable
 fun AppThemeCard(
@@ -31,120 +32,169 @@ fun AppThemeCard(
     isExpanded: Boolean,
     onToggleExpand: () -> Unit
 ) {
-    val currentTheme = AppThemeOptions.find { it.id == preferences.selectedThemePreset } ?: AppThemeOptions[1]
+    val context = LocalContext.current
+    val appearance = rememberAppAppearance()
+    val currentAccent = AppAccentPalettes.firstOrNull { it.id == appearance.accentColor }
+        ?: AppAccentPalettes.first()
+    val modeLabel = when (appearance.themeMode) {
+        "DARK" -> "Dark"
+        "SYSTEM" -> "System"
+        else -> "Light"
+    }
 
     ProfileSectionDrawer(
         title = "App Theme & Colors",
         icon = Icons.Default.Palette,
-        iconTint = Color(0xFF8E24AA),
-        iconBackground = Color(0xFF8E24AA).copy(alpha = 0.15f),
-        statusBadgeText = "${currentTheme.name} ${currentTheme.icon}",
-        statusBadgeColor = Color(0xFF8E24AA),
+        iconTint = currentAccent.color,
+        iconBackground = currentAccent.color.copy(alpha = 0.15f),
+        statusBadgeText = "$modeLabel • ${currentAccent.name}",
+        statusBadgeColor = currentAccent.color,
         isExpanded = isExpanded,
         onToggleExpand = onToggleExpand,
         testTag = "drawer_app_theme"
     ) {
         Column(
             modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Text(
-                text = "Choose Your Vibe Sync Visual Canvas",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = "Theme mode",
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurface
             )
-
-            AppThemeOptions.forEach { theme ->
-                val isSelected = theme.id == preferences.selectedThemePreset
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .border(
-                            width = if (isSelected) 2.dp else 1.dp,
-                            color = if (isSelected) theme.previewPrimary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                            shape = RoundedCornerShape(14.dp)
-                        )
-                        .clickable {
-                            onUpdatePreferences(preferences.copy(selectedThemePreset = theme.id))
-                        }
-                        .testTag("theme_option_${theme.id}"),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isSelected) theme.previewPrimary.copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                listOf("LIGHT" to "Light", "DARK" to "Dark", "SYSTEM" to "System").forEach { (mode, label) ->
+                    FilterChip(
+                        selected = appearance.themeMode == mode,
+                        onClick = { AppPreferences.setThemeMode(context, mode) },
+                        label = { Text(label, maxLines = 1, fontSize = 12.sp) },
+                        modifier = Modifier.weight(1f).testTag("theme_mode_$mode"),
+                        shape = RoundedCornerShape(50.dp)
                     )
-                ) {
-                    Row(
+                }
+            }
+
+            Text(
+                text = "Accent color",
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                AppAccentPalettes.forEach { accent ->
+                    val selected = appearance.accentColor == accent.id
+                    Column(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                            .weight(1f)
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable { AppPreferences.setAccentColor(context, accent.id) }
+                            .testTag("theme_accent_${accent.id}")
+                            .padding(horizontal = 2.dp, vertical = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f)
+                        Box(
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(accent.color)
+                                .border(
+                                    width = if (selected) 3.dp else 1.dp,
+                                    color = if (selected) MaterialTheme.colorScheme.onSurface
+                                    else MaterialTheme.colorScheme.outlineVariant,
+                                    shape = CircleShape
+                                ),
+                            contentAlignment = Alignment.Center
                         ) {
-                            // Swatch Preview circles
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(24.dp)
-                                        .clip(CircleShape)
-                                        .background(theme.previewPrimary)
-                                        .border(1.dp, Color.White.copy(alpha = 0.4f), CircleShape)
-                                )
-                                Spacer(modifier = Modifier.width((-6).dp))
-                                Box(
-                                    modifier = Modifier
-                                        .size(24.dp)
-                                        .clip(CircleShape)
-                                        .background(theme.previewBackground)
-                                        .border(1.dp, Color.Gray.copy(alpha = 0.4f), CircleShape)
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.width(12.dp))
-
-                            Column {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = theme.name,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 13.sp,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(text = theme.icon, fontSize = 13.sp)
-                                }
-                                Text(
-                                    text = theme.tagLine,
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-
-                        if (isSelected) {
-                            Box(
-                                modifier = Modifier
-                                    .size(24.dp)
-                                    .clip(CircleShape)
-                                    .background(theme.previewPrimary),
-                                contentAlignment = Alignment.Center
-                            ) {
+                            if (selected) {
                                 Icon(
                                     imageVector = Icons.Default.Check,
-                                    contentDescription = "Selected",
+                                    contentDescription = "Selected accent",
                                     tint = Color.White,
-                                    modifier = Modifier.size(16.dp)
+                                    modifier = Modifier.size(17.dp)
                                 )
                             }
+                        }
+                        Text(
+                            text = accent.name,
+                            fontSize = 9.sp,
+                            maxLines = 1,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = accent.hex,
+                            fontSize = 9.sp,
+                            maxLines = 1,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    MaterialTheme.colorScheme.outlineVariant
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Chat preview",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                            shape = RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp)
+                        ) {
+                            Text(
+                                text = "Outgoing message",
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surface,
+                            contentColor = MaterialTheme.colorScheme.onSurface,
+                            shape = RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp),
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                MaterialTheme.colorScheme.outlineVariant
+                            )
+                        ) {
+                            Text(
+                                text = "Incoming message",
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                fontSize = 12.sp
+                            )
                         }
                     }
                 }
             }
+
+            Text(
+                text = "Your appearance choices are saved locally and persist after restart.",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

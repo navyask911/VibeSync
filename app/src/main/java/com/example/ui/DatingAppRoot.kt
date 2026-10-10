@@ -51,12 +51,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.model.MatchEntity
@@ -93,8 +95,8 @@ import com.example.ui.screens.ProfileScreen
 import com.example.ui.screens.RegistrationProfileScreen
 import com.example.ui.screens.StatusStoriesScreen
 import com.example.ui.screens.VibeSyncSplashScreen
+import com.example.util.rememberAppAppearance
 import com.example.ui.theme.VibeSyncLightGreen
-import com.example.ui.theme.VibeSyncTeal
 import com.example.ui.theme.VibeSyncUnreadBadge
 import androidx.compose.material.icons.filled.DonutLarge
 import androidx.compose.material.icons.outlined.DonutLarge
@@ -178,6 +180,7 @@ fun DatingAppRoot(
     val showPhonebookScreen by viewModel.showPhonebookScreen.collectAsStateWithLifecycle()
     val selectedContactToInvite by viewModel.selectedContactToInvite.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val appearance = rememberAppAppearance()
 
     // Zero Profile Duplication & Recovery States
     val duplicateProfileDetected by viewModel.duplicateProfileDetected.collectAsStateWithLifecycle()
@@ -391,7 +394,10 @@ fun DatingAppRoot(
         viewModel.closeChat()
     }
 
-    MyApplicationTheme(presetId = preferences?.selectedThemePreset ?: "PURE_LIGHT") {
+    MyApplicationTheme(
+        themeMode = appearance.themeMode,
+        accentColor = appearance.accentColor
+    ) {
         // Secure AuthState Root Navigator (Eliminates Infinite Splash Loading Loop)
         if (authState == AuthState.INITIALIZING || isSessionChecking) {
         VibeSyncSplashScreen()
@@ -501,6 +507,8 @@ fun DatingAppRoot(
                     tonalElevation = 8.dp,
                     modifier = Modifier
                         .windowInsetsPadding(WindowInsets.navigationBars)
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                        .clip(RoundedCornerShape(24.dp))
                         .testTag("dating_bottom_nav")
                 ) {
                     // Chats Tab (with unread badge)
@@ -527,9 +535,9 @@ fun DatingAppRoot(
                         },
                         label = { Text("Chats", fontSize = 11.sp, fontWeight = if (currentTab == 0) FontWeight.Bold else FontWeight.Normal) },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = VibeSyncTeal,
-                            selectedTextColor = VibeSyncTeal,
-                            indicatorColor = VibeSyncTeal.copy(alpha = 0.2f)
+                            selectedIconColor = MaterialTheme.colorScheme.primary,
+                            selectedTextColor = MaterialTheme.colorScheme.primary,
+                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
                         ),
                         modifier = Modifier.testTag("tab_chats")
                     )
@@ -547,9 +555,9 @@ fun DatingAppRoot(
                         },
                         label = { Text("Stories", fontSize = 11.sp, fontWeight = if (currentTab == 1) FontWeight.Bold else FontWeight.Normal) },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = VibeSyncTeal,
-                            selectedTextColor = VibeSyncTeal,
-                            indicatorColor = VibeSyncTeal.copy(alpha = 0.2f)
+                            selectedIconColor = MaterialTheme.colorScheme.primary,
+                            selectedTextColor = MaterialTheme.colorScheme.primary,
+                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
                         ),
                         modifier = Modifier.testTag("tab_status")
                     )
@@ -563,7 +571,7 @@ fun DatingAppRoot(
                                 badge = {
                                     val totalFriendsNotifications = pendingFriendRequests.size
                                     if (totalFriendsNotifications > 0) {
-                                        Badge(containerColor = VibeSyncTeal) {
+                                        Badge(containerColor = MaterialTheme.colorScheme.primary) {
                                             Text("$totalFriendsNotifications")
                                         }
                                     }
@@ -578,9 +586,9 @@ fun DatingAppRoot(
                         },
                         label = { Text("Connect", fontSize = 11.sp, fontWeight = if (currentTab == 2) FontWeight.Bold else FontWeight.Normal) },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = VibeSyncTeal,
-                            selectedTextColor = VibeSyncTeal,
-                            indicatorColor = VibeSyncTeal.copy(alpha = 0.2f)
+                            selectedIconColor = MaterialTheme.colorScheme.primary,
+                            selectedTextColor = MaterialTheme.colorScheme.primary,
+                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
                         ),
                         modifier = Modifier.testTag("tab_connect")
                     )
@@ -598,9 +606,9 @@ fun DatingAppRoot(
                         },
                         label = { Text("Find", fontSize = 11.sp, fontWeight = if (currentTab == 3) FontWeight.Bold else FontWeight.Normal) },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = VibeSyncTeal,
-                            selectedTextColor = VibeSyncTeal,
-                            indicatorColor = VibeSyncTeal.copy(alpha = 0.2f)
+                            selectedIconColor = MaterialTheme.colorScheme.primary,
+                            selectedTextColor = MaterialTheme.colorScheme.primary,
+                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
                         ),
                         modifier = Modifier.testTag("tab_find")
                     )
@@ -618,9 +626,9 @@ fun DatingAppRoot(
                         },
                         label = { Text("Profile", fontSize = 11.sp, fontWeight = if (currentTab == 4) FontWeight.Bold else FontWeight.Normal) },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = VibeSyncTeal,
-                            selectedTextColor = VibeSyncTeal,
-                            indicatorColor = VibeSyncTeal.copy(alpha = 0.2f)
+                            selectedIconColor = MaterialTheme.colorScheme.primary,
+                            selectedTextColor = MaterialTheme.colorScheme.primary,
+                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
                         ),
                         modifier = Modifier.testTag("tab_profile")
                     )

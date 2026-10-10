@@ -44,8 +44,12 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
-      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+      isMinifyEnabled = true
+      isShrinkResources = true
+      proguardFiles(
+        getDefaultProguardFile("proguard-android-optimize.txt"),
+        "proguard-rules.pro"
+      )
       if (signingConfigs.names.contains("release")) signingConfig = signingConfigs.getByName("release")
     }
     debug { signingConfig = signingConfigs.getByName("debug") }
@@ -62,16 +66,19 @@ android {
   }
 
   packaging {
+    jniLibs {
+      // Keep all dependency-provided ABIs; compress JNI libraries in the APK.
+      useLegacyPackaging = true
+      keepDebugSymbols.clear()
+    }
     resources {
-      excludes += listOf(
+      excludes += setOf(
         "META-INF/DEPENDENCIES",
-        "META-INF/LICENSE",
-        "META-INF/LICENSE.txt",
-        "META-INF/license.txt",
-        "META-INF/NOTICE",
-        "META-INF/NOTICE.txt",
-        "META-INF/notice.txt",
-        "META-INF/INDEX.LIST"
+        "META-INF/INDEX.LIST",
+        "META-INF/io.netty.versions.properties",
+        "META-INF/*.kotlin_module",
+        "META-INF/LICENSE*",
+        "META-INF/NOTICE*"
       )
     }
   }
