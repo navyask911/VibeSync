@@ -58,28 +58,39 @@ object UserSessionManager {
         expiresAtEpochSeconds: Long,
         accessToken: String = ""
     ) {
+        // Persist the security-critical session first. Optional identity-key or legacy
+        // preference work must never prevent Realtime credentials from being stored.
+        VibeSyncSessionManager.saveSession(
+            context = context.applicationContext,
+            sessionToken = sessionToken,
+            profileId = profileId,
+            phoneNumber = phoneNumber,
+            expiresAtEpochSeconds = expiresAtEpochSeconds,
+            accessToken = accessToken
+        )
+
         try {
-            val publicKeyset = TinkCryptoManager.getMyPublicKeysetJson(context)
-            val sp: SharedPreferences = context.getSharedPreferences(PREFS_AUTH_SESSION, Context.MODE_PRIVATE)
+            val app = context.applicationContext
+            val sp: SharedPreferences = app.getSharedPreferences(PREFS_AUTH_SESSION, Context.MODE_PRIVATE)
             sp.edit()
                 .putString("verified_phone_number", phoneNumber)
                 .putLong("verified_timestamp", System.currentTimeMillis())
                 .putBoolean("is_authenticated", true)
                 .apply()
-            if (publicKeyset.isNotBlank()) {
-                sp.edit().putString("public_identity_key", publicKeyset).apply()
+
+            // The profile/identity key is useful but optional; a local keyset issue must
+            // not roll back the already-persisted verified session.
+            try {
+                val publicKeyset = TinkCryptoManager.getMyPublicKeysetJson(app)
+                if (publicKeyset.isNotBlank()) {
+                    sp.edit().putString("public_identity_key", publicKeyset).apply()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Optional identity keyset persistence notice: ${e.message}")
             }
-            VibeSyncSessionManager.saveSession(
-                context = context,
-                sessionToken = sessionToken,
-                profileId = profileId,
-                phoneNumber = phoneNumber,
-                expiresAtEpochSeconds = expiresAtEpochSeconds,
-                accessToken = accessToken
-            )
             Log.i(TAG, "Saved local Truecaller verification state and encrypted VibeSync session.")
         } catch (e: Exception) {
-            Log.e(TAG, "Error saving verified session: ${e.message}", e)
+            Log.w(TAG, "Optional local verification metadata notice: ${e.message}")
         }
     }
 
