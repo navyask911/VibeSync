@@ -13,8 +13,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,6 +30,8 @@ import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -126,186 +130,170 @@ fun AuthLoginScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 24.dp, vertical = 18.dp),
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 22.dp, vertical = 10.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Spacer(Modifier.height(2.dp))
-
+            // The content above the footer scrolls on short devices/font scales; the legal
+            // action stays outside the scroll container and above Android's navigation bar.
             Column(
                 modifier = Modifier
+                    .weight(1f)
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(20.dp))
-                    .clickable {
-                        headerTapCount += 1
-                        if (headerTapCount >= 7) {
-                            headerTapCount = 0
-                            onOpenAdminPortal()
-                        }
-                    }
-                    .padding(vertical = 8.dp),
+                    .verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                verticalArrangement = Arrangement.spacedBy(9.dp)
             ) {
-                Image(
-                    painter = painterResource(id = com.example.R.drawable.ic_launcher_foreground),
-                    contentDescription = "VibeSync app logo",
-                    modifier = Modifier.size(58.dp).clip(RoundedCornerShape(16.dp))
-                )
-                Text(
-                    text = "VibeSync",
-                    style = MaterialTheme.typography.headlineLarge.copy(
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 31.sp,
-                        letterSpacing = (-0.6).sp
-                    ),
-                    textAlign = TextAlign.Center
-                )
-                Text(
-                    text = "Connect locally. Grow your business.",
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 14.sp
-                    ),
-                    textAlign = TextAlign.Center
-                )
-            }
-
-            Spacer(Modifier.height(10.dp))
-
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("login_india_trust_badge"),
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(20.dp))
+                        .clickable {
+                            headerTapCount += 1
+                            if (headerTapCount >= 7) {
+                                headerTapCount = 0
+                                onOpenAdminPortal()
+                            }
+                        }
+                        .padding(top = 2.dp, bottom = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
                 ) {
-                    Text("🇮🇳", fontSize = 18.sp)
+                    Image(
+                        painter = painterResource(id = com.example.R.drawable.ic_launcher_foreground),
+                        contentDescription = "VibeSync app logo",
+                        modifier = Modifier.size(52.dp).clip(RoundedCornerShape(15.dp))
+                    )
+                    Text(
+                        text = "VibeSync",
+                        style = MaterialTheme.typography.headlineLarge.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 29.sp,
+                            letterSpacing = (-0.6).sp
+                        ),
+                        textAlign = TextAlign.Center
+                    )
+                    Text(
+                        text = "Connect locally. Grow your business.",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 13.sp
+                        ),
+                        textAlign = TextAlign.Center
+                    )
+                }
+
+                LoginValueCard(
+                    icon = "🇮🇳",
+                    title = "Made in India, for the World",
+                    description = null,
+                    testTag = "login_india_trust_badge",
+                    compact = true
+                )
+
+                LoginValueCard(
+                    icon = "🛡️",
+                    title = "Google Tink • End-to-End Encryption",
+                    description = "Client-side cryptographic security keeps private chats and merchant records strictly confidential.",
+                    testTag = "login_encryption_card"
+                )
+
+                LoginValueCard(
+                    icon = "📇",
+                    title = "Zero-Knowledge Contact Discovery",
+                    description = "Discover friends locally via cryptographic hashing without uploading your address book.",
+                    testTag = "login_contact_discovery_card"
+                )
+
+                Spacer(Modifier.height(3.dp))
+
+                Button(
+                    onClick = { launchVerification() },
+                    enabled = !isLaunching,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                        .testTag(if (hasError) "btn_retry_truecaller" else "btn_truecaller_one_tap_main"),
+                    shape = CircleShape,
+                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp, pressedElevation = 1.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = VibeSyncTruecallerBlue,
+                        contentColor = Color.White
+                    )
+                ) {
+                    if (isLaunching) {
+                        CircularProgressIndicator(
+                            color = Color.White,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    } else if (hasError) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    } else {
+                        Text("⚡", fontSize = 17.sp)
+                    }
                     Spacer(Modifier.size(8.dp))
                     Text(
-                        text = "Made in India, for the World",
-                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
-                        color = MaterialTheme.colorScheme.onSurface
+                        text = when {
+                            isLaunching -> "Starting secure sign-in…"
+                            hasError -> "Retry Truecaller sign-in"
+                            else -> "Continue with Truecaller"
+                        },
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp
                     )
                 }
-            }
 
-            Spacer(Modifier.height(10.dp))
-
-            LoginValueCard(
-                icon = "🛡️",
-                title = "Google Tink • End-to-End Encryption",
-                description = "Client-side encryption helps keep private chats and business records confidential.",
-                testTag = "login_encryption_card"
-            )
-
-            Spacer(Modifier.height(10.dp))
-
-            LoginValueCard(
-                icon = "📇",
-                title = "Zero-Knowledge Contact Discovery",
-                description = "Matches mutual contacts on-device via secure cryptographic hashes without uploading your address book.",
-                testTag = "login_contact_discovery_card"
-            )
-
-            Spacer(Modifier.height(16.dp))
-
-            Button(
-                onClick = { launchVerification() },
-                enabled = !isLaunching,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(54.dp)
-                    .testTag(if (hasError) "btn_retry_truecaller" else "btn_truecaller_one_tap_main"),
-                shape = CircleShape,
-                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp, pressedElevation = 1.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = VibeSyncTruecallerBlue,
-                    contentColor = Color.White
-                )
-            ) {
-                if (isLaunching) {
-                    CircularProgressIndicator(
-                        color = Color.White,
-                        strokeWidth = 2.dp,
-                        modifier = Modifier.size(21.dp)
-                    )
-                } else {
-                    Icon(
-                        imageVector = if (hasError) Icons.Default.Refresh else Icons.Default.PhoneAndroid,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    if (!hasError && !isLaunching) {
-                        Spacer(Modifier.size(7.dp))
-                        Text("⚡", fontSize = 16.sp)
+                if (hasError) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().testTag("truecaller_error_state"),
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.25f))
+                    ) {
+                        Text(
+                            text = visibleError.orEmpty(),
+                            modifier = Modifier.padding(12.dp),
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
                     }
                 }
-                Spacer(Modifier.size(10.dp))
-                Text(
-                    text = when {
-                        isLaunching -> "Starting secure sign-in…"
-                        hasError -> "Retry Truecaller sign-in"
-                        else -> "Continue with Truecaller"
-                    },
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp
-                )
-            }
 
-            if (hasError) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth().testTag("truecaller_error_state"),
-                    color = MaterialTheme.colorScheme.errorContainer,
-                    shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.25f))
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Box(Modifier.weight(1f).height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
+                    Text(
+                        text = "or",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Box(Modifier.weight(1f).height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
+                }
+
+                TextButton(
+                    onClick = { showAlternatePhoneHelp = true },
+                    modifier = Modifier.testTag("btn_use_another_phone"),
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 ) {
                     Text(
-                        text = visibleError.orEmpty(),
-                        modifier = Modifier.padding(14.dp),
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        style = MaterialTheme.typography.bodyMedium
+                        text = "Use another phone number",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
                     )
                 }
             }
 
-            Spacer(Modifier.height(if (hasError) 12.dp else 18.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                Box(Modifier.weight(1f).height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-                Text(
-                    text = "or",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Box(Modifier.weight(1f).height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-            }
-
-            Spacer(Modifier.height(4.dp))
-
-            TextButton(
-                onClick = { showAlternatePhoneHelp = true },
-                modifier = Modifier.testTag("btn_use_another_phone"),
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            ) {
-                Text(
-                    text = "Use another phone number",
-                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
-                )
-            }
-
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.height(6.dp))
 
             val legalLink = buildAnnotatedString {
                 append("By continuing, you agree to our\n")
@@ -323,11 +311,14 @@ fun AuthLoginScreen(
             }
             ClickableText(
                 text = legalLink,
-                modifier = Modifier.fillMaxWidth().testTag("login_terms_privacy_link"),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("login_terms_privacy_link")
+                    .padding(bottom = 2.dp),
                 style = MaterialTheme.typography.bodySmall.copy(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
-                    lineHeight = 18.sp
+                    lineHeight = 17.sp
                 ),
                 onClick = { offset ->
                     legalLink.getStringAnnotations("legal", offset, offset)
@@ -364,53 +355,54 @@ fun AuthLoginScreen(
 private fun LoginValueCard(
     icon: String,
     title: String,
-    description: String,
-    testTag: String
+    description: String?,
+    testTag: String,
+    compact: Boolean = false
 ) {
-    Surface(
+    Card(
         modifier = Modifier
             .fillMaxWidth()
             .testTag(testTag),
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        tonalElevation = 1.dp
+        elevation = CardDefaults.cardElevation(defaultElevation = if (compact) 0.dp else 1.dp)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.Top
+            modifier = Modifier.padding(
+                horizontal = 14.dp,
+                vertical = if (compact) 9.dp else 10.dp
+            ),
+            horizontalArrangement = Arrangement.spacedBy(11.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = icon,
-                fontSize = 22.sp,
-                modifier = Modifier.padding(top = 1.dp)
-            )
+            Text(text = icon, fontSize = if (compact) 18.sp else 21.sp)
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleSmall.copy(
                         fontWeight = FontWeight.SemiBold,
-                        fontSize = 14.sp
+                        fontSize = if (compact) 13.sp else 14.sp
                     ),
                     color = MaterialTheme.colorScheme.onSurface
                 )
-                Text(
-                    text = description,
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontSize = 12.sp,
-                        lineHeight = 16.sp
-                    ),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                if (!description.isNullOrBlank()) {
+                    Text(
+                        text = description,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontSize = 11.5.sp,
+                            lineHeight = 14.5.sp
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }
 }
-
 @Composable
 private fun VibeSyncLegalDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
