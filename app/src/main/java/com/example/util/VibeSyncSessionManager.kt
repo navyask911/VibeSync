@@ -244,14 +244,22 @@ object VibeSyncSessionManager {
             "unauthorized",
             "session revoked",
             "session_revoked",
+            "session_revoked",
             "session invalid",
+            "session_invalid",
             "invalid session",
+            "invalid_session",
             "session expired",
+            "session_expired",
             "jwt expired",
+            "jwt_expired",
             "jwt is expired",
             "invalid jwt",
+            "invalid_jwt",
             "jwt is invalid",
             "invalid_token",
+            "token expired",
+            "token_expired",
             "token revoked"
         ).any { phrase -> detail.contains(phrase) }
         if (!confirmedSessionRejection) return false
