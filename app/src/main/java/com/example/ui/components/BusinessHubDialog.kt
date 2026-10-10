@@ -14,7 +14,6 @@ import java.util.Locale
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.DockedSearchBar
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -101,6 +100,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -186,7 +186,6 @@ fun BusinessHubContent(
     var activeQrStickerBiz by remember { mutableStateOf<BusinessEntity?>(null) }
     var editingBusiness by remember { mutableStateOf<BusinessEntity?>(null) }
     var globalSearchQuery by remember { mutableStateOf("") }
-    var isBusinessSearchActive by remember { mutableStateOf(false) }
     val searchFocusRequester = remember { FocusRequester() }
 
     Surface(
@@ -287,43 +286,56 @@ fun BusinessHubContent(
 
                     if (selectedTab != 3) {
                         // Enterprise search; filter chips remain in the content area below.
-                        DockedSearchBar(
-                            query = globalSearchQuery,
-                            onQueryChange = { query ->
+                        // Fixed, single-line search remains pinned in the header and never expands on focus.
+                        OutlinedTextField(
+                            value = globalSearchQuery,
+                            onValueChange = { query ->
                                 globalSearchQuery = query
                                 if (selectedTab != 0 && selectedTab != 2 && query.isNotBlank()) selectedTab = 0
                             },
-                            onSearch = { isBusinessSearchActive = false },
-                            active = isBusinessSearchActive,
-                            onActiveChange = { isBusinessSearchActive = it },
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("top_pinned_search_bar"),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .padding(horizontal = 16.dp)
+                                .testTag("top_pinned_search_bar"),
+                            singleLine = true,
+                            maxLines = 1,
                             placeholder = {
                                 Text(
                                     "Search businesses, deals, cafes, services…",
+                                    maxLines = 1,
                                     fontSize = 13.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             },
-                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search", tint = MaterialTheme.colorScheme.primary) },
+                            leadingIcon = {
+                                Icon(Icons.Default.Search, contentDescription = "Search", tint = MaterialTheme.colorScheme.primary)
+                            },
                             trailingIcon = {
                                 if (globalSearchQuery.isNotEmpty()) {
                                     IconButton(onClick = { globalSearchQuery = "" }) {
                                         Icon(Icons.Default.Close, contentDescription = "Clear search")
                                     }
                                 }
-                            }
-                        ) {
-                            if (globalSearchQuery.isNotBlank()) {
-                                Text(
-                                    "Searching businesses, services and listings",
-                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
+                            },
+                            shape = RoundedCornerShape(18.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                                focusedContainerColor = MaterialTheme.colorScheme.surface,
+                                unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                            )
+                        )
+
+                        if (globalSearchQuery.isNotBlank()) {
+                            Text(
+                                "Searching businesses, services and listings",
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-    
-    
+
                         Spacer(modifier = Modifier.height(6.dp))
     
     
@@ -803,9 +815,9 @@ private fun NearestBusinessesTab(
                             }
                         }
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Current Location", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
+                            Text("Location Controls", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
                             Text(
-                                text = currentCoordinate.label,
+                                text = "Use GPS or search a city to change the venue area.",
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
@@ -1148,90 +1160,20 @@ private fun NearestBusinessesTab(
         }
 
         item {
-            // 3. Real-Time GPS Proximity Status & Counter Bar
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = if (currentCoordinate.isRealTimeGps) Color(0xFFE8F5E9) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-                border = if (currentCoordinate.isRealTimeGps) BorderStroke(1.dp, Color(0xFF81C784)) else null,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(
-                            if (currentCoordinate.isRealTimeGps) Icons.Default.MyLocation else Icons.Default.NearMe,
-                            contentDescription = null,
-                            tint = if (currentCoordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(14.dp)
+            UserLocationTag(
+                coordinate = currentCoordinate,
+                filteredVenueCount = filteredBusinesses.size,
+                hasLocationPermission = hasLocationPermission,
+                onEnableGps = {
+                    permissionLauncher.launch(
+                        arrayOf(
+                            android.Manifest.permission.ACCESS_FINE_LOCATION,
+                            android.Manifest.permission.ACCESS_COARSE_LOCATION
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Column {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = if (currentCoordinate.isRealTimeGps) "Current Location: ${currentCoordinate.label}" else "Search Area: ${currentCoordinate.label}",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (currentCoordinate.isRealTimeGps) Color(0xFF1B5E20) else MaterialTheme.colorScheme.onSurface
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Surface(
-                                    shape = RoundedCornerShape(4.dp),
-                                    color = if (currentCoordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outlineVariant
-                                ) {
-                                    Text(
-                                        text = if (currentCoordinate.isRealTimeGps) "GPS ACTIVE" else "SEARCH AREA",
-                                        color = Color.White,
-                                        fontSize = 8.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                    )
-                                }
-                            }
-                            Text(
-                                text = "Priority: ⭐ Gold > 🛡️ Silver > ✓ Blue Tick > Standard, then Rating & GPS Proximity • ${filteredBusinesses.size} venues",
-                                fontSize = 10.sp,
-                                color = if (currentCoordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    if (!hasLocationPermission) {
-                        OutlinedButton(
-                            onClick = {
-                                permissionLauncher.launch(
-                                    arrayOf(
-                                        android.Manifest.permission.ACCESS_FINE_LOCATION,
-                                        android.Manifest.permission.ACCESS_COARSE_LOCATION
-                                    )
-                                )
-                            },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                            modifier = Modifier.height(28.dp),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("Enable GPS", fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                        }
-                    } else {
-                        IconButton(
-                            onClick = { refreshLocation() },
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Refresh,
-                                contentDescription = "Refresh GPS Location",
-                                tint = if (currentCoordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    }
-                }
-            }
+                    )
+                },
+                onRefreshGps = { refreshLocation() }
+            )
         }
 
         if (filteredBusinesses.isEmpty()) {
@@ -2785,6 +2727,91 @@ fun CreateOfferDialog(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
                 ) {
                     Text("Publish Offer & Broadcast Banner ✨", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
+            }
+        }
+    }
+}
+
+
+/** The single location badge used by Find / Nearby Businesses. */
+@Composable
+private fun UserLocationTag(
+    coordinate: GpsCoordinate,
+    filteredVenueCount: Int,
+    hasLocationPermission: Boolean,
+    onEnableGps: () -> Unit,
+    onRefreshGps: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = if (coordinate.isRealTimeGps) Color(0xFFE8F5E9) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+        border = if (coordinate.isRealTimeGps) BorderStroke(1.dp, Color(0xFF81C784)) else null,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                Icon(
+                    imageVector = if (coordinate.isRealTimeGps) Icons.Default.MyLocation else Icons.Default.NearMe,
+                    contentDescription = null,
+                    tint = if (coordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = if (coordinate.isRealTimeGps) "Current Location: ${coordinate.label}" else "Search Area: ${coordinate.label}",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (coordinate.isRealTimeGps) Color(0xFF1B5E20) else MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = if (coordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outlineVariant
+                        ) {
+                            Text(
+                                text = if (coordinate.isRealTimeGps) "GPS ACTIVE" else "SEARCH AREA",
+                                color = Color.White,
+                                fontSize = 8.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        text = "Priority: ⭐ Gold > 🛡️ Silver > ✓ Blue Tick > Standard, then Rating & GPS Proximity • $filteredVenueCount venues",
+                        fontSize = 10.sp,
+                        color = if (coordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            if (!hasLocationPermission) {
+                OutlinedButton(
+                    onClick = onEnableGps,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    modifier = Modifier.height(28.dp),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Enable GPS", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+            } else {
+                IconButton(onClick = onRefreshGps, modifier = Modifier.size(28.dp)) {
+                    Icon(
+                        Icons.Default.Refresh,
+                        contentDescription = "Refresh GPS Location",
+                        tint = if (coordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
                 }
             }
         }
