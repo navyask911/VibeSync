@@ -253,7 +253,7 @@ object VibeSyncSessionManager {
             "jwt is invalid",
             "invalid_token",
             "token revoked"
-        ).any(detail::contains)
+        ).any { phrase -> detail.contains(phrase) }
         if (!confirmedSessionRejection) return false
         val context = appContext ?: return false
         Log.w(TAG, "Backend returned a session/JWT 401; invalidating cached VibeSync credentials.")
