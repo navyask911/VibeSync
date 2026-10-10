@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,6 +44,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -77,11 +79,13 @@ fun AuthLoginScreen(
     onTruecallerRetry: () -> Unit = {},
     truecallerClient: TruecallerVerificationClient = PlatformTruecallerVerificationClient,
     onOpenAdminPortal: () -> Unit = {},
+    onStartSuperAdminAuth: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     var isLaunching by remember { mutableStateOf(false) }
     var headerTapCount by remember { mutableIntStateOf(0) }
+    var lastLogoTapTime by remember { mutableLongStateOf(0L) }
     var localError by remember { mutableStateOf<String?>(null) }
     var showLegalDialog by remember { mutableStateOf(false) }
     var showAlternatePhoneHelp by remember { mutableStateOf(false) }
@@ -149,11 +153,18 @@ fun AuthLoginScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(20.dp))
-                        .clickable {
-                            headerTapCount += 1
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) {
+                            val now = System.currentTimeMillis()
+                            headerTapCount = if (now - lastLogoTapTime in 1L..500L) headerTapCount + 1 else 1
+                            lastLogoTapTime = now
                             if (headerTapCount >= 7) {
                                 headerTapCount = 0
-                                onOpenAdminPortal()
+                                lastLogoTapTime = 0L
+                                onStartSuperAdminAuth()
+                                launchVerification()
                             }
                         }
                         .padding(top = 2.dp, bottom = 4.dp),

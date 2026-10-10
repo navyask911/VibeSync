@@ -257,8 +257,20 @@ Deno.serve(async (req: Request) => {
       signingKey,
     );
 
+    const { data: superAdminRow, error: superAdminLookupError } = await admin
+      .from("super_admins")
+      .select("profile_id")
+      .eq("profile_id", profileId)
+      .maybeSingle();
+    if (superAdminLookupError) {
+      // Fail closed for elevation without breaking standard Truecaller sign-in if migration is absent.
+      console.warn("super_admins lookup failed closed", superAdminLookupError.message);
+    }
+    const isSuperAdmin = !superAdminLookupError && superAdminRow?.profile_id === profileId;
+
     return json({
       verified: true,
+      is_super_admin: isSuperAdmin,
       phone: identity.phone,
       profile_id: profileId,
       // Canonical VibeSync session field; keep access_token for older clients.

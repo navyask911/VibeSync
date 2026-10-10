@@ -19,7 +19,8 @@ data class VerifiedTruecallerIdentity(
     val expiresAtEpochSeconds: Long,
     val firstName: String,
     val lastName: String,
-    val avatarUrl: String
+    val avatarUrl: String,
+    val isSuperAdmin: Boolean = false
 )
 
 object TruecallerAuthGateway {
@@ -95,7 +96,8 @@ object TruecallerAuthGateway {
                             expiresAtEpochSeconds = expiresAt,
                             firstName = root.optString("first_name", "").trim(),
                             lastName = root.optString("last_name", "").trim(),
-                            avatarUrl = root.optString("avatar_url", "").trim()
+                            avatarUrl = root.optString("avatar_url", "").trim(),
+                            isSuperAdmin = root.optBoolean("is_super_admin", false)
                         )
                     )
                 }

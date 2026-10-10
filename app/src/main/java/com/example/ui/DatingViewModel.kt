@@ -470,6 +470,12 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     // Auth & Verification States
     private val _truecallerError = MutableStateFlow<String?>(null)
     val truecallerError: StateFlow<String?> = _truecallerError.asStateFlow()
+    private val _superAdminAuthRequested = MutableStateFlow(false)
+
+    fun startTruecallerSuperAdminAuth() {
+        _superAdminAuthRequested.value = true
+        _truecallerError.value = null
+    }
 
     private val _activeMobile = MutableStateFlow("")
     val activeMobile: StateFlow<String> = _activeMobile.asStateFlow()
@@ -2002,6 +2008,12 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(Dispatchers.IO) {
             val result = com.example.util.TruecallerAuthGateway.verify(profile)
             result.onSuccess { identity ->
+                val isSuperAdminAttempt = _superAdminAuthRequested.value
+                _superAdminAuthRequested.value = false
+                if (isSuperAdminAttempt && !identity.isSuperAdmin) {
+                    _truecallerError.value = "Truecaller verified this account, but it is not registered as a VibeSync super-admin."
+                    return@onSuccess
+                }
                 try {
                     finalizeTruecallerAuthenticatedSession(
                         phone = identity.phone,
@@ -2013,13 +2025,19 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         lastName = identity.lastName,
                         avatarUrl = identity.avatarUrl
                     )
-                    _toastMessage.emit(
-                        if (identity.firstName.isNotBlank()) {
-                            "Verified instantly with Truecaller. Welcome ${identity.firstName}!"
-                        } else {
-                            "Verified instantly with Truecaller."
-                        }
-                    )
+                    if (isSuperAdminAttempt && identity.isSuperAdmin) {
+                        _isAdminLoggedIn.value = true
+                        openAdminPortal()
+                        _toastMessage.emit("Truecaller super-admin verification succeeded.")
+                    } else {
+                        _toastMessage.emit(
+                            if (identity.firstName.isNotBlank()) {
+                                "Verified instantly with Truecaller. Welcome ${identity.firstName}!"
+                            } else {
+                                "Verified instantly with Truecaller."
+                            }
+                        )
+                    }
                 } catch (e: Exception) {
                     android.util.Log.e(
                         "TruecallerAuthFlow",
@@ -2030,6 +2048,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         "Truecaller verified this account, but VibeSync could not save the secure local session. Check device storage and retry."
                 }
             }.onFailure { error ->
+                _superAdminAuthRequested.value = false
                 val detail = error.message?.trim().orEmpty()
                 android.util.Log.w("TruecallerAuthFlow", "Truecaller verification gateway failed: ${detail}", error)
                 // Keep HTTP status and connectivity/DNS diagnostics visible instead of replacing
