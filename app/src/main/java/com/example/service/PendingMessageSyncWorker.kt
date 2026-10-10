@@ -303,7 +303,7 @@ object PendingMessageSyncScheduler {
             try {
                 val appContext = context.applicationContext
                 val pending = DatingDatabase.getDatabase(appContext).chatMessageDao()
-                    .getPendingOutgoingMessages(limit = 500)
+                    .getPendingOutgoingMessages()
                 pending.forEach { enqueue(appContext, it.messageId) }
                 Log.i(TAG, "Startup outbox sweep found ${pending.size} pending message(s).")
             } catch (t: Throwable) {
