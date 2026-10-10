@@ -1,5 +1,6 @@
 package com.example.service
 
+import android.content.Context
 import android.util.Log
 import com.example.util.AppNotificationManager
 import com.google.firebase.messaging.FirebaseMessagingService
@@ -19,6 +20,54 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
 
     companion object {
         private const val TAG = "AppFirebaseMsgService"
+
+        /**
+         * Firebase auto-init is disabled in this app, so explicitly request a token after a
+         * verified VibeSync session is restored/saved. No FCM token is written to public profile
+         * rows; register_fcm_token binds it to the active custom VibeSync session in device_tokens.
+         */
+        fun refreshAndRegisterToken(context: Context) {
+            val appContext = context.applicationContext
+            if (com.example.util.VibeSyncSessionManager.getSession(appContext) == null) {
+                Log.d(TAG, "FCM token registration deferred until a VibeSync session is available.")
+                return
+            }
+            try {
+                com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+                    .addOnCompleteListener { task ->
+                        if (!task.isSuccessful || task.result.isNullOrBlank()) {
+                            Log.w(TAG, "Could not obtain FCM token: ${task.exception?.message}")
+                            return@addOnCompleteListener
+                        }
+                        registerTokenForCurrentSession(appContext, task.result)
+                    }
+            } catch (t: Throwable) {
+                Log.w(TAG, "FCM token request unavailable: ${t.message}")
+            }
+        }
+
+        /** Called from onNewToken and any cached-token refresh path. Registration is session-bound. */
+        fun registerTokenForCurrentSession(context: Context, token: String) {
+            val appContext = context.applicationContext
+            val cleanToken = token.trim()
+            if (cleanToken.length < 20) {
+                Log.w(TAG, "Ignoring empty/invalid FCM token.")
+                return
+            }
+            AppNotificationManager.updateCachedFcmToken(cleanToken)
+            if (com.example.util.VibeSyncSessionManager.getSession(appContext) == null) {
+                Log.d(TAG, "FCM token cached locally; Supabase registration will retry after session restore.")
+                return
+            }
+            CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+                val registered = com.example.util.SupabaseClientManager.registerFcmTokenRpc(cleanToken)
+                if (registered) {
+                    Log.i(TAG, "FCM token registered for the active VibeSync profile.")
+                } else {
+                    Log.w(TAG, "FCM token registration failed; token refresh/login will retry.")
+                }
+            }
+        }
     }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -26,10 +75,7 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
     override fun onNewToken(token: String) {
         super.onNewToken(token)
         Log.i(TAG, "FCM token refreshed.")
-        AppNotificationManager.updateCachedFcmToken(token)
-        serviceScope.launch {
-            com.example.util.SupabaseClientManager.registerFcmTokenRpc(token)
-        }
+        registerTokenForCurrentSession(applicationContext, token)
     }
 
     override fun onMessageReceived(remoteMessage: RemoteMessage) {
@@ -52,6 +98,23 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
             val mediaType = data["media_type"] ?: "TEXT"
 
             when (type.uppercase()) {
+                "CHAT_SYNC_WAKEUP" -> {
+                    // FCM carries no message body/ciphertext. It only wakes the client to pull the
+                    // authoritative encrypted row from Supabase and ACK after the row is cached.
+                    com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(applicationContext)
+                    Log.i(TAG, "Supabase inbox sync queued for push message id=${data["message_id"] ?: "unknown"}.")
+                    if (!AppNotificationManager.isAppInForeground) {
+                        AppNotificationManager.showMessageNotification(
+                            context = applicationContext,
+                            senderId = senderOrMatchId,
+                            senderName = name,
+                            messageText = "You have a new secure message",
+                            senderPhotoUrl = photoUrl,
+                            mediaType = mediaType,
+                            channelId = AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES
+                        )
+                    }
+                }
                 "NEW_USER", "USER_JOINED", "JOINING" -> {
                     // One time alert inside Chat only - NO duplicate notifications for joining user
                     val database = com.example.data.database.DatingDatabase.getDatabase(applicationContext)
