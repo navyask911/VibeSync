@@ -49,6 +49,22 @@ object SupabaseClientManager {
             .readTimeout(10, TimeUnit.SECONDS)
             .writeTimeout(10, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
+            .addInterceptor { chain ->
+                val response = chain.proceed(chain.request())
+                if (response.code == 401) {
+                    // Peek rather than consume the body so existing response handlers still
+                    // receive the full error. Only a clear session/JWT rejection invalidates
+                    // the local session; unrelated Truecaller/API 401s must not log users out.
+                    val responseText = runCatching {
+                        response.peekBody(4096).string()
+                    }.getOrDefault("")
+                    VibeSyncSessionManager.invalidateForBackendUnauthorized(
+                        httpStatus = response.code,
+                        responseBody = responseText
+                    )
+                }
+                response
+            }
             .build()
     }
 
