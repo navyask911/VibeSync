@@ -356,7 +356,6 @@ object SupabaseClientManager {
             if (profileId.isBlank() || profileId != story.userId) {
                 return@withContext Result.failure(IllegalStateException("Story owner does not match the active VibeSync profile."))
             }
-            val now = System.currentTimeMillis()
             val payload = JSONObject().apply {
                 put("id", story.id)
                 put("userId", profileId)
@@ -371,7 +370,7 @@ object SupabaseClientManager {
                 put("backgroundColorStart", story.backgroundColorStart)
                 put("backgroundColorEnd", story.backgroundColorEnd)
                 put("createdAt", story.timestamp)
-                put("expiresAt", now + 24L * 60L * 60L * 1000L)
+                put("expiresAt", story.timestamp + 24L * 60L * 60L * 1000L)
                 put("privacy", story.privacy)
                 put("allowedViewerProfileIds", JSONArray(allowedViewerProfileIds.distinct().filter { it.isNotBlank() && it != profileId }))
             }.toString()
