@@ -296,11 +296,20 @@ interface StatusStoryDao {
     @Query("SELECT * FROM status_stories ORDER BY timestamp DESC")
     fun getAllStories(): Flow<List<StatusStoryEntity>>
 
+    @Query("SELECT * FROM status_stories ORDER BY timestamp DESC")
+    suspend fun getAllStoriesSync(): List<StatusStoryEntity>
+
     @Query("SELECT * FROM status_stories WHERE isMyStatus = 1 ORDER BY timestamp DESC")
     fun getMyStories(): Flow<List<StatusStoryEntity>>
 
     @Query("SELECT * FROM status_stories WHERE isMyStatus = 0 ORDER BY timestamp DESC")
     fun getFriendsStories(): Flow<List<StatusStoryEntity>>
+
+    @Query("DELETE FROM status_stories WHERE isMyStatus = 0")
+    suspend fun clearFriendsStories()
+
+    @Query("DELETE FROM status_stories WHERE timestamp < :cutoffTimestamp")
+    suspend fun deleteExpiredStories(cutoffTimestamp: Long)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertStory(story: StatusStoryEntity)
