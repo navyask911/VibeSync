@@ -211,12 +211,13 @@ fun BusinessDashboardScreen(
                     append("\n")
                     append(venue.address.ifBlank { venue.city })
                     append("\n\n")
-                    append("Store profile includes ${venue.photosList.size} photo(s), contact details, offers and listing information.")
+                    val photoCount = if (venue.photoGalleryJson.isNotBlank()) venue.photoGalleryJson.split("|").count { it.isNotBlank() } else if (venue.bannerUrl.isNotBlank()) 1 else 0
+                    append("Store profile includes $photoCount photo(s), contact details, offers and listing information.")
                 }
             }
             "verification" -> {
                 title = "Verification Badge"
-                detail = "${venue.tierEnum.title}\nCurrent status: ${if (venue.isVerified) "Verified" else "Pending verification"}\nBusiness name: ${venue.name}"
+                detail = "${com.example.data.model.VerificationTier.fromId(venue.verificationTier).title}\nCurrent status: ${if (venue.isVerified) "Verified" else "Pending verification"}\nBusiness name: ${venue.name}"
             }
             "promotions" -> {
                 title = "Direct Promotions"
@@ -455,7 +456,7 @@ fun BusinessDashboardScreen(
                         )
                         BusinessSuiteActionCard(
                             title = "Verification",
-                            subtitle = venue.tierEnum.badgeLabel,
+                            subtitle = com.example.data.model.VerificationTier.fromId(venue.verificationTier).badgeLabel,
                             icon = Icons.Default.Check,
                             modifier = Modifier.weight(1f),
                             onClick = { selectedAction = "verification" }
