@@ -197,20 +197,29 @@ interface ChatMessageDao {
     @Update
     suspend fun updateMessage(message: ChatMessageEntity)
 
-    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1 WHERE messageId = :messageId")
+    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryState = 'READ' WHERE messageId = :messageId")
     suspend fun markMessageAsRead(messageId: String)
 
-    @Query("UPDATE chat_messages SET isDelivered = 1 WHERE messageId = :messageId")
+    @Query("UPDATE chat_messages SET isDelivered = 1, deliveryState = CASE WHEN deliveryState = 'READ' THEN 'READ' ELSE 'DELIVERED' END WHERE messageId = :messageId")
     suspend fun markMessageAsDelivered(messageId: String)
 
-    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1 WHERE matchId = :matchId AND senderId != 'USER'")
+    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryState = 'READ' WHERE matchId = :matchId AND senderId != 'USER'")
     suspend fun markIncomingMessagesAsReadForMatch(matchId: String)
 
-    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1 WHERE matchId = :matchId")
+    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryState = 'READ' WHERE matchId = :matchId")
     suspend fun markAllMessagesAsReadForMatch(matchId: String)
 
     @Query("SELECT * FROM chat_messages WHERE messageId = :messageId LIMIT 1")
     suspend fun getMessageById(messageId: String): ChatMessageEntity?
+
+    @Query("SELECT * FROM chat_messages WHERE senderId = 'USER' AND deliveryState = 'PENDING' ORDER BY timestamp ASC LIMIT :limit")
+    suspend fun getPendingOutgoingMessages(limit: Int = 100): List<ChatMessageEntity>
+
+    @Query("UPDATE chat_messages SET deliveryState = 'SENT_TO_SERVER', syncAttempts = syncAttempts + 1, lastSyncError = '', lastSyncAttemptAt = :attemptedAt WHERE messageId = :messageId AND deliveryState = 'PENDING'")
+    suspend fun markOutboxSentToServerIfPending(messageId: String, attemptedAt: Long): Int
+
+    @Query("UPDATE chat_messages SET syncAttempts = syncAttempts + 1, lastSyncError = :error, lastSyncAttemptAt = :attemptedAt WHERE messageId = :messageId AND deliveryState = 'PENDING'")
+    suspend fun recordOutboxFailure(messageId: String, error: String, attemptedAt: Long): Int
 
     @Query("SELECT COUNT(*) FROM chat_messages WHERE messageId = :messageId")
     suspend fun hasMessage(messageId: String): Int
