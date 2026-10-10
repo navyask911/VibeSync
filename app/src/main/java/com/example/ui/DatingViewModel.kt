@@ -1970,8 +1970,13 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 )
             }.onFailure { error ->
-                android.util.Log.w("TruecallerAuthFlow", "Truecaller verification gateway failed: ${error.message}")
-                _truecallerError.value = "Truecaller verification could not be completed. Please retry with Truecaller."
+                val detail = error.message?.trim().orEmpty()
+                android.util.Log.w("TruecallerAuthFlow", "Truecaller verification gateway failed: ${detail}", error)
+                // Keep HTTP status and connectivity/DNS diagnostics visible instead of replacing
+                // actionable gateway errors with the generic Truecaller banner.
+                _truecallerError.value = detail.take(500).ifBlank {
+                    "Truecaller verification could not be completed. Check your connection and retry."
+                }
             }
         }
     }
