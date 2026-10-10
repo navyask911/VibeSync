@@ -60,6 +60,8 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
     @Volatile private var lastActivity: FragmentActivity? = null
     @Volatile private var activityResultLauncher: ActivityResultLauncher<Intent>? = null
     @Volatile private var launchWhenReady = false
+    private val requestStateLock = Any()
+    @Volatile private var requestFinished = true
     @Volatile private var lastOAuthState = ""
     @Volatile private var lastCodeVerifier = ""
 
@@ -88,27 +90,41 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
                         override fun onSuccess(tcOAuthData: TcOAuthData) {
                             Log.i(
                                 TAG,
-                                "OAuth success callback received; codePresent=${!tcOAuthData.authorizationCode.isNullOrBlank()}, " +
-                                    "statePresent=${!tcOAuthData.state.isNullOrBlank()}, " +
-                                    "scopes=${tcOAuthData.scopesGranted.orEmpty()}"
+                                "OAuth authorization-code callback received; codePresent=" +
+                                    (!tcOAuthData.authorizationCode.isNullOrBlank()) +
+                                    ", statePresent=" + (!tcOAuthData.state.isNullOrBlank()) +
+                                    ", scopes=" + tcOAuthData.scopesGranted.orEmpty()
                             )
+                            // The OAuth code is the handoff point: never exchange it on the device.
+                            // Claim this attempt exactly once so late SDK failures cannot overwrite success.
+                            val request = synchronized(requestStateLock) {
+                                if (requestFinished) null else {
+                                    requestFinished = true
+                                    val captured = lastOAuthState to lastCodeVerifier
+                                    lastOAuthState = ""
+                                    lastCodeVerifier = ""
+                                    captured
+                                }
+                            }
+                            if (request == null) {
+                                Log.w(TAG, "Ignoring duplicate/late OAuth success callback; no active request")
+                                return
+                            }
+
                             val state = tcOAuthData.state.orEmpty()
-                            val expectedState = lastOAuthState
+                            val expectedState = request.first
                             val authorizationCode = tcOAuthData.authorizationCode.orEmpty()
-                            val verifier = lastCodeVerifier
+                            val verifier = request.second
 
                             if (expectedState.isBlank() || state != expectedState) {
-                                clearRequestState()
                                 notifyFailure("Truecaller authorization state mismatch.")
                                 return
                             }
                             if (authorizationCode.isBlank() || verifier.isBlank()) {
-                                clearRequestState()
                                 notifyFailure("Truecaller authorization response was incomplete.")
                                 return
                             }
 
-                            clearRequestState()
                             notifySuccess(
                                 TruecallerProfileResult(
                                     authorizationCode = authorizationCode,
@@ -122,29 +138,32 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
                         override fun onFailure(tcOAuthError: TcOAuthError) {
                             val errorCode = tcOAuthError.errorCode
                             val errorMessage = tcOAuthError.errorMessage.orEmpty()
-                            Log.e(
-                                TAG,
-                                "OAuth failure callback: code=$errorCode, message=$errorMessage"
-                            )
-                            clearRequestState()
+                            if (!finishRequestIfActive()) {
+                                Log.w(TAG, "Ignoring late/duplicate OAuth failure after terminal callback: code=" + errorCode + ", message=" + errorMessage)
+                                return
+                            }
+                            Log.e(TAG, "OAuth failure callback before authorization handoff: code=" + errorCode + ", message=" + errorMessage)
                             notifyFailure(
-                                "Truecaller authorization failed (code $errorCode" +
-                                    (errorMessage.takeIf { it.isNotBlank() }?.let { ": $it" } ?: "") +
+                                "Truecaller authorization failed (code " + errorCode +
+                                    (errorMessage.takeIf { it.isNotBlank() }?.let { ": " + it } ?: "") +
                                     ")."
                             )
                         }
 
                         override fun onVerificationRequired(tcOAuthError: TcOAuthError?) {
+                            if (!finishRequestIfActive()) {
+                                Log.w(TAG, "Ignoring late verification-required callback after terminal OAuth callback")
+                                return
+                            }
                             Log.w(
                                 TAG,
-                                "OAuth verification-required callback: code=${tcOAuthError?.errorCode}, " +
-                                    "message=${tcOAuthError?.errorMessage.orEmpty()}"
+                                "OAuth verification-required callback: code=" + tcOAuthError?.errorCode +
+                                    ", message=" + tcOAuthError?.errorMessage.orEmpty()
                             )
-                            clearRequestState()
                             mainHandler.post {
                                 callback?.onVerificationRequired(
                                     "Complete the secure phone verification flow" +
-                                        (tcOAuthError?.let { " (code ${it.errorCode})" } ?: "") +
+                                        (tcOAuthError?.let { " (code " + it.errorCode + ")" } ?: "") +
                                         "."
                                 )
                             }
@@ -227,8 +246,11 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
             val codeChallenge = CodeVerifierUtil.getCodeChallenge(codeVerifier)
                 ?: throw IllegalStateException("Truecaller PKCE code challenge could not be generated")
 
-            lastOAuthState = state
-            lastCodeVerifier = codeVerifier
+            synchronized(requestStateLock) {
+                lastOAuthState = state
+                lastCodeVerifier = codeVerifier
+                requestFinished = false
+            }
 
             TcSdk.getInstance().setOAuthState(state)
             TcSdk.getInstance().setOAuthScopes(arrayOf("openid", "profile", "phone"))
@@ -252,7 +274,11 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
             TcSdk.getInstance().onActivityResultObtained(activity, resultCode, data)
         } catch (t: Throwable) {
             Log.e(TAG, "Truecaller OAuth activity-result handling failed: ${t.javaClass.simpleName}: ${t.message}", t)
-            notifyFailure("Truecaller verification could not be completed.")
+            if (finishRequestIfActive()) {
+                notifyFailure("Truecaller activity handoff failed: " + (t.message ?: t.javaClass.simpleName))
+            } else {
+                Log.w(TAG, "Ignoring activity-result exception after OAuth callback already completed")
+            }
         }
     }
 
@@ -271,9 +297,23 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
         }
     }
 
+    private fun finishRequestIfActive(): Boolean = synchronized(requestStateLock) {
+        if (requestFinished) {
+            false
+        } else {
+            requestFinished = true
+            lastOAuthState = ""
+            lastCodeVerifier = ""
+            true
+        }
+    }
+
     private fun clearRequestState() {
-        lastOAuthState = ""
-        lastCodeVerifier = ""
+        synchronized(requestStateLock) {
+            requestFinished = true
+            lastOAuthState = ""
+            lastCodeVerifier = ""
+        }
     }
 
     private fun notifySuccess(profile: TruecallerProfileResult) {
