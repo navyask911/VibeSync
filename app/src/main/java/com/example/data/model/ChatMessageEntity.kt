@@ -34,7 +34,12 @@ data class ChatMessageEntity(
     val replyToSender: String? = null,
     val isDeletedForEveryone: Boolean = false,
     val isDeletedForMe: Boolean = false,
-    val isForwarded: Boolean = false
+    val isForwarded: Boolean = false,
+    /** PENDING -> SENT_TO_SERVER -> DELIVERED -> READ. Existing rows migrate to SENT_TO_SERVER. */
+    val deliveryState: String = "SENT_TO_SERVER",
+    val syncAttempts: Int = 0,
+    val lastSyncError: String = "",
+    val lastSyncAttemptAt: Long = 0L
 ) {
     @androidx.room.Ignore
     val senderUid: String = senderId
