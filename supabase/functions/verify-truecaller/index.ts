@@ -41,12 +41,25 @@ function getSupabaseSecretKey(): string {
   return Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 }
 
-function normalizePhone(value: unknown): { e164: string; last10: string } {
-  const digits = String(value ?? "").replace(/[^0-9]/g, "");
+function normalizePhone(value: unknown): { e164: string; last10: string; candidates: string[] } {
+  const raw = String(value ?? "").trim();
+  const digits = raw.replace(/[^0-9]/g, "");
   if (digits.length < 10 || digits.length > 15) {
     throw new HttpError("truecaller_phone_invalid", 401);
   }
-  return { e164: "+" + digits, last10: digits.slice(-10) };
+  let e164: string;
+  if (raw.startsWith("+")) e164 = "+" + digits;
+  else if (digits.length === 10) e164 = "+91" + digits;
+  else if (digits.length === 11 && digits.startsWith("0")) e164 = "+91" + digits.slice(1);
+  else if (digits.length === 12 && digits.startsWith("91")) e164 = "+" + digits;
+  else e164 = "+" + digits;
+  const internationalDigits = e164.slice(1);
+  const last10 = internationalDigits.slice(-10);
+  const candidates = Array.from(new Set([
+    e164, internationalDigits, "+" + digits, digits,
+    "+91" + last10, "91" + last10, last10, "0" + last10,
+  ]));
+  return { e164, last10, candidates };
 }
 
 async function sha256Hex(value: string): Promise<string> {
@@ -257,20 +270,25 @@ Deno.serve(async (req: Request) => {
       signingKey,
     );
 
-    const { data: superAdminRow, error: superAdminLookupError } = await admin
-      .from("super_admins")
-      .select("profile_id")
-      .eq("profile_id", profileId)
-      .maybeSingle();
+    // Live schema contract: public.super_admins has phone and user_id columns (not profile_id).
+    // Check normalized phone variants or the verified profile ID; errors fail closed for elevation.
+    const [superAdminPhoneLookup, superAdminUserLookup] = await Promise.all([
+      admin.from("super_admins").select("user_id,phone").in("phone", identity.phoneCandidates).limit(1),
+      admin.from("super_admins").select("user_id,phone").eq("user_id", profileId).maybeSingle(),
+    ]);
+    const superAdminLookupError = superAdminPhoneLookup.error || superAdminUserLookup.error;
     if (superAdminLookupError) {
-      // Fail closed for elevation without breaking standard Truecaller sign-in if migration is absent.
       console.warn("super_admins lookup failed closed", superAdminLookupError.message);
     }
-    const isSuperAdmin = !superAdminLookupError && superAdminRow?.profile_id === profileId;
+    const isSuperAdmin = !superAdminLookupError && (
+      (superAdminPhoneLookup.data?.length ?? 0) > 0 ||
+      superAdminUserLookup.data?.user_id === profileId
+    );
 
     return json({
       verified: true,
       is_super_admin: isSuperAdmin,
+      admin_role: isSuperAdmin ? "SUPER_ADMIN" : "MEMBER",
       phone: identity.phone,
       profile_id: profileId,
       // Canonical VibeSync session field; keep access_token for older clients.
