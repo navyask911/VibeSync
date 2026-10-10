@@ -365,13 +365,14 @@ fun ChatDetailScreen(
     var selectedChatColorHex by remember {
         mutableStateOf(com.example.util.ChatColorPreferences.getSelectedColorHex(context))
     }
-    val chatTextColor = remember(selectedChatColorHex, MaterialTheme.colorScheme.onSurface) {
+    val defaultChatTextColor = MaterialTheme.colorScheme.onSurface
+    val chatTextColor = remember(selectedChatColorHex, defaultChatTextColor) {
         if (selectedChatColorHex.equals(
                 com.example.util.ChatColorPreferences.DEFAULT_COLOR_HEX,
                 ignoreCase = true
             )
         ) {
-            MaterialTheme.colorScheme.onSurface
+            defaultChatTextColor
         } else {
             com.example.util.ChatColorPreferences.parseColor(selectedChatColorHex)
         }

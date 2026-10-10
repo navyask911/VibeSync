@@ -21,19 +21,19 @@ val AppAccentPalettes = listOf(
     AppAccentPalette("SUNSET_CORAL", "Sunset Coral", "#F97316", Color(0xFFF97316))
 )
 
-private val LightCanvas = Color(0xFFF4F5F7)
-private val LightCard = Color(0xFFFFFFFF)
-private val LightInput = Color(0xFFEAECEF)
-private val LightBorder = Color(0xFFE1E4EA)
-private val LightTextPrimary = Color(0xFF0F172A)
-private val LightTextSecondary = Color(0xFF64748B)
+private val ThemeLightCanvas = Color(0xFFF4F5F7)
+private val ThemeLightCard = Color(0xFFFFFFFF)
+private val ThemeLightInput = Color(0xFFEAECEF)
+private val ThemeLightBorder = Color(0xFFE1E4EA)
+private val ThemeLightTextPrimary = Color(0xFF0F172A)
+private val ThemeLightTextSecondary = Color(0xFF64748B)
 
-private val DarkCanvas = Color(0xFF090A0F)
-private val DarkCard = Color(0xFF181B22)
-private val DarkInput = Color(0xFF101217)
-private val DarkBorder = Color(0xFF232730)
-private val DarkTextPrimary = Color(0xFFFFFFFF)
-private val DarkTextSecondary = Color(0xFF767E8C)
+private val ThemeDarkCanvas = Color(0xFF090A0F)
+private val ThemeDarkCard = Color(0xFF181B22)
+private val ThemeDarkInput = Color(0xFF101217)
+private val ThemeDarkBorder = Color(0xFF232730)
+private val ThemeDarkTextPrimary = Color(0xFFFFFFFF)
+private val ThemeDarkTextSecondary = Color(0xFF767E8C)
 
 @Composable
 fun MyApplicationTheme(
@@ -68,42 +68,42 @@ fun MyApplicationTheme(
             primary = accent,
             onPrimary = Color.White,
             primaryContainer = accent.copy(alpha = 0.22f),
-            onPrimaryContainer = DarkTextPrimary,
+            onPrimaryContainer = ThemeDarkTextPrimary,
             secondary = accent,
             onSecondary = Color.White,
-            secondaryContainer = DarkInput,
-            onSecondaryContainer = DarkTextPrimary,
+            secondaryContainer = ThemeDarkInput,
+            onSecondaryContainer = ThemeDarkTextPrimary,
             tertiary = accent,
             onTertiary = Color.White,
-            background = DarkCanvas,
-            onBackground = DarkTextPrimary,
-            surface = DarkCard,
-            onSurface = DarkTextPrimary,
-            surfaceVariant = DarkInput,
-            onSurfaceVariant = DarkTextSecondary,
-            outline = DarkBorder,
-            outlineVariant = DarkBorder
+            background = ThemeDarkCanvas,
+            onBackground = ThemeDarkTextPrimary,
+            surface = ThemeDarkCard,
+            onSurface = ThemeDarkTextPrimary,
+            surfaceVariant = ThemeDarkInput,
+            onSurfaceVariant = ThemeDarkTextSecondary,
+            outline = ThemeDarkBorder,
+            outlineVariant = ThemeDarkBorder
         )
     } else {
         lightColorScheme(
             primary = accent,
             onPrimary = Color.White,
             primaryContainer = accent.copy(alpha = 0.14f),
-            onPrimaryContainer = LightTextPrimary,
+            onPrimaryContainer = ThemeLightTextPrimary,
             secondary = accent,
             onSecondary = Color.White,
-            secondaryContainer = LightInput,
-            onSecondaryContainer = LightTextPrimary,
+            secondaryContainer = ThemeLightInput,
+            onSecondaryContainer = ThemeLightTextPrimary,
             tertiary = accent,
             onTertiary = Color.White,
-            background = LightCanvas,
-            onBackground = LightTextPrimary,
-            surface = LightCard,
-            onSurface = LightTextPrimary,
-            surfaceVariant = LightInput,
-            onSurfaceVariant = LightTextSecondary,
-            outline = LightBorder,
-            outlineVariant = LightBorder
+            background = ThemeLightCanvas,
+            onBackground = ThemeLightTextPrimary,
+            surface = ThemeLightCard,
+            onSurface = ThemeLightTextPrimary,
+            surfaceVariant = ThemeLightInput,
+            onSurfaceVariant = ThemeLightTextSecondary,
+            outline = ThemeLightBorder,
+            outlineVariant = ThemeLightBorder
         )
     }
 
