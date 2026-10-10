@@ -256,9 +256,6 @@ fun DatingAppRoot(
 
     // Authentication & Guard State Variables
     val isLoggedIn = preferences?.isLoggedIn ?: false
-    val loginTimestamp = preferences?.loginTimestamp ?: 0L
-    val thirtyDaysMillis = 30L * 24 * 60 * 60 * 1000L
-    val isSessionExpired = (System.currentTimeMillis() - loginTimestamp) > thirtyDaysMillis
     val isMpinSet = preferences?.isMpinSet ?: false
     val savedMpin = preferences?.userMpin ?: ""
     val isProfileCompleted = preferences?.isProfileCompleted ?: false
@@ -299,7 +296,7 @@ fun DatingAppRoot(
 
     // System Back Handler for Main Bottom Navigation Tabs (Tab 1/2/3 -> Tab 0 Chats)
     BackHandler(
-        enabled = isLoggedIn && !isSessionExpired && isMpinUnlocked && isProfileCompleted && !isAnyOverlayOpen && !showAdminPortal && !showFaceVerification && pagerState.currentPage != 0
+        enabled = isLoggedIn && isMpinUnlocked && isProfileCompleted && !isAnyOverlayOpen && !showAdminPortal && !showFaceVerification && pagerState.currentPage != 0
     ) {
         coroutineScope.launch {
             pagerState.animateScrollToPage(0)
@@ -308,7 +305,7 @@ fun DatingAppRoot(
 
     // System Back Handler for Main Root Screen (Tab 0 Chats) - double tap back to exit safeguard
     BackHandler(
-        enabled = isLoggedIn && !isSessionExpired && isMpinUnlocked && isProfileCompleted && !isAnyOverlayOpen && !showAdminPortal && !showFaceVerification && pagerState.currentPage == 0
+        enabled = isLoggedIn && isMpinUnlocked && isProfileCompleted && !isAnyOverlayOpen && !showAdminPortal && !showFaceVerification && pagerState.currentPage == 0
     ) {
         val now = System.currentTimeMillis()
         if (now - lastRootBackPressTime < 2000L) {
@@ -334,11 +331,11 @@ fun DatingAppRoot(
         }
     }
 
-    BackHandler(enabled = (!isLoggedIn || isSessionExpired) && showAccountRecoveryDialog) {
+    BackHandler(enabled = !isLoggedIn && showAccountRecoveryDialog) {
         viewModel.closeAccountRecovery()
     }
 
-    BackHandler(enabled = (!isLoggedIn || isSessionExpired) && duplicateProfileDetected != null) {
+    BackHandler(enabled = !isLoggedIn && duplicateProfileDetected != null) {
         viewModel.dismissDuplicateProfileDialog()
     }
 
