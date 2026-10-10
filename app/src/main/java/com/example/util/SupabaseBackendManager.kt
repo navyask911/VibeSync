@@ -108,9 +108,13 @@ object SupabaseBackendManager {
         val sessionToken = VibeSyncSessionManager.getToken().orEmpty()
         val accessJwt = VibeSyncSessionManager.getAccessToken().orEmpty()
         val sessionProfileId = VibeSyncSessionManager.getProfileId().orEmpty()
-        if (sessionToken.isBlank() || sessionProfileId.isBlank()) {
+        if (sessionToken.isBlank() || sessionProfileId.isBlank() || accessJwt.isBlank()) {
             _realtimeConnected.value = false
-            Log.i(TAG, "Waiting for an authenticated VibeSync profile session before connecting Realtime.")
+            Log.i(
+                TAG,
+                "Realtime waiting for a complete VibeSync session (sessionTokenPresent=${sessionToken.isNotBlank()}, " +
+                    "accessJwtPresent=${accessJwt.isNotBlank()}, profileIdPresent=${sessionProfileId.isNotBlank()})."
+            )
             return
         }
         try {
@@ -127,13 +131,13 @@ object SupabaseBackendManager {
 
             val requestBuilder = Request.Builder().url(wsUrl)
                 .header("apikey", SUPABASE_ANON_KEY)
-                .header("Authorization", "Bearer ${if (accessJwt.isNotBlank()) accessJwt else SUPABASE_ANON_KEY}")
+                .header("Authorization", "Bearer $accessJwt")
                 .header("x-vibesync-session", sessionToken)
             val request = requestBuilder.build()
             realtimeWebSocket = wsHttpClient.newWebSocket(request, object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
                     _realtimeConnected.value = true
-                    Log.i(TAG, "⚡ Supabase Realtime WebSocket Connected to $wsUrl!")
+                    Log.i(TAG, "Supabase Realtime WebSocket transport opened; awaiting chat subscription acknowledgement.")
 
                     // Truecaller sessions are not Supabase Auth JWTs. Subscribe by the
                     // validated session's VibeSync profile ID and ignore the deprecated messages table.
@@ -141,7 +145,7 @@ object SupabaseBackendManager {
                         put("topic", "realtime:public:chat_messages")
                         put("event", "phx_join")
                         put("payload", JSONObject().apply {
-                            if (accessJwt.isNotBlank()) put("access_token", accessJwt)
+                            put("access_token", accessJwt)
                             val config = JSONObject().apply {
                                 put("broadcast", JSONObject().apply { put("self", true) })
                                 val changes = JSONArray().apply {
@@ -195,7 +199,26 @@ object SupabaseBackendManager {
                         val topic = json.optString("topic", "")
                         val payload = json.optJSONObject("payload") ?: JSONObject()
 
-                        // 1. Filter out Phoenix protocol messages, pings, heartbeats, and replies
+                        // Realtime may open a WebSocket even if RLS denies the channel join.
+                        // Inspect the join acknowledgement instead of silently discarding every phx_reply.
+                        if (event == "phx_reply" && json.optString("ref") == "join_chat_messages") {
+                            val status = payload.optString("status", "unknown")
+                            val detail = payload.optJSONObject("response")?.toString()?.take(700).orEmpty()
+                            if (status.equals("ok", ignoreCase = true)) {
+                                Log.i(
+                                    TAG,
+                                    "Supabase Realtime chat subscription confirmed for profile=$sessionProfileId " +
+                                        "(INSERT receiver_id, UPDATE sender_id)."
+                                )
+                            } else {
+                                _realtimeConnected.value = false
+                                Log.e(TAG, "Supabase Realtime chat subscription rejected: status=$status detail=$detail")
+                                webSocket.close(4001, "chat subscription rejected")
+                            }
+                            return
+                        }
+
+                        // 1. Filter out Phoenix protocol messages, pings, heartbeats, and other replies.
                         if (topic == "phoenix" || event in listOf("phx_reply", "phx_close", "heartbeat", "ping", "pong")) {
                             return
                         }
