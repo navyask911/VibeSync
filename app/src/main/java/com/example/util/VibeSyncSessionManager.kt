@@ -16,10 +16,12 @@ import java.nio.charset.StandardCharsets
 import java.security.KeyStore
 import java.security.SecureRandom
 import java.util.concurrent.CopyOnWriteArraySet
+import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * Device-local storage for the opaque VibeSync session issued by the Truecaller
@@ -30,7 +32,11 @@ object VibeSyncSessionManager {
     private const val PREFS = "vibesync_session"
     private const val SESSION_KEY = "session_blob"
     private const val KEY_ALIAS = "vibesync_session_aes_v1"
+    private const val FALLBACK_PREFS = "vibesync_session_fallback_key"
+    private const val FALLBACK_KEY_NAME = "aes_key_v1"
     private const val GCM_TAG_BITS = 128
+    private const val KEYSTORE_PREFIX = "ks1:"
+    private const val FALLBACK_PREFIX = "sp1:"
     private val secureRandom by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { SecureRandom() }
     private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -44,6 +50,8 @@ object VibeSyncSessionManager {
 
     @Volatile private var cachedSession: Session? = null
     @Volatile private var appContext: Context? = null
+    // Invalidates queued disk writes on logout or after a newer session is stored.
+    private var mutationVersion: Long = 0L
     private val sessionChangeListeners = CopyOnWriteArraySet<(Session?) -> Unit>()
 
     /** Register a process-local listener for verified-session save, restore, and clear events. */
@@ -87,33 +95,160 @@ object VibeSyncSessionManager {
     private fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    private fun encrypt(value: String): String {
+    private fun existingKeyOrNull(): SecretKey? = try {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        ks.getKey(KEY_ALIAS, null) as? SecretKey
+    } catch (e: Throwable) {
+        Log.w(TAG, "Could not read Android Keystore session key: ${e.javaClass.simpleName}")
+        null
+    }
+
+    private fun deleteKeystoreKey() {
+        try {
+            KeyStore.getInstance("AndroidKeyStore").apply {
+                load(null)
+                if (containsAlias(KEY_ALIAS)) deleteEntry(KEY_ALIAS)
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Could not repair Android Keystore session key: ${e.javaClass.simpleName}")
+        }
+    }
+
+    private fun encryptPrimary(value: String): String {
         val iv = ByteArray(12).also(secureRandom::nextBytes)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key(), GCMParameterSpec(GCM_TAG_BITS, iv))
-        return Base64.encodeToString(
+        return KEYSTORE_PREFIX + Base64.encodeToString(
             iv + cipher.doFinal(value.toByteArray(StandardCharsets.UTF_8)),
             Base64.NO_WRAP
         )
     }
 
-    private fun decrypt(value: String): String? {
+    /**
+     * Device-sandbox fallback, only used when Android Keystore encryption fails.
+     * The AES key and ciphertext are stored in separate app-private preferences. This is
+     * less resistant to extraction on a rooted/compromised device than hardware-backed Keystore.
+     */
+    private fun fallbackKey(context: Context, createIfMissing: Boolean): SecretKey? {
+        val keyPrefs = context.applicationContext.getSharedPreferences(FALLBACK_PREFS, Context.MODE_PRIVATE)
+        val encoded = try { keyPrefs.getString(FALLBACK_KEY_NAME, null) } catch (_: Throwable) { null }
+        if (!encoded.isNullOrBlank()) {
+            val bytes = try { Base64.decode(encoded, Base64.NO_WRAP) } catch (_: Throwable) { null }
+            if (bytes != null && bytes.size == 32) return SecretKeySpec(bytes, "AES")
+            Log.w(TAG, "Fallback session key is malformed.")
+            if (!createIfMissing) return null
+            runCatching { keyPrefs.edit().remove(FALLBACK_KEY_NAME).commit() }
+        } else if (!createIfMissing) {
+            return null
+        }
+
         return try {
-            val raw = Base64.decode(value, Base64.NO_WRAP)
-            if (raw.size < 13) {
+            val bytes = ByteArray(32).also(secureRandom::nextBytes)
+            val saved = keyPrefs.edit()
+                .putString(FALLBACK_KEY_NAME, Base64.encodeToString(bytes, Base64.NO_WRAP))
+                .commit()
+            if (!saved) {
+                Log.w(TAG, "Could not persist fallback key; session will remain available in memory.")
                 null
             } else {
-                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-                cipher.init(
-                    Cipher.DECRYPT_MODE,
-                    key(),
-                    GCMParameterSpec(GCM_TAG_BITS, raw.copyOfRange(0, 12))
-                )
-                String(cipher.doFinal(raw.copyOfRange(12, raw.size)), StandardCharsets.UTF_8)
+                SecretKeySpec(bytes, "AES")
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "Encrypted VibeSync session could not be opened: ${e.message}")
+            Log.e(TAG, "Fallback session key setup failed: ${e.javaClass.simpleName}")
             null
+        }
+    }
+
+    private fun encryptFallback(context: Context, value: String): String {
+        val secret = fallbackKey(context, createIfMissing = true)
+            ?: throw IllegalStateException("Fallback session encryption key is unavailable")
+        val iv = ByteArray(12).also(secureRandom::nextBytes)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, secret, GCMParameterSpec(GCM_TAG_BITS, iv))
+        return FALLBACK_PREFIX + Base64.encodeToString(
+            iv + cipher.doFinal(value.toByteArray(StandardCharsets.UTF_8)),
+            Base64.NO_WRAP
+        )
+    }
+
+    private fun decryptWithKey(value: String, secret: SecretKey): String? {
+        val raw = Base64.decode(value, Base64.NO_WRAP)
+        if (raw.size < 13) return null
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, secret, GCMParameterSpec(GCM_TAG_BITS, raw.copyOfRange(0, 12)))
+        return String(cipher.doFinal(raw.copyOfRange(12, raw.size)), StandardCharsets.UTF_8)
+    }
+
+    private fun decrypt(value: String, context: Context): String? = try {
+        when {
+            value.startsWith(FALLBACK_PREFIX) -> {
+                val secret = fallbackKey(context, createIfMissing = false) ?: return null
+                decryptWithKey(value.removePrefix(FALLBACK_PREFIX), secret)
+            }
+            value.startsWith(KEYSTORE_PREFIX) -> {
+                val secret = existingKeyOrNull() ?: return null
+                decryptWithKey(value.removePrefix(KEYSTORE_PREFIX), secret)
+            }
+            else -> {
+                // Legacy session blobs were raw Base64 AES-GCM payloads.
+                val secret = existingKeyOrNull() ?: return null
+                decryptWithKey(value, secret)
+            }
+        }
+    } catch (e: AEADBadTagException) {
+        Log.w(TAG, "Encrypted session authentication failed (key or payload mismatch).")
+        null
+    } catch (e: Throwable) {
+        Log.w(TAG, "Encrypted VibeSync session could not be opened: ${e.javaClass.simpleName}")
+        null
+    }
+
+    private fun encodeSession(session: Session): String =
+        JSONObject().apply {
+            put("session_token", session.sessionToken)
+            put("profile_id", session.profileId)
+            put("phone_number", session.phoneNumber)
+            put("expires_at", session.expiresAtEpochSeconds)
+            put("access_jwt", session.accessToken)
+            put("access_token", session.accessToken)
+        }.toString()
+
+    private fun persistSessionAsync(context: Context, session: Session, generation: Long) {
+        syncScope.launch(Dispatchers.IO) {
+            synchronized(this@VibeSyncSessionManager) {
+                if (generation != mutationVersion) {
+                    Log.d(TAG, "Skipping stale session write after a newer session change.")
+                    return@synchronized
+                }
+                try {
+                    val payload = encodeSession(session)
+                    val encrypted = try {
+                        encryptPrimary(payload)
+                    } catch (firstError: Throwable) {
+                        Log.w(TAG, "Primary encryption failed; attempting Keystore repair: ${firstError.javaClass.simpleName}")
+                        deleteKeystoreKey()
+                        try {
+                            encryptPrimary(payload)
+                        } catch (repairError: Throwable) {
+                            Log.w(TAG, "Keystore repair failed; using app-private fallback: ${repairError.javaClass.simpleName}")
+                            encryptFallback(context, payload)
+                        }
+                    }
+
+                    val committed = prefs(context).edit().putString(SESSION_KEY, encrypted).commit()
+                    if (committed) {
+                        Log.i(TAG, "Encrypted VibeSync session persisted.")
+                    } else {
+                        Log.w(TAG, "Session commit returned false; retrying with app-private encryption.")
+                        val fallback = encryptFallback(context, payload)
+                        if (!prefs(context).edit().putString(SESSION_KEY, fallback).commit()) {
+                            Log.e(TAG, "Disk persistence failed; active session remains in memory.")
+                        }
+                    }
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Session persistence failed; active session remains in memory: ${e.javaClass.simpleName}: ${e.message}")
+                }
+            }
         }
     }
 
@@ -139,23 +274,17 @@ object VibeSyncSessionManager {
         }
         val session = Session(sessionToken, profileId, phoneNumber.trim(), expiresAtEpochSeconds, accessToken.trim())
         require(session.accessToken.isNotBlank()) { "Signed VibeSync access JWT is required" }
-        val payload = JSONObject().apply {
-            put("session_token", session.sessionToken)
-            put("profile_id", session.profileId)
-            put("phone_number", session.phoneNumber)
-            put("expires_at", session.expiresAtEpochSeconds)
-            // access_jwt is the canonical name returned to the app; retain access_token
-            // for compatibility with installations running earlier builds.
-            put("access_jwt", session.accessToken)
-            put("access_token", session.accessToken)
-        }.toString()
         val app = context.applicationContext
-        val persisted = prefs(app).edit().putString(SESSION_KEY, encrypt(payload)).commit()
-        check(persisted) { "Could not persist the encrypted VibeSync session to local storage" }
-        appContext = app
-        cachedSession = session
-        Log.i(TAG, "Encrypted VibeSync session persisted (profilePresent=true, accessJwtPresent=true).")
+        val generation: Long
+        synchronized(this) {
+            mutationVersion += 1L
+            generation = mutationVersion
+            appContext = app
+            cachedSession = session
+        }
+        // Complete the login flow and notify Realtime before slow keystore/disk work.
         notifySessionChanged(session)
+        persistSessionAsync(app, session, generation)
     }
 
     fun getSession(context: Context? = appContext): Session? {
@@ -187,9 +316,15 @@ object VibeSyncSessionManager {
             session.expiresAtEpochSeconds > System.currentTimeMillis() / 1000L
 
     private fun load(context: Context): Session? {
-        val blob = prefs(context).getString(SESSION_KEY, null) ?: return null
+        appContext = context.applicationContext
+        val blob = try {
+            prefs(context).getString(SESSION_KEY, null)
+        } catch (e: Throwable) {
+            Log.w(TAG, "Session preferences could not be read: ${e.javaClass.simpleName}")
+            null
+        } ?: return null
         val session = try {
-            val decoded = decrypt(blob)
+            val decoded = decrypt(blob, context)
             if (decoded == null) {
                 Log.w(TAG, "Stored session could not be decrypted; retaining it for explicit recovery/logout.")
                 return null
@@ -220,14 +355,19 @@ object VibeSyncSessionManager {
         return cachedSession
     }
 
+    @Synchronized
     fun clear(context: Context) {
         val app = context.applicationContext
-        val persisted = prefs(app).edit().remove(SESSION_KEY).commit()
-        if (!persisted) {
-            Log.e(TAG, "Could not persist local session removal.")
-        }
+        mutationVersion += 1L
         cachedSession = null
         appContext = app
+        try {
+            if (!prefs(app).edit().remove(SESSION_KEY).commit()) {
+                Log.e(TAG, "Could not persist local session removal.")
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Session blob removal failed: ${e.javaClass.simpleName}")
+        }
         notifySessionChanged(null)
     }
 
