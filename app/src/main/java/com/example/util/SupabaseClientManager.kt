@@ -895,4 +895,49 @@ object SupabaseClientManager {
             false
         }
     }
+
+    /** Creates a badge request; payment and verification status remain server/admin-owned. */
+    suspend fun submitVerificationBadgeRequest(
+        badgeTier: String,
+        applicantEmail: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val profileId = VibeSyncSessionManager.getProfileId()?.trim().orEmpty()
+        val sessionToken = VibeSyncSessionManager.getToken().orEmpty()
+        if (profileId.isBlank() || sessionToken.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("Sign in with Truecaller before requesting a badge."))
+        }
+        val tier = badgeTier.trim().uppercase()
+        if (tier !in setOf("BLUE", "SILVER", "GOLD")) {
+            return@withContext Result.failure(IllegalArgumentException("Only Blue, Silver, and Gold badges can be requested."))
+        }
+        val email = applicantEmail.trim()
+        if (!android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()) {
+            return@withContext Result.failure(IllegalArgumentException("Enter a valid email address."))
+        }
+        try {
+            val body = JSONObject().apply {
+                put("user_id", profileId)
+                put("badge_tier", tier)
+                put("applicant_email", email)
+                put("documents_url", JSONArray())
+            }.toString()
+            val request = buildRequest("verification_requests", "POST", body, "return=representation")
+            httpClient.newCall(request).execute().use { response ->
+                val responseText = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(
+                        IllegalStateException("Badge request failed (HTTP ${response.code}): ${responseText.take(300)}")
+                    )
+                }
+                val requestId = runCatching { JSONArray(responseText).optJSONObject(0)?.optString("id").orEmpty() }
+                    .getOrDefault("")
+                if (requestId.isBlank()) Result.failure(IllegalStateException("Request accepted but no request ID was returned."))
+                else Result.success(requestId)
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Verification badge request notice: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
 }

@@ -299,6 +299,8 @@ fun ProfileScreen(
                         onToggleExpand = {}
                     )
 
+                    VerificationBadgeRequestCard()
+
                     // Discovery Preferences
                     DiscoveryPreferencesCard(
                         preferences = prefs,
