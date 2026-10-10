@@ -212,8 +212,8 @@ interface ChatMessageDao {
     @Query("SELECT * FROM chat_messages WHERE messageId = :messageId LIMIT 1")
     suspend fun getMessageById(messageId: String): ChatMessageEntity?
 
-    @Query("SELECT * FROM chat_messages WHERE senderId = 'USER' AND deliveryState = 'PENDING' ORDER BY timestamp ASC")
-    suspend fun getPendingOutgoingMessages(): List<ChatMessageEntity>
+    @Query("SELECT * FROM chat_messages WHERE senderId = 'USER' AND deliveryState = 'PENDING' AND outboxOwnerProfileId = :ownerProfileId ORDER BY timestamp ASC")
+    suspend fun getPendingOutgoingMessagesForOwner(ownerProfileId: String): List<ChatMessageEntity>
 
     @Query("UPDATE chat_messages SET deliveryState = 'SENT_TO_SERVER', syncAttempts = syncAttempts + 1, lastSyncError = '', lastSyncAttemptAt = :attemptedAt WHERE messageId = :messageId AND deliveryState = 'PENDING'")
     suspend fun markOutboxSentToServerIfPending(messageId: String, attemptedAt: Long): Int
