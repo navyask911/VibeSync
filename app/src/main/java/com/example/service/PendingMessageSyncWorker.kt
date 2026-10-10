@@ -343,6 +343,33 @@ object PendingMessageSyncScheduler {
         }
     }
 
+    /**
+     * Urgent one-time inbox pull scheduled by FCM's data-only wake-up signal.
+     * The worker fetches authoritative encrypted rows from Supabase and commits delivery ACKs
+     * after caching each incoming message in Room.
+     */
+    fun enqueueInboxSyncNow(context: Context) {
+        try {
+            val request = OneTimeWorkRequestBuilder<PendingMessageInboxSyncWorker>()
+                .setConstraints(
+                    Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build()
+                )
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30L, TimeUnit.SECONDS)
+                .addTag("VibeSyncInbox")
+                .build()
+            WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+                "vibesync-chat-inbox-wakeup",
+                ExistingWorkPolicy.KEEP,
+                request
+            )
+            Log.i(TAG, "Scheduled immediate Supabase inbox pull after FCM wake-up.")
+        } catch (t: Throwable) {
+            Log.e(TAG, "Could not schedule immediate inbox pull; periodic sync remains available.", t)
+        }
+    }
+
     /** Periodic inbox pull is the no-FCM fallback; Android may defer its execution under Doze. */
     fun ensureInboxSync(context: Context) {
         try {
