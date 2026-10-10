@@ -78,6 +78,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -1278,13 +1281,23 @@ private fun ContactToInviteRow(
         Spacer(modifier = Modifier.width(12.dp))
 
         Column(modifier = Modifier.weight(1f)) {
+            val contactNameParts = contact.name.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+            val firstName = contactNameParts.firstOrNull().orEmpty()
+            val remainingName = contactNameParts.drop(1).joinToString(" ")
+            val compactLastName = if (contact.name.trim().length > 14) {
+                remainingName.firstOrNull()?.let { " ${it.uppercaseChar()}." }.orEmpty()
+            } else {
+                remainingName.takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty()
+            }
             Text(
-                text = contact.name,
-                style = MaterialTheme.typography.titleMedium.copy(
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp
-                ),
-                color = MaterialTheme.colorScheme.onSurface
+                text = buildAnnotatedString {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(firstName) }
+                    append(compactLastName)
+                },
+                style = MaterialTheme.typography.titleMedium.copy(fontSize = 14.sp),
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
             Text(
                 text = "${contact.phoneNumber} • Invite candidate",

@@ -13,6 +13,9 @@ data class ProfileEntity(
     val occupation: String = "",
     val city: String = "",
     val distanceMiles: Int = 0,
+    /** Latitude/longitude of the registered location; zero means unknown. */
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
     val bio: String = "",
     val interests: String = "", // Comma separated, e.g. "Photography, Rock Climbing, Vinyl"
     // Legacy persisted field retained for Room compatibility; new profiles use neutral Connect wording.

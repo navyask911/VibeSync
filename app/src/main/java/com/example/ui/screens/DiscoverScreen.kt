@@ -128,6 +128,8 @@ fun DiscoverScreen(
 ) {
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
+    val currentLatitude = userPreferences?.latitude ?: 0.0
+    val currentLongitude = userPreferences?.longitude ?: 0.0
     var showPreferencesDialog by remember { mutableStateOf(false) }
     var dismissedRequestIds by rememberSaveable { mutableStateOf(setOf<String>()) }
     var followedBusinessIds by rememberSaveable { mutableStateOf(setOf<String>()) }
@@ -669,6 +671,8 @@ fun DiscoverScreen(
                     key(nextProfile.id) {
                         DatingCard(
                             profile = nextProfile,
+                            currentLatitude = currentLatitude,
+                            currentLongitude = currentLongitude,
                             isTopCard = false,
                             onSwipe = {},
                             onInfoClick = {},
@@ -928,6 +932,8 @@ fun DiscoverScreen(
                     key(topProfile.id) {
                         DatingCard(
                             profile = topProfile,
+                            currentLatitude = currentLatitude,
+                            currentLongitude = currentLongitude,
                             isTopCard = true,
                             onSwipe = { direction ->
                                 AdManager.recordCardSwipe()

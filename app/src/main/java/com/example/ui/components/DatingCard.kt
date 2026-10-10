@@ -76,6 +76,8 @@ fun DatingCard(
     isBreakupShared: Boolean = false,
     isBreakupPending: Boolean = false,
     onRequestBreakupShare: (() -> Unit)? = null,
+    currentLatitude: Double = 0.0,
+    currentLongitude: Double = 0.0,
     modifier: Modifier = Modifier
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -97,6 +99,13 @@ fun DatingCard(
         } else {
             profile.getEffectiveAvatarUrl()
         }
+    }
+
+    val distanceKm = remember(profile.latitude, profile.longitude, currentLatitude, currentLongitude) {
+        calculateDistanceKm(
+            currentLatitude, currentLongitude,
+            profile.latitude, profile.longitude
+        )
     }
 
     val swipeThreshold = 260f
@@ -447,8 +456,20 @@ fun DatingCard(
                             Surface(shape = RoundedCornerShape(6.dp), color = Color(0xFF1976D2).copy(alpha = 0.08f), contentColor = Color(0xFF1565C0)) {
                                 Text("👥 ${profile.friendsCount} Connections", fontSize = 9.5.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 5.dp, vertical = 3.dp))
                             }
-                            Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurfaceVariant) {
-                                Text("${profile.countryFlag} ${profile.country}", fontSize = 9.5.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(horizontal = 5.dp, vertical = 3.dp))
+                            if (distanceKm != null) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                    contentColor = MaterialTheme.colorScheme.onSurface
+                                ) {
+                                    Text(
+                                        text = if (distanceKm < 10) "${"%.1f".format(java.util.Locale.US, distanceKm)} km away"
+                                        else "${distanceKm.toInt()} km away",
+                                        fontSize = 9.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 3.dp)
+                                    )
+                                }
                             }
                         }
 
@@ -568,4 +589,29 @@ fun DatingCard(
             }
         }
     }
+}
+
+
+/** Returns a coordinate-based distance; never infers distance from country or state labels. */
+private fun calculateDistanceKm(
+    startLatitude: Double,
+    startLongitude: Double,
+    endLatitude: Double,
+    endLongitude: Double
+): Double? {
+    if (startLatitude == 0.0 || startLongitude == 0.0 ||
+        endLatitude == 0.0 || endLongitude == 0.0
+    ) return null
+    if (startLatitude !in -90.0..90.0 || endLatitude !in -90.0..90.0 ||
+        startLongitude !in -180.0..180.0 || endLongitude !in -180.0..180.0
+    ) return null
+    val earthRadiusKm = 6371.0088
+    val dLat = Math.toRadians(endLatitude - startLatitude)
+    val dLon = Math.toRadians(endLongitude - startLongitude)
+    val a = kotlin.math.sin(dLat / 2).let { it * it } +
+        kotlin.math.cos(Math.toRadians(startLatitude)) *
+        kotlin.math.cos(Math.toRadians(endLatitude)) *
+        kotlin.math.sin(dLon / 2).let { it * it }
+    return (2 * earthRadiusKm * kotlin.math.asin(kotlin.math.sqrt(a.coerceIn(0.0, 1.0))))
+        .takeIf { it.isFinite() }
 }
