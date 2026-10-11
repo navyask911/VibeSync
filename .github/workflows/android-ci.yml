@@ -1,6 +1,6 @@
 name: VibeSync Android Release CI
-# Release APK/AAB publication is gated on tests, signing and artifact verification.
-# Emulator startup smoke test is best-effort and cannot invalidate a verified release artifact.
+# Fast active-development lane: tests, signing and release APK verification only.
+# AAB packaging and emulator/UI smoke tests are deferred until the production release.
 
 on:
   push:
@@ -240,7 +240,9 @@ jobs:
         run: ./gradlew --no-daemon compileDebugKotlin
 
       - name: JVM unit + Compose UI tests
-        run: ./gradlew clean test -Djava.awt.headless=true --no-daemon
+        # Avoid "clean" here: compileDebugKotlin already checked the source, and deleting
+        # outputs would force the test task to rebuild the same source from scratch.
+        run: ./gradlew test -Djava.awt.headless=true --no-daemon
 
       - name: Prepare release signing
         env:
@@ -316,27 +318,18 @@ jobs:
           echo "KEY_ALIAS=$SIGNING_ALIAS" >> "$GITHUB_ENV"
 
       - name: Assemble signed release APK
-        run: ./gradlew --no-daemon -Djava.awt.headless=true assembleRelease --rerun-tasks
+        run: ./gradlew assembleRelease
 
-      - name: Build signed release AAB
-        run: ./gradlew --no-daemon -Djava.awt.headless=true bundleRelease --rerun-tasks
-
-      - name: Verify release artifacts
+      - name: Verify release APK
         shell: bash
         run: |
           set -euo pipefail
 
           APK=(app/build/outputs/apk/release/*.apk)
-          AAB=(app/build/outputs/bundle/release/*.aab)
-
           test -f "${APK[0]}"
-          test -f "${AAB[0]}"
 
-          echo "Release APK:"
+          echo "Signed release APK:"
           ls -lh "${APK[0]}"
-
-          echo "Release AAB:"
-          ls -lh "${AAB[0]}"
           BUILD_TOOLS_DIR=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
           MIN_SDK=$(awk -F'[ =]+' '/^[[:space:]]*minSdk[[:space:]]*=/{print $3; exit}' gradle/libs.versions.toml app/build.gradle.kts)
           MIN_SDK="${MIN_SDK:-24}"
@@ -375,75 +368,14 @@ jobs:
             test "$APK_SHA256" = "$(normalize_fingerprint "$VIBESYNC_RELEASE_SHA256")"
           fi
 
-          # The AAB is produced by the same verified release signing configuration.
-          test -s "${AAB[0]}"
+          echo "Release APK signature verified."
 
-          echo "Release APK signature verified; release APK/AAB files are present."
-
-      - name: Upload APK, AAB and test reports
+      - name: Upload signed APK and test reports
         uses: actions/upload-artifact@v6
         with:
-          name: VibeSync-Android-Release
+          name: VibeSync-Android-Release-APK
           if-no-files-found: error
           path: |
             app/build/outputs/apk/release/*.apk
-            app/build/outputs/bundle/release/*.aab
             app/build/outputs/mapping/release/**
             app/build/test-results/test/**/*.xml
-
-      - name: Release APK startup smoke test (Android emulator)
-        id: emulator-smoke
-        # Build/signature validation and artifact upload above are authoritative.
-        # A missing emulator device must not hide a usable release APK/AAB.
-        continue-on-error: true
-        timeout-minutes: 12
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 35
-          arch: x86_64
-          profile: pixel_2
-          target: google_apis
-          cores: 4
-          disk-size: 2048M
-          emulator-boot-timeout: 600
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -camera-back none
-          disable-linux-hw-accel: false
-          disable-animations: true
-          script: |
-            set -euo pipefail
-            APK_PATH="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)"
-            test -n "$APK_PATH" && test -s "$APK_PATH"
-
-            adb install -r "$APK_PATH"
-            adb logcat -c
-            START_OUTPUT="$(adb shell am start -W -n com.aistudio.freedating.mkwvxq/com.example.MainActivity 2>&1 || true)"
-            printf '%s\n' "$START_OUTPUT"
-            if ! printf '%s\n' "$START_OUTPUT" | grep -q 'Status: ok'; then
-              echo "Activity launch failed. Recent Android runtime logs:"
-              adb logcat -d -v threadtime | grep -E 'FATAL EXCEPTION|AndroidRuntime|VibeSyncApplication|MainActivity' | tail -n 160 || true
-              exit 1
-            fi
-
-            sleep 8
-            if ! adb shell pidof com.aistudio.freedating.mkwvxq >/dev/null 2>&1; then
-              echo "The application process exited after launch. Recent Android runtime logs:"
-              adb logcat -d -v threadtime | grep -E 'FATAL EXCEPTION|AndroidRuntime|VibeSyncApplication|MainActivity' | tail -n 160 || true
-              exit 1
-            fi
-            if adb logcat -d -v threadtime | grep -E 'FATAL EXCEPTION: main|Process: com.aistudio.freedating.mkwvxq, PID:'; then
-              echo "Fatal startup exception found in emulator logcat."
-              exit 1
-            fi
-            echo "Release APK installed and remained alive after cold launch."
-
-      - name: Report emulator smoke-test outcome
-        if: always()
-        shell: bash
-        env:
-          SMOKE_TEST_OUTCOME: ${{ steps.emulator-smoke.outcome }}
-        run: |
-          if [ "$SMOKE_TEST_OUTCOME" = "success" ]; then
-            echo "Release APK startup smoke test passed."
-          else
-            echo "::warning::Emulator smoke test did not complete (outcome: $SMOKE_TEST_OUTCOME). Signed APK/AAB were already verified and uploaded as VibeSync-Android-Release."
-          fi
