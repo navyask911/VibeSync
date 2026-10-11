@@ -371,10 +371,14 @@ jobs:
           echo "Release APK signature verified."
 
       - name: Upload signed APK and test reports
+        # Artifact storage is best-effort in the active-development lane.
+        # Keep temporary APKs only briefly and don't fail CI if quota is exhausted.
+        continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
           name: VibeSync-Android-Release-APK
           if-no-files-found: error
+          retention-days: 1
           path: |
             app/build/outputs/apk/release/*.apk
             app/build/outputs/mapping/release/**
