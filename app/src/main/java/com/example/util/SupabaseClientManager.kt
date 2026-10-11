@@ -827,7 +827,8 @@ object SupabaseClientManager {
         receiverIdentity: String = "",
         recipientProfileId: String = receiverIdentity,
         dispatchPush: Boolean = true,
-        broadcastRealtime: Boolean = true
+        broadcastRealtime: Boolean = true,
+        onRpcResult: ((httpCode: Int?, success: Boolean, failure: String?) -> Unit)? = null
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             val recipient = recipientProfileId.ifBlank { receiverIdentity }
@@ -849,6 +850,15 @@ object SupabaseClientManager {
             httpClient.newCall(request).execute().use { response ->
                 val success = response.isSuccessful
                 val responseBody = response.body?.string().orEmpty()
+                runCatching {
+                    onRpcResult?.invoke(
+                        response.code,
+                        success,
+                        if (success) null else "HTTP ${response.code}"
+                    )
+                }.onFailure { callbackError ->
+                    Log.w(TAG, "RPC result logger failed: ${callbackError.message}")
+                }
                 if (success) {
                     Log.i("VibeSyncChat", "SEND committed HTTP ${response.code}; table=public.chat_messages messageId=${msg.messageId}.")
                     val broadcast = JSONObject().apply {
@@ -870,6 +880,15 @@ object SupabaseClientManager {
                 success
             }
         } catch (e: Throwable) {
+            runCatching {
+                onRpcResult?.invoke(
+                    null,
+                    false,
+                    "${e.javaClass.simpleName}: ${e.message ?: "network or transport error"}"
+                )
+            }.onFailure { callbackError ->
+                Log.w(TAG, "RPC failure logger failed: ${callbackError.message}")
+            }
             Log.e("VibeSyncChat", "SEND exception in rpc/send_encrypted_message: ${e.javaClass.simpleName}: ${e.message}", e)
             Log.w(TAG, "Encrypted chat RPC notice: ${e.message}")
             false

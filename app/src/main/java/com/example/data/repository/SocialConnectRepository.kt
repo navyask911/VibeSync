@@ -3108,11 +3108,55 @@ class SocialConnectRepository(
             hasUnread = false
         )
 
-        // Durable outbox: Room persists first, then a unique WorkManager request retries until
-        // Supabase confirms the message_id upsert. The queued work survives offline periods and restarts.
+        // Eager-send after the durable local Room write. WorkManager is enqueued only when the
+        // immediate attempt cannot commit, preserving a reliable retry path without delaying normal sends.
         val queueContext = context
         if (queueContext != null) {
-            com.example.service.PendingMessageSyncScheduler.enqueue(queueContext, clientMsgId)
+            try {
+                android.util.Log.i(
+                    "VibeSyncOutbox",
+                    "Immediate outbox attempt starting: message_id=$clientMsgId, local_match_id=$matchId."
+                )
+                when (val attempt = com.example.service.PendingMessageOutboxSender.attempt(queueContext, clientMsgId)) {
+                    is com.example.service.PendingOutboxAttempt.Sent -> {
+                        android.util.Log.i(
+                            "VibeSyncOutbox",
+                            "Immediate send completed: message_id=$clientMsgId, status=COMMITTED, " +
+                                "pending_transition=${attempt.pendingTransition}; WorkManager not needed."
+                        )
+                    }
+                    is com.example.service.PendingOutboxAttempt.NoOp -> {
+                        android.util.Log.i(
+                            "VibeSyncOutbox",
+                            "Immediate send skipped: message_id=$clientMsgId, reason=${attempt.reason}."
+                        )
+                    }
+                    is com.example.service.PendingOutboxAttempt.Retryable -> {
+                        android.util.Log.w(
+                            "VibeSyncOutbox",
+                            "Immediate send did not commit: message_id=$clientMsgId; scheduling durable fallback: ${attempt.reason}"
+                        )
+                        com.example.service.PendingMessageSyncScheduler.enqueue(queueContext, clientMsgId)
+                    }
+                    is com.example.service.PendingOutboxAttempt.Rejected -> {
+                        android.util.Log.e(
+                            "VibeSyncOutbox",
+                            "Immediate send rejected: message_id=$clientMsgId; ${attempt.reason}"
+                        )
+                    }
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                // The message is already in Room; ensure cancellation/navigation cannot strand it.
+                com.example.service.PendingMessageSyncScheduler.enqueue(queueContext, clientMsgId)
+                throw cancelled
+            } catch (t: Throwable) {
+                android.util.Log.e(
+                    "VibeSyncOutbox",
+                    "Immediate send threw for $clientMsgId; scheduling durable fallback: ${t.javaClass.simpleName}: ${t.message}",
+                    t
+                )
+                com.example.service.PendingMessageSyncScheduler.enqueue(queueContext, clientMsgId)
+            }
         } else {
             android.util.Log.e(
                 "VibeSyncChat",
