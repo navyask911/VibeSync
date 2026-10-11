@@ -207,7 +207,7 @@ internal object PendingMessageOutboxSender {
                     "Outbox attempt committed: message_id=$safeMessageId, " +
                         "local_state=${latest?.deliveryState ?: "removed"}, pending_transition=$changed."
                 )
-                PendingOutboxAttempt.Sent(changed)
+                PendingOutboxAttempt.Sent(changed > 0)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (e: IOException) {
