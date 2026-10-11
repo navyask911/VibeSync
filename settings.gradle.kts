@@ -1,5 +1,16 @@
 pluginManagement {
+  // Resolve KSP directly to the published implementation module instead of
+  // relying on the plugin-marker artifact that failed resolution in CI.
+  resolutionStrategy {
+    eachPlugin {
+      if (requested.id.id == "com.google.devtools.ksp") {
+        useModule("com.google.devtools.ksp:symbol-processing-gradle-plugin:${requested.version}")
+      }
+    }
+  }
   repositories {
+    // KSP's Gradle implementation is published to Maven Central.
+    mavenCentral()
     google {
       content {
         includeGroupByRegex("com\\.android.*")
