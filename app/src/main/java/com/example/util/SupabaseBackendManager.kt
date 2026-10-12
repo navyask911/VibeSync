@@ -207,7 +207,7 @@ object SupabaseBackendManager {
                     reconnectAttempt = 0
                     Log.i(
                         TAG,
-                        "Supabase Realtime WebSocket transport opened (anonHandshake=$useAnonForHandshake); " +
+                        "Supabase Realtime WebSocket transport opened with the public apikey; " +
                             "applying active VibeSync credentials when available."
                     )
 
