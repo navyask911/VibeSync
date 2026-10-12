@@ -72,7 +72,7 @@ import com.example.data.model.ApiCredentialRequestEntity
         LocalBusinessAnalyticsEventEntity::class,
         ApiCredentialRequestEntity::class
     ],
-    version = 45,
+    version = 46,
     exportSchema = false
 )
 abstract class DatingDatabase : RoomDatabase() {
@@ -315,6 +315,13 @@ abstract class DatingDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_45_46 = object : Migration(45, 46) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                addColumnIfMissing(db, "chat_messages", "serverCreatedAt", "INTEGER NOT NULL DEFAULT 0")
+                addColumnIfMissing(db, "chat_messages", "deliveryAckPending", "INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getDatabase(context: Context): DatingDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -336,7 +343,8 @@ abstract class DatingDatabase : RoomDatabase() {
                     MIGRATION_41_42,
                     MIGRATION_42_43,
                     MIGRATION_43_44,
-                    MIGRATION_44_45
+                    MIGRATION_44_45,
+                    MIGRATION_45_46
                 )
                  // Intentionally omit MIGRATION_39_40: upgrading an existing v39 store forces
                  // Room to rebuild tables from the current entity definitions if schemas drift.

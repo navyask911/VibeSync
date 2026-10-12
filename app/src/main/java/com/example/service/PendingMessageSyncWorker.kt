@@ -413,8 +413,13 @@ class PendingMessageSyncWorker(
                 Result.success()
             }
             is PendingOutboxAttempt.Rejected -> {
-                Log.e(TAG, "doWork FAILED: message_id=$messageId, status=REJECTED, reason=${attempt.reason}.")
-                Result.failure()
+                val reason = attempt.reason.take(350)
+                runCatching {
+                    DatingDatabase.getDatabase(applicationContext).chatMessageDao()
+                        .recordOutboxFailure(messageId, reason, System.currentTimeMillis())
+                }
+                Log.w(TAG, "Outbox row remains PENDING for retry: message_id=$messageId, reason=$reason.")
+                Result.retry()
             }
             is PendingOutboxAttempt.Retryable -> {
                 val reason = attempt.reason.take(350)
@@ -458,13 +463,23 @@ class PendingMessageInboxSyncWorker(
         try {
             val database = DatingDatabase.getDatabase(applicationContext)
             val session = VibeSyncSessionManager.getSession(applicationContext)
-                ?: return@withContext Result.success()
+                ?: return@withContext Result.retry()
             val myProfileId = session.profileId.trim()
-            if (myProfileId.isBlank()) return@withContext Result.success()
+            if (myProfileId.isBlank()) return@withContext Result.retry()
 
-            val repository = SocialConnectRepository(database, context = applicationContext)
-            val chatDao = database.chatMessageDao()
-            val matches = database.matchDao().getAllMatchesSync()
+            val allMatches = database.matchDao().getAllMatchesSync()
+            val requestedMatchId = inputData.getString(KEY_REMOTE_MATCH_ID).orEmpty().trim()
+            val targetMessageId = inputData.getString(KEY_REMOTE_MESSAGE_ID).orEmpty().trim()
+            val targetSenderId = inputData.getString(KEY_REMOTE_SENDER_ID).orEmpty().trim()
+            val matched = if (requestedMatchId.isBlank()) allMatches else allMatches.filter { match ->
+                match.matchId.equals(requestedMatchId, ignoreCase = true) ||
+                    SupabaseClientManager.canonicalChatMatchId(myProfileId, match.profileId)
+                        .equals(requestedMatchId, ignoreCase = true)
+            }
+            // If a wakeup references a match not present in Room yet, scan all known conversations
+            // instead of falsely acknowledging a successful no-op.
+            val matches = matched.ifEmpty { allMatches }
+            var hadIncompleteConversation = false
             var checkedConversations = 0
             var syncedMessages = 0
             var ackFailures = 0
@@ -474,75 +489,46 @@ class PendingMessageInboxSyncWorker(
                 if (peerProfileId.isBlank() || peerProfileId.equals(myProfileId, ignoreCase = true)) continue
                 val canonicalMatchId = SupabaseClientManager.canonicalChatMatchId(myProfileId, peerProfileId)
                 if (canonicalMatchId.isBlank()) continue
+                val isTargetConversation = requestedMatchId.isBlank() ||
+                    requestedMatchId.equals(match.matchId, ignoreCase = true) ||
+                    requestedMatchId.equals(canonicalMatchId, ignoreCase = true)
                 checkedConversations++
 
-                val remoteMessages = SupabaseClientManager.fetchMessagesForMatch(
-                    matchId = canonicalMatchId,
-                    currentUserPhone = session.phoneNumber,
-                    partnerPhone = peerProfileId
+                val profile = runCatching { database.profileDao().getProfileByIdSync(peerProfileId) }.getOrNull()
+                val result = com.example.util.MessageDeltaSyncManager.syncConversation(
+                    context = applicationContext,
+                    database = database,
+                    match = match,
+                    myProfileId = myProfileId,
+                    myPhone = session.phoneNumber,
+                    partnerPhone = profile?.phoneNumber.orEmpty().ifBlank { peerProfileId },
+                    targetMessageId = targetMessageId.takeIf { it.isNotBlank() && isTargetConversation },
+                    notifyTargetMessage = targetMessageId.isNotBlank() && isTargetConversation &&
+                        !com.example.util.AppNotificationManager.isAppInForeground
                 )
-                for (remote in remoteMessages) {
-                    val isFromMe = remote.senderId.equals(myProfileId, ignoreCase = true)
-                    if (isFromMe) {
-                        // Recover a server commit when the sender lost the HTTP response/Realtime UPDATE.
-                        chatDao.markOutboxSentToServerIfPending(remote.messageId, System.currentTimeMillis())
-                        if (remote.isRead) chatDao.markMessageAsRead(remote.messageId)
-                        else if (remote.isDelivered) chatDao.markMessageAsDelivered(remote.messageId)
-                    }
-
-                    val local = remote.copy(
-                        matchId = match.matchId,
-                        senderId = if (isFromMe) "USER" else remote.senderId,
-                        isDelivered = if (isFromMe) remote.isDelivered else true,
-                        deliveryState = when {
-                            remote.isRead -> "READ"
-                            !isFromMe -> "DELIVERED"
-                            remote.isDelivered -> "DELIVERED"
-                            else -> "SENT_TO_SERVER"
-                        }
-                    )
-                    repository.insertReceivedChatMessage(local, remote.senderId, peerProfileId)
-                    syncedMessages++
-
-                    if (!isFromMe && !remote.isDelivered) {
-                        val acked = SupabaseBackendManager.markMessageDelivered(
-                            remote.messageId,
-                            remote.senderId,
-                            myProfileId
-                        )
-                        if (!acked) {
-                            ackFailures++
-                            Log.w(TAG, "Background inbox delivery ACK failed for ${remote.messageId}; periodic sync will retry.")
-                        }
-                    }
-                }
-
-                // Sender-side catch-up requires metadata only: sender cannot decrypt ciphertext encrypted
-                // to the recipient's key, but it can safely reconcile is_delivered/is_read in Room.
-                val deliveryStates = SupabaseClientManager.fetchMessageDeliveryStatesForMatch(canonicalMatchId)
-                for (state in deliveryStates) {
-                    if (!state.senderId.equals(myProfileId, ignoreCase = true)) continue
-                    when {
-                        state.isRead -> chatDao.markMessageAsRead(state.messageId)
-                        state.isDelivered -> chatDao.markMessageAsDelivered(state.messageId)
-                        else -> chatDao.markOutboxSentToServerIfPending(state.messageId, System.currentTimeMillis())
-                    }
-                }
+                if (!result.complete) hadIncompleteConversation = true
+                syncedMessages += result.syncedCount
+                ackFailures += result.ackFailures
             }
-            Log.i(
-                TAG,
-                "Inbox pull finished: conversations=$checkedConversations rows=$syncedMessages ackFailures=$ackFailures."
-            )
-            Result.success()
+
+            if (targetMessageId.isNotBlank() && syncedMessages == 0) {
+                Log.w(TAG, "Targeted FCM message not yet resolvable; returning retry so the wakeup is not lost.")
+                return@withContext Result.retry()
+            }
+            Log.i(TAG, "Inbox delta finished: conversations=$checkedConversations rows=$syncedMessages ackFailures=$ackFailures incomplete=$hadIncompleteConversation.")
+            if (hadIncompleteConversation || ackFailures > 0) Result.retry() else Result.success()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (t: Throwable) {
-            Log.e(TAG, "Inbox pull failed; a future constrained run will retry: ${t.message}", t)
+            Log.e(TAG, "Inbox delta failed; WorkManager will retry: ${t.message}", t)
             Result.retry()
         }
     }
 
     companion object {
+        const val KEY_REMOTE_MATCH_ID = "remote_match_id"
+        const val KEY_REMOTE_MESSAGE_ID = "remote_message_id"
+        const val KEY_REMOTE_SENDER_ID = "remote_sender_id"
         private const val TAG = "VibeSyncInbox"
     }
 }
@@ -608,25 +594,42 @@ object PendingMessageSyncScheduler {
      * The worker fetches authoritative encrypted rows from Supabase and commits delivery ACKs
      * after caching each incoming message in Room.
      */
-    fun enqueueInboxSyncNow(context: Context) {
+    fun enqueueInboxSyncNow(
+        context: Context,
+        remoteMatchId: String? = null,
+        messageId: String? = null,
+        senderId: String? = null
+    ) {
         try {
+            val cleanMessageId = messageId.orEmpty().trim()
+            val cleanMatchId = remoteMatchId.orEmpty().trim()
+            val input = workDataOf(
+                PendingMessageInboxSyncWorker.KEY_REMOTE_MATCH_ID to cleanMatchId,
+                PendingMessageInboxSyncWorker.KEY_REMOTE_MESSAGE_ID to cleanMessageId,
+                PendingMessageInboxSyncWorker.KEY_REMOTE_SENDER_ID to senderId.orEmpty()
+            )
             val request = OneTimeWorkRequestBuilder<PendingMessageInboxSyncWorker>()
+                .setInputData(input)
                 .setConstraints(
-                    Constraints.Builder()
-                        .setRequiredNetworkType(NetworkType.CONNECTED)
-                        .build()
+                    Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
                 )
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30L, TimeUnit.SECONDS)
+                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
                 .addTag("VibeSyncInbox")
                 .build()
+            val uniqueName = if (cleanMessageId.isNotBlank()) {
+                "vibesync-chat-inbox-message-$cleanMessageId"
+            } else {
+                "vibesync-chat-inbox-resume"
+            }
             WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
-                "vibesync-chat-inbox-wakeup",
-                ExistingWorkPolicy.KEEP,
+                uniqueName,
+                ExistingWorkPolicy.APPEND_OR_REPLACE,
                 request
             )
-            Log.i(TAG, "Scheduled immediate Supabase inbox pull after FCM wake-up.")
+            Log.i(TAG, "Scheduled inbox delta (targeted=${cleanMessageId.isNotBlank()}).")
         } catch (t: Throwable) {
-            Log.e(TAG, "Could not schedule immediate inbox pull; periodic sync remains available.", t)
+            Log.e(TAG, "Could not schedule immediate inbox delta; periodic sync remains available.", t)
         }
     }
 

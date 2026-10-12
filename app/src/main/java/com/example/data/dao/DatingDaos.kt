@@ -200,16 +200,19 @@ interface ChatMessageDao {
     @Query("UPDATE chat_messages SET senderDisplayName = :displayName, senderPhotoUri = :photoUri WHERE matchId = :matchId AND senderId != 'USER'")
     suspend fun persistIncomingContactMetadata(matchId: String, displayName: String, photoUri: String)
 
-    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryState = 'READ' WHERE messageId = :messageId")
+    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryAckPending = 0, deliveryState = 'READ' WHERE messageId = :messageId")
     suspend fun markMessageAsRead(messageId: String)
 
-    @Query("UPDATE chat_messages SET isDelivered = 1, deliveryState = CASE WHEN deliveryState = 'READ' THEN 'READ' ELSE 'DELIVERED' END WHERE messageId = :messageId")
+    @Query("UPDATE chat_messages SET isDelivered = 1, deliveryAckPending = 0, deliveryState = CASE WHEN deliveryState = 'READ' THEN 'READ' ELSE 'DELIVERED' END WHERE messageId = :messageId")
     suspend fun markMessageAsDelivered(messageId: String)
 
-    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryState = 'READ' WHERE matchId = :matchId AND senderId != 'USER'")
+    @Query("SELECT * FROM chat_messages WHERE matchId = :matchId AND senderId != 'USER' AND deliveryAckPending = 1 ORDER BY timestamp ASC")
+    suspend fun getPendingDeliveryAcksForMatch(matchId: String): List<ChatMessageEntity>
+
+    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryAckPending = 0, deliveryState = 'READ' WHERE matchId = :matchId AND senderId != 'USER'")
     suspend fun markIncomingMessagesAsReadForMatch(matchId: String)
 
-    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryState = 'READ' WHERE matchId = :matchId")
+    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryAckPending = 0, deliveryState = 'READ' WHERE matchId = :matchId")
     suspend fun markAllMessagesAsReadForMatch(matchId: String)
 
     @Query("SELECT * FROM chat_messages WHERE messageId = :messageId LIMIT 1")

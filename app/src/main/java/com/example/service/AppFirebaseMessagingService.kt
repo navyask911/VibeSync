@@ -96,24 +96,37 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
             val city = data["city"] ?: "Bengaluru"
             val score = data["score"]?.toIntOrNull() ?: 94
             val mediaType = data["media_type"] ?: "TEXT"
+            val wakeMatchId = data["match_id"].orEmpty().trim()
+            val wakeMessageId = data["message_id"].orEmpty().trim()
+            val wakeSenderId = data["sender_id"].orEmpty().trim()
+
+            if (wakeMatchId.isNotBlank() && wakeMessageId.isNotBlank()) {
+                val viewingThisChat = AppNotificationManager.isAppInForeground && (
+                    (wakeSenderId.isNotBlank() && AppNotificationManager.isUserActiveInChatWith(wakeSenderId)) ||
+                        AppNotificationManager.isUserActiveInChatWith(wakeMatchId)
+                    )
+                if (!viewingThisChat) {
+                    com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(
+                        context = applicationContext,
+                        remoteMatchId = wakeMatchId,
+                        messageId = wakeMessageId,
+                        senderId = wakeSenderId
+                    )
+                }
+                Log.i(TAG, if (viewingThisChat) {
+                    "FCM wakeup already covered by active chat UI for message_id=$wakeMessageId."
+                } else {
+                    "Targeted FCM wakeup queued for match_id=$wakeMatchId message_id=$wakeMessageId."
+                })
+                return
+            }
 
             when (type.uppercase()) {
                 "CHAT_SYNC_WAKEUP" -> {
-                    // FCM carries no message body/ciphertext. It only wakes the client to pull the
-                    // authoritative encrypted row from Supabase and ACK after the row is cached.
+                    // Legacy wakeups without identifiers still pull the inbox. Notify only after
+                    // REST decryption and Room persistence, from the inbox worker.
                     com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(applicationContext)
-                    Log.i(TAG, "Supabase inbox sync queued for push message id=${data["message_id"] ?: "unknown"}.")
-                    if (!AppNotificationManager.isAppInForeground) {
-                        AppNotificationManager.showMessageNotification(
-                            context = applicationContext,
-                            senderId = senderOrMatchId,
-                            senderName = data["sender_name"] ?: "VibeSync",
-                            messageText = "You have a new secure message",
-                            senderPhotoUrl = photoUrl,
-                            mediaType = mediaType,
-                            channelId = AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES
-                        )
-                    }
+                    Log.i(TAG, "Fallback inbox sync queued for a legacy FCM wake-up.")
                 }
                 "NEW_USER", "USER_JOINED", "JOINING" -> {
                     // One time alert inside Chat only - NO duplicate notifications for joining user

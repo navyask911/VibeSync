@@ -1,0 +1,234 @@
+package com.example.util
+
+import android.content.Context
+import android.util.Log
+import com.example.data.database.DatingDatabase
+import com.example.data.model.ChatMessageEntity
+import com.example.data.model.MatchEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+data class MessageDeltaSyncResult(
+    val complete: Boolean,
+    val syncedCount: Int,
+    val latestCreatedAtMs: Long,
+    val ackFailures: Int = 0,
+    val reason: String = ""
+)
+
+/**
+ * Idempotent inbound delta pipeline shared by an active chat and the FCM/WorkManager path.
+ * Watermarks advance only after each returned row has been handled and every inbound payload was
+ * either decrypted or belongs to the current sender (whose ciphertext cannot be decrypted locally).
+ */
+object MessageDeltaSyncManager {
+    private const val TAG = "VibeSyncDelta"
+
+    suspend fun syncConversation(
+        context: Context,
+        database: DatingDatabase,
+        match: MatchEntity,
+        myProfileId: String,
+        myPhone: String,
+        partnerPhone: String,
+        targetMessageId: String? = null,
+        notifyTargetMessage: Boolean = false
+    ): MessageDeltaSyncResult = withContext(Dispatchers.IO) {
+        val ownerId = myProfileId.trim()
+        val peerId = match.profileId.trim()
+        val remoteMatchId = SupabaseClientManager.canonicalChatMatchId(ownerId, peerId)
+        if (ownerId.isBlank() || peerId.isBlank() || remoteMatchId.isBlank()) {
+            return@withContext MessageDeltaSyncResult(false, 0, 0L, reason = "missing canonical conversation identity")
+        }
+
+        val localWatermark = MessageSyncWatermarkStore.read(context, match.matchId)
+        // A targeted FCM wake-up bypasses the cursor once, so late push delivery cannot hide its row.
+        val afterCreatedAt = if (targetMessageId.isNullOrBlank()) localWatermark else 0L
+        val batch = SupabaseClientManager.fetchMessageDeltaForMatch(
+            matchId = remoteMatchId,
+            currentUserPhone = myPhone,
+            partnerPhone = partnerPhone,
+            afterCreatedAtMs = afterCreatedAt
+        )
+        var complete = batch?.complete == true
+        var synced = 0
+        var ackFailures = 0
+
+        if (batch != null) {
+            val dao = database.chatMessageDao()
+            val messageDao = database.messageDao()
+            val matchDao = database.matchDao()
+            for (record in batch.records) {
+                val remote = record.message
+                if (record.deleted) {
+                    dao.deleteMessageById(remote.messageId)
+                    synced++
+                    continue
+                }
+                val isFromMe = remote.senderId.equals(ownerId, ignoreCase = true)
+                val existing = dao.getMessageById(remote.messageId)
+                val existingPlaintext = existing?.text?.takeIf {
+                    it.isNotBlank() && !it.startsWith(TinkCryptoManager.TINK_PREFIX)
+                }
+                val canRenderPlaintext = record.decryptionSucceeded || existingPlaintext != null
+
+                if (isFromMe) {
+                    if (existing != null) {
+                        // Never replace the sender's local plaintext with recipient-key ciphertext.
+                        when {
+                            remote.isRead -> dao.markMessageAsRead(remote.messageId)
+                            remote.isDelivered -> dao.markMessageAsDelivered(remote.messageId)
+                            else -> dao.markOutboxSentToServerIfPending(remote.messageId, System.currentTimeMillis())
+                        }
+                        dao.upsertMessage(existing.copy(
+                            serverCreatedAt = maxOf(existing.serverCreatedAt, remote.serverCreatedAt),
+                            isDelivered = existing.isDelivered || remote.isDelivered,
+                            isRead = existing.isRead || remote.isRead,
+                            deliveryState = when {
+                                existing.isRead || remote.isRead -> "READ"
+                                existing.isDelivered || remote.isDelivered -> "DELIVERED"
+                                existing.deliveryState == "PENDING" -> "SENT_TO_SERVER"
+                                else -> existing.deliveryState
+                            }
+                        ))
+                    } else {
+                        // Another device may have sent this message; preserve a filtered ciphertext row
+                        // rather than silently omitting the server row from local synchronization.
+                        dao.upsertMessage(remote.copy(senderId = "USER", text = remote.text, deliveryAckPending = false))
+                    }
+                    synced++
+                    continue
+                }
+
+                if (!canRenderPlaintext) complete = false
+                val localText = if (record.decryptionSucceeded) remote.text else existingPlaintext ?: remote.text
+                val needsAck = canRenderPlaintext && !remote.isDelivered && !remote.isRead
+                val local = remote.copy(
+                    matchId = match.matchId,
+                    senderId = remote.senderId,
+                    text = localText,
+                    isDelivered = remote.isDelivered,
+                    isRead = remote.isRead,
+                    isEncrypted = true,
+                    deliveryState = when {
+                        remote.isRead -> "READ"
+                        remote.isDelivered -> "DELIVERED"
+                        needsAck -> "ACK_PENDING"
+                        !canRenderPlaintext -> "PENDING_DECRYPTION"
+                        else -> "DELIVERED"
+                    },
+                    deliveryAckPending = needsAck,
+                    senderDisplayName = existing?.senderDisplayName?.ifBlank { match.localContactName }
+                        ?: match.localContactName,
+                    senderPhotoUri = existing?.senderPhotoUri?.ifBlank { match.localPhotoUri }
+                        ?: match.localPhotoUri
+                ).let { fresh ->
+                    if (existing == null) fresh else fresh.copy(
+                        isStarred = existing.isStarred,
+                        isEdited = existing.isEdited,
+                        editedTimestamp = maxOf(existing.editedTimestamp, fresh.editedTimestamp),
+                        replyToMessageId = fresh.replyToMessageId ?: existing.replyToMessageId,
+                        replyToText = fresh.replyToText ?: existing.replyToText,
+                        replyToSender = fresh.replyToSender ?: existing.replyToSender,
+                        isDeletedForMe = existing.isDeletedForMe,
+                        isDeletedForEveryone = existing.isDeletedForEveryone,
+                        isForwarded = existing.isForwarded || fresh.isForwarded,
+                        outboxOwnerProfileId = existing.outboxOwnerProfileId,
+                        syncAttempts = existing.syncAttempts,
+                        lastSyncError = existing.lastSyncError,
+                        lastSyncAttemptAt = existing.lastSyncAttemptAt
+                    )
+                }
+
+                // Room is the durable inbox commit. ACK is only attempted after this REPLACE succeeds.
+                dao.upsertMessage(local)
+                messageDao.insertMessage(local.toLocalMessage())
+                synced++
+
+                if (canRenderPlaintext && remote.timestamp >= match.lastMessageTime && local.text.isNotBlank()) {
+                    matchDao.updateLastMessage(
+                        matchId = match.matchId,
+                        text = local.text,
+                        timestamp = remote.timestamp,
+                        hasUnread = !remote.isRead
+                    )
+                }
+
+                if (canRenderPlaintext && needsAck) {
+                    val acked = SupabaseBackendManager.markMessageDelivered(
+                        remote.messageId,
+                        remote.senderId,
+                        ownerId
+                    )
+                    if (acked) {
+                        dao.markMessageAsDelivered(remote.messageId)
+                    } else {
+                        ackFailures++
+                        Log.w(TAG, "Delivery ACK left in Room outbox for message_id=${remote.messageId}.")
+                    }
+                }
+
+                if (
+                    notifyTargetMessage &&
+                    !AppNotificationManager.isAppInForeground &&
+                    !targetMessageId.isNullOrBlank() &&
+                    targetMessageId == remote.messageId &&
+                    existing == null &&
+                    canRenderPlaintext &&
+                    local.text.isNotBlank()
+                ) {
+                    val sender = runCatching { database.profileDao().getProfileByIdSync(remote.senderId) }.getOrNull()
+                    AppNotificationManager.showMessageNotification(
+                        context = context.applicationContext,
+                        senderId = remote.senderId,
+                        senderName = sender?.name?.ifBlank { match.localContactName } ?: "VibeSync Contact",
+                        messageText = local.text,
+                        senderPhotoUrl = sender?.avatarUrl.orEmpty().ifBlank { match.localPhotoUri },
+                        mediaType = remote.mediaType,
+                        channelId = AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES
+                    )
+                }
+            }
+
+            // Retain and retry ACKs independently from the read watermark, including failures older
+            // than the overlap window. This avoids a successful message sync losing its pending ACK.
+            val pendingAcks = database.chatMessageDao().getPendingDeliveryAcksForMatch(match.matchId)
+            for (pending in pendingAcks) {
+                val acked = SupabaseBackendManager.markMessageDelivered(
+                    pending.messageId,
+                    pending.senderId,
+                    ownerId
+                )
+                if (acked) database.chatMessageDao().markMessageAsDelivered(pending.messageId)
+                else ackFailures++
+            }
+
+            // Sender cannot decrypt recipient-key ciphertext, so delivery ticks are reconciled from
+            // authoritative metadata as part of each delta sweep.
+            val deliveryStates = SupabaseClientManager.fetchMessageDeliveryStatesForMatch(remoteMatchId)
+            for (state in deliveryStates) {
+                if (!state.senderId.equals(ownerId, ignoreCase = true)) continue
+                when {
+                    state.isRead -> database.chatMessageDao().markMessageAsRead(state.messageId)
+                    state.isDelivered -> database.chatMessageDao().markMessageAsDelivered(state.messageId)
+                    else -> database.chatMessageDao().markOutboxSentToServerIfPending(state.messageId, System.currentTimeMillis())
+                }
+            }
+
+            if (batch.complete && complete && batch.latestCreatedAtMs > 0L) {
+                MessageSyncWatermarkStore.advance(context.applicationContext, match.matchId, batch.latestCreatedAtMs)
+            } else if (!complete || !batch.complete) {
+                Log.w(TAG, "Watermark unchanged for local_match_id=${match.matchId}; one or more rows still need decryption/retry.")
+            }
+            MessageDeltaSyncResult(batch.complete && complete, synced, batch.latestCreatedAtMs, ackFailures)
+        } else {
+            // Even if the REST read failed, try old pending delivery ACKs on the next worker/resume.
+            val pendingAcks = database.chatMessageDao().getPendingDeliveryAcksForMatch(match.matchId)
+            for (pending in pendingAcks) {
+                val acked = SupabaseBackendManager.markMessageDelivered(pending.messageId, pending.senderId, ownerId)
+                if (acked) database.chatMessageDao().markMessageAsDelivered(pending.messageId) else ackFailures++
+            }
+            MessageDeltaSyncResult(false, 0, 0L, ackFailures, "REST delta query failed")
+        }
+    }
+}

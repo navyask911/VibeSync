@@ -3184,8 +3184,9 @@ class SocialConnectRepository(
                     is com.example.service.PendingOutboxAttempt.Rejected -> {
                         android.util.Log.e(
                             "VibeSyncOutbox",
-                            "Immediate send rejected: message_id=$clientMsgId; ${attempt.reason}"
+                            "Immediate send did not commit: message_id=$clientMsgId; scheduling durable retry: ${attempt.reason}"
                         )
+                        com.example.service.PendingMessageSyncScheduler.enqueue(queueContext, clientMsgId)
                     }
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {

@@ -1,15 +1,27 @@
 package com.example.util
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.net.Uri
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
 
-/** Durable app-private contact/photo copies plus Supabase profile-avatar upload. */
 object ProfileAvatarStorageManager {
-    data class PersistedAvatar(val uri: String, val remoteUrl: String?)
+    private const val MAX_SIDE = 512
+    private const val MAX_BYTES = 150 * 1024
+    private const val INITIAL_QUALITY = 80
+    private const val TAG = "ProfileAvatarStorage"
+
+    /** uri is the app-private compressed file URI, suitable for immediate Coil rendering. */
+    data class PersistedAvatar(val uri: String, val remoteUrl: String?, val byteCount: Int)
 
     suspend fun cacheContactPhoto(context: Context, sourceUri: String, identityKey: String): String? =
         withContext(Dispatchers.IO) {
@@ -27,26 +39,82 @@ object ProfileAvatarStorageManager {
             } catch (_: Throwable) { file.delete(); null }
         }
 
-    suspend fun persistPickedAvatar(context: Context, sourceUri: Uri, profileId: String, slot: Int): PersistedAvatar =
-        withContext(Dispatchers.IO) {
-            val mime = context.contentResolver.getType(sourceUri) ?: "image/jpeg"
-            val extension = when (mime.lowercase()) {
-                "image/png" -> "png"
-                "image/webp" -> "webp"
-                else -> "jpg"
-            }
-            val dir = File(context.filesDir, "profile_avatars").apply { mkdirs() }
-            val file = File(dir, "avatar_${slot.coerceIn(1, 3)}.$extension")
-            try {
-                context.contentResolver.openInputStream(sourceUri)?.use { input ->
-                    file.outputStream().use { output -> input.copyTo(output) }
-                } ?: return@withContext PersistedAvatar(sourceUri.toString(), null)
-                if (file.length() <= 0L) return@withContext PersistedAvatar(sourceUri.toString(), null)
-                val localUri = Uri.fromFile(file).toString()
-                val remote = if (profileId.isBlank()) null else SupabaseClientManager.uploadProfileAvatar(file, profileId, mime)
-                PersistedAvatar(remote?.ifBlank { null } ?: localUri, remote?.ifBlank { null })
-            } catch (_: Throwable) { PersistedAvatar(sourceUri.toString(), null) }
+    suspend fun persistPickedAvatar(
+        context: Context,
+        sourceUri: Uri,
+        profileId: String,
+        slot: Int
+    ): PersistedAvatar = withContext(Dispatchers.IO) {
+        require(profileId.isNotBlank()) { "A verified VibeSync profile is required to sync an avatar." }
+        val decoded = decodeSampled(context, sourceUri) ?: error("Selected image could not be decoded.")
+        val square = try {
+            val cropSize = minOf(decoded.width, decoded.height)
+            val left = (decoded.width - cropSize) / 2
+            val top = (decoded.height - cropSize) / 2
+            val crop = Bitmap.createBitmap(decoded, left, top, cropSize, cropSize)
+            if (crop !== decoded) decoded.recycle()
+            if (crop.width == MAX_SIDE && crop.height == MAX_SIDE) crop
+            else Bitmap.createScaledBitmap(crop, MAX_SIDE, MAX_SIDE, true).also { if (it !== crop) crop.recycle() }
+        } catch (t: Throwable) {
+            decoded.recycle()
+            throw t
         }
+
+        try {
+            val dir = File(context.cacheDir, "avatars").apply { mkdirs() }
+            val localFile = File(dir, "${safeHash(profileId)}_${slot.coerceIn(1, 3)}.jpg")
+            val bytes = compressUnderLimit(square)
+            localFile.outputStream().use { output -> output.write(bytes); output.flush() }
+            require(localFile.isFile && localFile.length() in 1 until MAX_BYTES.toLong()) {
+                "Compressed avatar must be strictly below 150 KiB."
+            }
+
+            // The compressed local file is ready before any network request. Coil can use it while
+            // the remote profile row/cache catches up; only this JPEG is sent to Storage.
+            val objectName = when (slot.coerceIn(1, 3)) {
+                1 -> "$profileId.jpg"
+                else -> "${profileId}_${slot.coerceIn(1, 3)}.jpg"
+            }
+            val remoteUrl = SupabaseClientManager.uploadProfileAvatar(
+                file = localFile,
+                profileId = profileId,
+                contentType = "image/jpeg",
+                storageObjectName = objectName
+            ) ?: error("Supabase avatar upload failed; retry while connected.")
+            PersistedAvatar(
+                uri = Uri.fromFile(localFile).toString(),
+                remoteUrl = remoteUrl,
+                byteCount = bytes.size
+            )
+        } finally {
+            square.recycle()
+        }
+    }
+
+    private fun decodeSampled(context: Context, uri: Uri): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        val maxDim = maxOf(bounds.outWidth, bounds.outHeight)
+        while (maxDim / (sample * 2) >= MAX_SIDE * 2) sample *= 2
+        val options = BitmapFactory.Options().apply { inSampleSize = sample.coerceAtLeast(1) }
+        return context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+    }
+
+    private fun compressUnderLimit(bitmap: Bitmap): ByteArray {
+        var quality = INITIAL_QUALITY
+        while (quality >= 35) {
+            val stream = ByteArrayOutputStream()
+            val compressed = bitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+            val bytes = stream.toByteArray()
+            stream.close()
+            if (compressed && bytes.isNotEmpty() && bytes.size < MAX_BYTES) return bytes
+            // Quality 80 is the normal path; only drop lower if the hard 150 KiB cap requires it.
+            quality -= 5
+        }
+        error("Avatar could not be compressed below 150 KiB.")
+    }
 
     private fun safeHash(value: String): String =
         MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))

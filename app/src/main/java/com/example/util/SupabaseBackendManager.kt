@@ -82,6 +82,8 @@ object SupabaseBackendManager {
     @Volatile private var realtimeAuthToken: String? = null
     @Volatile private var realtimeSubscriptionSocket: WebSocket? = null
     @Volatile private var realtimeSubscribedProfileId: String? = null
+    @Volatile private var realtimeRequestedMatchId: String? = null
+    @Volatile private var realtimeSubscribedMatchId: String? = null
 
     // Callbacks for incoming realtime events
     @Volatile private var onInsertCallback: ((JSONObject) -> Unit)? = null
@@ -131,8 +133,14 @@ object SupabaseBackendManager {
      */
     fun connectRealtimeWebsocket(
         onInsert: (JSONObject) -> Unit,
-        onUpdate: (JSONObject) -> Unit = {}
+        onUpdate: (JSONObject) -> Unit = {},
+        matchId: String? = null
     ) {
+        val requestedMatch = matchId?.trim().orEmpty().ifBlank { null }
+        if (realtimeWebSocket != null && realtimeRequestedMatchId != requestedMatch) {
+            disconnectRealtimeWebsocket()
+        }
+        realtimeRequestedMatchId = requestedMatch
         onInsertCallback = onInsert
         onUpdateCallback = onUpdate
         isIntentionallyClosed = false
@@ -466,6 +474,7 @@ object SupabaseBackendManager {
         if (socket == null || realtimeSubscriptionSocket === socket) {
             realtimeSubscriptionSocket = null
             realtimeSubscribedProfileId = null
+            realtimeSubscribedMatchId = null
         }
     }
 
@@ -505,7 +514,10 @@ object SupabaseBackendManager {
             Log.i(TAG, "Applied refreshed VibeSync JWT to the open Realtime socket.")
         }
 
-        if (realtimeSubscriptionSocket === webSocket && realtimeSubscribedProfileId == profileId) return
+        if (realtimeSubscriptionSocket === webSocket &&
+            realtimeSubscribedProfileId == profileId &&
+            realtimeSubscribedMatchId == realtimeRequestedMatchId
+        ) return
 
         _realtimeSubscriptionStatus.value = "SUBSCRIBING"
         val joinChatMsg = JSONObject().apply {
@@ -516,17 +528,19 @@ object SupabaseBackendManager {
                 val config = JSONObject().apply {
                     put("broadcast", JSONObject().put("self", true))
                     val changes = JSONArray().apply {
+                        val activeMatch = realtimeRequestedMatchId?.trim().orEmpty()
+                        val scopedFilter = activeMatch.takeIf { it.isNotBlank() }?.let { "match_id=eq.$it" }
                         put(JSONObject().apply {
                             put("event", "INSERT")
                             put("schema", "public")
                             put("table", "chat_messages")
-                            put("filter", "receiver_id=eq.$profileId")
+                            put("filter", scopedFilter ?: "receiver_id=eq.$profileId")
                         })
                         put(JSONObject().apply {
                             put("event", "UPDATE")
                             put("schema", "public")
                             put("table", "chat_messages")
-                            put("filter", "sender_id=eq.$profileId")
+                            put("filter", scopedFilter ?: "sender_id=eq.$profileId")
                         })
                     }
                     put("postgres_changes", changes)
@@ -538,6 +552,7 @@ object SupabaseBackendManager {
         if (webSocket.send(joinChatMsg.toString())) {
             realtimeSubscriptionSocket = webSocket
             realtimeSubscribedProfileId = profileId
+            realtimeSubscribedMatchId = realtimeRequestedMatchId
         } else {
             _realtimeSubscriptionStatus.value = "ERROR"
             Log.w(TAG, "Realtime chat subscription join could not be queued.")
@@ -562,8 +577,14 @@ object SupabaseBackendManager {
             resetRealtimeSocketAuthState(socket)
             _realtimeConnected.value = false
             _realtimeSubscriptionStatus.value = "DISCONNECTED"
-            socket?.close(1000, "App backgrounded")
-            Log.i(TAG, "🔌 Disconnected Supabase Realtime WebSocket (App Backgrounded)")
+            socket?.close(1000, "Chat screen closed or paused")
+            realtimeSubscriptionSocket = null
+            realtimeSubscribedProfileId = null
+            realtimeSubscribedMatchId = null
+            realtimeRequestedMatchId = null
+            onInsertCallback = null
+            onUpdateCallback = null
+            Log.i(TAG, "🔌 Disconnected Supabase Realtime WebSocket (no active chat)")
         } catch (e: Exception) {
             Log.w(TAG, "Notice disconnecting realtime websocket: ${e.message}")
         }
@@ -773,6 +794,7 @@ object SupabaseBackendManager {
                         put("id", messageId)
                         put("message_id", messageId)
                         put("is_delivered", true)
+                        put("status", "DELIVERED")
                         put("type", "UPDATE")
                     }
                     broadcastUpdateStatus(updateBc)

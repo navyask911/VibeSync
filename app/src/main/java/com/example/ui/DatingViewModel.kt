@@ -321,23 +321,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         // Truecaller verification is the sign-in authority; the verified session is device-local.
         // Firebase remains a transport/legacy compatibility boundary only.
 
-        // Supabase Realtime startup may perform network/channel setup. Never run it on the
-        // main thread while the launcher screen is being composed.
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                com.example.util.SupabaseBackendManager.connectRealtimeWebsocket(
-                    onInsert = { record ->
-                        handleRealtimeChatMessageInsert(record)
-                    },
-                    onUpdate = { record ->
-                        handleRealtimeChatMessageUpdate(record)
-                    }
-                )
-            } catch (t: Throwable) {
-                android.util.Log.e("VibeSyncInit", "Safe init fallback: Supabase Realtime", t)
-            }
-        }
-
         viewModelScope.launch(Dispatchers.IO) {
             repository.userPreferences.collectLatest { prefs ->
                 if (prefs != null && prefs.isLoggedIn) {
@@ -354,115 +337,89 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun disconnectRealtime() {
+    @Volatile private var activeRealtimeRemoteMatchId: String? = null
+    private var realtimeStatusSyncJob: kotlinx.coroutines.Job? = null
+
+    /** Called only by ChatDetailScreen while its 1-on-1 route is resumed. */
+    fun startChatRealtime(match: MatchEntity, profile: ProfileEntity) {
+        val ownProfileId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+        val remoteMatchId = com.example.util.SupabaseClientManager.canonicalChatMatchId(ownProfileId, profile.id)
+        if (ownProfileId.isBlank() || remoteMatchId.isBlank()) {
+            android.util.Log.w("VibeSyncRealtime", "Skipped chat channel because participant IDs are not canonical.")
+            return
+        }
+        if (activeRealtimeRemoteMatchId != null && activeRealtimeRemoteMatchId != remoteMatchId) {
+            stopChatRealtime()
+        }
+        activeRealtimeRemoteMatchId = remoteMatchId
+
+        fun belongsToActiveChat(record: org.json.JSONObject): Boolean {
+            val rowMatchId = record.optString("match_id", record.optString("matchId", "")).trim()
+            // Read-receipt/update payloads can carry only message_id; those updates are Room-ID-scoped.
+            return rowMatchId.isBlank() || rowMatchId.equals(remoteMatchId, ignoreCase = true)
+        }
+
+        com.example.util.SupabaseBackendManager.connectRealtimeWebsocket(
+            onInsert = { record ->
+                if (activeRealtimeRemoteMatchId == remoteMatchId && belongsToActiveChat(record)) {
+                    handleRealtimeChatMessageInsert(record)
+                }
+            },
+            onUpdate = { record ->
+                if (activeRealtimeRemoteMatchId == remoteMatchId && belongsToActiveChat(record)) {
+                    handleRealtimeChatMessageUpdate(record)
+                }
+            },
+            matchId = remoteMatchId
+        )
+
+        realtimeStatusSyncJob?.cancel()
+        realtimeStatusSyncJob = viewModelScope.launch {
+            com.example.util.SupabaseBackendManager.realtimeSubscriptionStatus.collectLatest { state ->
+                // StateFlow emits SUBSCRIBED after every successful join, including reconnects.
+                if (state == "SUBSCRIBED" && activeRealtimeRemoteMatchId == remoteMatchId) {
+                    syncChatMessagesSinceWatermark(match, profile)
+                }
+            }
+        }
+        viewModelScope.launch(Dispatchers.IO) { syncChatMessagesSinceWatermark(match, profile) }
+    }
+
+    fun stopChatRealtime() {
+        activeRealtimeRemoteMatchId = null
+        realtimeStatusSyncJob?.cancel()
+        realtimeStatusSyncJob = null
         try {
             com.example.util.SupabaseBackendManager.disconnectRealtimeWebsocket()
         } catch (e: Exception) {
-            android.util.Log.w("DatingViewModel", "Error disconnecting realtime: ${e.message}")
+            android.util.Log.w("DatingViewModel", "Error closing active chat Realtime: ${e.message}")
         }
     }
 
-    private val resumeSyncGuard = java.util.concurrent.atomic.AtomicBoolean(false)
+    // Compatibility wrappers deliberately never open a socket without an active chat screen.
+    fun disconnectRealtime() = stopChatRealtime()
 
     fun reconnectRealtime() {
-        try {
-            com.example.util.SupabaseBackendManager.connectRealtimeWebsocket(
-                onInsert = { record -> handleRealtimeChatMessageInsert(record) },
-                onUpdate = { record -> handleRealtimeChatMessageUpdate(record) }
-            )
-        } catch (e: Exception) {
-            android.util.Log.w("DatingViewModel", "Error reconnecting realtime: ${e.message}")
-        }
-        syncRecentMessagesOnResume()
+        val current = _activeChat.value
+        if (current != null) startChatRealtime(current.first, current.second)
+        else com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(getApplication())
     }
 
-    /** REST catch-up complements Realtime so events missed while backgrounded are recovered. */
-    private fun syncRecentMessagesOnResume() {
-        if (!resumeSyncGuard.compareAndSet(false, true)) return
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val prefs = repository.userPreferences.firstOrNull() ?: return@launch
-                if (!prefs.isLoggedIn) return@launch
-                val ownerProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
-                if (ownerProfileId.isBlank()) return@launch
-                val store = getApplication<Application>().getSharedPreferences(
-                    "vibesync_incremental_chat_sync", android.content.Context.MODE_PRIVATE
-                )
-                val saved = store.getLong("last_synced_timestamp", 0L)
-                val since = if (saved > 0L) (saved - 3_000L).coerceAtLeast(0L)
-                    else (System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000).coerceAtLeast(0L)
-                val refs = com.example.util.SupabaseClientManager.fetchRecentChatMessageRefsSince(since)
-                    ?: return@launch
-                if (refs.isEmpty()) return@launch
-
-                val localMatches = database.matchDao().getAllMatchesSync()
-                val profiles = database.profileDao().getAllProfilesSync().associateBy { it.id }
-                val matchByRemoteId = mutableMapOf<String, MatchEntity>()
-                for (match in localMatches) {
-                    val profile = profiles[match.profileId]
-                    val peerId = profile?.id?.takeIf { it.isNotBlank() } ?: match.profileId
-                    val remoteId = com.example.util.SupabaseClientManager.canonicalChatMatchId(ownerProfileId, peerId)
-                    if (remoteId.isNotBlank()) matchByRemoteId[remoteId] = match
-                }
-
-                var fullyMapped = true
-                for ((remoteMatchId, groupRefs) in refs.groupBy { it.matchId }) {
-                    val match = matchByRemoteId[remoteMatchId]
-                    if (match == null) {
-                        // Keep the sweep cursor behind unmapped conversations so a later profile/match
-                        // refresh can make the missing local association recoverable.
-                        fullyMapped = false
-                        continue
-                    }
-                    val profile = profiles[match.profileId]
-                    val partnerPhone = profile?.phoneNumber.orEmpty()
-                    val remoteMessages = com.example.util.SupabaseClientManager.fetchMessagesForMatch(
-                        remoteMatchId, prefs.verifiedMobileNumber, partnerPhone
-                    )
-                    if (remoteMessages.isEmpty()) {
-                        // A remote reference existed for this conversation. Don't move the cursor
-                        // if its detail request was blocked or transiently failed.
-                        fullyMapped = false
-                        continue
-                    }
-                    for (remote in remoteMessages) {
-                        val isFromMe = remote.senderId.equals(ownerProfileId, ignoreCase = true) ||
-                            (prefs.verifiedMobileNumber.isNotBlank() && remote.senderId == prefs.verifiedMobileNumber)
-                        val localMessage = remote.copy(
-                            matchId = match.matchId,
-                            senderId = if (isFromMe) "USER" else remote.senderId,
-                            senderDisplayName = if (!isFromMe) match.localContactName.ifBlank { remote.senderDisplayName } else remote.senderDisplayName,
-                            senderPhotoUri = if (!isFromMe) match.localPhotoUri.ifBlank { remote.senderPhotoUri } else remote.senderPhotoUri,
-                            isDelivered = if (isFromMe) remote.isDelivered else true,
-                            isRead = if (isFromMe) remote.isRead else remote.isRead,
-                            deliveryState = when {
-                                remote.isRead -> "READ"
-                                !isFromMe || remote.isDelivered -> "DELIVERED"
-                                else -> "SENT_TO_SERVER"
-                            }
-                        )
-                        repository.insertReceivedChatMessage(localMessage, remote.senderId, prefs.verifiedMobileNumber)
-                        if (!isFromMe && !remote.isDelivered) {
-                            com.example.util.SupabaseBackendManager.markMessageDelivered(
-                                remote.messageId, partnerPhone, prefs.verifiedMobileNumber
-                            )
-                        }
-                        if (remote.timestamp >= match.lastMessageTime && remote.text.isNotBlank()) {
-                            database.matchDao().updateLastMessage(
-                                match.matchId, remote.text, remote.timestamp, !isFromMe && !remote.isRead
-                            )
-                        }
-                    }
-                }
-                if (fullyMapped) {
-                    val newest = refs.maxOfOrNull { it.timestamp } ?: saved
-                    if (newest > saved) store.edit().putLong("last_synced_timestamp", newest).apply()
-                }
-            } catch (t: Throwable) {
-                android.util.Log.w("DatingViewModel", "Resume REST message sweep failed: ${t.message}")
-            } finally {
-                resumeSyncGuard.set(false)
-            }
+    suspend fun syncChatMessagesSinceWatermark(match: MatchEntity, profile: ProfileEntity) {
+        val prefs = repository.userPreferences.firstOrNull() ?: return
+        val ownerId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+        if (ownerId.isBlank() || !prefs.isLoggedIn) return
+        val result = com.example.util.MessageDeltaSyncManager.syncConversation(
+            context = getApplication(),
+            database = database,
+            match = match,
+            myProfileId = ownerId,
+            myPhone = prefs.verifiedMobileNumber,
+            partnerPhone = profile.phoneNumber.ifBlank { profile.id },
+            notifyTargetMessage = false
+        )
+        if (!result.complete) {
+            android.util.Log.w("VibeSyncDelta", "Active chat sync will retry on resume/reconnect: ${result.reason}")
         }
     }
 
@@ -1074,78 +1031,11 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             // Mark all past incoming messages as read both locally and in public.chat_messages
             repository.markMatchAsRead(match.matchId, myPhone, partnerPhone)
 
-            // Remote conversation IDs are canonical across devices; Room keeps its local match key.
+            // Reconcile from the monotonic per-chat cursor; never depend on the socket for history.
             try {
-                val senderProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
-                val remoteMatchId = com.example.util.SupabaseClientManager.canonicalChatMatchId(
-                    senderProfileId.ifBlank { myPhone },
-                    resolvedProfile.id.ifBlank { partnerPhone }
-                ).ifBlank { match.matchId }
-                val remoteMsgs = com.example.util.SupabaseClientManager.fetchMessagesForMatch(remoteMatchId, myPhone, partnerPhone)
-                for (rm in remoteMsgs) {
-                    val isFromMe = rm.senderId.equals(senderProfileId, ignoreCase = true)
-                    if (isFromMe) {
-                        // Reconcile a server-committed send whose HTTP response or UPDATE event was missed.
-                        database.chatMessageDao().markOutboxSentToServerIfPending(
-                            rm.messageId,
-                            System.currentTimeMillis()
-                        )
-                        if (rm.isRead) {
-                            database.chatMessageDao().markMessageAsRead(rm.messageId)
-                        } else if (rm.isDelivered) {
-                            database.chatMessageDao().markMessageAsDelivered(rm.messageId)
-                        }
-                    }
-
-                    val localMessage = rm.copy(
-                        matchId = match.matchId,
-                        senderId = if (isFromMe) "USER" else rm.senderId,
-                        // This loop runs when the recipient opens this chat; record that the incoming
-                        // row reached this device even if the previous WebSocket INSERT was missed.
-                        isDelivered = if (isFromMe) rm.isDelivered else true,
-                        isRead = if (isFromMe) rm.isRead else true,
-                        deliveryState = when {
-                            !isFromMe -> "READ"
-                            rm.isRead -> "READ"
-                            rm.isDelivered -> "DELIVERED"
-                            else -> "SENT_TO_SERVER"
-                        }
-                    )
-                    repository.insertReceivedChatMessage(localMessage, rm.senderId, myPhone)
-
-                    // A device returning from offline/background may fetch its message before its
-                    // Realtime listener sees the INSERT. Commit the same delivery ACK on catch-up.
-                    if (!isFromMe && !rm.isDelivered) {
-                        val acked = com.example.util.SupabaseBackendManager.markMessageDelivered(
-                            rm.messageId,
-                            rm.senderId,
-                            senderProfileId
-                        )
-                        if (!acked) {
-                            android.util.Log.w(
-                                "VibeSyncChat",
-                                "Catch-up delivery ACK failed for ${rm.messageId}; it will be retried on the next sync."
-                            )
-                        }
-                    }
-                }
-
-                // Recover delivery/read ticks even though the sender cannot decrypt recipient-key ciphertext.
-                val deliveryStates = com.example.util.SupabaseClientManager
-                    .fetchMessageDeliveryStatesForMatch(remoteMatchId)
-                for (state in deliveryStates) {
-                    if (!state.senderId.equals(senderProfileId, ignoreCase = true)) continue
-                    when {
-                        state.isRead -> database.chatMessageDao().markMessageAsRead(state.messageId)
-                        state.isDelivered -> database.chatMessageDao().markMessageAsDelivered(state.messageId)
-                        else -> database.chatMessageDao().markOutboxSentToServerIfPending(
-                            state.messageId,
-                            System.currentTimeMillis()
-                        )
-                    }
-                }
+                syncChatMessagesSinceWatermark(match, resolvedProfile)
             } catch (e: Exception) {
-                android.util.Log.w("DatingViewModel", "openChat fetch remote messages error: ${e.message}")
+                android.util.Log.w("VibeSyncChat", "Opening-chat delta sync failed: ${e.message}")
             }
         }
     }
@@ -1533,6 +1423,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun closeChat() {
+        stopChatRealtime()
         com.example.util.AlertSoundAndVibrationManager.stopAllSounds(getApplication())
         _activeChat.value = null
         _currentMatchId.value = null

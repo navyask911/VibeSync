@@ -265,12 +265,47 @@ fun ChatDetailScreen(
     onForwardMessage: (targetMatchId: String, message: ChatMessageEntity) -> Unit = { _, _ -> },
     otherMatches: List<Pair<MatchEntity, ProfileEntity>> = emptyList(),
     currentUserId: String? = null,
+    onStartRealtime: () -> Unit = {},
+    onStopRealtime: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     DisposableEffect(profile.id, match?.matchId) {
         com.example.util.AppNotificationManager.setActiveChatSession(profile.id, match?.matchId)
         onDispose {
             com.example.util.AppNotificationManager.clearActiveChatSession()
+        }
+    }
+
+    val chatLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(chatLifecycleOwner, profile.id, match?.matchId) {
+        var socketRequested = false
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
+                    if (!socketRequested) {
+                        socketRequested = true
+                        onStartRealtime()
+                    }
+                }
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> {
+                    if (socketRequested) {
+                        socketRequested = false
+                        onStopRealtime()
+                    }
+                }
+                else -> Unit
+            }
+        }
+        chatLifecycleOwner.lifecycle.addObserver(observer)
+        if (chatLifecycleOwner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) {
+            socketRequested = true
+            onStartRealtime()
+        }
+        onDispose {
+            chatLifecycleOwner.lifecycle.removeObserver(observer)
+            // Close immediately when this screen leaves composition (even if parent exit animation runs).
+            socketRequested = false
+            onStopRealtime()
         }
     }
 

@@ -75,6 +75,10 @@ fun EditProfileDialog(
     var photo1 by remember { mutableStateOf(preferences.avatarUrl) }
     var photo2 by remember { mutableStateOf(preferences.getPhotoList().getOrNull(1) ?: "") }
     var photo3 by remember { mutableStateOf(preferences.getPhotoList().getOrNull(2) ?: "") }
+    var photo1Preview by remember { mutableStateOf(preferences.avatarUrl) }
+    var photo2Preview by remember { mutableStateOf(preferences.getPhotoList().getOrNull(1) ?: "") }
+    var photo3Preview by remember { mutableStateOf(preferences.getPhotoList().getOrNull(2) ?: "") }
+    var hasUnsyncedAvatar by remember { mutableStateOf(false) }
     var activePhotoSlot by remember { mutableIntStateOf(1) }
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -91,15 +95,16 @@ fun EditProfileDialog(
                     val profileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
                     val persisted = com.example.util.ProfileAvatarStorageManager.persistPickedAvatar(context, uri, profileId, targetSlot)
                     when (targetSlot) {
-                        1 -> photo1 = persisted.uri
-                        2 -> photo2 = persisted.uri
-                        3 -> photo3 = persisted.uri
+                        1 -> { photo1 = persisted.remoteUrl ?: photo1; photo1Preview = persisted.uri }
+                        2 -> { photo2 = persisted.remoteUrl ?: photo2; photo2Preview = persisted.uri }
+                        3 -> { photo3 = persisted.remoteUrl ?: photo3; photo3Preview = persisted.uri }
                     }
-                    if (persisted.remoteUrl.isNullOrBlank()) {
-                        android.widget.Toast.makeText(context, "Photo saved on this device. Sign in and check Storage permissions to sync it to your profile.", android.widget.Toast.LENGTH_LONG).show()
-                    } else {
-                        android.widget.Toast.makeText(context, "Profile photo saved and synced.", android.widget.Toast.LENGTH_SHORT).show()
-                    }
+                    hasUnsyncedAvatar = persisted.remoteUrl.isNullOrBlank()
+                    android.widget.Toast.makeText(
+                        context,
+                        "Avatar compressed to ${persisted.byteCount / 1024} KiB and synced.",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
                 } catch (_: Throwable) {
                     android.widget.Toast.makeText(context, "Could not save that photo. Please choose it again.", android.widget.Toast.LENGTH_LONG).show()
                 } finally { isUploadingAvatar = false }
@@ -286,7 +291,7 @@ fun EditProfileDialog(
                 ) {
                     // Slot 1
                     EditPhotoSlot(
-                        photoUrl = photo1,
+                        photoUrl = photo1Preview,
                         avatarCacheVersion = preferences.avatarCacheVersion,
                         slotNumber = 1,
                         label = "Main Photo",
@@ -295,11 +300,11 @@ fun EditProfileDialog(
                             activePhotoSlot = 1
                             slotPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                         },
-                        onRemove = { photo1 = "" }
+                        onRemove = { photo1 = ""; photo1Preview = ""; hasUnsyncedAvatar = false }
                     )
                     // Slot 2
                     EditPhotoSlot(
-                        photoUrl = photo2,
+                        photoUrl = photo2Preview,
                         avatarCacheVersion = preferences.avatarCacheVersion,
                         slotNumber = 2,
                         label = "Photo 2",
@@ -308,11 +313,11 @@ fun EditProfileDialog(
                             activePhotoSlot = 2
                             slotPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                         },
-                        onRemove = { photo2 = "" }
+                        onRemove = { photo2 = ""; photo2Preview = ""; hasUnsyncedAvatar = false }
                     )
                     // Slot 3
                     EditPhotoSlot(
-                        photoUrl = photo3,
+                        photoUrl = photo3Preview,
                         avatarCacheVersion = preferences.avatarCacheVersion,
                         slotNumber = 3,
                         label = "Photo 3",
@@ -321,7 +326,7 @@ fun EditProfileDialog(
                             activePhotoSlot = 3
                             slotPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                         },
-                        onRemove = { photo3 = "" }
+                        onRemove = { photo3 = ""; photo3Preview = ""; hasUnsyncedAvatar = false }
                     )
                 }
 
@@ -430,7 +435,7 @@ fun EditProfileDialog(
         },
         confirmButton = {
             Button(
-                enabled = !isUploadingAvatar,
+                enabled = !isUploadingAvatar && !hasUnsyncedAvatar,
                 onClick = {
                     val finalPhotoList = listOf(photo1, photo2, photo3).filter { it.isNotBlank() }
                     val effectiveAvatar = finalPhotoList.firstOrNull() ?: preferences.avatarUrl

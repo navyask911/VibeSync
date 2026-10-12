@@ -52,7 +52,13 @@ data class ChatMessageEntity(
     @ColumnInfo(defaultValue = "''")
     val senderDisplayName: String = "",
     @ColumnInfo(defaultValue = "''")
-    val senderPhotoUri: String = ""
+    val senderPhotoUri: String = "",
+    /** Server-side created_at epoch millis used by the monotonic delta-sync watermark. */
+    @ColumnInfo(defaultValue = "0")
+    val serverCreatedAt: Long = 0L,
+    /** Durable delivery ACK outbox; cleared only after Supabase confirms the ACK RPC. */
+    @ColumnInfo(defaultValue = "0")
+    val deliveryAckPending: Boolean = false
 ) {
     @androidx.room.Ignore
     val senderUid: String = senderId

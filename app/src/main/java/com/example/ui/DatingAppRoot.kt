@@ -137,22 +137,17 @@ fun DatingAppRoot(
     val networkState by viewModel.networkState.collectAsStateWithLifecycle()
 
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val syncContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
     androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            when (event) {
-                androidx.lifecycle.Lifecycle.Event.ON_STOP -> {
-                    viewModel.disconnectRealtime()
-                }
-                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
-                    viewModel.reconnectRealtime()
-                }
-                else -> {}
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                // REST-only launch/resume repair; Realtime lives exclusively in ChatDetailScreen.
+                com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(syncContext)
+                com.example.service.PendingMessageSyncScheduler.enqueueAllPending(syncContext)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     val chatMessages by viewModel.currentChatMessages.collectAsStateWithLifecycle()
@@ -737,6 +732,8 @@ fun DatingAppRoot(
                 },
                 onBack = { viewModel.closeChat() },
                 onViewProfile = { viewModel.openProfileDetail(profile) },
+                onStartRealtime = { viewModel.startChatRealtime(match, profile) },
+                onStopRealtime = { viewModel.stopChatRealtime() },
                 onBlockAndReport = { reason, details ->
                     viewModel.emergencyBlockAndReportUser(profile.id, match.matchId, reason, details)
                 },

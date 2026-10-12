@@ -1142,7 +1142,12 @@ object SupabaseClientManager {
      * Upload a profile image to the public-read, owner-write profile-avatars bucket.
      * Storage RLS restricts writes to the active session's profile folder.
      */
-    suspend fun uploadProfileAvatar(file: File, profileId: String, contentType: String): String? =
+    suspend fun uploadProfileAvatar(
+        file: File,
+        profileId: String,
+        contentType: String,
+        storageObjectName: String = "$profileId.jpg"
+    ): String? =
         withContext(Dispatchers.IO) {
             if (!file.isFile || file.length() <= 0L || profileId.isBlank()) return@withContext null
             if (!VibeSyncSessionManager.getProfileId().orEmpty().equals(profileId, ignoreCase = true)) {
@@ -1150,10 +1155,13 @@ object SupabaseClientManager {
                 return@withContext null
             }
             try {
-                val objectPath = "$profileId/${file.name}"
-                val encodedPath = Uri.encode(objectPath, "/")
+                val objectName = storageObjectName.trim().ifBlank { "$profileId.jpg" }
+                require(objectName in setOf("$profileId.jpg", "$profileId_2.jpg", "$profileId_3.jpg")) {
+                    "Avatar storage object name must be bound to the active profile ID."
+                }
+                val encodedPath = Uri.encode(objectName)
                 val request = Request.Builder()
-                    .url("$SUPABASE_URL/storage/v1/object/profile-avatars/$encodedPath")
+                    .url("$SUPABASE_URL/storage/v1/object/avatars/$encodedPath")
                     .header("apikey", SUPABASE_PUBLISHABLE_KEY)
                     .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_PUBLISHABLE_KEY)}")
                     .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
@@ -1168,7 +1176,7 @@ object SupabaseClientManager {
                         return@withContext null
                     }
                 }
-                "$SUPABASE_URL/storage/v1/object/public/profile-avatars/$encodedPath?v=${file.lastModified()}"
+                "$SUPABASE_URL/storage/v1/object/public/avatars/$encodedPath?v=${file.lastModified()}"
             } catch (t: Throwable) {
                 Log.w(TAG, "Profile avatar upload notice: ${t.javaClass.simpleName}: ${t.message}")
                 null
@@ -1216,6 +1224,159 @@ object SupabaseClientManager {
                 null
             }
         }
+
+    data class MessageDeltaRecord(
+        val message: ChatMessageEntity,
+        val decryptionSucceeded: Boolean,
+        val deleted: Boolean = false
+    )
+
+    data class MessageDeltaBatch(
+        val records: List<MessageDeltaRecord>,
+        val latestCreatedAtMs: Long,
+        val complete: Boolean
+    )
+
+    private fun parseServerCreatedAtMillis(value: String): Long {
+        val raw = value.trim()
+        if (raw.isBlank()) return 0L
+        raw.toLongOrNull()?.let { return it }
+        return runCatching { java.time.Instant.parse(raw).toEpochMilli() }
+            .recoverCatching { java.time.OffsetDateTime.parse(raw).toInstant().toEpochMilli() }
+            .getOrDefault(0L)
+    }
+
+    /**
+     * Authenticated, paginated delta read. The 2-second overlap intentionally re-reads rows sharing
+     * the same created_at timestamp; Room's stable message_id primary key makes this idempotent.
+     * A null result means REST failed. complete=false means a row could not be safely decrypted or
+     * timestamped, so callers must not advance the watermark.
+     */
+    suspend fun fetchMessageDeltaForMatch(
+        matchId: String,
+        currentUserPhone: String,
+        partnerPhone: String,
+        afterCreatedAtMs: Long
+    ): MessageDeltaBatch? = withContext(Dispatchers.IO) {
+        val records = mutableListOf<MessageDeltaRecord>()
+        var complete = true
+        var latestCreatedAt = 0L
+        var offset = 0
+        val pageSize = 500
+        val maxPages = 20
+        val currentProfileId = VibeSyncSessionManager.getProfileId().orEmpty()
+        val context = AppNotificationManager.appContext ?: MessageHandler.appContext
+        val safeMatch = java.net.URLEncoder.encode(matchId, "UTF-8")
+        val lowerBound = if (afterCreatedAtMs > 0L) (afterCreatedAtMs - 2_000L).coerceAtLeast(0L) else 0L
+        val afterFilter = if (lowerBound > 0L) {
+            val iso = java.time.Instant.ofEpochMilli(lowerBound).toString()
+            "&created_at=gt.${java.net.URLEncoder.encode(iso, "UTF-8")}"
+        } else ""
+        try {
+            var pageIndex = 0
+            while (pageIndex < maxPages) {
+                val endpoint = "chat_messages?select=message_id,match_id,sender_id,receiver_id,ciphertext,timestamp,is_delivered,is_read,media_url,media_type,voice_duration_seconds,created_at&match_id=eq.$safeMatch$afterFilter&order=created_at.asc&limit=$pageSize&offset=$offset"
+                val request = buildRequest(endpoint, "GET")
+                val pageText = httpClient.newCall(request).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        Log.w(TAG, "Message delta REST failed HTTP ${response.code}: ${body.take(240)}")
+                        return@withContext null
+                    }
+                    body
+                }
+                val page = JSONArray(pageText)
+                for (i in 0 until page.length()) {
+                    val row = page.optJSONObject(i) ?: run {
+                        complete = false
+                        continue
+                    }
+                    val id = row.optSafeString("message_id", row.optSafeString("id", ""))
+                    val senderId = row.optSafeString("sender_id", "")
+                    val receiverId = row.optSafeString("receiver_id", "")
+                    val remoteMatch = row.optSafeString("match_id", matchId)
+                    val cipherText = row.optSafeString("ciphertext", "")
+                    val createdAt = parseServerCreatedAtMillis(row.optSafeString("created_at", ""))
+                    if (createdAt <= 0L) complete = false else latestCreatedAt = maxOf(latestCreatedAt, createdAt)
+                    if (id.isBlank() || remoteMatch.isBlank()) {
+                        complete = false
+                        continue
+                    }
+
+                    // Server-side deletions still advance only after the row identity/timestamp is known.
+                    val mediaType = row.optSafeString("media_type", "TEXT")
+                    val mediaUrl = row.optSafeString("media_url", "")
+                    val timestamp = row.optLong("timestamp", createdAt).takeIf { it > 0L } ?: createdAt
+                    if (cipherText.isBlank()) {
+                        // A media-only row with no ciphertext cannot be ACKed as decrypted content.
+                        complete = false
+                        records += MessageDeltaRecord(
+                            ChatMessageEntity(
+                                messageId = id, matchId = remoteMatch, senderId = senderId,
+                                text = "", timestamp = timestamp, mediaType = mediaType, mediaUrl = mediaUrl,
+                                isDelivered = row.optBoolean("is_delivered", false),
+                                isRead = row.optBoolean("is_read", false), serverCreatedAt = createdAt
+                            ),
+                            decryptionSucceeded = false
+                        )
+                        continue
+                    }
+
+                    val aad = TinkCryptoManager.resolveAadParticipantIds(
+                        senderProfileId = senderId,
+                        receiverProfileId = receiverId,
+                        matchId = remoteMatch,
+                        currentProfileId = currentProfileId
+                    )
+                    val decrypted = if (
+                        context != null &&
+                        cipherText.startsWith(TinkCryptoManager.TINK_PREFIX) &&
+                        aad != null
+                    ) {
+                        runCatching {
+                            TinkCryptoManager.decryptPayload(
+                                context = context,
+                                payload = cipherText,
+                                senderPhone = aad.first,
+                                receiverPhone = aad.second
+                            )
+                        }.getOrDefault("")
+                    } else ""
+                    val ownMessage = senderId.equals(currentProfileId, ignoreCase = true)
+                    val decryptionSucceeded = decrypted.isNotBlank()
+                    // A sender normally cannot decrypt ciphertext encrypted to the recipient's key.
+                    // This is expected; the local Room outbox owns its plaintext copy.
+                    if (!decryptionSucceeded && !ownMessage) complete = false
+                    records += MessageDeltaRecord(
+                        message = ChatMessageEntity(
+                            messageId = id,
+                            matchId = remoteMatch,
+                            senderId = senderId,
+                            text = if (decryptionSucceeded) decrypted else cipherText,
+                            timestamp = timestamp,
+                            isDelivered = row.optBoolean("is_delivered", false),
+                            isRead = row.optBoolean("is_read", false),
+                            mediaUrl = mediaUrl,
+                            mediaType = mediaType,
+                            voiceDurationSeconds = row.optInt("voice_duration_seconds", 0),
+                            isEncrypted = true,
+                            serverCreatedAt = createdAt
+                        ),
+                        decryptionSucceeded = decryptionSucceeded
+                    )
+                }
+                if (page.length() < pageSize) return@withContext MessageDeltaBatch(records, latestCreatedAt, complete)
+                offset += pageSize
+                pageIndex++
+            }
+            // Page cap reached; preserve the cursor and continue next time rather than skip rows.
+            complete = false
+            MessageDeltaBatch(records, latestCreatedAt, complete)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Message delta fetch failed: ${t.javaClass.simpleName}: ${t.message}")
+            null
+        }
+    }
 
     /**
      * Fetch messages for match/conversation from public.chat_messages with decryption and phone matching.
