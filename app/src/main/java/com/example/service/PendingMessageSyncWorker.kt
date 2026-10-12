@@ -113,10 +113,18 @@ internal object PendingMessageOutboxSender {
 
                 val localRecipient = db.profileDao().getProfileByIdSync(recipientProfileId)
                 val recipientPublicKey = localRecipient?.publicIdentityKey.orEmpty().ifBlank {
-                    SupabaseClientManager.fetchPublicIdentityKey(recipientProfileId).orEmpty()
+                    // The remote ID query is primary; older contact rows may only hold a phone number,
+                    // so retry via the privacy-preserving phone-hash RPC when that number is available.
+                    SupabaseClientManager.fetchPublicIdentityKey(
+                        profileId = recipientProfileId,
+                        fallbackPhoneNumber = localRecipient?.phoneNumber.orEmpty()
+                    ).orEmpty()
                 }
                 if (recipientPublicKey.isBlank()) {
-                    return@withContext PendingOutboxAttempt.Retryable("Recipient Tink public key is not available yet.")
+                    return@withContext PendingOutboxAttempt.Retryable(
+                        "Recipient Tink public key is unavailable for profile_id=$recipientProfileId; " +
+                            "profile-ID and eligible phone-hash lookups returned no published key."
+                    )
                 }
 
                 val rawText = message.text.ifBlank {

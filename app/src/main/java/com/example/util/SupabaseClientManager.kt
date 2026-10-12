@@ -1,6 +1,7 @@
 package com.example.util
 
 import android.content.Context
+import android.content.Context
 import android.net.Uri
 import android.util.Log
 import com.example.BuildConfig
@@ -630,6 +631,15 @@ object SupabaseClientManager {
                 return@withContext false
             }
 
+            // The key is generated locally and the private keyset never leaves this device.
+            // Profile callers often don't hydrate publicIdentityKey from Room, so derive it here.
+            val publicIdentityKey = profile.publicIdentityKey.trim().ifBlank {
+                TinkCryptoManager.getMyPublicKeysetJson()
+            }.trim()
+            if (publicIdentityKey.isBlank()) {
+                Log.w(TAG, "Local Tink public keyset is not available; profile sync will retry key publication after key initialization.")
+            }
+
             val payload = JSONObject().apply {
                 put("name", cleanName)
                 put("bio", ContactResolver.sanitizeName(profile.bio).take(160))
@@ -647,8 +657,8 @@ object SupabaseClientManager {
                 put("occupation", ContactResolver.sanitizeName(profile.occupation, "Member"))
                 put("qualification", ContactResolver.sanitizeName(profile.qualification, "Verified"))
                 put("marital_status", ContactResolver.sanitizeName(profile.maritalStatus, "Single"))
-                if (profile.publicIdentityKey.isNotBlank()) {
-                    put("public_identity_key", profile.publicIdentityKey)
+                if (publicIdentityKey.isNotBlank()) {
+                    put("public_identity_key", publicIdentityKey)
                 }
             }
 
@@ -666,6 +676,59 @@ object SupabaseClientManager {
             }
         } catch (e: Throwable) {
             Log.w(TAG, "VibeSync profile update notice: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Publish the locally generated Tink public key for the authenticated VibeSync profile.
+     * The RPC derives the owner from the verified session; neither profile ID nor private key
+     * is accepted from caller-controlled JSON. The SQL RPC updates only non-empty payload fields.
+     */
+    suspend fun publishMyPublicIdentityKey(
+        context: Context,
+        expectedProfileId: String? = null
+    ): Boolean = withContext(Dispatchers.IO) {
+        val session = VibeSyncSessionManager.getSession(context)
+            ?: return@withContext false
+        val activeProfileId = session.profileId.trim()
+        if (activeProfileId.isBlank()) return@withContext false
+        if (!expectedProfileId.isNullOrBlank() &&
+            !activeProfileId.equals(expectedProfileId.trim(), ignoreCase = true)
+        ) {
+            Log.w(TAG, "Skipping Tink key publish because the active profile changed during session restoration.")
+            return@withContext false
+        }
+
+        val publicKeyset = TinkCryptoManager.getMyPublicKeysetJson(context).trim()
+        if (publicKeyset.isBlank()) {
+            Log.w(TAG, "Cannot publish Tink public identity key: local public keyset generation failed.")
+            return@withContext false
+        }
+
+        try {
+            val payload = JSONObject().put("public_identity_key", publicKeyset)
+            val request = buildRequest(
+                endpoint = "rpc/upsert_my_profile",
+                method = "POST",
+                bodyJson = JSONObject().put("payload", payload).toString()
+            )
+            httpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty().trim().trim('"')
+                val updated = response.isSuccessful && body.equals("true", ignoreCase = true)
+                if (updated) {
+                    Log.i(TAG, "Published Tink public identity key for active VibeSync profile.")
+                } else {
+                    Log.w(
+                        TAG,
+                        "Tink public identity key publish did not update a profile: HTTP ${response.code}, " +
+                            "rpc_result=${body.take(80)}."
+                    )
+                }
+                updated
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "Tink public identity key publish failed: ${t.javaClass.simpleName}: ${t.message}")
             false
         }
     }
@@ -803,23 +866,42 @@ object SupabaseClientManager {
             false
         }
     }
-    suspend fun fetchPublicIdentityKey(profileId: String): String? = withContext(Dispatchers.IO) {
-        if (profileId.isBlank()) return@withContext null
+    suspend fun fetchPublicIdentityKey(
+        profileId: String,
+        fallbackPhoneNumber: String = ""
+    ): String? = withContext(Dispatchers.IO) {
+        val safeProfileId = profileId.trim()
+        if (safeProfileId.isBlank()) return@withContext null
+
+        // Preferred lookup: canonical opaque profile ID returned by the VibeSync APIs.
         try {
-            val safeId = java.net.URLEncoder.encode(profileId, "UTF-8")
+            val safeId = java.net.URLEncoder.encode(safeProfileId, "UTF-8")
             val request = buildRequest(
                 endpoint = "vibesync_profiles_public?select=public_identity_key&id=eq.$safeId&limit=1",
                 method = "GET"
             )
             httpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@withContext null
-                val arr = JSONArray(response.body?.string() ?: "[]")
-                arr.optJSONObject(0)?.optSafeString("public_identity_key", "")?.ifBlank { null }
+                if (response.isSuccessful) {
+                    val arr = JSONArray(response.body?.string() ?: "[]")
+                    arr.optJSONObject(0)?.optSafeString("public_identity_key", "")?.ifBlank { null }
+                        ?.let { return@withContext it }
+                } else {
+                    Log.w(TAG, "Profile-ID public-key lookup returned HTTP ${response.code}.")
+                }
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "fetchPublicIdentityKey notice: ${e.message}")
-            null
+            Log.w(TAG, "Profile-ID public-key lookup notice: ${e.javaClass.simpleName}: ${e.message}")
         }
+
+        // Older/local contact rows may hold phone identity rather than canonical Supabase profile ID.
+        val phone = fallbackPhoneNumber.trim()
+        if (phone.isNotBlank()) {
+            Log.i(TAG, "No public key resolved by profile ID; trying the privacy-preserving phone-hash RPC.")
+            return@withContext SupabaseBackendManager.fetchPublicKeyForPhone(phone)?.ifBlank { null }
+        }
+
+        Log.w(TAG, "No published Tink public key found for profile_id=$safeProfileId; outbox should retry after peer registration.")
+        null
     }
     suspend fun upsertChatMessage(
         msg: ChatMessageEntity,

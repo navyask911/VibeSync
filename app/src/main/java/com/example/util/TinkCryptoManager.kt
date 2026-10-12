@@ -30,6 +30,24 @@ object TinkCryptoManager {
     const val TINK_PREFIX = "TINK_ENC:"
 
     @Volatile
+    private var applicationContext: Context? = null
+
+    /** Bind the application context early so profile sync can publish a key without an Activity. */
+    fun setApplicationContext(context: Context) {
+        applicationContext = context.applicationContext
+    }
+
+    /** Public-key accessor for profile sync paths that do not carry a Context parameter. */
+    fun getMyPublicKeysetJson(): String {
+        val context = applicationContext
+        if (context == null) {
+            Log.w(TAG, "Cannot publish local public keyset before application context is attached.")
+            return ""
+        }
+        return getMyPublicKeysetJson(context)
+    }
+
+    @Volatile
     private var isInitialized = false
 
     @Volatile
@@ -55,6 +73,7 @@ object TinkCryptoManager {
      * Gets or creates hardware-backed ECIES KeysetHandle using AndroidKeysetManager.
      */
     fun getOrCreateMyKeysetHandle(context: Context): KeysetHandle? {
+        applicationContext = context.applicationContext
         initTink()
         cachedKeysetHandle?.let { return it }
 
