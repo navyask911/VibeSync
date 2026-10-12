@@ -1243,8 +1243,17 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         deliveryState = if (shouldMarkRead) "READ" else "DELIVERED"
                     )
 
-                    // Immediately insert successfully decrypted plaintext entities into Room on Dispatchers.IO
-                    // so ChatDetailScreen collects them reactively via Flow<List<ChatMessageEntity>> and renders incoming bubbles instantly!
+                    // Play once for a newly decrypted incoming message. Existing plaintext rows suppress
+                    // duplicate Realtime replay sounds; an encrypted placeholder still qualifies as new.
+                    val priorLocalMessage = database.chatMessageDao().getMessageById(msgId)
+                    val isNewlyDecryptedMessage = priorLocalMessage == null ||
+                        priorLocalMessage.text.isBlank() ||
+                        priorLocalMessage.text.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)
+                    if (isNewlyDecryptedMessage && com.example.util.AppNotificationManager.isAppInForeground) {
+                        com.example.util.AlertSoundAndVibrationManager.playInAppIncomingMessageSound(getApplication())
+                    }
+
+                    // Persist plaintext immediately so the Room chat Flow emits without a polling sweep.
                     repository.insertReceivedChatMessage(entity, normSender, normReceiver)
 
                     // Immediately execute delivery ACK back to Supabase: UPDATE public.chat_messages SET is_delivered = true WHERE id = :messageId

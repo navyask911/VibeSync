@@ -363,8 +363,11 @@ object MessageHandler {
                 !SupabaseClientManager.isPhoneNumberCandidate(it) &&
                 !it.startsWith("match_", ignoreCase = true)
         }
-        val resolvedPeerId = explicitPeerId
-            ?: participants.firstOrNull { !it.equals(currentProfileId, ignoreCase = true) }.orEmpty()
+        val resolvedPeerId = explicitPeerId ?: when {
+            participants.first.equals(currentProfileId, ignoreCase = true) -> participants.second
+            participants.second.equals(currentProfileId, ignoreCase = true) -> participants.first
+            else -> ""
+        }
 
         return TinkCryptoManager.decryptPayloadWithImmediateIdentityRefresh(
             context = effectiveContext,

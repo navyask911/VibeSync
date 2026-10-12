@@ -2,6 +2,8 @@ package com.example.util
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.MediaPlayer
+import android.net.Uri
 import android.media.Ringtone
 import android.media.RingtoneManager
 import android.os.Build
@@ -20,7 +22,60 @@ object AlertSoundAndVibrationManager {
     private const val TAG = "AlertSoundVibManager"
     private var activePreviewRingtone: Ringtone? = null
     private val activeRingtones = linkedSetOf<Ringtone>()
+    private var activeIncomingMessagePlayer: MediaPlayer? = null
     private val audioLock = Any()
+
+    /**
+     * Plays the selected Android notification sound once for a newly decrypted foreground message.
+     * This is independent of a system notification so it works while chat is open.
+     */
+    fun playInAppIncomingMessageSound(context: Context) {
+        val appContext = context.applicationContext
+        val selectedSound = NotificationSoundPreferences.cachedSoundUri(appContext)
+        if (selectedSound == NotificationSoundPreferences.SILENT_URI) return
+        val soundUri = selectedSound?.takeIf { it.isNotBlank() }
+            ?.let { runCatching { Uri.parse(it) }.getOrNull() }
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            ?: return
+
+        val player = MediaPlayer()
+        try {
+            player.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            player.setDataSource(appContext, soundUri)
+            player.setOnCompletionListener { completed -> releaseIncomingMessagePlayer(completed) }
+            player.setOnErrorListener { failed, _, _ ->
+                releaseIncomingMessagePlayer(failed)
+                true
+            }
+            player.prepare()
+            synchronized(audioLock) {
+                activeIncomingMessagePlayer?.let { previous ->
+                    runCatching { previous.stop() }
+                    runCatching { previous.release() }
+                }
+                activeIncomingMessagePlayer = player
+                player.start()
+            }
+        } catch (t: Throwable) {
+            synchronized(audioLock) {
+                if (activeIncomingMessagePlayer === player) activeIncomingMessagePlayer = null
+            }
+            runCatching { player.release() }
+            Log.w(TAG, "Could not play in-app incoming message sound: ${t.message}")
+        }
+    }
+
+    private fun releaseIncomingMessagePlayer(player: MediaPlayer) {
+        synchronized(audioLock) {
+            if (activeIncomingMessagePlayer === player) activeIncomingMessagePlayer = null
+        }
+        runCatching { player.release() }
+    }
 
     /**
      * Plays a brief notification tone/ringtone and triggers haptic vibration.
@@ -113,12 +168,19 @@ object AlertSoundAndVibrationManager {
 
     private fun stopActiveAudio() {
         val ringtones: List<Ringtone>
+        val incomingPlayer: MediaPlayer?
         synchronized(audioLock) {
             ringtones = activeRingtones.toList()
             activeRingtones.clear()
             activePreviewRingtone = null
+            incomingPlayer = activeIncomingMessagePlayer
+            activeIncomingMessagePlayer = null
         }
         ringtones.forEach { try { it.stop() } catch (_: Exception) {} }
+        incomingPlayer?.let { player ->
+            runCatching { player.stop() }
+            runCatching { player.release() }
+        }
     }
 
     /**

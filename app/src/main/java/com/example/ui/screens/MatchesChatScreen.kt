@@ -124,7 +124,31 @@ fun MatchesChatScreen(
         profiles.forEach { profile -> profileMap[profile.id] = profile }
     }
     val syncedLocalPhotos = remember { androidx.compose.runtime.mutableStateMapOf<String, String>() }
-    var searchQuery by remember { mutableStateOf("") }
+
+    // Link opaque profile IDs to this device's address-book entries before rendering conversations.
+    fun resolveConversationProfile(match: MatchEntity, baseProfile: ProfileEntity): ProfileEntity {
+        val linkedContact = phonebookContacts.firstOrNull { contact ->
+            contact.vibeSyncProfileId?.equals(match.profileId, ignoreCase = true) == true ||
+                contact.vibeSyncUser?.id?.equals(match.profileId, ignoreCase = true) == true ||
+                contact.vibeSyncProfileId?.equals(baseProfile.id, ignoreCase = true) == true ||
+                contact.vibeSyncUser?.id?.equals(baseProfile.id, ignoreCase = true) == true ||
+                (baseProfile.phoneNumber.isNotBlank() && contact.phoneNumber.isNotBlank() &&
+                    com.example.util.PhonebookHasher.arePhonesMatching(contact.phoneNumber, baseProfile.phoneNumber))
+        }
+        val linkedProfile = if (linkedContact != null) {
+            baseProfile.copy(
+                name = linkedContact.name.trim().ifBlank { baseProfile.name },
+                phoneNumber = linkedContact.phoneNumber.trim().ifBlank { baseProfile.phoneNumber },
+                avatarUrl = linkedContact.photoUrl.trim().ifBlank {
+                    linkedContact.vibeSyncUser?.avatarUrl?.trim().orEmpty().ifBlank { baseProfile.avatarUrl }
+                },
+                avatarEmoji = linkedContact.avatarEmoji.ifBlank { baseProfile.avatarEmoji }
+            )
+        } else baseProfile
+        return com.example.util.ContactResolver.matchChatSessionParticipant(context, linkedProfile)
+    }
+
+    var searchQuery by remember { mutableStateOf("")
     var showTopBarMenu by remember { mutableStateOf(false) }
     // Connect-first chat filters: All, Unread, Contacts, Groups, Connect
     var selectedFilter by remember { mutableStateOf("All") }
@@ -775,7 +799,7 @@ fun MatchesChatScreen(
                             phoneNumber = if (match.profileId.length >= 10 && match.profileId.all { it.isDigit() || it == '+' }) match.profileId else "",
                             isVerified = true
                         )
-                        val profile = com.example.util.ContactResolver.matchChatSessionParticipant(context, baseProfile)
+                        val profile = resolveConversationProfile(match, baseProfile)
 
                         VibeSyncConversationItem(
                             match = match,
@@ -917,7 +941,7 @@ fun MatchesChatScreen(
                         )
 
                         // Match contact name from ContactsContract against chat participant, overriding remote strings
-                        val profile = com.example.util.ContactResolver.matchChatSessionParticipant(context, baseProfile)
+                        val profile = resolveConversationProfile(match, baseProfile)
 
                         VibeSyncConversationItem(
                             match = match,
@@ -1125,6 +1149,15 @@ private fun ContactOnVibeSyncRow(
     val contactDisplayName = remember(contact.id, contact.phoneNumber, contact.name) {
         com.example.util.ContactResolver.resolveParticipantDisplayName(context, contact.phoneNumber.ifBlank { contact.id }, contact.name)
     }
+    val localPhotoKey = contact.phoneNumber.ifBlank { contact.id }
+    LaunchedEffect(contact.phoneNumber, contact.photoUrl) {
+        if (localPhotoKey.isNotBlank() && syncedLocalPhotos[localPhotoKey].isNullOrBlank()) {
+            val localPhotoUri = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.example.util.ContactResolver.fetchContactPhotoByPhoneNumber(context, localPhotoKey)
+            }
+            if (!localPhotoUri.isNullOrBlank()) syncedLocalPhotos[localPhotoKey] = localPhotoUri
+        }
+    }
 
     Row(
         modifier = Modifier
@@ -1238,6 +1271,15 @@ private fun ContactToInviteRow(
     syncedLocalPhotos: androidx.compose.runtime.snapshots.SnapshotStateMap<String, String>
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val localPhotoKey = contact.phoneNumber.ifBlank { contact.id }
+    LaunchedEffect(contact.phoneNumber, contact.photoUrl) {
+        if (localPhotoKey.isNotBlank() && syncedLocalPhotos[localPhotoKey].isNullOrBlank()) {
+            val localPhotoUri = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.example.util.ContactResolver.fetchContactPhotoByPhoneNumber(context, localPhotoKey)
+            }
+            if (!localPhotoUri.isNullOrBlank()) syncedLocalPhotos[localPhotoKey] = localPhotoUri
+        }
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1264,7 +1306,8 @@ private fun ContactToInviteRow(
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center
         ) {
-            val contactPhoto = syncedLocalPhotos[contact.phoneNumber.ifBlank { contact.id }] ?: ""
+            val contactPhoto = syncedLocalPhotos[localPhotoKey]
+                ?: contact.photoUrl.ifBlank { contact.vibeSyncUser?.avatarUrl.orEmpty() }
             if (contactPhoto.isNotBlank()) {
                 coil.compose.AsyncImage(
                     model = contactPhoto,
@@ -1369,6 +1412,18 @@ private fun VibeSyncConversationItem(
     syncedLocalPhotos: androidx.compose.runtime.snapshots.SnapshotStateMap<String, String>
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val avatarLookupKey = profile.phoneNumber.ifBlank { profile.id }
+    val contactLookupPhone = profile.phoneNumber.ifBlank {
+        profile.id.takeIf { com.example.util.SupabaseClientManager.isPhoneNumberCandidate(it) }.orEmpty()
+    }
+    LaunchedEffect(profile.id, contactLookupPhone) {
+        if (contactLookupPhone.isNotBlank() && syncedLocalPhotos[avatarLookupKey].isNullOrBlank()) {
+            val localPhotoUri = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.example.util.ContactResolver.fetchContactPhotoByPhoneNumber(context, contactLookupPhone)
+            }
+            if (!localPhotoUri.isNullOrBlank()) syncedLocalPhotos[avatarLookupKey] = localPhotoUri
+        }
+    }
     val timeFormatted = remember(match.lastMessageTime) {
         val diff = System.currentTimeMillis() - match.lastMessageTime
         val minutes = diff / (60 * 1000)
@@ -1399,11 +1454,15 @@ private fun VibeSyncConversationItem(
             size = 48.dp,
             isVerified = profile.isVerified,
             isOnline = profile.activityStatus.contains("Online", ignoreCase = true) || profile.activityStatus.contains("Active", ignoreCase = true),
-            avatarUrl = syncedLocalPhotos[profile.phoneNumber.ifBlank { profile.id }] ?: profile.avatarUrl,
+            avatarUrl = syncedLocalPhotos[avatarLookupKey] ?: profile.avatarUrl,
             avatarCacheVersion = profile.avatarCacheVersion,
             modifier = Modifier.clickable {
-                val phone = profile.phoneNumber.ifBlank { profile.id }
-                val photoUri = com.example.util.ContactResolver.fetchContactPhotoByPhoneNumber(context, phone)
+                val phone = profile.phoneNumber.ifBlank {
+                    profile.id.takeIf { com.example.util.SupabaseClientManager.isPhoneNumberCandidate(it) }.orEmpty()
+                }
+                val photoUri = phone.takeIf { it.isNotBlank() }?.let {
+                    com.example.util.ContactResolver.fetchContactPhotoByPhoneNumber(context, it)
+                }
                 if (!photoUri.isNullOrBlank()) {
                     syncedLocalPhotos[phone] = photoUri
                     android.widget.Toast.makeText(context, "🔄 Profile picture successfully synced from your local device contacts!", android.widget.Toast.LENGTH_SHORT).show()

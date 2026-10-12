@@ -275,11 +275,11 @@ fun ChatDetailScreen(
     }
 
     val context = androidx.compose.ui.platform.LocalContext.current
-    var matchedParticipant by remember(profile.id, profile.phoneNumber, profile.name) {
+    var matchedParticipant by remember(profile.id, profile.phoneNumber, profile.name, profile.avatarUrl) {
         mutableStateOf(com.example.util.ContactResolver.matchChatSessionParticipant(context, profile))
     }
 
-    LaunchedEffect(profile.id, profile.phoneNumber, profile.name) {
+    LaunchedEffect(profile.id, profile.phoneNumber, profile.name, profile.avatarUrl) {
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             val updated = com.example.util.ContactResolver.matchChatSessionParticipant(context, profile)
             matchedParticipant = updated
