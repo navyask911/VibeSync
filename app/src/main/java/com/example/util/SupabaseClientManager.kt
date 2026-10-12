@@ -632,9 +632,7 @@ object SupabaseClientManager {
 
             // The key is generated locally and the private keyset never leaves this device.
             // Profile callers often don't hydrate publicIdentityKey from Room, so derive it here.
-            val publicIdentityKey = profile.publicIdentityKey.trim().ifBlank {
-                TinkCryptoManager.getMyPublicKeysetJson()
-            }.trim()
+            val publicIdentityKey = TinkCryptoManager.getMyPublicKeysetJson().trim()
             if (publicIdentityKey.isBlank()) {
                 Log.w(TAG, "Local Tink public keyset is not available; profile sync will retry key publication after key initialization.")
             }

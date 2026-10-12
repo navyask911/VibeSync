@@ -14,6 +14,7 @@ import com.google.crypto.tink.config.TinkConfig
 import com.google.crypto.tink.hybrid.HybridConfig
 import com.google.crypto.tink.integration.android.AndroidKeysetManager
 import java.io.ByteArrayOutputStream
+import java.security.MessageDigest
 
 /**
  * TinkCryptoManager
@@ -108,6 +109,49 @@ object TinkCryptoManager {
             Log.e(TAG, "Error serializing public keyset handle: ${e.message}", e)
             ""
         }
+    }
+
+    /**
+     * Computes a device-independent safety fingerprint over both participants' published
+     * public Tink keysets. Both sides sort the same profile-ID/key pairs and get the same value.
+     * This fingerprint is for manual comparison; loading it alone does not mark a peer verified.
+     */
+    fun createSafetyFingerprint(
+        profileAId: String,
+        publicKeyAJson: String,
+        profileBId: String,
+        publicKeyBJson: String
+    ): String {
+        val aId = profileAId.trim().lowercase(java.util.Locale.ROOT)
+        val bId = profileBId.trim().lowercase(java.util.Locale.ROOT)
+        val aKey = publicKeyAJson.trim()
+        val bKey = publicKeyBJson.trim()
+        require(aId.isNotBlank() && bId.isNotBlank() && aId != bId) {
+            "Two distinct VibeSync profile IDs are required to calculate a safety fingerprint."
+        }
+        require(aKey.isNotBlank() && bKey.isNotBlank()) {
+            "Both participants must publish their Tink public keysets before verification."
+        }
+
+        val identities = listOf(aId to aKey, bId to bKey).sortedBy { it.first }
+        val canonical = buildString {
+            append("VibeSync safety fingerprint v1\n")
+            identities.forEach { (profileId, publicKeyset) ->
+                append(profileId.length).append(':').append(profileId).append('\n')
+                append(publicKeyset.length).append(':').append(publicKeyset).append('\n')
+            }
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(canonical.toByteArray(Charsets.UTF_8))
+        val hexDigits = "0123456789ABCDEF"
+        val hex = buildString(digest.size * 2) {
+            digest.forEach { byte ->
+                val value = byte.toInt() and 0xFF
+                append(hexDigits[value ushr 4])
+                append(hexDigits[value and 0x0F])
+            }
+        }
+        return hex.chunked(8).joinToString(" ")
     }
 
     /**

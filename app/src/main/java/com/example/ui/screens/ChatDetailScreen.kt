@@ -379,8 +379,57 @@ fun ChatDetailScreen(
     }
     var showE2eeDetailsDialog by remember { mutableStateOf(false) }
     var e2eeVisualizerTab by remember { mutableStateOf("FINGERPRINT") } // "FINGERPRINT", "EXPLAINER", "SCANNER"
-    var fingerprintVerificationStatus by remember { mutableStateOf("UNVERIFIED") } // "UNVERIFIED", "VERIFYING", "VERIFIED"
+    var fingerprintVerificationStatus by remember(profile.id, match?.matchId) { mutableStateOf("UNVERIFIED") }
+    var safetyFingerprintText by remember(profile.id, match?.matchId) { mutableStateOf("") }
+    var safetyFingerprintError by remember(profile.id, match?.matchId) { mutableStateOf("") }
     var showAttachmentSheet by remember { mutableStateOf(false) }
+
+    suspend fun loadSafetyFingerprint() {
+        fingerprintVerificationStatus = "VERIFYING"
+        safetyFingerprintError = ""
+        safetyFingerprintText = ""
+        try {
+            val ownProfileId = com.example.util.VibeSyncSessionManager.getProfileId(context).orEmpty().trim()
+            if (ownProfileId.isBlank()) {
+                throw IllegalStateException("Restore your verified VibeSync session before checking safety numbers.")
+            }
+            val ownPublicKey = com.example.util.TinkCryptoManager.getMyPublicKeysetJson(context).trim()
+            if (ownPublicKey.isBlank()) {
+                throw IllegalStateException("This device could not create its Google Tink public keyset.")
+            }
+            val ownKeyPublished = com.example.util.SupabaseClientManager.publishMyPublicIdentityKey(
+                context,
+                expectedProfileId = ownProfileId
+            )
+            if (!ownKeyPublished) {
+                throw IllegalStateException("Your public key could not be published. Check your connection and retry.")
+            }
+
+            // Fetch the peer key from the server rather than treating a stale Room cache as current.
+            val peerPublicKey = com.example.util.SupabaseClientManager.fetchPublicIdentityKey(
+                profileId = profile.id,
+                fallbackPhoneNumber = profile.phoneNumber
+            ).orEmpty().trim()
+            if (peerPublicKey.isBlank()) {
+                throw IllegalStateException(
+                    "The other account has not published a Tink public key yet. Ask them to open VibeSync online, then retry."
+                )
+            }
+
+            safetyFingerprintText = com.example.util.TinkCryptoManager.createSafetyFingerprint(
+                profileAId = ownProfileId,
+                publicKeyAJson = ownPublicKey,
+                profileBId = profile.id,
+                publicKeyBJson = peerPublicKey
+            )
+            fingerprintVerificationStatus = "READY"
+        } catch (t: Throwable) {
+            safetyFingerprintError = t.message?.take(240)
+                ?.ifBlank { null }
+                ?: "Could not fetch both public keys. Check the connection and try again."
+            fingerprintVerificationStatus = "ERROR"
+        }
+    }
 
     // Live Camera and Video Recording Simulated Overlay States
     var showLiveCameraOverlay by remember { mutableStateOf(false) }
@@ -2030,58 +2079,87 @@ fun ChatDetailScreen(
                         "FINGERPRINT" -> {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(
-                                    text = "To verify secure encryption, compare these numbers with ${profile.name}'s device:",
+                                    text = "Load both published public keys, then compare this fingerprint with the other device in person.",
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                                Surface(
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                    shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
+                                if (safetyFingerprintText.isNotBlank()) {
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(
+                                            text = safetyFingerprintText,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = VibeSyncTeal,
+                                            textAlign = TextAlign.Center,
+                                            modifier = Modifier.padding(12.dp).fillMaxWidth()
+                                        )
+                                    }
+                                }
+                                if (safetyFingerprintError.isNotBlank()) {
                                     Text(
-                                        text = "38491  09412  88421\n99512  44182  77215",
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = VibeSyncTeal,
-                                        textAlign = TextAlign.Center,
-                                        modifier = Modifier.padding(12.dp).fillMaxWidth()
+                                        text = safetyFingerprintError,
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.error
                                     )
                                 }
-                                
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.Center,
-                                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
-                                ) {
-                                    if (fingerprintVerificationStatus == "VERIFIED") {
-                                        Icon(
-                                            imageVector = Icons.Default.Verified,
-                                            contentDescription = "Verified",
-                                            tint = VibeSyncTeal,
-                                            modifier = Modifier.size(16.dp)
+                                when (fingerprintVerificationStatus) {
+                                    "VERIFYING" -> {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(18.dp),
+                                            strokeWidth = 2.dp,
+                                            color = VibeSyncTeal
                                         )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Identity Fingerprint Verified", fontSize = 11.sp, color = VibeSyncTeal, fontWeight = FontWeight.Bold)
-                                    } else if (fingerprintVerificationStatus == "VERIFYING") {
-                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = VibeSyncTeal)
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Verifying Google Tink key binding...", fontSize = 11.sp, color = Color.Gray)
-                                    } else {
+                                        Text("Publishing your key and fetching the peer key...", fontSize = 11.sp)
+                                    }
+                                    "VERIFIED" -> {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.Center,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Verified,
+                                                contentDescription = "Manually confirmed",
+                                                tint = VibeSyncTeal,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                "You confirmed the fingerprints match on both devices.",
+                                                fontSize = 11.sp,
+                                                color = VibeSyncTeal,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                    "READY" -> {
+                                        Text(
+                                            "Compare all eight groups on both devices. Do not confirm if any character differs.",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                         Button(
-                                            onClick = {
-                                                coroutineScope.launch {
-                                                    fingerprintVerificationStatus = "VERIFYING"
-                                                    delay(2000)
-                                                    fingerprintVerificationStatus = "VERIFIED"
-                                                }
-                                            },
+                                            onClick = { fingerprintVerificationStatus = "VERIFIED" },
                                             colors = ButtonDefaults.buttonColors(containerColor = VibeSyncTeal),
-                                            modifier = Modifier.height(32.dp),
+                                            modifier = Modifier.height(34.dp),
                                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
                                         ) {
-                                            Text("Verify Safety Numbers", fontSize = 11.sp)
+                                            Text("I compared both devices", fontSize = 11.sp)
+                                        }
+                                    }
+                                    else -> {
+                                        Button(
+                                            onClick = { coroutineScope.launch { loadSafetyFingerprint() } },
+                                            colors = ButtonDefaults.buttonColors(containerColor = VibeSyncTeal),
+                                            modifier = Modifier.height(34.dp),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                                        ) {
+                                            Text("Fetch both keys", fontSize = 11.sp)
                                         }
                                     }
                                 }
@@ -2115,72 +2193,24 @@ fun ChatDetailScreen(
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text(
-                                    text = "Simulate QR Code scanning of safety fingerprints:",
+                                    "QR scanning is not connected in this build. No scan will be marked as verified automatically.",
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     textAlign = TextAlign.Center
                                 )
-                                Box(
-                                    modifier = Modifier
-                                        .size(110.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(Color.White)
-                                        .padding(8.dp),
-                                    contentAlignment = Alignment.Center
+                                Text(
+                                    "Use the Fingerprint tab to load both live public keys and compare the complete SHA-256 fingerprint on each device.",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center
+                                )
+                                Button(
+                                    onClick = { e2eeVisualizerTab = "FINGERPRINT" },
+                                    colors = ButtonDefaults.buttonColors(containerColor = VibeSyncTeal),
+                                    modifier = Modifier.height(34.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
                                 ) {
-                                    // Simulated high-contrast E2EE QR Code
-                                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                        repeat(12) { row ->
-                                            Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                                                repeat(12) { col ->
-                                                    val isBlack = (row + col) % 3 == 0 || (row < 4 && col < 4) || (row > 7 && col < 4) || (row < 4 && col > 7)
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .size(6.dp)
-                                                            .background(if (isBlack) Color.Black else Color.LightGray)
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                
-                                if (fingerprintVerificationStatus == "VERIFIED") {
-                                    Surface(
-                                        color = VibeSyncTeal.copy(alpha = 0.15f),
-                                        shape = RoundedCornerShape(8.dp)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Verified,
-                                                contentDescription = "Verified",
-                                                tint = VibeSyncTeal,
-                                                modifier = Modifier.size(14.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text("QR Match Verified • 100% Secure", fontSize = 11.sp, color = VibeSyncTeal, fontWeight = FontWeight.Bold)
-                                        }
-                                    }
-                                } else if (fingerprintVerificationStatus == "VERIFYING") {
-                                    Text("Scanning code...", fontSize = 11.sp, color = VibeSyncTeal, fontWeight = FontWeight.Bold)
-                                } else {
-                                    Button(
-                                        onClick = {
-                                            coroutineScope.launch {
-                                                fingerprintVerificationStatus = "VERIFYING"
-                                                delay(1800)
-                                                fingerprintVerificationStatus = "VERIFIED"
-                                            }
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = VibeSyncTeal),
-                                        modifier = Modifier.height(32.dp),
-                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
-                                    ) {
-                                        Text("Scan Partner QR Code", fontSize = 11.sp)
-                                    }
+                                    Text("Open safety fingerprint", fontSize = 11.sp)
                                 }
                             }
                         }
