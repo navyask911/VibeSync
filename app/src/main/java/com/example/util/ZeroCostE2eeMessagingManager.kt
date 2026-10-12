@@ -139,10 +139,13 @@ object ZeroCostE2eeMessagingManager {
         Log.d(TAG, "No legacy cloud listener to stop.")
     }
 
+    /**
+     * Historical method name retained for callers during the session-reset refactor.
+     * Encrypted local message history is intentionally durable across an ordinary logout.
+     * Explicit user/account deletion owns the separate, intentional erasure path.
+     */
+    @Deprecated("Local chat history is retained on logout; use explicit account/data deletion to erase it.")
     suspend fun nukeLocalDataOnLogout() = withContext(Dispatchers.IO) {
-        val localDb = database ?: appContext?.let { DatingDatabase.getDatabase(it) } ?: return@withContext
-        localDb.messageDao().nukeTableOnLogout()
-        localDb.chatMessageDao().nukeTableOnLogout()
-        Log.i(TAG, "Local chat data cleared on logout.")
+        Log.i(TAG, "Ordinary logout retained encrypted local chat history.")
     }
 }
