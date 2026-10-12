@@ -74,6 +74,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -96,6 +97,7 @@ import com.example.ui.theme.RomanticViolet
 import com.example.ui.theme.VibeSyncTeal
 import com.example.util.DeviceSimAndIpCountryHelper
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -138,13 +140,45 @@ fun RegistrationProfileScreen(
         onBackToLogin()
     }
 
-    // 1. Profile Photo
+    // 1. Profile Photo. Compress before previewing or saving a user-selected image.
     var avatarUri by remember { mutableStateOf(initialAvatarUrl) }
+    val photoPreparationScope = rememberCoroutineScope()
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
         if (uri != null) {
-            avatarUri = uri.toString()
+            photoPreparationScope.launch {
+                try {
+                    val profileId = com.example.util.VibeSyncSessionManager.getProfileId(context).orEmpty().trim()
+                    require(profileId.isNotBlank()) {
+                        "Your verified profile session is not ready. Retry sign-in before adding a photo."
+                    }
+                    val prepared = com.example.util.ProfileAvatarStorageManager.preparePickedAvatar(
+                        context = context,
+                        sourceUri = uri,
+                        profileId = profileId,
+                        slot = 1
+                    )
+                    // Render the compressed internal-cache JPEG immediately, then use its remote URL.
+                    avatarUri = prepared.uri
+                    val remoteUrl = com.example.util.ProfileAvatarStorageManager.uploadPreparedAvatar(prepared)
+                    if (!remoteUrl.isNullOrBlank()) {
+                        avatarUri = remoteUrl
+                    } else {
+                        Toast.makeText(
+                            context,
+                            "Photo compressed and cached locally, but upload failed. Retry in Edit Profile.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                } catch (t: Throwable) {
+                    Toast.makeText(
+                        context,
+                        t.message?.takeIf { it.isNotBlank() } ?: "Could not prepare the selected profile photo.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
         }
     }
 

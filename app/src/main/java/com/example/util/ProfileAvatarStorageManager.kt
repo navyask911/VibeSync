@@ -61,6 +61,9 @@ object ProfileAvatarStorageManager {
             throw t
         }
         try {
+            check(square.width <= MAX_SIDE && square.height <= MAX_SIDE) {
+                "Avatar image exceeds the 512x512 dimension limit."
+            }
             val cleanSlot = slot.coerceIn(1, 3)
             val dir = File(context.cacheDir, "avatars").apply { mkdirs() }
             val localFile = File(dir, "${safeHash(profileId)}_${cleanSlot}.jpg")

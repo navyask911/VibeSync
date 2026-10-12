@@ -1,5 +1,6 @@
 package com.example.ui.screens.profile
 
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -44,6 +46,7 @@ import com.example.ui.theme.CoralPink
 import com.example.ui.theme.PassRed
 import com.example.ui.theme.VerifiedBadgeBlue
 import com.example.ui.theme.VibeSyncTeal
+import kotlinx.coroutines.launch
 
 @Composable
 fun ProfileHeaderSection(
@@ -56,39 +59,84 @@ fun ProfileHeaderSection(
     onLogout: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val photoScope = rememberCoroutineScope()
     val photos = remember(preferences.profilePhotos, preferences.avatarUrl) { preferences.getPhotoList().take(3) }
+
+    /** Compress each selected image before previewing or saving it. */
+    fun prepareAndUploadPhoto(sourceUri: Uri, slot: Int, existingPhotos: List<String>) {
+        photoScope.launch {
+            try {
+                val profileId = com.example.util.VibeSyncSessionManager.getProfileId(context).orEmpty().trim()
+                require(profileId.isNotBlank()) { "Sign in again before uploading profile photos." }
+                val prepared = com.example.util.ProfileAvatarStorageManager.preparePickedAvatar(
+                    context = context,
+                    sourceUri = sourceUri,
+                    profileId = profileId,
+                    slot = slot
+                )
+
+                val stagedPhotos = existingPhotos.toMutableList()
+                while (stagedPhotos.size < slot) stagedPhotos.add("")
+                stagedPhotos[slot - 1] = prepared.uri
+                val stagedList = stagedPhotos.filter { it.isNotBlank() }
+                val isCanonicalAvatar = slot == 1 || preferences.avatarUrl.isBlank()
+                onUpdatePreferences(
+                    preferences.copy(
+                        avatarUrl = if (isCanonicalAvatar) prepared.uri else preferences.avatarUrl,
+                        profilePhotos = stagedList.joinToString("|||"),
+                        avatarCacheVersion = System.currentTimeMillis()
+                    )
+                )
+
+                val remoteUrl = com.example.util.ProfileAvatarStorageManager.uploadPreparedAvatar(prepared)
+                if (remoteUrl.isNullOrBlank()) {
+                    android.widget.Toast.makeText(
+                        context,
+                        "Compressed photo is cached on this device, but upload failed. Retry it in Edit Profile.",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    val uploadedPhotos = stagedPhotos.toMutableList()
+                    uploadedPhotos[slot - 1] = remoteUrl
+                    onUpdatePreferences(
+                        preferences.copy(
+                            avatarUrl = if (isCanonicalAvatar) remoteUrl else preferences.avatarUrl,
+                            profilePhotos = uploadedPhotos.filter { it.isNotBlank() }.joinToString("|||"),
+                            avatarCacheVersion = System.currentTimeMillis()
+                        )
+                    )
+                    android.widget.Toast.makeText(
+                        context,
+                        "Profile photo compressed and synced.",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            } catch (t: Throwable) {
+                android.widget.Toast.makeText(
+                    context,
+                    t.message?.takeIf { it.isNotBlank() } ?: "Could not prepare the selected profile photo.",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
-        uri?.let {
-            val currentPhotos = preferences.getPhotoList().take(3).toMutableList()
-            if (currentPhotos.isEmpty()) currentPhotos.add(it.toString()) else currentPhotos[0] = it.toString()
-            onUpdatePreferences(
-                preferences.copy(
-                    avatarUrl = it.toString(),
-                    profilePhotos = currentPhotos.joinToString("|||"),
-                    avatarCacheVersion = System.currentTimeMillis()
-                )
-            )
+        uri?.let { source ->
+            prepareAndUploadPhoto(source, 1, preferences.getPhotoList().take(3))
         }
     }
 
     val galleryPhotoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
-        uri?.let {
+        uri?.let { source ->
             val currentList = preferences.getPhotoList().toMutableList()
-            if (!currentList.contains(it.toString()) && currentList.size < 3) {
-                currentList.add(it.toString())
-                onUpdatePreferences(
-                    preferences.copy(
-                        // The first uploaded image is always the canonical profile/discovery avatar.
-                        avatarUrl = preferences.avatarUrl.ifBlank { it.toString() },
-                        profilePhotos = currentList.joinToString("|||"),
-                        avatarCacheVersion = System.currentTimeMillis()
-                    )
-                )
-            } else if (currentList.size >= 3 && !currentList.contains(it.toString())) {
+            if (!currentList.contains(source.toString()) && currentList.size < 3) {
+                prepareAndUploadPhoto(source, currentList.size + 1, currentList)
+            } else if (currentList.size >= 3 && !currentList.contains(source.toString())) {
                 android.widget.Toast.makeText(context, "You can upload up to 3 profile photos.", android.widget.Toast.LENGTH_SHORT).show()
             }
         }
