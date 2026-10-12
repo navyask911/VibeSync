@@ -119,10 +119,10 @@ object ProfileAvatarStorageManager {
 
     /** Replace cache URLs in server metadata with opaque encrypted-object pointers. */
     fun serverAvatarReference(profileId: String, avatarUrl: String): String {
-        if (profileId.isBlank() || avatarUrl.isBlank()) return avatarUrl
-        return avatarUrl.split("|||").joinToString("|||") { value ->
+        if (profileId.isBlank() || avatarUrl.isBlank()) return ""
+        return avatarUrl.split("|||").mapNotNull { value ->
             val trimmed = value.trim()
-            if (trimmed.startsWith("vibesync-avatar-enc://")) return@joinToString trimmed
+            if (trimmed.startsWith("vibesync-avatar-enc://")) return@mapNotNull trimmed
             val uri = runCatching { Uri.parse(trimmed) }.getOrNull()
             val path = uri?.path.orEmpty()
             if (uri?.scheme.equals("file", ignoreCase = true) && path.contains("/avatars/")) {
@@ -133,8 +133,12 @@ object ProfileAvatarStorageManager {
                     else -> 1
                 }
                 encryptedAvatarReference(profileId, slot)
-            } else trimmed
-        }
+            } else {
+                // Never write raw network/content URLs into a profile document. Those legacy
+                // avatars must be reselected/reuploaded through the encrypt-before-upload path.
+                null
+            }
+        }.distinct().joinToString("|||")
     }
 
     private fun encryptedRefParts(reference: String): Pair<String, Int>? {
