@@ -10,8 +10,6 @@ data class ProfileEntity(
     @PrimaryKey val id: String,
     val name: String,
     val age: Int,
-    /** Private DOB from registration; never serialized into public profile fields. */
-    @androidx.room.ColumnInfo(defaultValue = "''") val dateOfBirth: String = "",
     val occupation: String = "",
     val city: String = "",
     val distanceMiles: Int = 0,
@@ -65,7 +63,9 @@ data class ProfileEntity(
     val friendIds: String = "", // Comma-separated list of confirmed friend profile IDs
     val phoneNumber: String = "",
     val email: String = "",
-    val publicIdentityKey: String = ""
+    val publicIdentityKey: String = "",
+    /** Private DOB from registration; never serialized into public profile fields. */
+    @androidx.room.ColumnInfo(defaultValue = "''") val dateOfBirth: String = ""
 ) {
     fun getInterestList(): List<String> {
         return interests.split(",").map { it.trim() }.filter { it.isNotEmpty() }
