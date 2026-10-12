@@ -248,7 +248,7 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                                 database.chatMessageDao().insertMessage(incomingEntity)
                                 database.messageDao().insertMessage(incomingEntity.toLocalMessage())
 
-                                val existingMatch = database.matchDao().getMatchByIdSync(matchId) ?: database.matchDao().getMatchByProfileId(normSender.ifBlank { senderOrMatchId })
+                                val existingMatch = database.matchDao().getMatchByIdSync(matchId) ?: database.matchDao().getMatchByProfileId(senderRoomIdentity)
                                 if (existingMatch == null) {
                                     val newMatch = com.example.data.model.MatchEntity(
                                         matchId = matchId,
@@ -283,7 +283,7 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     } else {
                         val displayBody = if (ciphertext.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
                             try {
-                                com.example.util.TinkCryptoManager.decryptPayload(applicationContext, ciphertext, senderPhone, receiverPhone)
+                                com.example.util.TinkCryptoManager.decryptPayload(applicationContext, ciphertext, senderIdentity, receiverIdentity)
                             } catch (_: Exception) {
                                 "Encrypted message"
                             }
