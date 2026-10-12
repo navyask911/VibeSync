@@ -41,14 +41,20 @@ object MessageDeltaSyncManager {
             return@withContext MessageDeltaSyncResult(false, 0, 0L, reason = "missing canonical conversation identity")
         }
 
-        val localWatermark = MessageSyncWatermarkStore.read(context, match.matchId)
-        // A targeted FCM wake-up bypasses the cursor once, so late push delivery cannot hide its row.
-        val afterCreatedAt = if (targetMessageId.isNullOrBlank()) localWatermark else 0L
+        // A targeted FCM wake-up deliberately bypasses the cursor once, so delayed pushes are not
+        // hidden by a newer watermark. Normal syncs use the exact (created_at, message_id) tuple.
+        val cursor = if (targetMessageId.isNullOrBlank()) {
+            MessageSyncWatermarkStore.readCursor(context, match.matchId)
+        } else {
+            MessageSyncCursor()
+        }
         val batch = SupabaseClientManager.fetchMessageDeltaForMatch(
             matchId = remoteMatchId,
             currentUserPhone = myPhone,
             partnerPhone = partnerPhone,
-            afterCreatedAtMs = afterCreatedAt
+            afterCreatedAtMs = cursor.createdAtMs,
+            afterCreatedAtRaw = cursor.createdAtIso,
+            afterMessageId = cursor.messageId
         )
         var complete = batch?.complete == true
         var synced = 0
@@ -216,8 +222,16 @@ object MessageDeltaSyncManager {
                 }
             }
 
-            if (batch.complete && complete && batch.latestCreatedAtMs > 0L) {
-                MessageSyncWatermarkStore.advance(context.applicationContext, match.matchId, batch.latestCreatedAtMs)
+            if (batch.complete && complete && batch.latestCreatedAtMs > 0L &&
+                batch.latestCreatedAtRaw.isNotBlank() && batch.latestMessageId.isNotBlank()
+            ) {
+                MessageSyncWatermarkStore.advance(
+                    context = context.applicationContext,
+                    localMatchId = match.matchId,
+                    serverCreatedAtIso = batch.latestCreatedAtRaw,
+                    serverMessageId = batch.latestMessageId,
+                    serverCreatedAtMs = batch.latestCreatedAtMs
+                )
             } else if (!complete || !batch.complete) {
                 Log.w(TAG, "Watermark unchanged for local_match_id=${match.matchId}; one or more rows still need decryption/retry.")
             }

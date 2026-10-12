@@ -317,6 +317,27 @@ fun AuthLoginScreen(
                 }
             }
 
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "End-to-End Encrypted via Google Tink",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    text = "Zero-knowledge architecture: Keys are stored exclusively on your device, ensuring private communications.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 3.dp)
+                )
+            }
+
             Spacer(Modifier.height(6.dp))
 
             val legalLink = buildAnnotatedString {

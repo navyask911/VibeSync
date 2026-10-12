@@ -1720,13 +1720,15 @@ fun StatusStoryViewer(
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .navigationBarsPadding()
+                .imePadding()
                 .background(Color.Black.copy(alpha = 0.9f)),
             contentAlignment = Alignment.Center
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth(0.99f)
-                    .fillMaxHeight(0.98f)
+                    .fillMaxHeight(0.9f)
                     .clip(RoundedCornerShape(16.dp))
                     .background(
                         Brush.linearGradient(
@@ -1737,7 +1739,6 @@ fun StatusStoryViewer(
                         )
                     )
                     .statusBarsPadding()
-                    .navigationBarsPadding()
                     .pointerInput(activeStory.id, currentIndex) {
                         detectTapGestures(
                             onPress = {

@@ -55,6 +55,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
@@ -169,10 +170,13 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                             map[key] = m
                         }
                     }
-                    emit(map.values.sortedByDescending { it.lastMessageTime })
+                    emit(map.values
+                        .distinctBy { it.matchId.trim().lowercase() }
+                        .sortedByDescending { it.lastMessageTime })
                 }
             }
         }
+        .distinctUntilChanged()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val userPreferences: StateFlow<UserPreferencesEntity?> = repository.userPreferences

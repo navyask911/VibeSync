@@ -1228,54 +1228,91 @@ object SupabaseClientManager {
     data class MessageDeltaRecord(
         val message: ChatMessageEntity,
         val decryptionSucceeded: Boolean,
-        val deleted: Boolean = false
+        val deleted: Boolean = false,
+        val createdAtRaw: String = ""
     )
 
     data class MessageDeltaBatch(
         val records: List<MessageDeltaRecord>,
         val latestCreatedAtMs: Long,
-        val complete: Boolean
+        val complete: Boolean,
+        val latestCreatedAtRaw: String = "",
+        val latestMessageId: String = ""
     )
 
     private fun parseServerCreatedAtMillis(value: String): Long {
         val raw = value.trim()
         if (raw.isBlank()) return 0L
         raw.toLongOrNull()?.let { return it }
-        return runCatching { java.time.Instant.parse(raw).toEpochMilli() }
-            .recoverCatching { java.time.OffsetDateTime.parse(raw).toInstant().toEpochMilli() }
-            .getOrDefault(0L)
+        return parseServerCreatedAtInstant(raw)?.toEpochMilli() ?: 0L
+    }
+
+    private fun parseServerCreatedAtInstant(value: String): java.time.Instant? {
+        val raw = value.trim()
+        if (raw.isBlank()) return null
+        return runCatching { java.time.Instant.parse(raw) }
+            .recoverCatching { java.time.OffsetDateTime.parse(raw).toInstant() }
+            .getOrNull()
+    }
+
+    /** Compare precise server timestamps, then lexicographic message ids as the cursor tie-breaker. */
+    private fun compareServerMessageCursor(
+        leftCreatedAt: String,
+        leftMessageId: String,
+        rightCreatedAt: String,
+        rightMessageId: String
+    ): Int {
+        val leftInstant = parseServerCreatedAtInstant(leftCreatedAt)
+        val rightInstant = parseServerCreatedAtInstant(rightCreatedAt)
+        val timeComparison = if (leftInstant != null && rightInstant != null) {
+            leftInstant.compareTo(rightInstant)
+        } else {
+            leftCreatedAt.compareTo(rightCreatedAt)
+        }
+        return if (timeComparison != 0) timeComparison else leftMessageId.compareTo(rightMessageId)
     }
 
     /**
-     * Authenticated, paginated delta read. The 2-second overlap intentionally re-reads rows sharing
-     * the same created_at timestamp; Room's stable message_id primary key makes this idempotent.
-     * A null result means REST failed. complete=false means a row could not be safely decrypted or
-     * timestamped, so callers must not advance the watermark.
+     * Authenticated lexicographic delta read ordered by (created_at, message_id). Keep the timestamp
+     * at server precision (including fractional seconds) so rows sharing created_at have a stable
+     * message_id tie-breaker. Legacy timestamp-only cursors retain a small overlap for migration.
      */
     suspend fun fetchMessageDeltaForMatch(
         matchId: String,
         currentUserPhone: String,
         partnerPhone: String,
-        afterCreatedAtMs: Long
+        afterCreatedAtMs: Long,
+        afterCreatedAtRaw: String = "",
+        afterMessageId: String = ""
     ): MessageDeltaBatch? = withContext(Dispatchers.IO) {
         val records = mutableListOf<MessageDeltaRecord>()
         var complete = true
         var latestCreatedAt = 0L
+        var latestCreatedAtRaw = ""
+        var latestMessageId = ""
         var offset = 0
         val pageSize = 500
         val maxPages = 20
         val currentProfileId = VibeSyncSessionManager.getProfileId().orEmpty()
         val context = AppNotificationManager.appContext ?: MessageHandler.appContext
         val safeMatch = java.net.URLEncoder.encode(matchId, "UTF-8")
-        val lowerBound = if (afterCreatedAtMs > 0L) (afterCreatedAtMs - 2_000L).coerceAtLeast(0L) else 0L
-        val afterFilter = if (lowerBound > 0L) {
-            val iso = java.time.Instant.ofEpochMilli(lowerBound).toString()
-            "&created_at=gt.${java.net.URLEncoder.encode(iso, "UTF-8")}"
-        } else ""
+        val afterFilter = when {
+            afterCreatedAtRaw.isNotBlank() && afterMessageId.isNotBlank() -> {
+                val expression = "(created_at.gt." + afterCreatedAtRaw +
+                    ",and(created_at.eq." + afterCreatedAtRaw + ",message_id.gt." + afterMessageId + "))"
+                "&or=" + java.net.URLEncoder.encode(expression, "UTF-8")
+            }
+            afterCreatedAtMs > 0L -> {
+                val lowerBound = (afterCreatedAtMs - 2_000L).coerceAtLeast(0L)
+                val iso = java.time.Instant.ofEpochMilli(lowerBound).toString()
+                "&created_at=gt." + java.net.URLEncoder.encode(iso, "UTF-8")
+            }
+            else -> ""
+        }
         try {
             var pageIndex = 0
             while (pageIndex < maxPages) {
-                val endpoint = "chat_messages?select=message_id,match_id,sender_id,receiver_id,ciphertext,timestamp,is_delivered,is_read,media_url,media_type,voice_duration_seconds,created_at&match_id=eq.$safeMatch$afterFilter&order=created_at.asc&limit=$pageSize&offset=$offset"
+                val endpoint = "chat_messages?select=message_id,match_id,sender_id,receiver_id,ciphertext,timestamp,is_delivered,is_read,media_url,media_type,voice_duration_seconds,created_at&match_id=eq.$safeMatch$afterFilter&order=created_at.asc,message_id.asc&limit=$pageSize&offset=$offset"
                 val request = buildRequest(endpoint, "GET")
                 val pageText = httpClient.newCall(request).execute().use { response ->
                     val body = response.body?.string().orEmpty()
@@ -1297,8 +1334,21 @@ object SupabaseClientManager {
                     val receiverId = row.optSafeString("receiver_id", "")
                     val remoteMatch = row.optSafeString("match_id", matchId)
                     val cipherText = row.optSafeString("ciphertext", "")
-                    val createdAt = parseServerCreatedAtMillis(row.optSafeString("created_at", ""))
-                    if (createdAt <= 0L) complete = false else latestCreatedAt = maxOf(latestCreatedAt, createdAt)
+                    val createdAtRaw = row.optSafeString("created_at", "")
+                    val createdAt = parseServerCreatedAtMillis(createdAtRaw)
+                    if (createdAt <= 0L) {
+                        complete = false
+                    } else {
+                        latestCreatedAt = maxOf(latestCreatedAt, createdAt)
+                        if (id.isNotBlank() && (
+                                latestCreatedAtRaw.isBlank() ||
+                                    compareServerMessageCursor(createdAtRaw, id, latestCreatedAtRaw, latestMessageId) > 0
+                            )
+                        ) {
+                            latestCreatedAtRaw = createdAtRaw
+                            latestMessageId = id
+                        }
+                    }
                     if (id.isBlank() || remoteMatch.isBlank()) {
                         complete = false
                         continue
@@ -1318,7 +1368,8 @@ object SupabaseClientManager {
                                 isDelivered = row.optBoolean("is_delivered", false),
                                 isRead = row.optBoolean("is_read", false), serverCreatedAt = createdAt
                             ),
-                            decryptionSucceeded = false
+                            decryptionSucceeded = false,
+                            createdAtRaw = createdAtRaw
                         )
                         continue
                     }
@@ -1363,16 +1414,17 @@ object SupabaseClientManager {
                             isEncrypted = true,
                             serverCreatedAt = createdAt
                         ),
-                        decryptionSucceeded = decryptionSucceeded
+                        decryptionSucceeded = decryptionSucceeded,
+                        createdAtRaw = createdAtRaw
                     )
                 }
-                if (page.length() < pageSize) return@withContext MessageDeltaBatch(records, latestCreatedAt, complete)
+                if (page.length() < pageSize) return@withContext MessageDeltaBatch(records, latestCreatedAt, complete, latestCreatedAtRaw, latestMessageId)
                 offset += pageSize
                 pageIndex++
             }
             // Page cap reached; preserve the cursor and continue next time rather than skip rows.
             complete = false
-            MessageDeltaBatch(records, latestCreatedAt, complete)
+            MessageDeltaBatch(records, latestCreatedAt, complete, latestCreatedAtRaw, latestMessageId)
         } catch (t: Throwable) {
             Log.w(TAG, "Message delta fetch failed: ${t.javaClass.simpleName}: ${t.message}")
             null

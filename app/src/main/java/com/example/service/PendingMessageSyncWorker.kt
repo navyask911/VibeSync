@@ -462,6 +462,7 @@ class PendingMessageInboxSyncWorker(
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
             val database = DatingDatabase.getDatabase(applicationContext)
+            val chatDao = database.chatMessageDao()
             val session = VibeSyncSessionManager.getSession(applicationContext)
                 ?: return@withContext Result.retry()
             val myProfileId = session.profileId.trim()
