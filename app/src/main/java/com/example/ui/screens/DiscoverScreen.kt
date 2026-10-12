@@ -614,23 +614,16 @@ fun DiscoverScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(11.dp)
                         ) {
-                            Box(
-                                modifier = Modifier.size(60.dp).clip(CircleShape).background(
-                                    Brush.linearGradient(listOf(Color(profile.gradientColorStart), Color(profile.gradientColorEnd)))
-                                ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (profile.avatarUrl.isNotBlank()) {
-                                    AsyncImage(
-                                        model = profile.avatarUrl,
-                                        contentDescription = "${profile.name} profile picture",
-                                        modifier = Modifier.fillMaxSize().clip(CircleShape),
-                                        contentScale = ContentScale.Crop
-                                    )
-                                } else {
-                                    Text(profile.avatarEmoji.ifBlank { "👤" }, fontSize = 28.sp)
-                                }
-                            }
+                            com.example.ui.components.DatingAvatar(
+                                name = profile.name,
+                                emoji = profile.avatarEmoji,
+                                colorStart = profile.gradientColorStart,
+                                colorEnd = profile.gradientColorEnd,
+                                size = 60.dp,
+                                isVerified = profile.isVerified,
+                                avatarUrl = profile.avatarUrl,
+                                avatarCacheVersion = profile.avatarCacheVersion
+                            )
                             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text("${profile.name.ifBlank { "VibeSync User" }} · ${profile.age}", fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1)
