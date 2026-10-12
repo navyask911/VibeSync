@@ -261,7 +261,7 @@ object TinkCryptoManager {
         } catch (e: RecipientKeyNotFoundException) {
             throw e
         } catch (t: Throwable) {
-            Log.e(TAG, "Tink encryption failure: ${t.javaClass.simpleName}: ${t.message}; recipient_key_chars=${recipientPublicKeysetJson.length()}, sender_profile_id=$senderPhone, recipient_profile_id=$receiverPhone.", t)
+            Log.e(TAG, "Tink encryption failure: ${t.javaClass.simpleName}: ${t.message}; recipient_key_chars=${recipientPublicKeysetJson.length}, sender_profile_id=$senderPhone, recipient_profile_id=$receiverPhone.", t)
             throw TinkEncryptionException("Tink hybrid encryption failed: ${t.javaClass.simpleName}: ${t.message ?: "unknown error"}", t)
         }
     }

@@ -888,7 +888,7 @@ object SupabaseClientManager {
                     if (rawKey.isNotBlank()) {
                         val decoded = TinkCryptoManager.decodePostgrestTextValue(rawKey)
                         if (TinkCryptoManager.validatePublicKeysetJson(decoded)) {
-                            Log.i(TAG, "Resolved valid peer Tink key by profile ID; key_chars=${decoded.length()}.")
+                            Log.i(TAG, "Resolved valid peer Tink key by profile ID; key_chars=${decoded.length}.")
                             return@withContext decoded
                         }
                         Log.e(TAG, "Profile-ID lookup returned malformed key: profile_id=$safeProfileId, raw_row=${body}, returned_value=${rawKey}, decoded_value=${decoded}")

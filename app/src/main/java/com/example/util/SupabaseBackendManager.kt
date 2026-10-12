@@ -855,7 +855,7 @@ object SupabaseBackendManager {
                         Log.e("TinkE2EE", "Phone-hash RPC returned an invalid Tink keyset: raw_response=${rawBody}; decoded_value=${keyset}")
                         return@withContext null
                     }
-                    Log.i("TinkE2EE", "Phone-hash key lookup returned a valid Tink public keyset (chars=${keyset.length()}).")
+                    Log.i("TinkE2EE", "Phone-hash key lookup returned a valid Tink public keyset (chars=${keyset.length}).")
                     keyset
                 }
             } catch (e: Exception) {
