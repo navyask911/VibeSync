@@ -185,13 +185,10 @@ object AppNotificationManager {
             val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 ?: return
 
-            val selectedSound = NotificationSoundPreferences.cachedSoundUri(context)
-            val soundUri = when {
-                selectedSound == NotificationSoundPreferences.SILENT_URI -> null
-                !selectedSound.isNullOrBlank() -> runCatching { Uri.parse(selectedSound) }.getOrNull()
-                else -> RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-            }
-            updateSoundChannelIds(selectedSound)
+            // System channels use Android's default notification sound; in-app audio can still
+            // honor the user's selected VibeSync sound preference while the app is open.
+            val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            updateSoundChannelIds(null)
             val audioAttributes = AudioAttributes.Builder()
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .setUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_INSTANT)

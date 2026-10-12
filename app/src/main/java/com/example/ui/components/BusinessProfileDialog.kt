@@ -10,6 +10,7 @@ import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -83,6 +84,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -203,29 +206,6 @@ fun BusinessProfileDialog(
                                 )
                             }
 
-                            // Gradient overlays
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(100.dp)
-                                    .background(
-                                        Brush.verticalGradient(
-                                            listOf(Color.Black.copy(alpha = 0.7f), Color.Transparent)
-                                        )
-                                    )
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(120.dp)
-                                    .align(Alignment.BottomCenter)
-                                    .background(
-                                        Brush.verticalGradient(
-                                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f))
-                                        )
-                                    )
-                            )
-
                             // Swipeable Dot Indicators (if > 1 photo)
                             if (photos.size > 1) {
                                 Row(
@@ -305,38 +285,7 @@ fun BusinessProfileDialog(
                                 }
                             }
 
-                            // Logo Emoji and Category on Banner bottom
-                            Row(
-                                modifier = Modifier
-                                    .align(Alignment.BottomStart)
-                                    .padding(16.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = MaterialTheme.colorScheme.surface,
-                                    shadowElevation = 6.dp,
-                                    modifier = Modifier.size(56.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Text(business.logoEmoji, fontSize = 28.sp)
-                                    }
-                                }
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
-                                    VerificationBadgeView(
-                                        tier = business.tierEnum,
-                                        showRank = true
-                                    )
-                                    Spacer(modifier = Modifier.height(3.dp))
-                                    Text(
-                                        text = "${business.category} • ${business.city}",
-                                        color = Color.White,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                }
-                            }
+
                         }
                     }
 
@@ -477,6 +426,26 @@ fun BusinessProfileDialog(
                                 }
                             }
 
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                color = Color(0xFF111214),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, Color(0xFF2563EB).copy(alpha = 0.55f))
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.End,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Partner Rank • ${business.tierEnum}",
+                                        color = Color(0xFF93B4FF),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
                             Spacer(modifier = Modifier.height(14.dp))
 
                             // Address & Directions
@@ -927,64 +896,70 @@ fun BusinessProfileDialog(
 
                             item {
                                 val totalRatings = reviews.size
-                                val denominator = totalRatings.coerceAtLeast(1)
-                                val distribution = (5 downTo 1).map { stars ->
-                                    stars to reviews.count { it.rating.toInt().coerceIn(1, 5) == stars }
-                                }
+                                val fiveStarCount = reviews.count { it.rating.toInt().coerceIn(1, 5) == 5 }
+                                val fiveStarPercent = if (totalRatings == 0) 0 else (fiveStarCount * 100f / totalRatings).toInt()
                                 Card(
                                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                                    shape = RoundedCornerShape(18.dp),
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                                    shape = RoundedCornerShape(20.dp),
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF111214)),
+                                    border = BorderStroke(1.dp, Color(0xFF303642)),
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                                 ) {
-                                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth().padding(18.dp),
+                                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
                                             Column(modifier = Modifier.weight(1f)) {
+                                                Text("Ratings overview", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
                                                 Text(
-                                                    business.rating.toString(),
-                                                    fontSize = 30.sp,
-                                                    fontWeight = FontWeight.ExtraBold,
-                                                    fontFamily = FontFamily.Serif,
-                                                    color = MaterialTheme.colorScheme.onSurface
+                                                    "Based on ${business.reviewCount} reviews",
+                                                    color = Color(0xFFAAB4C4),
+                                                    fontSize = 11.sp
                                                 )
-                                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                                    repeat(5) {
-                                                        Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFFFFB300), modifier = Modifier.size(14.dp))
-                                                    }
-                                                }
                                             }
-                                            Column(horizontalAlignment = Alignment.End) {
-                                                Text(
-                                                    "${business.reviewCount}",
-                                                    fontSize = 22.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = MaterialTheme.colorScheme.onSurface
-                                                )
-                                                Text("total reviews", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                            }
-                                        }
-                                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                                        distribution.forEach { (stars, count) ->
-                                            val percentage = (count * 100f / denominator).coerceIn(0f, 100f)
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            Button(
+                                                onClick = { showCheckInDialog = true },
+                                                shape = RoundedCornerShape(10.dp),
+                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                                             ) {
-                                                Text("${stars}★", modifier = Modifier.width(30.dp), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                                                LinearProgressIndicator(
-                                                    progress = { percentage / 100f },
-                                                    modifier = Modifier.weight(1f).height(7.dp).clip(RoundedCornerShape(8.dp)),
-                                                    color = Color(0xFFFFB300),
-                                                    trackColor = MaterialTheme.colorScheme.surfaceVariant
-                                                )
-                                                Text("${percentage.toInt()}%", modifier = Modifier.width(38.dp), fontSize = 11.sp, textAlign = TextAlign.End, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                Icon(Icons.Default.RateReview, contentDescription = null, modifier = Modifier.size(15.dp))
+                                                Spacer(modifier = Modifier.width(5.dp))
+                                                Text("Rate venue", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                             }
                                         }
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                            verticalAlignment = Alignment.Top
+                                        ) {
+                                            BusinessMetricDonut(
+                                                modifier = Modifier.weight(1f),
+                                                progress = (business.rating / 5f).coerceIn(0f, 1f),
+                                                centerText = String.format(Locale.ROOT, "%.1f", business.rating),
+                                                label = "Venue rating",
+                                                detail = "out of 5.0",
+                                                accent = Color(0xFF2563EB)
+                                            )
+                                            BusinessMetricDonut(
+                                                modifier = Modifier.weight(1f),
+                                                progress = (fiveStarPercent / 100f).coerceIn(0f, 1f),
+                                                centerText = "${fiveStarPercent}%",
+                                                label = "5-star share",
+                                                detail = "${fiveStarCount} of ${totalRatings} reviews",
+                                                accent = Color(0xFF22C55E)
+                                            )
+                                        }
+                                        HorizontalDivider(color = Color(0xFF303642))
                                         Text(
-                                            "Distribution of ${totalRatings} recorded reviews",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            "The 5-star share is calculated from recorded visitor reviews.",
+                                            color = Color(0xFFAAB4C4),
+                                            style = MaterialTheme.typography.labelSmall
                                         )
                                     }
                                 }
@@ -1617,5 +1592,45 @@ fun CreateBusinessPostDialog(
                 }
             }
         }
+    }
+}
+
+
+@Composable
+private fun BusinessMetricDonut(
+    modifier: Modifier = Modifier,
+    progress: Float,
+    centerText: String,
+    label: String,
+    detail: String,
+    accent: Color
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Canvas(modifier = Modifier.size(88.dp)) {
+                val strokeWidth = 10.dp.toPx()
+                drawArc(
+                    color = Color(0xFF2A2F39),
+                    startAngle = -90f,
+                    sweepAngle = 360f,
+                    useCenter = false,
+                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+                )
+                drawArc(
+                    color = accent,
+                    startAngle = -90f,
+                    sweepAngle = 360f * progress.coerceIn(0f, 1f),
+                    useCenter = false,
+                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+                )
+            }
+            Text(centerText, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
+        }
+        Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        Text(detail, color = Color(0xFFAAB4C4), fontSize = 10.sp, textAlign = TextAlign.Center)
     }
 }

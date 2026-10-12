@@ -186,6 +186,7 @@ fun BusinessHubContent(
     var activeQrStickerBiz by remember { mutableStateOf<BusinessEntity?>(null) }
     var editingBusiness by remember { mutableStateOf<BusinessEntity?>(null) }
     var globalSearchQuery by remember { mutableStateOf("") }
+    var globalCityQuery by remember { mutableStateOf("") }
     val searchFocusRequester = remember { FocusRequester() }
 
     Surface(
@@ -287,45 +288,66 @@ fun BusinessHubContent(
                     if (selectedTab != 3) {
                         // Enterprise search; filter chips remain in the content area below.
                         // Fixed, single-line search remains pinned in the header and never expands on focus.
-                        OutlinedTextField(
-                            value = globalSearchQuery,
-                            onValueChange = { query ->
-                                globalSearchQuery = query
-                                if (selectedTab != 0 && selectedTab != 2 && query.isNotBlank()) selectedTab = 0
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(52.dp)
-                                .padding(horizontal = 16.dp)
-                                .testTag("top_pinned_search_bar"),
-                            singleLine = true,
-                            maxLines = 1,
-                            placeholder = {
-                                Text(
-                                    "Search businesses, deals, cafes, services…",
-                                    maxLines = 1,
-                                    fontSize = 13.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            },
-                            leadingIcon = {
-                                Icon(Icons.Default.Search, contentDescription = "Search", tint = MaterialTheme.colorScheme.primary)
-                            },
-                            trailingIcon = {
-                                if (globalSearchQuery.isNotEmpty()) {
-                                    IconButton(onClick = { globalSearchQuery = "" }) {
-                                        Icon(Icons.Default.Close, contentDescription = "Clear search")
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = globalSearchQuery,
+                                onValueChange = { query ->
+                                    globalSearchQuery = query
+                                    if (selectedTab != 0 && selectedTab != 2 && query.isNotBlank()) selectedTab = 0
+                                },
+                                modifier = Modifier
+                                    .weight(if (selectedTab == 0) 1.45f else 1f)
+                                    .height(52.dp)
+                                    .testTag("top_pinned_search_bar"),
+                                singleLine = true,
+                                maxLines = 1,
+                                placeholder = { Text("Search businesses, deals, cafes…", maxLines = 1, fontSize = 12.sp) },
+                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search", tint = MaterialTheme.colorScheme.primary) },
+                                trailingIcon = {
+                                    if (globalSearchQuery.isNotEmpty()) {
+                                        IconButton(onClick = { globalSearchQuery = "" }) {
+                                            Icon(Icons.Default.Close, contentDescription = "Clear search")
+                                        }
                                     }
-                                }
-                            },
-                            shape = RoundedCornerShape(18.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = MaterialTheme.colorScheme.primary,
-                                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
-                                focusedContainerColor = MaterialTheme.colorScheme.surface,
-                                unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                                },
+                                shape = RoundedCornerShape(16.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color(0xFF2563EB),
+                                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                                    focusedContainerColor = MaterialTheme.colorScheme.surface,
+                                    unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                                )
                             )
-                        )
+                            if (selectedTab == 0) {
+                                OutlinedTextField(
+                                    value = globalCityQuery,
+                                    onValueChange = { globalCityQuery = it },
+                                    modifier = Modifier.weight(0.9f).height(52.dp).testTag("find_inline_city_selector"),
+                                    singleLine = true,
+                                    maxLines = 1,
+                                    placeholder = { Text("City", maxLines = 1, fontSize = 12.sp) },
+                                    leadingIcon = { Icon(Icons.Default.LocationOn, contentDescription = "Filter by city", modifier = Modifier.size(17.dp)) },
+                                    trailingIcon = {
+                                        if (globalCityQuery.isNotBlank()) {
+                                            IconButton(onClick = { globalCityQuery = "" }) {
+                                                Icon(Icons.Default.Close, contentDescription = "Clear city")
+                                            }
+                                        }
+                                    },
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = Color(0xFF2563EB),
+                                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                                        unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                                    )
+                                )
+                            }
+                        }
 
                         if (globalSearchQuery.isNotBlank()) {
                             Text(
@@ -499,7 +521,7 @@ fun BusinessHubContent(
                     0 -> NearestBusinessesTab(
                         businesses = allBusinesses,
                         searchQuery = globalSearchQuery,
-                        onSearchQueryChange = { globalSearchQuery = it },
+                        cityQuery = globalCityQuery,
                         onFollow = { viewModel.toggleFollowBusiness(it.id) },
                         onSelect = { selectedBusinessForProfile = it }
                     )
@@ -692,7 +714,7 @@ fun BusinessHubContent(
 private fun NearestBusinessesTab(
     businesses: List<BusinessEntity>,
     searchQuery: String = "",
-    onSearchQueryChange: (String) -> Unit = {},
+    cityQuery: String = "",
     onFollow: (BusinessEntity) -> Unit,
     onSelect: (BusinessEntity) -> Unit
 ) {
@@ -759,7 +781,7 @@ private fun NearestBusinessesTab(
     }
 
     // Filter by Search Query & Category / Subcategory
-    val filteredBusinesses = remember(processedBusinesses, searchQuery, selectedCategory, selectedSubCategory) {
+    val filteredBusinesses = remember(processedBusinesses, searchQuery, cityQuery, selectedCategory, selectedSubCategory) {
         processedBusinesses.filter { biz ->
             val matchesQuery = searchQuery.isBlank() ||
                     biz.name.contains(searchQuery, ignoreCase = true) ||
@@ -776,7 +798,10 @@ private fun NearestBusinessesTab(
                 selectedSubCategory = selectedSubCategory
             )
 
-            matchesQuery && matchesCat
+            val matchesCity = cityQuery.isBlank() ||
+                biz.city.contains(cityQuery.trim(), ignoreCase = true) ||
+                biz.address.contains(cityQuery.trim(), ignoreCase = true)
+            matchesQuery && matchesCat && matchesCity
         }
     }
 
@@ -785,155 +810,6 @@ private fun NearestBusinessesTab(
         contentPadding = PaddingValues(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        item {
-            var locationQuery by remember { mutableStateOf("") }
-            var isSearchingLocation by remember { mutableStateOf(false) }
-            var locationSearchMessage by remember { mutableStateOf("") }
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.size(44.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Default.MyLocation, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
-                            }
-                        }
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Location Controls", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
-                            Text(
-                                text = "Use GPS or search a city to change the venue area.",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        Button(
-                            onClick = {
-                                if (hasLocationPermission) {
-                                    refreshLocation()
-                                    onSearchQueryChange("")
-                                } else {
-                                    permissionLauncher.launch(
-                                        arrayOf(
-                                            android.Manifest.permission.ACCESS_FINE_LOCATION,
-                                            android.Manifest.permission.ACCESS_COARSE_LOCATION
-                                        )
-                                    )
-                                }
-                            },
-                            enabled = !isGpsRefreshing,
-                            shape = RoundedCornerShape(14.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                            elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
-                        ) {
-                            if (isGpsRefreshing) {
-                                CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp)
-                            } else {
-                                Text("Use GPS", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                            }
-                        }
-                    }
-
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
-
-                    Text("Search Location", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        OutlinedTextField(
-                            value = locationQuery,
-                            onValueChange = { locationQuery = it; locationSearchMessage = "" },
-                            modifier = Modifier.weight(1f).testTag("field_business_search_location"),
-                            placeholder = { Text("City or latitude, longitude") },
-                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                            singleLine = true,
-                            shape = RoundedCornerShape(14.dp)
-                        )
-                        Button(
-                            onClick = {
-                                val query = locationQuery.trim()
-                                if (query.isNotBlank()) {
-                                    scope.launch {
-                                        isSearchingLocation = true
-                                        locationSearchMessage = ""
-                                        val coordinatePattern = Regex("""^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$""")
-                                        val parsed = coordinatePattern.matchEntire(query)
-                                        val foundCoordinate = if (parsed != null) {
-                                            val latitude = parsed.groupValues[1].toDoubleOrNull()
-                                            val longitude = parsed.groupValues[2].toDoubleOrNull()
-                                            if (latitude != null && longitude != null && latitude in -90.0..90.0 && longitude in -180.0..180.0) {
-                                                GpsCoordinate(latitude, longitude, "Search: $query", false)
-                                            } else null
-                                        } else {
-                                            withContext(Dispatchers.IO) {
-                                                try {
-                                                    @Suppress("DEPRECATION")
-                                                    val addresses = Geocoder(context, Locale.getDefault()).getFromLocationName(query, 1)
-                                                    addresses?.firstOrNull()?.let { address ->
-                                                        GpsCoordinate(
-                                                            address.latitude,
-                                                            address.longitude,
-                                                            address.locality ?: address.subAdminArea ?: address.adminArea ?: query,
-                                                            false
-                                                        )
-                                                    }
-                                                } catch (_: Exception) {
-                                                    null
-                                                }
-                                            }
-                                        }
-                                        if (foundCoordinate != null) {
-                                            currentCoordinate = foundCoordinate
-                                            // For a city search, restrict results to matching business city/address;
-                                            // for coordinates, show the nearest venues around the entered point.
-                                            onSearchQueryChange(if (parsed == null) query else "")
-                                            locationSearchMessage = "Showing venues around ${foundCoordinate.label}"
-                                        } else {
-                                            locationSearchMessage = "Location not found. Try a city name or valid coordinates."
-                                        }
-                                        isSearchingLocation = false
-                                    }
-                                }
-                            },
-                            enabled = locationQuery.isNotBlank() && !isSearchingLocation,
-                            shape = RoundedCornerShape(14.dp),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp),
-                            elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
-                        ) {
-                            if (isSearchingLocation) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                            else Text("Search", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        }
-                    }
-                    if (locationSearchMessage.isNotBlank()) {
-                        Text(
-                            locationSearchMessage,
-                            color = if (locationSearchMessage.startsWith("Showing")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                            fontSize = 11.sp
-                        )
-                    }
-                }
-            }
-        }
-
         item {
             // 1. Horizontal Category Bar        item {
             // 1. Horizontal Category Bar (All + 5 Parent Categories with dropdown sub-navigation)

@@ -2110,25 +2110,36 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun openProfileDetail(profile: ProfileEntity) {
-        val local = runCatching { database.profileDao().getProfileByIdSync(profile.id) }.getOrNull()
-        val canonical = if (local == null) profile else local.copy(
-            name = local.name.takeIf { value ->
-                value.isNotBlank() && !value.equals("VibeSync User", true) &&
-                    !value.equals("VibeSync Contact", true) && !value.equals("VibeSync Match", true)
-            } ?: profile.name,
-            age = local.age.takeIf { it > 0 } ?: profile.age,
-            occupation = local.occupation.takeIf { it.isNotBlank() && !it.equals("Member", true) } ?: profile.occupation,
-            city = local.city.takeIf { it.isNotBlank() && !it.equals("Online", true) } ?: profile.city,
-            bio = local.bio.takeIf { it.isNotBlank() && !it.equals("VibeSync Connection", true) } ?: profile.bio,
-            gender = local.gender.takeIf { it.isNotBlank() && !it.equals("Not specified", true) } ?: profile.gender,
-            phoneNumber = local.phoneNumber.ifBlank { profile.phoneNumber },
-            dateOfBirth = local.dateOfBirth.ifBlank { profile.dateOfBirth },
-            avatarUrl = local.avatarUrl.ifBlank { profile.avatarUrl },
-            avatarCacheVersion = maxOf(local.avatarCacheVersion, profile.avatarCacheVersion),
-            publicIdentityKey = local.publicIdentityKey.ifBlank { profile.publicIdentityKey }
-        )
+        // Open immediately from the selected registration/profile record, then enrich with Room.
+        val context = getApplication<Application>()
         _selectedProfileDetail.value =
-            com.example.util.ContactResolver.matchChatSessionParticipant(getApplication(), canonical)
+            com.example.util.ContactResolver.matchChatSessionParticipant(context, profile)
+
+        viewModelScope.launch {
+            val local = runCatching {
+                database.profileDao().getProfileByIdSync(profile.id)
+            }.getOrNull()
+            val canonical = if (local == null) profile else local.copy(
+                name = local.name.takeIf { value ->
+                    value.isNotBlank() && !value.equals("VibeSync User", true) &&
+                        !value.equals("VibeSync Contact", true) && !value.equals("VibeSync Match", true)
+                } ?: profile.name,
+                age = local.age.takeIf { it > 0 } ?: profile.age,
+                occupation = local.occupation.takeIf { it.isNotBlank() && !it.equals("Member", true) } ?: profile.occupation,
+                city = local.city.takeIf { it.isNotBlank() && !it.equals("Online", true) } ?: profile.city,
+                bio = local.bio.takeIf { it.isNotBlank() && !it.equals("VibeSync Connection", true) } ?: profile.bio,
+                gender = local.gender.takeIf { it.isNotBlank() && !it.equals("Not specified", true) } ?: profile.gender,
+                phoneNumber = local.phoneNumber.ifBlank { profile.phoneNumber },
+                dateOfBirth = local.dateOfBirth.ifBlank { profile.dateOfBirth },
+                avatarUrl = local.avatarUrl.ifBlank { profile.avatarUrl },
+                avatarCacheVersion = maxOf(local.avatarCacheVersion, profile.avatarCacheVersion),
+                publicIdentityKey = local.publicIdentityKey.ifBlank { profile.publicIdentityKey }
+            )
+            if (_selectedProfileDetail.value?.id == profile.id) {
+                _selectedProfileDetail.value =
+                    com.example.util.ContactResolver.matchChatSessionParticipant(context, canonical)
+            }
+        }
     }
 
     fun closeProfileDetail() {

@@ -956,6 +956,7 @@ fun MatchesChatScreen(
                             profile = profile,
                             latestMessage = latestMessageMap[match.matchId],
                             onClick = { onOpenChat(match, profile) },
+                            onViewProfile = onOpenProfileDetail,
                             syncedLocalPhotos = syncedLocalPhotos
                         )
                     }

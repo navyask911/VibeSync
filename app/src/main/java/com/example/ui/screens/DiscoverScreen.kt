@@ -2,6 +2,8 @@ package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -145,7 +147,7 @@ fun DiscoverScreen(
     val context = LocalContext.current
     val currentLatitude = userPreferences?.latitude ?: 0.0
     val currentLongitude = userPreferences?.longitude ?: 0.0
-    var showPreferencesDialog by remember { mutableStateOf(false) }
+    var showConnectPreferences by remember { mutableStateOf(false) }
     var dismissedRequestIds by rememberSaveable { mutableStateOf(setOf<String>()) }
     var followedBusinessIds by rememberSaveable { mutableStateOf(setOf<String>()) }
     var businessSearchQuery by rememberSaveable { mutableStateOf("") }
@@ -168,8 +170,8 @@ fun DiscoverScreen(
     var businessHubInitialTab by rememberSaveable { androidx.compose.runtime.mutableIntStateOf(0) }
 
     // Intercept phone back button to dismiss preferences dialog if open
-    BackHandler(enabled = showPreferencesDialog) {
-        showPreferencesDialog = false
+    BackHandler(enabled = showConnectPreferences) {
+        showConnectPreferences = false
     }
 
     // Combine all request sources into a single banner list (Friendship, Like, Superlike)
@@ -194,62 +196,6 @@ fun DiscoverScreen(
         }
 
         list
-    }
-
-    if (showPreferencesDialog) {
-        val prefs = userPreferences ?: com.example.data.model.UserPreferencesEntity()
-        var tempMaxDistance by remember(prefs.maxDistanceMiles) { mutableFloatStateOf(prefs.maxDistanceMiles.coerceIn(5, 150).toFloat()) }
-        var tempOnlyVerified by remember(prefs.onlyVerified) { mutableStateOf(prefs.onlyVerified) }
-        var tempIsProfileLocked by remember(prefs.isProfileLocked) { mutableStateOf(prefs.isProfileLocked) }
-        AlertDialog(
-            onDismissRequest = { showPreferencesDialog = false },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Tune, contentDescription = null, tint = VibeSyncTeal)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Connection Preferences", fontWeight = FontWeight.Bold)
-                }
-            },
-            text = {
-                Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text("Discovery radius", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                        Text("${tempMaxDistance.toInt()} km", fontWeight = FontWeight.Bold, color = VibeSyncTeal)
-                    }
-                    Slider(value = tempMaxDistance, onValueChange = { tempMaxDistance = it }, valueRange = 5f..150f, steps = 28, modifier = Modifier.fillMaxWidth().testTag("slider_connection_radius"))
-                    HorizontalDivider(thickness = 0.5.dp)
-                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Verified profiles", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            Text("Prioritize verified people and organizations", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Switch(checked = tempOnlyVerified, onCheckedChange = { tempOnlyVerified = it })
-                    }
-                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Profile privacy", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            Text("Limit visibility of sensitive profile details", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Switch(checked = tempIsProfileLocked, onCheckedChange = { tempIsProfileLocked = it })
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        onUpdatePreferences(prefs.copy(
-                            maxDistanceMiles = tempMaxDistance.toInt().coerceIn(5, 150),
-                            onlyVerified = tempOnlyVerified,
-                            isProfileLocked = tempIsProfileLocked
-                        ))
-                        showPreferencesDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = VibeSyncTeal),
-                    modifier = Modifier.testTag("btn_save_connect_preferences")
-                ) { Text("Save connection settings") }
-            },
-            dismissButton = { TextButton(onClick = { showPreferencesDialog = false }) { Text("Cancel") } }
-        )
     }
 
     Column(
@@ -478,8 +424,9 @@ fun DiscoverScreen(
             mutableFloatStateOf(((userPreferences?.maxDistanceMiles ?: 93) * 1.60934f).coerceIn(0f, 150f))
         }
         var verifiedOnly by rememberSaveable { mutableStateOf(userPreferences?.onlyVerified ?: false) }
+        var intentFilter by rememberSaveable { mutableStateOf(userPreferences?.goalFilter ?: "All") }
 
-        val filteredCandidates = remember(candidates, discoverSearchQuery, ageRange, genderFilter, maxDistanceKm, verifiedOnly) {
+        val filteredCandidates = remember(candidates, discoverSearchQuery, ageRange, genderFilter, maxDistanceKm, verifiedOnly, intentFilter) {
             candidates.asSequence()
                 .filter { it.age in ageRange.start.toInt()..ageRange.endInclusive.toInt() }
                 .filter { profile ->
@@ -493,6 +440,14 @@ fun DiscoverScreen(
                 }
                 .filter { it.distanceMiles.toDouble() * 1.60934 <= maxDistanceKm }
                 .filter { !verifiedOnly || it.isVerified }
+                .filter { profile ->
+                    intentFilter == "All" || when (intentFilter) {
+                        "Friendship" -> profile.relationshipGoal.contains("friend", ignoreCase = true) || !profile.isDatingGoal
+                        "Casual" -> profile.relationshipGoal.contains("casual", ignoreCase = true)
+                        "Long-term" -> profile.relationshipGoal.contains("long", ignoreCase = true) || profile.isDatingGoal
+                        else -> profile.relationshipGoal.contains(intentFilter, ignoreCase = true)
+                    }
+                }
                 .filter { discoverSearchQuery.isBlank() ||
                     it.name.contains(discoverSearchQuery, ignoreCase = true) ||
                     it.city.contains(discoverSearchQuery, ignoreCase = true) ||
@@ -518,76 +473,131 @@ fun DiscoverScreen(
             modifier = Modifier.weight(1f).fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            OutlinedTextField(
-                value = discoverSearchQuery,
-                onValueChange = { discoverSearchQuery = it },
-                modifier = Modifier.fillMaxWidth().height(56.dp).testTag("discover_fixed_search"),
-                singleLine = true,
-                maxLines = 1,
-                textStyle = MaterialTheme.typography.bodyMedium,
-                placeholder = { Text("Search people, places or businesses…", maxLines = 1) },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                shape = RoundedCornerShape(14.dp),
-                colors = OutlinedTextFieldDefaults.colors()
-            )
-
-            Card(
-                modifier = Modifier.fillMaxWidth().wrapContentHeight(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)),
-                shape = RoundedCornerShape(16.dp)
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp, bottom = 2.dp)
+                    .clip(CircleShape)
+                    .clickable { showConnectPreferences = !showConnectPreferences }
+                    .testTag("connect_preferences_summary"),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
             ) {
-                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Age", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                        Text("${ageRange.start.toInt()}–${ageRange.endInclusive.toInt()}", style = MaterialTheme.typography.labelMedium)
-                    }
-                    RangeSlider(
-                        value = ageRange,
-                        onValueChange = { range ->
-                            ageRange = range.start.coerceIn(18f, 99f)..range.endInclusive.coerceIn(18f, 99f)
-                        },
-                        valueRange = 18f..99f,
-                        steps = 80
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Tune, contentDescription = "Connection preferences", tint = Color(0xFF2563EB), modifier = Modifier.size(18.dp))
+                    Text(
+                        text = "${ageRange.start.toInt()}–${ageRange.endInclusive.toInt()} yrs • Within ${maxDistanceKm.toInt()} km" +
+                            (if (genderFilter != "All") " • ${genderFilter}" else "") +
+                            (if (intentFilter != "All") " • ${intentFilter}" else "") +
+                            (if (verifiedOnly) " • Verified" else ""),
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Gender", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                        Text("Distance ≤ ${maxDistanceKm.toInt()} km", style = MaterialTheme.typography.labelMedium)
-                    }
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(0.dp)) {
-                        listOf("All", "M", "F", "O").forEach { gender ->
-                            FilterChip(
-                                selected = genderFilter == gender,
-                                onClick = { genderFilter = gender },
-                                label = { Text(gender) },
-                                modifier = Modifier.testTag("discover_gender_${gender.lowercase()}")
-                            )
-                        }
-                    }
-                    Slider(
-                        value = maxDistanceKm,
-                        onValueChange = { maxDistanceKm = it.coerceIn(0f, 150f) },
-                        valueRange = 0f..150f,
-                        steps = 29,
-                        modifier = Modifier.fillMaxWidth().height(28.dp)
+                    Icon(
+                        imageVector = if (showConnectPreferences) Icons.Default.Close else Icons.Default.Tune,
+                        contentDescription = if (showConnectPreferences) "Collapse filters" else "Expand filters",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(17.dp)
                     )
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Switch(checked = verifiedOnly, onCheckedChange = { verifiedOnly = it }, modifier = Modifier.testTag("discover_verified_only"))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Verified only", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            AnimatedVisibility(
+                visible = showConnectPreferences,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().wrapContentHeight(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Age", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                            Text("${ageRange.start.toInt()}–${ageRange.endInclusive.toInt()}", style = MaterialTheme.typography.labelMedium)
                         }
-                        TextButton(onClick = {
-                            val current = userPreferences
-                            if (current != null) onUpdatePreferences(current.copy(
-                                minAge = ageRange.start.toInt().coerceIn(18, 99),
-                                maxAge = ageRange.endInclusive.toInt().coerceIn(18, 99),
-                                maxDistanceMiles = (maxDistanceKm / 1.60934f).toInt().coerceIn(0, 93),
-                                onlyVerified = verifiedOnly
-                            ))
-                        }) { Text("Apply filters") }
+                        RangeSlider(
+                            value = ageRange,
+                            onValueChange = { range ->
+                                ageRange = range.start.coerceIn(18f, 99f)..range.endInclusive.coerceIn(18f, 99f)
+                            },
+                            valueRange = 18f..99f,
+                            steps = 80
+                        )
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Gender", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                            Text("Distance ≤ ${maxDistanceKm.toInt()} km", style = MaterialTheme.typography.labelMedium)
+                        }
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(0.dp)) {
+                            listOf("All", "M", "F", "O").forEach { gender ->
+                                FilterChip(
+                                    selected = genderFilter == gender,
+                                    onClick = { genderFilter = gender },
+                                    label = { Text(gender) },
+                                    modifier = Modifier.testTag("discover_gender_${gender.lowercase()}")
+                                )
+                            }
+                        }
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(0.dp)) {
+                            listOf("All", "Long-term", "Casual", "Friendship").forEach { intent ->
+                                FilterChip(
+                                    selected = intentFilter == intent,
+                                    onClick = { intentFilter = intent },
+                                    label = { Text(if (intent == "All") "Any intent" else intent) },
+                                    modifier = Modifier.testTag("discover_intent_${intent.lowercase().replace('-', '_')}")
+                                )
+                            }
+                        }
+                        Slider(
+                            value = maxDistanceKm,
+                            onValueChange = { maxDistanceKm = it.coerceIn(0f, 150f) },
+                            valueRange = 0f..150f,
+                            steps = 29,
+                            modifier = Modifier.fillMaxWidth().height(28.dp)
+                        )
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Switch(checked = verifiedOnly, onCheckedChange = { verifiedOnly = it }, modifier = Modifier.testTag("discover_verified_only"))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Verified only", style = MaterialTheme.typography.bodySmall)
+                            }
+                            TextButton(onClick = {
+                                val current = userPreferences
+                                if (current != null) onUpdatePreferences(current.copy(
+                                    minAge = ageRange.start.toInt().coerceIn(18, 99),
+                                    maxAge = ageRange.endInclusive.toInt().coerceIn(18, 99),
+                                    maxDistanceMiles = (maxDistanceKm / 1.60934f).toInt().coerceIn(0, 93),
+                                    onlyVerified = verifiedOnly,
+                                    goalFilter = intentFilter
+                                ))
+                                showConnectPreferences = false
+                            }) { Text("Apply Filters") }
+                        }
                     }
                 }
             }
+
+                OutlinedTextField(
+                    value = discoverSearchQuery,
+                    onValueChange = { discoverSearchQuery = it },
+                    modifier = Modifier.fillMaxWidth().height(56.dp).testTag("discover_fixed_search"),
+                    singleLine = true,
+                    maxLines = 1,
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    placeholder = { Text("Search people, places or businesses…", maxLines = 1) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = OutlinedTextFieldDefaults.colors()
+                )
 
             Text(
                 text = "People nearby • ${filteredCandidates.size}/25",

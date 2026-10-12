@@ -133,4 +133,4 @@ object MessageSyncWatermarkStore {
         MessageDigest.getInstance("SHA-256")
             .digest(localMatchId.toByteArray(Charsets.UTF_8))
             .take(12)
-            .joinToString("") { "%02x".format(it) }
+            .joinToString("") { byte -> (byte.toInt() and 0xff).toString(16).padStart(2, '0') }
