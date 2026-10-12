@@ -16,7 +16,7 @@ import java.security.MessageDigest
 
 object ProfileAvatarStorageManager {
     private const val MAX_SIDE = 512
-    private const val MAX_BYTES = 150 * 1024
+    private const val MAX_BYTES = 150_000
     private const val INITIAL_QUALITY = 80
     private const val TAG = "ProfileAvatarStorage"
 
@@ -70,7 +70,7 @@ object ProfileAvatarStorageManager {
             val bytes = compressUnderLimit(square)
             localFile.outputStream().use { output -> output.write(bytes); output.flush() }
             require(localFile.isFile && localFile.length() in 1 until MAX_BYTES.toLong()) {
-                "Compressed avatar must be strictly below 150 KiB."
+                "Compressed avatar must be strictly below 150,000 bytes."
             }
             val objectName = if (cleanSlot == 1) "$profileId.jpg" else "${profileId}_${cleanSlot}.jpg"
             PreparedAvatar(Uri.fromFile(localFile).toString(), localFile, profileId, objectName, bytes.size)
@@ -80,7 +80,7 @@ object ProfileAvatarStorageManager {
     suspend fun uploadPreparedAvatar(prepared: PreparedAvatar): String? =
         withContext(Dispatchers.IO) {
             if (!prepared.file.isFile || prepared.file.length() !in 1 until MAX_BYTES.toLong()) {
-                Log.w(TAG, "Refusing avatar upload because staged JPEG is missing or exceeds 150 KiB.")
+                Log.w(TAG, "Refusing avatar upload because staged JPEG is missing or exceeds 150,000 bytes.")
                 return@withContext null
             }
             SupabaseClientManager.uploadProfileAvatar(
@@ -111,7 +111,7 @@ object ProfileAvatarStorageManager {
             // Quality 80 is the normal path; only drop lower if the hard 150 KiB cap requires it.
             quality -= 5
         }
-        error("Avatar could not be compressed below 150 KiB.")
+        error("Avatar could not be compressed below 150,000 bytes.")
     }
 
     private fun safeHash(value: String): String =
