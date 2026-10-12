@@ -20,7 +20,7 @@ interface MessageDao {
     @Query("SELECT * FROM local_messages WHERE matchId = :matchId ORDER BY timestamp ASC")
     fun getMessagesForMatch(matchId: String): Flow<List<LocalMessage>>
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessage(message: LocalMessage)
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
