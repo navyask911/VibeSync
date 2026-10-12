@@ -173,7 +173,8 @@ object MessageDeltaSyncManager {
                     !AppNotificationManager.isAppInForeground &&
                     !targetMessageId.isNullOrBlank() &&
                     targetMessageId == remote.messageId &&
-                    existing == null &&
+                    (existing == null || existing.text.isBlank() ||
+                        existing.text.startsWith(TinkCryptoManager.TINK_PREFIX)) &&
                     canRenderPlaintext &&
                     local.text.isNotBlank()
                 ) {

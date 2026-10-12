@@ -511,9 +511,14 @@ class PendingMessageInboxSyncWorker(
                 ackFailures += result.ackFailures
             }
 
-            if (targetMessageId.isNotBlank() && syncedMessages == 0) {
-                Log.w(TAG, "Targeted FCM message not yet resolvable; returning retry so the wakeup is not lost.")
-                return@withContext Result.retry()
+            if (targetMessageId.isNotBlank()) {
+                val target = chatDao.getMessageById(targetMessageId)
+                val targetIsPlaintext = target != null && target.text.isNotBlank() &&
+                    !target.text.startsWith(TinkCryptoManager.TINK_PREFIX)
+                if (!targetIsPlaintext) {
+                    Log.w(TAG, "Targeted FCM message is not yet decrypted and persisted; retrying its wakeup.")
+                    return@withContext Result.retry()
+                }
             }
             Log.i(TAG, "Inbox delta finished: conversations=$checkedConversations rows=$syncedMessages ackFailures=$ackFailures incomplete=$hadIncompleteConversation.")
             if (hadIncompleteConversation || ackFailures > 0) Result.retry() else Result.success()

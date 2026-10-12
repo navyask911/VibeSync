@@ -78,7 +78,7 @@ fun EditProfileDialog(
     var photo1Preview by remember { mutableStateOf(preferences.avatarUrl) }
     var photo2Preview by remember { mutableStateOf(preferences.getPhotoList().getOrNull(1) ?: "") }
     var photo3Preview by remember { mutableStateOf(preferences.getPhotoList().getOrNull(2) ?: "") }
-    var hasUnsyncedAvatar by remember { mutableStateOf(false) }
+    var unsyncedAvatarSlots by remember { mutableStateOf(setOf<Int>()) }
     var activePhotoSlot by remember { mutableIntStateOf(1) }
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -93,18 +93,26 @@ fun EditProfileDialog(
                 isUploadingAvatar = true
                 try {
                     val profileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
-                    val persisted = com.example.util.ProfileAvatarStorageManager.persistPickedAvatar(context, uri, profileId, targetSlot)
+                    val prepared = com.example.util.ProfileAvatarStorageManager.preparePickedAvatar(context, uri, profileId, targetSlot)
+                    // Render the compressed internal cache file before starting Storage upload.
                     when (targetSlot) {
-                        1 -> { photo1 = persisted.remoteUrl ?: photo1; photo1Preview = persisted.uri }
-                        2 -> { photo2 = persisted.remoteUrl ?: photo2; photo2Preview = persisted.uri }
-                        3 -> { photo3 = persisted.remoteUrl ?: photo3; photo3Preview = persisted.uri }
+                        1 -> photo1Preview = prepared.uri
+                        2 -> photo2Preview = prepared.uri
+                        3 -> photo3Preview = prepared.uri
                     }
-                    hasUnsyncedAvatar = persisted.remoteUrl.isNullOrBlank()
-                    android.widget.Toast.makeText(
-                        context,
-                        "Avatar compressed to ${persisted.byteCount / 1024} KiB and synced.",
-                        android.widget.Toast.LENGTH_SHORT
-                    ).show()
+                    unsyncedAvatarSlots = unsyncedAvatarSlots + targetSlot
+                    val remoteUrl = com.example.util.ProfileAvatarStorageManager.uploadPreparedAvatar(prepared)
+                    if (remoteUrl.isNullOrBlank()) {
+                        android.widget.Toast.makeText(context, "Compressed photo is cached locally, but upload failed. Retry this photo before saving.", android.widget.Toast.LENGTH_LONG).show()
+                    } else {
+                        when (targetSlot) {
+                            1 -> photo1 = remoteUrl
+                            2 -> photo2 = remoteUrl
+                            3 -> photo3 = remoteUrl
+                        }
+                        unsyncedAvatarSlots = unsyncedAvatarSlots - targetSlot
+                        android.widget.Toast.makeText(context, "Avatar compressed to ${prepared.byteCount / 1024} KiB and synced.", android.widget.Toast.LENGTH_SHORT).show()
+                    }
                 } catch (_: Throwable) {
                     android.widget.Toast.makeText(context, "Could not save that photo. Please choose it again.", android.widget.Toast.LENGTH_LONG).show()
                 } finally { isUploadingAvatar = false }
@@ -300,7 +308,7 @@ fun EditProfileDialog(
                             activePhotoSlot = 1
                             slotPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                         },
-                        onRemove = { photo1 = ""; photo1Preview = ""; hasUnsyncedAvatar = false }
+                        onRemove = { photo1 = ""; photo1Preview = ""; unsyncedAvatarSlots = unsyncedAvatarSlots - 1 }
                     )
                     // Slot 2
                     EditPhotoSlot(
@@ -313,7 +321,7 @@ fun EditProfileDialog(
                             activePhotoSlot = 2
                             slotPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                         },
-                        onRemove = { photo2 = ""; photo2Preview = ""; hasUnsyncedAvatar = false }
+                        onRemove = { photo2 = ""; photo2Preview = ""; unsyncedAvatarSlots = unsyncedAvatarSlots - 2 }
                     )
                     // Slot 3
                     EditPhotoSlot(
@@ -326,7 +334,7 @@ fun EditProfileDialog(
                             activePhotoSlot = 3
                             slotPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                         },
-                        onRemove = { photo3 = ""; photo3Preview = ""; hasUnsyncedAvatar = false }
+                        onRemove = { photo3 = ""; photo3Preview = ""; unsyncedAvatarSlots = unsyncedAvatarSlots - 3 }
                     )
                 }
 
@@ -435,7 +443,7 @@ fun EditProfileDialog(
         },
         confirmButton = {
             Button(
-                enabled = !isUploadingAvatar && !hasUnsyncedAvatar,
+                enabled = !isUploadingAvatar && unsyncedAvatarSlots.isEmpty(),
                 onClick = {
                     val finalPhotoList = listOf(photo1, photo2, photo3).filter { it.isNotBlank() }
                     val effectiveAvatar = finalPhotoList.firstOrNull() ?: preferences.avatarUrl
