@@ -168,6 +168,35 @@ class ContactResolver(private val context: Context) {
          * Fetches a contact's saved name for a specific phone number using ContactsContract.PhoneLookup
          * and CommonDataKinds.Phone.
          */
+        /**
+         * Strict ContactsContract lookup for private-field visibility; cached/demo aliases do not count.
+         */
+        fun isNumberSavedOnDevice(context: Context, phoneNumber: String): Boolean {
+            val digits = phoneNumber.filter { it.isDigit() }
+            if (digits.length < 7) return false
+            return try {
+                val lookupUri = android.net.Uri.withAppendedPath(
+                    ContactsContract.PhoneLookup.CONTENT_FILTER_URI,
+                    android.net.Uri.encode(phoneNumber.trim())
+                )
+                val direct = context.contentResolver.query(
+                    lookupUri, arrayOf(ContactsContract.PhoneLookup._ID), null, null, null
+                )?.use { it.moveToFirst() } == true
+                if (direct) return true
+                val selection = "${ContactsContract.CommonDataKinds.Phone.NUMBER} LIKE ?"
+                val args = arrayOf("%" + digits.takeLast(10) + "%")
+                context.contentResolver.query(
+                    ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                    arrayOf(ContactsContract.CommonDataKinds.Phone._ID),
+                    selection, args, null
+                )?.use { it.moveToFirst() } == true
+            } catch (_: SecurityException) {
+                false
+            } catch (_: Throwable) {
+                false
+            }
+        }
+
         fun fetchContactNameByPhoneNumber(context: Context?, phoneNumber: String): String? {
             if (phoneNumber.isBlank()) return null
             val clean = phoneNumber.trim()
