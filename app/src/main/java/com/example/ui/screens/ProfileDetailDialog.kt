@@ -69,8 +69,13 @@ fun ProfileDetailDialog(
     onBlockAndReport: (reason: String) -> Unit = {},
     onOpenReport: ((ProfileEntity) -> Unit)? = null,
     onOpenChat: ((String) -> Unit)? = null,
-    compatibility: MatchingManager.CompatibilityResult? = null
+    compatibility: MatchingManager.CompatibilityResult? = null,
+    isMutualConnection: Boolean = false
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val canRevealSensitive = remember(profile.id, profile.phoneNumber, profile.dateOfBirth, isMutualConnection) {
+        com.example.util.ProfilePrivacyManager.canRevealSensitiveFields(context, profile, isMutualConnection)
+    }
     val photoList = remember(profile.avatarUrl, profile.id) {
         profile.getPhotoList()
     }
@@ -79,6 +84,14 @@ fun ProfileDetailDialog(
         photoList.getOrElse(currentPhotoIndex % photoList.size) { photoList[0] }
     } else {
         profile.getEffectiveAvatarUrl()
+    }
+    var resolvedActivePhoto by remember(activePhoto, profile.avatarCacheVersion) {
+        mutableStateOf(if (activePhoto.startsWith("vibesync-avatar-enc://")) "" else activePhoto)
+    }
+    LaunchedEffect(activePhoto, profile.avatarCacheVersion) {
+        resolvedActivePhoto = if (activePhoto.startsWith("vibesync-avatar-enc://")) {
+            com.example.util.ProfileAvatarStorageManager.resolveAvatarForDisplay(context, activePhoto, profile.avatarCacheVersion).orEmpty()
+        } else activePhoto
     }
 
     Dialog(
@@ -100,7 +113,7 @@ fun ProfileDetailDialog(
                         .fillMaxWidth()
                         .height(320.dp)
                         .then(
-                            if (activePhoto.isBlank()) {
+                            if (resolvedActivePhoto.isBlank()) {
                                 Modifier.background(
                                     Brush.verticalGradient(
                                         colors = listOf(
@@ -114,13 +127,12 @@ fun ProfileDetailDialog(
                             }
                         )
                 ) {
-                    if (activePhoto.isNotBlank()) {
-                        val context = androidx.compose.ui.platform.LocalContext.current
+                    if (resolvedActivePhoto.isNotBlank()) {
                         SubcomposeAsyncImage(
                             model = ImageRequest.Builder(context)
-                                .data(activePhoto)
-                                .memoryCacheKey("profile-avatar:${profile.id}:$activePhoto:${profile.avatarCacheVersion}")
-                                .diskCacheKey("profile-avatar:${profile.id}:$activePhoto:${profile.avatarCacheVersion}")
+                                .data(resolvedActivePhoto)
+                                .memoryCacheKey("profile-avatar:${profile.id}:$resolvedActivePhoto:${profile.avatarCacheVersion}")
+                                .diskCacheKey("profile-avatar:${profile.id}:$resolvedActivePhoto:${profile.avatarCacheVersion}")
                                 .crossfade(true)
                                 .diskCachePolicy(CachePolicy.ENABLED)
                                 .memoryCachePolicy(CachePolicy.ENABLED)
@@ -191,7 +203,7 @@ fun ProfileDetailDialog(
                                 colorEnd = profile.gradientColorEnd,
                                 size = 120.dp,
                                 isVerified = profile.isVerified,
-                                avatarUrl = profile.avatarUrl,
+                                avatarUrl = resolvedActivePhoto,
                                 avatarCacheVersion = profile.avatarCacheVersion
                             )
                         }
@@ -271,6 +283,11 @@ fun ProfileDetailDialog(
                             fontWeight = FontWeight.Medium
                         )
                     )
+                    Text(
+                        text = com.example.util.ProfilePrivacyManager.ageAndDobLabel(profile, canRevealSensitive),
+                        style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
+                        modifier = Modifier.padding(top = 5.dp)
+                    )
 
                     Spacer(modifier = Modifier.height(18.dp))
 
@@ -303,17 +320,13 @@ fun ProfileDetailDialog(
                         Spacer(modifier = Modifier.height(16.dp))
                     }
 
-                    // Contact Phone Details & Privacy Control
+                    // Always render the privacy card when a number exists; the shared policy decides disclosure.
                     val displayPhone = if (profile.phoneNumber.isNotBlank()) profile.phoneNumber else if (profile.id.filter { it.isDigit() }.length >= 10) profile.id else ""
-                    val context = androidx.compose.ui.platform.LocalContext.current
                     val isContactSaved = remember(displayPhone, profile.id) {
-                        if (displayPhone.isBlank()) false
-                        else com.example.util.ContactResolver.fetchContactNameByPhoneNumber(context, displayPhone) != null
+                        displayPhone.isNotBlank() && com.example.util.ContactResolver.isNumberSavedOnDevice(context, displayPhone)
                     }
-                    var isPhoneAccessRequested by remember(profile.id) { mutableStateOf(false) }
-                    var isPhoneRevealed by remember(profile.id) { mutableStateOf(false) }
 
-                    if (displayPhone.isNotBlank() && isContactSaved) {
+                    if (displayPhone.isNotBlank()) {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(18.dp),
@@ -344,13 +357,13 @@ fun ProfileDetailDialog(
                                             )
                                         )
                                     }
-                                    if (isContactSaved || isPhoneRevealed) {
+                                    if (canRevealSensitive) {
                                         Surface(
                                             shape = RoundedCornerShape(12.dp),
                                             color = LikeGreen.copy(alpha = 0.15f)
                                         ) {
                                             Text(
-                                                text = if (isContactSaved) "Phone Contact" else "Access Granted",
+                                                text = if (isMutualConnection) "Connected" else "Trusted Contact",
                                                 color = LikeGreen,
                                                 fontSize = 11.sp,
                                                 fontWeight = FontWeight.Bold,
@@ -385,7 +398,7 @@ fun ProfileDetailDialog(
                                 }
                                 Spacer(modifier = Modifier.height(10.dp))
 
-                                if (isContactSaved || isPhoneRevealed) {
+                                if (canRevealSensitive) {
                                     // Full number display for known contacts or after granted access
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
@@ -444,13 +457,7 @@ fun ProfileDetailDialog(
                                 } else {
                                     // Masked phone number with Request Phone Number action
                                     val maskedPhone = remember(displayPhone) {
-                                        if (displayPhone.startsWith("+")) {
-                                            val parts = displayPhone.trim().split(" ")
-                                            val cc = if (parts.isNotEmpty() && parts[0].startsWith("+")) parts[0] else "+91"
-                                            "$cc XXXXX XXXXX"
-                                        } else {
-                                            "+91 XXXXX XXXXX"
-                                        }
+                                        com.example.util.ProfilePrivacyManager.maskedPhone(displayPhone)
                                     }
                                     Column(
                                         modifier = Modifier.fillMaxWidth(),

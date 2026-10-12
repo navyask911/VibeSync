@@ -162,9 +162,7 @@ fun RegistrationProfileScreen(
                     // Render the compressed internal-cache JPEG immediately, then use its remote URL.
                     avatarUri = prepared.uri
                     val remoteUrl = com.example.util.ProfileAvatarStorageManager.uploadPreparedAvatar(prepared)
-                    if (!remoteUrl.isNullOrBlank()) {
-                        avatarUri = remoteUrl
-                    } else {
+                    if (remoteUrl.isNullOrBlank()) {
                         Toast.makeText(
                             context,
                             "Photo compressed and cached locally, but upload failed. Retry in Edit Profile.",

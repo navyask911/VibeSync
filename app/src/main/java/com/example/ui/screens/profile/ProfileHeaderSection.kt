@@ -96,11 +96,12 @@ fun ProfileHeaderSection(
                         android.widget.Toast.LENGTH_LONG
                     ).show()
                 } else {
+                    // Keep the local JPEG for Coil; profile sync maps this path to an opaque .enc reference.
                     val uploadedPhotos = stagedPhotos.toMutableList()
-                    uploadedPhotos[slot - 1] = remoteUrl
+                    uploadedPhotos[slot - 1] = prepared.uri
                     onUpdatePreferences(
                         preferences.copy(
-                            avatarUrl = if (isCanonicalAvatar) remoteUrl else preferences.avatarUrl,
+                            avatarUrl = if (isCanonicalAvatar) prepared.uri else preferences.avatarUrl,
                             profilePhotos = uploadedPhotos.filter { it.isNotBlank() }.joinToString("|||"),
                             avatarCacheVersion = System.currentTimeMillis()
                         )

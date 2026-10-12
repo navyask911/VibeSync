@@ -12,7 +12,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,6 +47,14 @@ fun DatingAvatar(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    var resolvedAvatarUrl by remember(avatarUrl, avatarCacheVersion) {
+        mutableStateOf(if (avatarUrl.startsWith("vibesync-avatar-enc://")) "" else avatarUrl)
+    }
+    LaunchedEffect(avatarUrl, avatarCacheVersion) {
+        resolvedAvatarUrl = if (avatarUrl.startsWith("vibesync-avatar-enc://")) {
+            com.example.util.ProfileAvatarStorageManager.resolveAvatarForDisplay(context, avatarUrl, avatarCacheVersion).orEmpty()
+        } else avatarUrl
+    }
     val fallbackLabel = remember(name, emoji) {
         val cleanEmoji = emoji.trim()
         if (cleanEmoji.isNotBlank() && cleanEmoji !in setOf("✨", "👤", "🙂", "😀")) {
@@ -73,12 +85,12 @@ fun DatingAvatar(
                 .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape),
             contentAlignment = Alignment.Center
         ) {
-            if (avatarUrl.isNotBlank()) {
+            if (resolvedAvatarUrl.isNotBlank()) {
                 AsyncImage(
                     model = ImageRequest.Builder(context)
-                        .data(avatarUrl)
-                        .memoryCacheKey("profile-avatar:$avatarUrl:$avatarCacheVersion")
-                        .diskCacheKey("profile-avatar:$avatarUrl:$avatarCacheVersion")
+                        .data(resolvedAvatarUrl)
+                        .memoryCacheKey("profile-avatar:$resolvedAvatarUrl:$avatarCacheVersion")
+                        .diskCacheKey("profile-avatar:$resolvedAvatarUrl:$avatarCacheVersion")
                         .crossfade(true)
                         .diskCachePolicy(CachePolicy.ENABLED)
                         .memoryCachePolicy(CachePolicy.ENABLED)

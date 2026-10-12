@@ -105,10 +105,11 @@ fun EditProfileDialog(
                     if (remoteUrl.isNullOrBlank()) {
                         android.widget.Toast.makeText(context, "Compressed photo is cached locally, but upload failed. Retry this photo before saving.", android.widget.Toast.LENGTH_LONG).show()
                     } else {
+                        // Store local JPEGs in preferences; only their encrypted versions are uploaded.
                         when (targetSlot) {
-                            1 -> photo1 = remoteUrl
-                            2 -> photo2 = remoteUrl
-                            3 -> photo3 = remoteUrl
+                            1 -> photo1 = prepared.uri
+                            2 -> photo2 = prepared.uri
+                            3 -> photo3 = prepared.uri
                         }
                         unsyncedAvatarSlots = unsyncedAvatarSlots - targetSlot
                         android.widget.Toast.makeText(context, "Avatar compressed to ${prepared.byteCount / 1024} KiB and synced.", android.widget.Toast.LENGTH_SHORT).show()
