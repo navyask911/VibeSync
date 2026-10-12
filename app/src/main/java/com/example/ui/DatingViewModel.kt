@@ -1000,6 +1000,74 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
     fun normalizePhone(p: String): String = p.replace("[^0-9]".toRegex(), "").takeLast(10)
 
+    /**
+     * Share a device-wrapped profile key only to an accepted/mutual connection or a verified
+     * VibeSync profile found in the local address book. The control payload uses the normal Tink
+     * encrypted durable outbox; DOB is included only after a mutual connection or reciprocal
+     * address-book evidence has been established.
+     */
+    private suspend fun queueProfileKeyExchangeIfAuthorized(match: MatchEntity, peer: ProfileEntity) {
+        val context = getApplication<Application>()
+        val ownerId = com.example.util.VibeSyncSessionManager.getProfileId(context).orEmpty().trim()
+        if (ownerId.isBlank() || peer.id.isBlank() || ownerId.equals(peer.id, ignoreCase = true) ||
+            peer.id.startsWith("biz_", ignoreCase = true)
+        ) return
+
+        val accepted = repository.acceptedFriendships.first().any { request ->
+            request.status.equals("ACCEPTED", ignoreCase = true) &&
+                (request.senderId.equals(peer.id, ignoreCase = true) ||
+                    request.receiverId.equals(peer.id, ignoreCase = true))
+        }
+        val peerPhone = peer.phoneNumber.ifBlank {
+            peer.id.takeIf { com.example.util.SupabaseClientManager.isPhoneNumberCandidate(it) }.orEmpty()
+        }
+        val savedInMyContacts = peerPhone.isNotBlank() &&
+            com.example.util.ContactResolver.isNumberSavedOnDevice(context, peerPhone)
+        val mutual = accepted || (match.isDatingMatch && match.hasStartedChat)
+        val verifiedContact = savedInMyContacts && (peer.isMobileVerified || peer.isVerified)
+        if (!mutual && !verifiedContact) return
+
+        var recipient = peer
+        if (recipient.publicIdentityKey.isBlank()) {
+            recipient = com.example.util.SupabaseClientManager.fetchProfileById(peer.id) ?: return
+            if (recipient.publicIdentityKey.isNotBlank()) {
+                database.profileDao().insertProfile(
+                    (database.profileDao().getProfileByIdSync(peer.id) ?: peer)
+                        .copy(publicIdentityKey = recipient.publicIdentityKey)
+                )
+            }
+        }
+        if (recipient.publicIdentityKey.isBlank()) {
+            android.util.Log.w("ProfileKeyExchange", "Skipping exchange because recipient has no published Tink key.")
+            return
+        }
+
+        val preferences = repository.userPreferences.firstOrNull() ?: return
+        val peerHasSavedMe = com.example.util.ProfileKeyManager.peerHasConfirmedSavingMyNumber(context, peer.id)
+        val mayShareDob = mutual || (savedInMyContacts && peerHasSavedMe)
+        val payload = com.example.util.ProfileKeyManager.buildExchangePayload(
+            context = context,
+            ownerProfileId = ownerId,
+            recipientProfileId = peer.id,
+            dateOfBirth = if (mayShareDob) preferences.userDob else "",
+            senderHasRecipientSaved = savedInMyContacts
+        )
+        if (com.example.util.ProfileKeyManager.hasSharedPayload(context, peer.id, payload)) return
+
+        repository.sendMessage(
+            matchId = match.matchId,
+            text = payload,
+            mediaType = "PROFILE_KEY_EXCHANGE",
+            clientMsgId = UUID.randomUUID().toString(),
+            recipientProfileId = peer.id,
+            recipientPhoneNumber = peerPhone
+        )
+        // sendMessage has already persisted the control row to Room and schedules durable retry on
+        // transient send failures, so the same envelope need not be enqueued on every chat opening.
+        com.example.util.ProfileKeyManager.markPayloadShared(context, peer.id, payload)
+        android.util.Log.i("ProfileKeyExchange", "Queued contact-scoped profile-key exchange for an authorized peer.")
+    }
+
     fun openChat(match: MatchEntity, profile: ProfileEntity) {
         com.example.util.AlertSoundAndVibrationManager.stopAllSounds(getApplication())
         val resolvedProfile = com.example.util.ContactResolver.matchChatSessionParticipant(getApplication(), profile)
@@ -1045,6 +1113,11 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 syncChatMessagesSinceWatermark(match, resolvedProfile)
             } catch (e: Exception) {
                 android.util.Log.w("VibeSyncChat", "Opening-chat delta sync failed: ${e.message}")
+            }
+            try {
+                queueProfileKeyExchangeIfAuthorized(match, resolvedProfile)
+            } catch (e: Exception) {
+                android.util.Log.w("ProfileKeyExchange", "Could not enqueue profile-key exchange: ${e.javaClass.simpleName}")
             }
         }
     }
