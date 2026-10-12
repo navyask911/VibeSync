@@ -1093,8 +1093,14 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
                 if (isControlPacket) {
                     try {
-                        val senderPhone = record.optString("sender_phone", record.optString("sender_id", ""))
-                        com.example.util.MessageHandler.verifyAndDecryptPayload(senderPhone, rawText)
+                        val senderPhone = record.optString("sender_phone", record.optString("sender_id", record.optString("sender_profile_id", record.optString("senderId", ""))))
+                        com.example.util.MessageHandler.verifyAndDecryptPayload(
+                            senderUid = senderPhone, rawPayload = rawText, context = getApplication(),
+                            senderPhone = record.optString("sender_id", record.optString("sender_profile_id", record.optString("senderId", ""))),
+                            receiverPhone = record.optString("recipient_id", record.optString("recipient_profile_id", record.optString("receiver_id", ""))),
+                            matchId = record.optString("match_id", record.optString("matchId", "")),
+                            inboundEventPayload = record
+                        )
                     } catch (_: Exception) {}
                     return@launch
                 }
@@ -1108,11 +1114,11 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
                 // Encryption AAD uses canonical profile IDs from the server. Phone fields are
                 // fallbacks for legacy rows and phone-based conversation matching only.
-                val senderProfileId = record.optString("sender_id", "").trim()
-                val receiverProfileId = record.optString("receiver_id", "").trim()
+                val senderProfileId = sequenceOf("sender_id", "sender_profile_id", "senderId").map { record.optString(it, "").trim() }.firstOrNull { it.isNotBlank() && !it.equals("null", true) }.orEmpty()
+                val receiverProfileId = sequenceOf("recipient_id", "recipient_profile_id", "receiver_id", "recipientId", "receiver_profile_id", "receiverId").map { record.optString(it, "").trim() }.firstOrNull { it.isNotBlank() && !it.equals("null", true) }.orEmpty()
                 val senderPhone = record.optString("sender_phone", "").trim()
                 val receiverPhone = record.optString("receiver_phone", "").trim()
-                val recordMatchId = record.optString("match_id", "").trim()
+                val recordMatchId = sequenceOf("match_id", "matchId").map { record.optString(it, "").trim() }.firstOrNull { it.isNotBlank() && !it.equals("null", true) }.orEmpty()
                 val voiceSeconds = record.optInt("voice_duration_seconds", 0)
                 val timestamp = record.optLong("timestamp", System.currentTimeMillis())
                 val isRead = record.optBoolean("is_read", false)
@@ -1124,14 +1130,19 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 val prefs = repository.userPreferences.firstOrNull()
                 val currentUserPhone = prefs?.verifiedMobileNumber ?: ""
                 val currentProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
-                val aadParticipants = com.example.util.TinkCryptoManager.resolveAadParticipantIds(
-                    senderProfileId = senderProfileId,
-                    receiverProfileId = receiverProfileId,
-                    matchId = recordMatchId,
-                    currentProfileId = currentProfileId
-                )
-                val senderIdentity = senderProfileId.ifBlank { aadParticipants?.first ?: senderPhone }
-                val receiverIdentity = receiverProfileId.ifBlank { aadParticipants?.second ?: receiverPhone }
+                val aadParticipants = com.example.util.MessageHandler.resolveAadParticipantsFromPayload(record, currentProfileId)
+                    ?: com.example.util.TinkCryptoManager.resolveAadParticipantIds(
+                        senderProfileId = senderProfileId,
+                        receiverProfileId = receiverProfileId,
+                        matchId = recordMatchId,
+                        currentProfileId = currentProfileId
+                    )
+                val senderIdentity = senderProfileId.ifBlank {
+                    aadParticipants?.let { pair -> if (currentProfileId.equals(pair.first, true)) pair.second else pair.first } ?: senderPhone
+                }
+                val receiverIdentity = receiverProfileId.ifBlank {
+                    aadParticipants?.let { pair -> if (currentProfileId.equals(pair.first, true) || currentProfileId.equals(pair.second, true)) currentProfileId else pair.second } ?: receiverPhone
+                }
 
                 val activePair = _activeChat.value
                 val activePartnerProfile = activePair?.second
@@ -1213,6 +1224,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                             context = getApplication(),
                             senderPhone = senderIdentity,
                             receiverPhone = receiverIdentity,
+                            matchId = recordMatchId,
+                            inboundEventPayload = record,
                             onMismatchedKey = {
                                 viewModelScope.launch(Dispatchers.IO) {
                                     val phoneFallback = senderPhone.takeIf { it.filter { ch -> ch.isDigit() }.length >= 7 }.orEmpty()

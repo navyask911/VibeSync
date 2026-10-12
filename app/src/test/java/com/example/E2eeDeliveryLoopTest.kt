@@ -41,6 +41,20 @@ class E2eeDeliveryLoopTest {
     }
 
     @Test
+    fun inboundMetadataUsesCanonicalMatchIdWhenParticipantFieldsAreMissingOrNamedDifferently() {
+        val matchId = "605918cdddc5a40c_7ebef8956864b083"
+        assertEquals("605918cdddc5a40c" to "7ebef8956864b083",
+            com.example.util.MessageHandler.resolveAadParticipantsFromPayload(JSONObject().put("match_id", matchId), "605918cdddc5a40c"))
+        val variants = JSONObject().put("senderId", "605918cdddc5a40c").put("recipient_profile_id", "7ebef8956864b083").put("matchId", matchId)
+        assertEquals("605918cdddc5a40c" to "7ebef8956864b083", com.example.util.MessageHandler.resolveAadParticipantsFromPayload(variants))
+        val uuid = "550e8400-e29b-41d4-a716-446655440000"
+        val expected = listOf(uuid, "7ebef8956864b083").sorted().joinToString("_")
+        assertEquals(expected, TinkCryptoManager.createDeterministicContext(uuid, "7ebef8956864b083").toString(Charsets.UTF_8))
+        assertEquals(TinkCryptoManager.createDeterministicContext(uuid, "7ebef8956864b083").toList(),
+            TinkCryptoManager.createDeterministicContext("7ebef8956864b083", uuid).toList())
+    }
+
+    @Test
     fun encryptDispatchDecryptAndDeliveryAck_storesOnlyCiphertextAndProducesSymmetricFingerprint() {
         TinkCryptoManager.initTink()
         val senderId = "profile_sender_001"

@@ -293,6 +293,21 @@ object MessageHandler {
      * Verifies sender signature and decrypts ciphertext using Tink or KDF.
      * Guaranteed to fallback cleanly to raw payload so messages are never dropped.
      */
+    private fun firstPayloadValue(payload: JSONObject, vararg keys: String): String =
+        keys.asSequence().map { payload.optString(it, "").trim() }
+            .firstOrNull { it.isNotBlank() && !it.equals("null", true) && !it.equals("undefined", true) }.orEmpty()
+
+    /** Parses Realtime/PostgREST/FCM naming variants; match_id/matchId resolves the canonical AAD pair. */
+    fun resolveAadParticipantsFromPayload(
+        payload: JSONObject,
+        currentProfileId: String = VibeSyncSessionManager.getProfileId().orEmpty()
+    ): Pair<String, String>? {
+        val sender = firstPayloadValue(payload, "sender_id", "sender_profile_id", "senderId")
+        val receiver = firstPayloadValue(payload, "recipient_id", "recipient_profile_id", "receiver_id", "recipientId", "receiver_profile_id", "receiverId")
+        val matchId = firstPayloadValue(payload, "match_id", "matchId")
+        return TinkCryptoManager.resolveAadParticipantIds(sender, receiver, matchId, currentProfileId)
+    }
+
     fun verifyAndDecryptPayload(
         senderUid: String,
         rawPayload: String,
@@ -300,7 +315,8 @@ object MessageHandler {
         senderPhone: String = "",
         receiverPhone: String = "",
         onMismatchedKey: (() -> Unit)? = null,
-        matchId: String = ""
+        matchId: String = "",
+        inboundEventPayload: JSONObject? = null
     ): String {
         if (rawPayload.isBlank()) return ""
 
@@ -308,12 +324,13 @@ object MessageHandler {
 
         // 0. Handle Google Tink ECIES Decryption
         if (rawPayload.startsWith(TinkCryptoManager.TINK_PREFIX)) {
-            val participants = TinkCryptoManager.resolveAadParticipantIds(
-                senderProfileId = senderPhone.ifBlank { senderUid },
-                receiverProfileId = receiverPhone,
-                matchId = matchId,
-                currentProfileId = VibeSyncSessionManager.getProfileId().orEmpty()
-            )
+            val participants = inboundEventPayload?.let { resolveAadParticipantsFromPayload(it) }
+                ?: TinkCryptoManager.resolveAadParticipantIds(
+                    senderProfileId = senderPhone.ifBlank { senderUid },
+                    receiverProfileId = receiverPhone,
+                    matchId = matchId,
+                    currentProfileId = VibeSyncSessionManager.getProfileId().orEmpty()
+                )
             if (effectiveContext != null && participants != null) {
                 val tinkDecrypted = TinkCryptoManager.decryptPayload(
                     context = effectiveContext,

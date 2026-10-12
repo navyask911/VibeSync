@@ -238,7 +238,7 @@ object TinkCryptoManager {
     private fun participantPairFromMatchId(matchId: String): Pair<String, String>? {
         val normalized = matchId.trim().replace(Regex("(?i)^match_"), "")
         val parts = normalized.split('_')
-        val profileIdPattern = Regex("^[0-9a-fA-F]{16}$")
+        val profileIdPattern = Regex("^(?:[0-9a-fA-F]{16}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$")
         if (parts.size != 2 || parts.any { !profileIdPattern.matches(it) }) return null
         val a = parts[0].lowercase(java.util.Locale.ROOT)
         val b = parts[1].lowercase(java.util.Locale.ROOT)
@@ -265,6 +265,8 @@ object TinkCryptoManager {
         val receiver = canonicalId(receiverProfileId)
         val current = canonicalId(currentProfileId)
         val matchPair = participantPairFromMatchId(matchId)
+        // A valid canonical conversation ID is the stable AAD source even if wrappers omit or rename participant fields.
+        if (matchPair != null) return matchPair
 
         if (sender.isNotBlank() && receiver.isNotBlank()) {
             if (sender == receiver) return null

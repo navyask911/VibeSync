@@ -201,12 +201,21 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     val database = com.example.data.database.DatingDatabase.getDatabase(applicationContext)
                     val messageId = data["message_id"] ?: data["msg_id"] ?: data["id"] ?: java.util.UUID.randomUUID().toString()
                     val ciphertext = data["ciphertext"] ?: data["text"] ?: data["message"] ?: data["body"] ?: ""
-                    val senderProfileId = data["sender_id"]?.trim().orEmpty()
-                    val receiverProfileId = data["receiver_id"]?.trim().orEmpty()
-                    val senderIdentity = senderProfileId.ifBlank { data["sender_phone"] ?: senderOrMatchId }
-                    val receiverIdentity = receiverProfileId.ifBlank { data["receiver_phone"].orEmpty() }
+                    val senderProfileId = sequenceOf("sender_id", "sender_profile_id", "senderId").map { data[it]?.trim().orEmpty() }.firstOrNull { it.isNotBlank() }.orEmpty()
+                    val receiverProfileId = sequenceOf("recipient_id", "recipient_profile_id", "receiver_id", "recipientId", "receiver_profile_id", "receiverId").map { data[it]?.trim().orEmpty() }.firstOrNull { it.isNotBlank() }.orEmpty()
+                    val pushMatchId = sequenceOf("match_id", "matchId").map { data[it]?.trim().orEmpty() }.firstOrNull { it.isNotBlank() }.orEmpty()
+                    val currentProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
+                    val inboundMetadata = org.json.JSONObject().apply { data.forEach { (key, value) -> put(key, value) } }
+                    val aadParticipants = com.example.util.MessageHandler.resolveAadParticipantsFromPayload(inboundMetadata, currentProfileId)
+                        ?: com.example.util.TinkCryptoManager.resolveAadParticipantIds(senderProfileId, receiverProfileId, pushMatchId, currentProfileId)
+                    val senderIdentity = senderProfileId.ifBlank {
+                        aadParticipants?.let { if (currentProfileId.equals(it.first, true)) it.second else it.first } ?: data["sender_phone"] ?: senderOrMatchId
+                    }
+                    val receiverIdentity = receiverProfileId.ifBlank {
+                        aadParticipants?.let { if (currentProfileId.equals(it.first, true) || currentProfileId.equals(it.second, true)) currentProfileId else it.second } ?: data["receiver_phone"].orEmpty()
+                    }
                     val senderRoomIdentity = senderProfileId.ifBlank {
-                        com.example.util.PhonebookHasher.normalizeToE164(senderIdentity).ifBlank { senderOrMatchId }
+                        aadParticipants?.let { if (currentProfileId.equals(it.first, true)) it.second else it.first } ?: com.example.util.PhonebookHasher.normalizeToE164(senderIdentity).ifBlank { senderOrMatchId }
                     }
                     val timestamp = data["timestamp"]?.toLongOrNull() ?: System.currentTimeMillis()
 
@@ -216,18 +225,24 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                             if (!ciphertext.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
                                 throw SecurityException("Rejected non-Tink message payload")
                             }
+                            val participants = aadParticipants
+                                ?: throw SecurityException("Cannot resolve canonical participant context from match_id or participant IDs.")
                             val decryptedText = com.example.util.TinkCryptoManager.decryptPayload(
                                 context = applicationContext,
                                 payload = ciphertext,
-                                senderPhone = senderIdentity,
-                                receiverPhone = receiverIdentity
+                                senderPhone = participants.first,
+                                receiverPhone = participants.second
                             )
                             if (decryptedText.isBlank()) {
                                 throw SecurityException("Tink decryption returned empty plaintext; delivery ACK withheld.")
                             }
 
                             val matchedLocalConversation = database.matchDao().getMatchByProfileId(senderRoomIdentity)
-                            val fallbackMatchId = data["match_id"] ?: if (senderRoomIdentity.isNotBlank()) "match_$senderRoomIdentity" else senderOrMatchId
+                            val fallbackMatchId = pushMatchId.ifBlank {
+                                if (senderRoomIdentity.isNotBlank() && currentProfileId.isNotBlank()) {
+                                    com.example.util.SupabaseClientManager.canonicalChatMatchId(currentProfileId, senderRoomIdentity)
+                                } else if (senderRoomIdentity.isNotBlank()) "match_$senderRoomIdentity" else senderOrMatchId
+                            }
                             val matchId = matchedLocalConversation?.matchId ?: fallbackMatchId
 
                             val existingMsg = database.chatMessageDao().getMessageById(messageId)
