@@ -67,6 +67,7 @@ fun FriendsListDialog(
     onToggleHideFriends: (Boolean) -> Unit,
     onOpenChat: (profileId: String) -> Unit,
     onCancelPendingRequest: (requestId: String) -> Unit = {},
+    onOpenProfile: (ProfileEntity) -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val profilesMap = allProfiles.associateBy { it.id }
@@ -293,7 +294,10 @@ fun FriendsListDialog(
                                                 colorStart = profile?.gradientColorStart ?: req.senderColorStart,
                                                 colorEnd = profile?.gradientColorEnd ?: req.senderColorEnd,
                                                 size = 48.dp,
-                                                isVerified = true
+                                                isVerified = true,
+                                                avatarUrl = profile?.avatarUrl.orEmpty(),
+                                                avatarCacheVersion = profile?.avatarCacheVersion ?: 0L,
+                                                modifier = Modifier.clickable { profile?.let(onOpenProfile) }
                                             )
                                             Spacer(modifier = Modifier.width(12.dp))
                                             Column {
@@ -432,7 +436,10 @@ fun FriendsListDialog(
                                                     colorStart = profile?.gradientColorStart ?: 0xFFFF5E62,
                                                     colorEnd = profile?.gradientColorEnd ?: 0xFFFF9966,
                                                     size = 48.dp,
-                                                    isVerified = profile?.isVerified ?: false
+                                                    isVerified = profile?.isVerified ?: false,
+                                                    avatarUrl = profile?.avatarUrl.orEmpty(),
+                                                    avatarCacheVersion = profile?.avatarCacheVersion ?: 0L,
+                                                    modifier = Modifier.clickable { profile?.let(onOpenProfile) }
                                                 )
                                                 Spacer(modifier = Modifier.width(12.dp))
                                                 Column {
