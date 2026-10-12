@@ -263,32 +263,15 @@ object TinkCryptoManager {
 
         val sender = canonicalId(senderProfileId)
         val receiver = canonicalId(receiverProfileId)
-        val current = canonicalId(currentProfileId)
         val matchPair = participantPairFromMatchId(matchId)
         // A valid canonical conversation ID is the stable AAD source even if wrappers omit or rename participant fields.
         if (matchPair != null) return matchPair
 
-        if (sender.isNotBlank() && receiver.isNotBlank()) {
-            if (sender == receiver) return null
-            if (matchPair != null &&
-                !((matchPair.first == sender && matchPair.second == receiver) ||
-                  (matchPair.first == receiver && matchPair.second == sender))
-            ) return null
-            return sender to receiver
+        // Without a parseable match_id, explicit participant IDs still resolve symmetrically.
+        if (sender.isNotBlank() && receiver.isNotBlank() && sender != receiver) {
+            return listOf(sender, receiver).sorted().let { it[0] to it[1] }
         }
-
-        val pair = matchPair ?: return null
-        return when {
-            sender.isNotBlank() && sender == pair.first -> sender to pair.second
-            sender.isNotBlank() && sender == pair.second -> sender to pair.first
-            sender.isNotBlank() -> null
-            receiver.isNotBlank() && receiver == pair.first -> pair.second to receiver
-            receiver.isNotBlank() && receiver == pair.second -> pair.first to receiver
-            receiver.isNotBlank() -> null
-            current.isNotBlank() && current == pair.first -> pair.second to current
-            current.isNotBlank() && current == pair.second -> pair.first to current
-            else -> pair.first to pair.second
-        }
+        return null
     }
 
     /** Kept as the common API: always returns canonical match-ID UTF-8 context bytes. */
