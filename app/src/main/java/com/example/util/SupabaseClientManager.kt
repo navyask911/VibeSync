@@ -650,7 +650,7 @@ object SupabaseClientManager {
             phoneNumber = phone,
             email = email,
             publicIdentityKey = publicIdentityKey,
-            isVerified = obj.optBoolean("is_verified", true),
+            isVerified = obj.optBoolean("is_verified", false),
             likedMe = true,
             isSuperLikedMe = true,
             isOpenForDating = true,
