@@ -1186,39 +1186,14 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         else -> "match_$senderPhone"
                     }
 
-                    // Decrypt incoming payload with Google Tink HybridDecrypt
-                    val decryptedText = if (rawText.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
-                        val participants = aadParticipants
-                        if (participants == null) {
-                            android.util.Log.e(
-                                "VibeSyncChat",
-                                "Realtime Tink decryption withheld: canonical participants unresolved for message_id=$msgId, match_id=$recordMatchId."
-                            )
-                            return@launch
-                        }
-                        com.example.util.TinkCryptoManager.decryptPayload(
-                            context = getApplication(),
-                            payload = rawText,
-                            senderPhone = participants.first,
-                            receiverPhone = participants.second,
-                            onMismatchedKey = {
-                                viewModelScope.launch(Dispatchers.IO) {
-                                    val phoneFallback = senderPhone.takeIf { it.filter { ch -> ch.isDigit() }.length >= 7 }.orEmpty()
-                                    com.example.util.SupabaseClientManager.fetchPublicIdentityKey(
-                                        profileId = senderIdentity,
-                                        fallbackPhoneNumber = phoneFallback
-                                    )?.let { newKey ->
-                                        val partnerProf = database.profileDao().getProfileByIdSync(senderIdentity)
-                                            ?: database.profileDao().getProfileByPhone(phoneFallback)
-                                        if (partnerProf != null && newKey.isNotBlank()) {
-                                            database.profileDao().insertProfile(partnerProf.copy(publicIdentityKey = newKey))
-                                        }
-                                    }
-                                }
-                            }
-                        )
-                    } else {
-                        com.example.util.MessageHandler.verifyAndDecryptPayload(
+                    // Await a single immediate key refresh + decrypt retry on this IO coroutine.
+                    // Successful plaintext is then upserted via insertReceivedChatMessage, which
+                    // emits through ChatMessageDao Flow and updates the active bubble without polling.
+                    val fallbackPeerPhone = senderPhone
+                        .takeIf { value -> value.filter { ch -> ch.isDigit() }.length >= 7 }
+                        .orEmpty()
+                    val decryptedText = com.example.util.MessageHandler
+                        .verifyAndDecryptPayloadWithImmediateKeyRefresh(
                             senderUid = senderPhone,
                             rawPayload = rawText,
                             context = getApplication(),
@@ -1226,23 +1201,18 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                             receiverPhone = receiverIdentity,
                             matchId = recordMatchId,
                             inboundEventPayload = record,
-                            onMismatchedKey = {
-                                viewModelScope.launch(Dispatchers.IO) {
-                                    val phoneFallback = senderPhone.takeIf { it.filter { ch -> ch.isDigit() }.length >= 7 }.orEmpty()
-                                    com.example.util.SupabaseClientManager.fetchPublicIdentityKey(
-                                        profileId = senderIdentity,
-                                        fallbackPhoneNumber = phoneFallback
-                                    )?.let { newKey ->
-                                        val partnerProf = database.profileDao().getProfileByIdSync(senderIdentity)
-                                            ?: database.profileDao().getProfileByPhone(phoneFallback)
-                                        if (partnerProf != null && newKey.isNotBlank()) {
-                                            database.profileDao().insertProfile(partnerProf.copy(publicIdentityKey = newKey))
-                                        }
-                                    }
+                            peerProfileId = senderIdentity,
+                            fallbackPhoneNumber = fallbackPeerPhone,
+                            onPeerPublicKeyRefreshed = { refreshedProfileId, newKey ->
+                                val partnerProf = database.profileDao().getProfileByIdSync(refreshedProfileId)
+                                    ?: database.profileDao().getProfileByPhone(fallbackPeerPhone)
+                                if (partnerProf != null && newKey.isNotBlank()) {
+                                    database.profileDao().insertProfile(
+                                        partnerProf.copy(publicIdentityKey = newKey)
+                                    )
                                 }
                             }
                         )
-                    }
 
                     if (decryptedText.isBlank()) {
                         android.util.Log.e(

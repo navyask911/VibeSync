@@ -336,6 +336,96 @@ object TinkCryptoManager {
     }
 
     /**
+     * Discard the process-local handle and reload the locally protected Tink keyset.
+     * The private key never leaves Android Keystore/shared preferences.
+     */
+    fun reloadMyKeysetHandle(context: Context): KeysetHandle? {
+        synchronized(this) {
+            cachedKeysetHandle = null
+        }
+        return getOrCreateMyKeysetHandle(context)
+    }
+
+    /**
+     * Realtime fast-recovery path. Try decryption once; on failure refresh the sender's
+     * published profile key, persist that refreshed peer identity through the callback,
+     * reload the local private key handle, and retry the exact same incoming payload once.
+     *
+     * The peer public key is refreshed for identity/cache consistency. HybridDecrypt still
+     * requires this device's matching private key; a payload encrypted to a permanently
+     * superseded recipient key must be re-encrypted by its sender to become decryptable.
+     */
+    suspend fun decryptPayloadWithImmediateIdentityRefresh(
+        context: Context,
+        payload: String,
+        senderPhone: String,
+        receiverPhone: String,
+        peerProfileId: String,
+        fallbackPhoneNumber: String = "",
+        onPeerPublicKeyRefreshed: (suspend (String, String) -> Unit)? = null
+    ): String {
+        if (!payload.startsWith(TINK_PREFIX)) return payload
+
+        val firstAttempt = decryptPayload(
+            context = context,
+            payload = payload,
+            senderPhone = senderPhone,
+            receiverPhone = receiverPhone
+        )
+        if (firstAttempt.isNotBlank()) return firstAttempt
+
+        val cleanPeerId = peerProfileId.trim()
+        val canRefreshPeer = cleanPeerId.isNotBlank() &&
+            !cleanPeerId.startsWith("match_", ignoreCase = true) &&
+            !SupabaseClientManager.isPhoneNumberCandidate(cleanPeerId)
+
+        val refreshedPeerKey = if (canRefreshPeer) {
+            try {
+                SupabaseClientManager.fetchPublicIdentityKey(
+                    profileId = cleanPeerId,
+                    fallbackPhoneNumber = fallbackPhoneNumber.trim()
+                )?.trim()?.takeIf { validatePublicKeysetJson(it) }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                Log.w(TAG, "Immediate peer-key refresh failed for profile_id=$cleanPeerId: ${t.javaClass.simpleName}")
+                null
+            }
+        } else {
+            null
+        }
+
+        if (!refreshedPeerKey.isNullOrBlank()) {
+            try {
+                onPeerPublicKeyRefreshed?.invoke(cleanPeerId, refreshedPeerKey)
+                Log.i(TAG, "Refreshed the peer public identity key after inbound decrypt failure; retrying message immediately.")
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                Log.w(TAG, "Could not persist refreshed peer public key for profile_id=$cleanPeerId: ${t.message}")
+            }
+        } else {
+            Log.w(TAG, "No refreshed peer public key available after inbound decrypt failure; retrying with the current local keyset.")
+        }
+
+        if (reloadMyKeysetHandle(context) == null) {
+            Log.e(TAG, "Cannot reload local Tink keyset for immediate inbound retry.")
+            return ""
+        }
+
+        val retry = decryptPayload(
+            context = context,
+            payload = payload,
+            senderPhone = senderPhone,
+            receiverPhone = receiverPhone
+        )
+        if (retry.isBlank()) {
+            Log.w(TAG, "Immediate inbound Tink retry still failed; Realtime delivery will remain unacknowledged for recovery.")
+        }
+        return retry
+    }
+
+    /**
      * Decrypts a "TINK_ENC:" prefixed payload using user's private KeysetHandle.
      * Tries matching associatedData context bytes first, then falls back to null context.
      * Explicitly logs all decryption errors via Log.e("TinkE2EE", ...) and invokes onMismatchedKey callback.

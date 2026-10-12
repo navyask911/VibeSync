@@ -188,7 +188,7 @@ interface ChatMessageDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertMessage(message: ChatMessageEntity)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun upsertMessage(message: ChatMessageEntity)
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)

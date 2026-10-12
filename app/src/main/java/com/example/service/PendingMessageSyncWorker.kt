@@ -54,6 +54,66 @@ internal sealed class PendingOutboxAttempt {
 internal object PendingMessageOutboxSender {
     private const val TAG = "VibeSyncOutbox"
 
+    private val identityResolutionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val identityResolutionsInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * Legacy phone-only local matches may need a privacy-preserving hash RPC to resolve the peer.
+     * Keep that network call outside the active send attempt; on success repair Room and retry the
+     * same stable message ID immediately. Valid canonical profile pairs encoded in local_match_id
+     * are resolved synchronously from the local string and never enter this branch.
+     */
+    private fun resolveLegacyRecipientIdentityInBackground(
+        context: Context,
+        messageId: String,
+        localMatchId: String,
+        senderProfileId: String,
+        phoneIdentity: String
+    ) {
+        val flightKey = "$messageId|$localMatchId|$phoneIdentity"
+        if (!identityResolutionsInFlight.add(flightKey)) return
+
+        identityResolutionScope.launch {
+            try {
+                val resolvedProfileId = SupabaseClientManager.resolveProfileIdByPhoneNumber(phoneIdentity)
+                    ?.trim()
+                    ?.takeIf {
+                        it.isNotBlank() &&
+                            !it.equals(senderProfileId, ignoreCase = true) &&
+                            !SupabaseClientManager.isPhoneNumberCandidate(it) &&
+                            !it.startsWith("match_", ignoreCase = true)
+                    }
+                    ?: return@launch
+
+                val db = DatingDatabase.getDatabase(context.applicationContext)
+                val latestMatch = db.matchDao().getMatchByIdSync(localMatchId) ?: return@launch
+                // Never overwrite a profile ID another path has repaired while the RPC was in flight.
+                if (!latestMatch.profileId.trim().equals(phoneIdentity.trim(), ignoreCase = true)) {
+                    return@launch
+                }
+                db.matchDao().insertMatch(latestMatch.copy(profileId = resolvedProfileId))
+                Log.i(TAG, "Resolved legacy peer identity asynchronously; message_id=$messageId.")
+
+                when (val retry = attempt(context.applicationContext, messageId)) {
+                    is PendingOutboxAttempt.Sent ->
+                        Log.i(TAG, "Asynchronous identity resolution unlocked outbox send for message_id=$messageId.")
+                    is PendingOutboxAttempt.Retryable ->
+                        Log.w(TAG, "Async identity retry remains queued for message_id=$messageId: ${retry.reason}")
+                    is PendingOutboxAttempt.Rejected ->
+                        Log.w(TAG, "Async identity retry rejected for message_id=$messageId: ${retry.reason}")
+                    is PendingOutboxAttempt.NoOp ->
+                        Log.i(TAG, "Async identity retry became a no-op for message_id=$messageId: ${retry.reason}")
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                Log.w(TAG, "Deferred peer identity lookup failed for message_id=$messageId: ${t.javaClass.simpleName}: ${t.message}")
+            } finally {
+                identityResolutionsInFlight.remove(flightKey)
+            }
+        }
+    }
+
     suspend fun attempt(context: Context, messageId: String): PendingOutboxAttempt =
         withContext(Dispatchers.IO) {
             val safeMessageId = messageId.trim()
@@ -142,8 +202,17 @@ internal object PendingMessageOutboxSender {
                         cachedRecipientId
                     }
                     storedIdentityIsPhone -> {
-                        recipientResolutionSource = "phone_hash_rpc"
-                        SupabaseClientManager.resolveProfileIdByPhoneNumber(storedRecipientIdentity).orEmpty()
+                        recipientResolutionSource = "phone_hash_rpc_async"
+                        resolveLegacyRecipientIdentityInBackground(
+                            context = context.applicationContext,
+                            messageId = safeMessageId,
+                            localMatchId = localMatch.matchId,
+                            senderProfileId = senderProfileId,
+                            phoneIdentity = storedRecipientIdentity
+                        )
+                        return@withContext PendingOutboxAttempt.Retryable(
+                            "Legacy peer identity resolution was moved off the active outbox attempt."
+                        )
                     }
                     else -> storedRecipientIdentity
                 }.trim()

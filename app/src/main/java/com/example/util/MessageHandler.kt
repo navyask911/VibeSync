@@ -308,6 +308,75 @@ object MessageHandler {
         return TinkCryptoManager.resolveAadParticipantIds(sender, receiver, matchId, currentProfileId)
     }
 
+    /**
+     * Suspendable inbound decrypt path used by Realtime. Tink payloads get a synchronous,
+     * bounded-to-one immediate key-refresh retry before the event handler may drop the message.
+     */
+    suspend fun verifyAndDecryptPayloadWithImmediateKeyRefresh(
+        senderUid: String,
+        rawPayload: String,
+        context: android.content.Context? = null,
+        senderPhone: String = "",
+        receiverPhone: String = "",
+        matchId: String = "",
+        inboundEventPayload: JSONObject? = null,
+        peerProfileId: String = "",
+        fallbackPhoneNumber: String = "",
+        onPeerPublicKeyRefreshed: (suspend (String, String) -> Unit)? = null,
+        onMismatchedKey: (() -> Unit)? = null
+    ): String {
+        if (!rawPayload.startsWith(TinkCryptoManager.TINK_PREFIX)) {
+            return verifyAndDecryptPayload(
+                senderUid = senderUid,
+                rawPayload = rawPayload,
+                context = context,
+                senderPhone = senderPhone,
+                receiverPhone = receiverPhone,
+                onMismatchedKey = onMismatchedKey,
+                matchId = matchId,
+                inboundEventPayload = inboundEventPayload
+            )
+        }
+
+        val effectiveContext = context ?: appContext
+        if (effectiveContext == null) {
+            Log.e(TAG, "Realtime Tink retry unavailable: app context is missing.")
+            return ""
+        }
+
+        val participants = inboundEventPayload?.let { resolveAadParticipantsFromPayload(it) }
+            ?: TinkCryptoManager.resolveAadParticipantIds(
+                senderProfileId = senderPhone.ifBlank { senderUid },
+                receiverProfileId = receiverPhone,
+                matchId = matchId,
+                currentProfileId = VibeSyncSessionManager.getProfileId().orEmpty()
+            )
+        if (participants == null) {
+            Log.e(TAG, "Realtime Tink retry withheld: canonical participant context could not be resolved.")
+            return ""
+        }
+
+        val currentProfileId = VibeSyncSessionManager.getProfileId().orEmpty().trim()
+        val explicitPeerId = peerProfileId.trim().takeIf {
+            it.isNotBlank() &&
+                !it.equals(currentProfileId, ignoreCase = true) &&
+                !SupabaseClientManager.isPhoneNumberCandidate(it) &&
+                !it.startsWith("match_", ignoreCase = true)
+        }
+        val resolvedPeerId = explicitPeerId
+            ?: participants.firstOrNull { !it.equals(currentProfileId, ignoreCase = true) }.orEmpty()
+
+        return TinkCryptoManager.decryptPayloadWithImmediateIdentityRefresh(
+            context = effectiveContext,
+            payload = rawPayload,
+            senderPhone = participants.first,
+            receiverPhone = participants.second,
+            peerProfileId = resolvedPeerId,
+            fallbackPhoneNumber = fallbackPhoneNumber,
+            onPeerPublicKeyRefreshed = onPeerPublicKeyRefreshed
+        )
+    }
+
     fun verifyAndDecryptPayload(
         senderUid: String,
         rawPayload: String,
