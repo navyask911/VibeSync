@@ -551,7 +551,17 @@ object SupabaseClientManager {
     }
 
     /**
-     * Helper to safely parse and decrypt a ProfileEntity from JSON, preventing literal "null" fields.
+     * Values prefixed LOCAL_V2 were encrypted with this device's Keystore and can only be opened
+     * on this device. Plain profile strings (including opaque encrypted-avatar references) pass
+     * through unchanged; invalid local ciphertext fails closed to an empty value.
+     */
+    private fun decryptProfileField(value: String): String {
+        if (!value.startsWith("LOCAL_V2:")) return value
+        return runCatching { HackFreeSecurityShield.decrypt(value) }.getOrDefault("")
+    }
+
+    /**
+     * Helper to safely parse a ProfileEntity from public JSON, preventing literal "null" fields.
      */
     fun parseProfileEntityFromJson(obj: JSONObject): ProfileEntity? {
         val rawId = obj.optSafeString("id", "")
@@ -570,7 +580,7 @@ object SupabaseClientManager {
         val encGender = obj.optSafeString("gender", "")
 
         val decryptedPhone = ContactResolver.sanitizePhone(
-            if (encPhone.isNotBlank()) HackFreeSecurityShield.decrypt(encPhone) else ""
+            if (encPhone.isNotBlank()) decryptProfileField(encPhone) else ""
         )
         val cleanPhone = when {
             decryptedPhone.isNotBlank() && !ContactResolver.isGarbledOrEncrypted(decryptedPhone) -> decryptedPhone
@@ -580,7 +590,7 @@ object SupabaseClientManager {
         }
 
         val decryptedName = ContactResolver.sanitizeName(
-            if (encName.isNotBlank()) HackFreeSecurityShield.decrypt(encName) else ""
+            if (encName.isNotBlank()) decryptProfileField(encName) else ""
         )
         val name = when {
             decryptedName.isNotBlank() && !ContactResolver.isGarbledOrEncrypted(decryptedName) -> decryptedName
@@ -605,21 +615,21 @@ object SupabaseClientManager {
             return null
         }
 
-        val email = ContactResolver.sanitizeName(if (encEmail.isNotBlank()) HackFreeSecurityShield.decrypt(encEmail) else "")
-        val bio = ContactResolver.sanitizeName(if (encBio.isNotBlank()) HackFreeSecurityShield.decrypt(encBio) else "").ifBlank { "Hey there! Secure with VibeSync E2EE." }
-        val city = ContactResolver.sanitizeName(if (encCity.isNotBlank()) HackFreeSecurityShield.decrypt(encCity) else "").ifBlank { "Online" }
-        val country = ContactResolver.sanitizeName(if (encCountry.isNotBlank()) HackFreeSecurityShield.decrypt(encCountry) else "").ifBlank { "United States" }
-        val place = ContactResolver.sanitizeName(if (encPlace.isNotBlank()) HackFreeSecurityShield.decrypt(encPlace) else "")
-        val occupation = ContactResolver.sanitizeName(if (encOccupation.isNotBlank()) HackFreeSecurityShield.decrypt(encOccupation) else "").ifBlank { "Member" }
-        val qualification = ContactResolver.sanitizeName(if (encQualification.isNotBlank()) HackFreeSecurityShield.decrypt(encQualification) else "").ifBlank { "Verified" }
-        val marital = ContactResolver.sanitizeName(if (encMarital.isNotBlank()) HackFreeSecurityShield.decrypt(encMarital) else "").ifBlank { "Single" }
+        val email = ContactResolver.sanitizeName(if (encEmail.isNotBlank()) decryptProfileField(encEmail) else "")
+        val bio = ContactResolver.sanitizeName(if (encBio.isNotBlank()) decryptProfileField(encBio) else "").ifBlank { "Hey there! Secure with VibeSync E2EE." }
+        val city = ContactResolver.sanitizeName(if (encCity.isNotBlank()) decryptProfileField(encCity) else "").ifBlank { "Online" }
+        val country = ContactResolver.sanitizeName(if (encCountry.isNotBlank()) decryptProfileField(encCountry) else "").ifBlank { "United States" }
+        val place = ContactResolver.sanitizeName(if (encPlace.isNotBlank()) decryptProfileField(encPlace) else "")
+        val occupation = ContactResolver.sanitizeName(if (encOccupation.isNotBlank()) decryptProfileField(encOccupation) else "").ifBlank { "Member" }
+        val qualification = ContactResolver.sanitizeName(if (encQualification.isNotBlank()) decryptProfileField(encQualification) else "").ifBlank { "Verified" }
+        val marital = ContactResolver.sanitizeName(if (encMarital.isNotBlank()) decryptProfileField(encMarital) else "").ifBlank { "Single" }
         val rawAvatarUrl = ContactResolver.sanitizeName(
-            if (encAvatarUrl.isNotBlank()) HackFreeSecurityShield.decrypt(encAvatarUrl) else ""
+            if (encAvatarUrl.isNotBlank()) decryptProfileField(encAvatarUrl) else ""
         )
         // Public profile records may carry only opaque encrypted-avatar references. Legacy raw
         // public URLs are deliberately suppressed rather than rendered as server-readable photos.
         val avatarUrl = rawAvatarUrl.takeIf { it.startsWith("vibesync-avatar-enc://") }.orEmpty()
-        val gender = ContactResolver.sanitizeName(if (encGender.isNotBlank()) HackFreeSecurityShield.decrypt(encGender) else "").ifBlank { "User" }
+        val gender = ContactResolver.sanitizeName(if (encGender.isNotBlank()) decryptProfileField(encGender) else "").ifBlank { "User" }
 
         val publicIdentityKey = obj.optSafeString("public_identity_key", "")
         val latitude = obj.optDouble("latitude", 0.0).takeIf { it in -90.0..90.0 } ?: 0.0
