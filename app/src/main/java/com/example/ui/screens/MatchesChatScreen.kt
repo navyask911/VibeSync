@@ -148,7 +148,7 @@ fun MatchesChatScreen(
         return com.example.util.ContactResolver.matchChatSessionParticipant(context, linkedProfile)
     }
 
-    var searchQuery by remember { mutableStateOf("")
+    var searchQuery by remember { mutableStateOf("") }
     var showTopBarMenu by remember { mutableStateOf(false) }
     // Connect-first chat filters: All, Unread, Contacts, Groups, Connect
     var selectedFilter by remember { mutableStateOf("All") }
