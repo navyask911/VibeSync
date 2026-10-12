@@ -2233,7 +2233,6 @@ class SocialConnectRepository(
                     "userId" to userId,
                     "name" to updatedPrefs.userName,
                     "age" to updatedPrefs.userAge,
-                    "dob" to updatedPrefs.userDob,
                     "gender" to updatedPrefs.userGender,
                     "interestedIn" to updatedPrefs.userInterestedIn,
                     "occupation" to updatedPrefs.userOccupation,
@@ -2266,6 +2265,8 @@ class SocialConnectRepository(
                     "accountStatus" to "ACTIVE",
                     "lastUpdated" to System.currentTimeMillis()
                 )
+                // Clear the old plaintext DOB field from prior public profile documents.
+                profileMap["dob"] = com.google.firebase.firestore.FieldValue.delete()
                 firestore.collection("profiles").document(userId).set(profileMap, com.google.firebase.firestore.SetOptions.merge())
                 firestore.collection("users").document(userId).set(profileMap, com.google.firebase.firestore.SetOptions.merge())
 
@@ -2278,6 +2279,7 @@ class SocialConnectRepository(
                     city = updatedPrefs.userCity,
                     distanceMiles = 0,
                     bio = updatedPrefs.userBio,
+                    dateOfBirth = updatedPrefs.userDob,
                     interests = updatedPrefs.userInterests,
                     relationshipGoal = updatedPrefs.userRelationshipGoal,
                     promptQuestion = "About me",

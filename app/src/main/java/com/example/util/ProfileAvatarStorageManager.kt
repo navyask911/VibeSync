@@ -23,10 +23,13 @@ object ProfileAvatarStorageManager {
     /** A bounded JPEG staged in internal cache and ready for immediate Coil rendering. */
     data class PreparedAvatar(
         val uri: String,
+        /** Local JPEG used by Coil on this device; not uploaded. */
         val file: File,
         val profileId: String,
         val objectName: String,
-        val byteCount: Int
+        val byteCount: Int,
+        val slot: Int = 1,
+        val encryptedFile: File? = null
     )
 
     suspend fun cacheContactPhoto(context: Context, sourceUri: String, identityKey: String): String? =
@@ -72,21 +75,100 @@ object ProfileAvatarStorageManager {
             require(localFile.isFile && localFile.length() in 1 until MAX_BYTES.toLong()) {
                 "Compressed avatar must be strictly below 150,000 bytes."
             }
-            val objectName = if (cleanSlot == 1) "$profileId.jpg" else "${profileId}_${cleanSlot}.jpg"
-            PreparedAvatar(Uri.fromFile(localFile).toString(), localFile, profileId, objectName, bytes.size)
+            // Encrypt the JPEG on-device. Only this ciphertext is sent to Supabase Storage.
+            val ciphertext = ProfileKeyManager.encryptLocalAvatar(context, profileId, cleanSlot, bytes)
+            val encryptedName = if (cleanSlot == 1) profileId + ".enc" else profileId + "_" + cleanSlot + ".enc"
+            val encryptedFile = File(dir, safeHash(profileId) + "_" + cleanSlot + ".enc")
+            encryptedFile.outputStream().use { output -> output.write(ciphertext); output.flush() }
+            check(encryptedFile.isFile && encryptedFile.length() > 28L) {
+                "Encrypted avatar output is incomplete."
+            }
+            PreparedAvatar(
+                uri = Uri.fromFile(localFile).toString(),
+                file = localFile,
+                profileId = profileId,
+                objectName = encryptedName,
+                byteCount = bytes.size,
+                slot = cleanSlot,
+                encryptedFile = encryptedFile
+            )
         } finally { square.recycle() }
     }
 
+    /** Upload ciphertext only; the local JPEG remains the on-device Coil source. */
     suspend fun uploadPreparedAvatar(prepared: PreparedAvatar): String? =
         withContext(Dispatchers.IO) {
             if (!prepared.file.isFile || prepared.file.length() !in 1 until MAX_BYTES.toLong()) {
                 Log.w(TAG, "Refusing avatar upload because staged JPEG is missing or exceeds 150,000 bytes.")
                 return@withContext null
             }
-            SupabaseClientManager.uploadProfileAvatar(
-                file = prepared.file, profileId = prepared.profileId,
-                contentType = "image/jpeg", storageObjectName = prepared.objectName
+            val encrypted = prepared.encryptedFile?.takeIf { it.isFile && it.length() > 28L }
+                ?: return@withContext null
+            val uploaded = SupabaseClientManager.uploadProfileAvatar(
+                file = encrypted,
+                profileId = prepared.profileId,
+                contentType = "application/octet-stream",
+                storageObjectName = prepared.objectName
             )
+            if (uploaded.isNullOrBlank()) null else encryptedAvatarReference(prepared.profileId, prepared.slot)
+        }
+
+    fun encryptedAvatarReference(profileId: String, slot: Int = 1): String =
+        if (slot <= 1) "vibesync-avatar-enc://" + profileId
+        else "vibesync-avatar-enc://" + profileId + "/" + slot.coerceIn(2, 3)
+
+    /** Replace cache URLs in server metadata with opaque encrypted-object pointers. */
+    fun serverAvatarReference(profileId: String, avatarUrl: String): String {
+        if (profileId.isBlank() || avatarUrl.isBlank()) return avatarUrl
+        return avatarUrl.split("|||").joinToString("|||") { value ->
+            val trimmed = value.trim()
+            if (trimmed.startsWith("vibesync-avatar-enc://")) return@joinToString trimmed
+            val uri = runCatching { Uri.parse(trimmed) }.getOrNull()
+            val path = uri?.path.orEmpty()
+            if (uri?.scheme.equals("file", ignoreCase = true) && path.contains("/avatars/")) {
+                val filename = path.substringAfterLast('/')
+                val slot = when {
+                    filename.contains("_2.jpg", ignoreCase = true) -> 2
+                    filename.contains("_3.jpg", ignoreCase = true) -> 3
+                    else -> 1
+                }
+                encryptedAvatarReference(profileId, slot)
+            } else trimmed
+        }
+    }
+
+    private fun encryptedRefParts(reference: String): Pair<String, Int>? {
+        if (!reference.startsWith("vibesync-avatar-enc://")) return null
+        val parts = reference.removePrefix("vibesync-avatar-enc://").split("/")
+        val owner = parts.firstOrNull().orEmpty().trim()
+        if (owner.isBlank()) return null
+        return owner to (parts.getOrNull(1)?.toIntOrNull()?.coerceIn(1, 3) ?: 1)
+    }
+
+    suspend fun resolveAvatarForDisplay(context: Context, reference: String, cacheVersion: Long = 0L): String? =
+        withContext(Dispatchers.IO) {
+            val ownerAndSlot = encryptedRefParts(reference)
+                ?: return@withContext reference.takeIf { it.isNotBlank() }
+            val (ownerId, slot) = ownerAndSlot
+            val dir = File(context.cacheDir, "decrypted_avatars").apply { mkdirs() }
+            val localFile = File(dir, safeHash(ownerId + ":" + slot + ":" + cacheVersion) + ".jpg")
+            if (localFile.isFile && localFile.length() > 0L) return@withContext Uri.fromFile(localFile).toString()
+            try {
+                val ciphertext = SupabaseClientManager.downloadEncryptedProfileAvatar(ownerId, slot)
+                    ?: return@withContext null
+                val plaintext = ProfileKeyManager.decryptAvatar(context, ownerId, slot, ciphertext)
+                    ?: return@withContext null
+                val temporary = File(dir, localFile.name + ".tmp")
+                temporary.outputStream().use { output -> output.write(plaintext); output.flush() }
+                if (!temporary.renameTo(localFile)) {
+                    temporary.copyTo(localFile, overwrite = true)
+                    temporary.delete()
+                }
+                Uri.fromFile(localFile).toString()
+            } catch (t: Throwable) {
+                Log.w(TAG, "Could not resolve encrypted profile avatar: " + t.javaClass.simpleName)
+                null
+            }
         }
 
     private fun decodeSampled(context: Context, uri: Uri): Bitmap? {

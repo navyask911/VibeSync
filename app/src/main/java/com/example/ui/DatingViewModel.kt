@@ -1926,7 +1926,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     "name" to name.trim(),
                     "userName" to name.trim(),
                     "age" to age,
-                    "dob" to dob,
                     "gender" to gender,
                     "address" to address.trim(),
                     "city" to city.trim(),

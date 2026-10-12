@@ -691,7 +691,9 @@ object SupabaseClientManager {
                 put("country_flag", profile.countryFlag.ifBlank { "🌐" })
                 put("place", ContactResolver.sanitizeName(profile.place))
                 put("avatar_emoji", profile.avatarEmoji.ifBlank { "✨" })
-                put("avatar_url", ContactResolver.sanitizeName(profile.avatarUrl))
+                put("avatar_url", ContactResolver.sanitizeName(
+                    ProfileAvatarStorageManager.serverAvatarReference(profile.id, profile.avatarUrl)
+                ))
                 put("occupation", ContactResolver.sanitizeName(profile.occupation, "Member"))
                 put("qualification", ContactResolver.sanitizeName(profile.qualification, "Verified"))
                 put("marital_status", ContactResolver.sanitizeName(profile.maritalStatus, "Single"))
@@ -1156,7 +1158,10 @@ object SupabaseClientManager {
             }
             try {
                 val objectName = storageObjectName.trim().ifBlank { "$profileId.jpg" }
-                require(objectName in setOf("$profileId.jpg", "${profileId}_2.jpg", "${profileId}_3.jpg")) {
+                require(objectName in setOf(
+                    "$profileId.jpg", "${profileId}_2.jpg", "${profileId}_3.jpg",
+                    "$profileId.enc", "${profileId}_2.enc", "${profileId}_3.enc"
+                )) {
                     "Avatar storage object name must be bound to the active profile ID."
                 }
                 val encodedPath = Uri.encode(objectName)
@@ -1179,6 +1184,29 @@ object SupabaseClientManager {
                 "$SUPABASE_URL/storage/v1/object/public/avatars/$encodedPath?v=${file.lastModified()}"
             } catch (t: Throwable) {
                 Log.w(TAG, "Profile avatar upload notice: ${t.javaClass.simpleName}: ${t.message}")
+                null
+            }
+        }
+
+    /** Download encrypted avatar bytes only; plaintext is never provided by the backend. */
+    suspend fun downloadEncryptedProfileAvatar(profileId: String, slot: Int = 1): ByteArray? =
+        withContext(Dispatchers.IO) {
+            if (profileId.isBlank()) return@withContext null
+            val cleanSlot = slot.coerceIn(1, 3)
+            val objectName = if (cleanSlot == 1) profileId + ".enc" else profileId + "_" + cleanSlot + ".enc"
+            val encodedPath = Uri.encode(objectName)
+            try {
+                val request = Request.Builder()
+                    .url("$SUPABASE_URL/storage/v1/object/public/avatars/$encodedPath")
+                    .get()
+                    .build()
+                httpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@withContext null
+                    val bytes = response.body?.bytes() ?: return@withContext null
+                    bytes.takeIf { it.size > 28 }
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Encrypted avatar download failed: " + t.javaClass.simpleName)
                 null
             }
         }
