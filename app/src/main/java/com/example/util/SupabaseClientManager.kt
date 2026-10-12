@@ -15,9 +15,11 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.RequestBody.Companion.asRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 /**
@@ -1133,6 +1135,43 @@ object SupabaseClientManager {
             } catch (t: Throwable) {
                 Log.w("VibeSyncChat", "Delivery-state catch-up exception: ${t.message}", t)
                 emptyList()
+            }
+        }
+
+    /**
+     * Upload a profile image to the public-read, owner-write profile-avatars bucket.
+     * Storage RLS restricts writes to the active session's profile folder.
+     */
+    suspend fun uploadProfileAvatar(file: File, profileId: String, contentType: String): String? =
+        withContext(Dispatchers.IO) {
+            if (!file.isFile || file.length() <= 0L || profileId.isBlank()) return@withContext null
+            if (!VibeSyncSessionManager.getProfileId().orEmpty().equals(profileId, ignoreCase = true)) {
+                Log.w(TAG, "Refusing avatar upload because the active profile does not own the destination folder.")
+                return@withContext null
+            }
+            try {
+                val objectPath = "$profileId/${file.name}"
+                val encodedPath = Uri.encode(objectPath, "/")
+                val request = Request.Builder()
+                    .url("$SUPABASE_URL/storage/v1/object/profile-avatars/$encodedPath")
+                    .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+                    .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_PUBLISHABLE_KEY)}")
+                    .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
+                    .header("Content-Type", contentType)
+                    .header("x-upsert", "true")
+                    .put(file.asRequestBody(contentType.toMediaType()))
+                    .build()
+                httpClient.newCall(request).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        Log.w(TAG, "Profile avatar upload failed HTTP ${response.code}: ${body.take(250)}")
+                        return@withContext null
+                    }
+                }
+                "$SUPABASE_URL/storage/v1/object/public/profile-avatars/$encodedPath?v=${file.lastModified()}"
+            } catch (t: Throwable) {
+                Log.w(TAG, "Profile avatar upload notice: ${t.javaClass.simpleName}: ${t.message}")
+                null
             }
         }
 

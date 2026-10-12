@@ -76,22 +76,36 @@ fun EditProfileDialog(
     var photo2 by remember { mutableStateOf(preferences.getPhotoList().getOrNull(1) ?: "") }
     var photo3 by remember { mutableStateOf(preferences.getPhotoList().getOrNull(2) ?: "") }
     var activePhotoSlot by remember { mutableIntStateOf(1) }
+    val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var isUploadingAvatar by remember { mutableStateOf(false) }
 
     val slotPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            val uriStr = uri.toString()
-            when (activePhotoSlot) {
-                1 -> photo1 = uriStr
-                2 -> photo2 = uriStr
-                3 -> photo3 = uriStr
+            val targetSlot = activePhotoSlot
+            coroutineScope.launch {
+                isUploadingAvatar = true
+                try {
+                    val profileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
+                    val persisted = com.example.util.ProfileAvatarStorageManager.persistPickedAvatar(context, uri, profileId, targetSlot)
+                    when (targetSlot) {
+                        1 -> photo1 = persisted.uri
+                        2 -> photo2 = persisted.uri
+                        3 -> photo3 = persisted.uri
+                    }
+                    if (persisted.remoteUrl.isNullOrBlank()) {
+                        android.widget.Toast.makeText(context, "Photo saved on this device. Sign in and check Storage permissions to sync it to your profile.", android.widget.Toast.LENGTH_LONG).show()
+                    } else {
+                        android.widget.Toast.makeText(context, "Profile photo saved and synced.", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                } catch (_: Throwable) {
+                    android.widget.Toast.makeText(context, "Could not save that photo. Please choose it again.", android.widget.Toast.LENGTH_LONG).show()
+                } finally { isUploadingAvatar = false }
             }
         }
     }
-
-    val coroutineScope = rememberCoroutineScope()
-    val context = androidx.compose.ui.platform.LocalContext.current
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -416,6 +430,7 @@ fun EditProfileDialog(
         },
         confirmButton = {
             Button(
+                enabled = !isUploadingAvatar,
                 onClick = {
                     val finalPhotoList = listOf(photo1, photo2, photo3).filter { it.isNotBlank() }
                     val effectiveAvatar = finalPhotoList.firstOrNull() ?: preferences.avatarUrl

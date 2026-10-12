@@ -123,6 +123,7 @@ googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.W
 // This makes it easy to add them back in the future if needed.
 dependencies {
   val roomVersion = "2.7.0"
+  implementation("com.razorpay:checkout:1.6.41")
 
   implementation(platform(libs.androidx.compose.bom))
   implementation(platform(libs.firebase.bom))

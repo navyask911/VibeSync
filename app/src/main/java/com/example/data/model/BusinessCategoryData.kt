@@ -22,6 +22,7 @@ object BusinessCategories {
             subCategories = listOf(
                 "Convenience store (or bodega/minimart)",
                 "Grocery store / Supermarket",
+                "Kirana & General Stores",
                 "Bakery & Pastry shop",
                 "Pharmacy / Drugstore",
                 "Clothing boutique / Shoe store",
@@ -38,6 +39,7 @@ object BusinessCategories {
             subCategories = listOf(
                 "Café / Coffee shop",
                 "Restaurants (fast food, casual, fine dining)",
+                "Tiffin Centers & Restaurants",
                 "Hotel / Hostel / Bed & Breakfast",
                 "Bar / Pub / Cocktail lounge",
                 "Ice cream parlor / Juice bar"
@@ -52,6 +54,9 @@ object BusinessCategories {
                 "Nail salon / Day spa",
                 "Dental clinic",
                 "Medical walk-in clinic",
+                "Hospitals & Clinics",
+                "Medical Stores / Pharmacies",
+                "Salons & Beauty Parlours",
                 "Optician / Eyewear shop"
             )
         ),
@@ -65,7 +70,9 @@ object BusinessCategories {
                 "Tailor / Alterations shop",
                 "Cobbler / Shoe repair",
                 "Locksmith",
-                "Auto repair shop / Gas station"
+                "Auto repair shop / Gas station",
+                "Petrol Bunks / Fuel Stations",
+                "Automobile Garages & Tyre Puncture Services"
             )
         ),
         BusinessCategory(

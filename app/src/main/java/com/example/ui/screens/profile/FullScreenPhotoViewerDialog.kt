@@ -25,7 +25,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
+import coil.request.CachePolicy
+import coil.request.ImageRequest
+import androidx.compose.ui.platform.LocalContext
 import com.example.ui.theme.VibeSyncTeal
 
 @Composable
@@ -35,6 +38,7 @@ fun FullScreenPhotoViewerDialog(
     subtitle: String = "Full Resolution View",
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
     var scale by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
@@ -72,19 +76,28 @@ fun FullScreenPhotoViewerDialog(
                 contentAlignment = Alignment.Center
             ) {
                 if (photoUrl.isNotBlank()) {
-                    AsyncImage(
-                        model = photoUrl,
+                    SubcomposeAsyncImage(
+                        model = ImageRequest.Builder(context).data(photoUrl)
+                            .memoryCachePolicy(CachePolicy.ENABLED)
+                            .diskCachePolicy(CachePolicy.ENABLED).crossfade(true).build(),
                         contentDescription = title,
                         contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .fillMaxHeight(0.82f)
-                            .graphicsLayer(
-                                scaleX = scale,
-                                scaleY = scale,
-                                translationX = offsetX,
-                                translationY = offsetY
-                            )
+                        modifier = Modifier.fillMaxWidth().fillMaxHeight(0.82f).graphicsLayer(
+                            scaleX = scale, scaleY = scale, translationX = offsetX, translationY = offsetY
+                        ),
+                        loading = {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(color = VibeSyncTeal)
+                            }
+                        },
+                        error = {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                                Icon(Icons.Default.Person, contentDescription = null, tint = VibeSyncTeal, modifier = Modifier.size(72.dp))
+                                Spacer(Modifier.height(12.dp))
+                                Text("Photo unavailable", color = Color.White, fontWeight = FontWeight.SemiBold)
+                                Text("Check your connection or choose another photo.", color = Color.LightGray, textAlign = TextAlign.Center)
+                            }
+                        }
                     )
                 } else {
                     Column(
