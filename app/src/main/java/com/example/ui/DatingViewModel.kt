@@ -362,6 +362,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private val resumeSyncGuard = java.util.concurrent.atomic.AtomicBoolean(false)
+
     fun reconnectRealtime() {
         try {
             com.example.util.SupabaseBackendManager.connectRealtimeWebsocket(
@@ -370,6 +372,91 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             )
         } catch (e: Exception) {
             android.util.Log.w("DatingViewModel", "Error reconnecting realtime: ${e.message}")
+        }
+        syncRecentMessagesOnResume()
+    }
+
+    /** REST catch-up complements Realtime so events missed while backgrounded are recovered. */
+    private fun syncRecentMessagesOnResume() {
+        if (!resumeSyncGuard.compareAndSet(false, true)) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val prefs = repository.userPreferences.firstOrNull() ?: return@launch
+                if (!prefs.isLoggedIn) return@launch
+                val ownerProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
+                if (ownerProfileId.isBlank()) return@launch
+                val store = getApplication<Application>().getSharedPreferences(
+                    "vibesync_incremental_chat_sync", android.content.Context.MODE_PRIVATE
+                )
+                val saved = store.getLong("last_synced_timestamp", 0L)
+                val since = if (saved > 0L) (saved - 3_000L).coerceAtLeast(0L)
+                    else (System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000).coerceAtLeast(0L)
+                val refs = com.example.util.SupabaseClientManager.fetchRecentChatMessageRefsSince(since)
+                    ?: return@launch
+                if (refs.isEmpty()) return@launch
+
+                val localMatches = database.matchDao().getAllMatchesSync()
+                val profiles = database.profileDao().getAllProfilesSync().associateBy { it.id }
+                val matchByRemoteId = mutableMapOf<String, MatchEntity>()
+                for (match in localMatches) {
+                    val profile = profiles[match.profileId]
+                    val peerId = profile?.id?.takeIf { it.isNotBlank() } ?: match.profileId
+                    val remoteId = com.example.util.SupabaseClientManager.canonicalChatMatchId(ownerProfileId, peerId)
+                    if (remoteId.isNotBlank()) matchByRemoteId[remoteId] = match
+                }
+
+                var fullyMapped = true
+                for ((remoteMatchId, groupRefs) in refs.groupBy { it.matchId }) {
+                    val match = matchByRemoteId[remoteMatchId]
+                    if (match == null) {
+                        // Keep the sweep cursor behind unmapped conversations so a later profile/match
+                        // refresh can make the missing local association recoverable.
+                        fullyMapped = false
+                        continue
+                    }
+                    val profile = profiles[match.profileId]
+                    val partnerPhone = profile?.phoneNumber.orEmpty()
+                    val remoteMessages = com.example.util.SupabaseClientManager.fetchMessagesForMatch(
+                        remoteMatchId, prefs.verifiedMobileNumber, partnerPhone
+                    )
+                    for (remote in remoteMessages) {
+                        val isFromMe = remote.senderId.equals(ownerProfileId, ignoreCase = true) ||
+                            (prefs.verifiedMobileNumber.isNotBlank() && remote.senderId == prefs.verifiedMobileNumber)
+                        val localMessage = remote.copy(
+                            matchId = match.matchId,
+                            senderId = if (isFromMe) "USER" else remote.senderId,
+                            senderDisplayName = if (!isFromMe) match.localContactName.ifBlank { remote.senderDisplayName } else remote.senderDisplayName,
+                            senderPhotoUri = if (!isFromMe) match.localPhotoUri.ifBlank { remote.senderPhotoUri } else remote.senderPhotoUri,
+                            isDelivered = if (isFromMe) remote.isDelivered else true,
+                            isRead = if (isFromMe) remote.isRead else remote.isRead,
+                            deliveryState = when {
+                                remote.isRead -> "READ"
+                                !isFromMe || remote.isDelivered -> "DELIVERED"
+                                else -> "SENT_TO_SERVER"
+                            }
+                        )
+                        repository.insertReceivedChatMessage(localMessage, remote.senderId, prefs.verifiedMobileNumber)
+                        if (!isFromMe && !remote.isDelivered) {
+                            com.example.util.SupabaseBackendManager.markMessageDelivered(
+                                remote.messageId, remote.senderId, ownerProfileId
+                            )
+                        }
+                        if (remote.timestamp >= match.lastMessageTime && remote.text.isNotBlank()) {
+                            database.matchDao().updateLastMessage(
+                                match.matchId, remote.text, remote.timestamp, !isFromMe && !remote.isRead
+                            )
+                        }
+                    }
+                }
+                if (fullyMapped) {
+                    val newest = refs.maxOfOrNull { it.timestamp } ?: saved
+                    if (newest > saved) store.edit().putLong("last_synced_timestamp", newest).apply()
+                }
+            } catch (t: Throwable) {
+                android.util.Log.w("DatingViewModel", "Resume REST message sweep failed: ${t.message}")
+            } finally {
+                resumeSyncGuard.set(false)
+            }
         }
     }
 
@@ -948,6 +1035,32 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         _currentMatchId.value = match.matchId
         com.example.util.AppNotificationManager.setActiveChatSession(resolvedProfile.id, match.matchId)
         viewModelScope.launch {
+            val contactName = resolvedProfile.name.trim().takeUnless {
+                it.isBlank() || it.equals("VibeSync User", true) ||
+                    it.equals("VibeSync Match", true) || it.equals("VibeSync Contact", true) ||
+                    it.equals("VibeSync Friend", true)
+            }.orEmpty()
+            val photoValue = resolvedProfile.avatarUrl.trim()
+            val context = getApplication<Application>()
+            val localPhoto = if (photoValue.startsWith("content://")) {
+                com.example.util.ProfileAvatarStorageManager.cacheContactPhoto(context, photoValue, match.profileId).orEmpty()
+            } else if (photoValue.startsWith("file://")) photoValue else ""
+            if (contactName.isNotBlank() || localPhoto.isNotBlank()) {
+                val latestMatch = database.matchDao().getMatchByIdSync(match.matchId) ?: match
+                val persisted = latestMatch.copy(
+                    localContactName = contactName.ifBlank { latestMatch.localContactName },
+                    localPhotoUri = localPhoto.ifBlank { latestMatch.localPhotoUri }
+                )
+                database.matchDao().insertMatch(persisted)
+                database.chatMessageDao().persistIncomingContactMetadata(
+                    match.matchId, persisted.localContactName, persisted.localPhotoUri
+                )
+                val displayProfile = resolvedProfile.copy(
+                    name = persisted.localContactName.ifBlank { resolvedProfile.name },
+                    avatarUrl = persisted.localPhotoUri.ifBlank { resolvedProfile.avatarUrl }
+                )
+                _activeChat.value = Pair(persisted, displayProfile)
+            }
             val prefs = repository.userPreferences.firstOrNull()
             val myPhone = prefs?.verifiedMobileNumber ?: ""
             val partnerPhone = resolvedProfile.phoneNumber.ifBlank { match.profileId }
@@ -1240,7 +1353,9 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         replyToSender = replyToSender,
                         isForwarded = isForwarded,
                         isEncrypted = true,
-                        deliveryState = if (shouldMarkRead) "READ" else "DELIVERED"
+                        deliveryState = if (shouldMarkRead) "READ" else "DELIVERED",
+                        senderDisplayName = database.matchDao().getMatchByIdSync(targetMatchId)?.localContactName.orEmpty(),
+                        senderPhotoUri = database.matchDao().getMatchByIdSync(targetMatchId)?.localPhotoUri.orEmpty()
                     )
 
                     // Play once for a newly decrypted incoming message. Existing plaintext rows suppress

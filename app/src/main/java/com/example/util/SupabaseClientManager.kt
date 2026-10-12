@@ -1175,6 +1175,48 @@ object SupabaseClientManager {
             }
         }
 
+    data class RecentChatMessageRef(val matchId: String, val timestamp: Long)
+
+    /**
+     * Page the authenticated user's newly timestamped messages. RLS still applies, so this
+     * endpoint only returns rows visible to the active VibeSync session.
+     * A null result means network/HTTP failure; an empty list is a successful empty sweep.
+     */
+    suspend fun fetchRecentChatMessageRefsSince(lastSyncedTimestamp: Long): List<RecentChatMessageRef>? =
+        withContext(Dispatchers.IO) {
+            val rows = mutableListOf<RecentChatMessageRef>()
+            var offset = 0
+            val pageSize = 500
+            try {
+                repeat(20) {
+                    val endpoint = "chat_messages?select=match_id,timestamp&timestamp=gte.$lastSyncedTimestamp&order=timestamp.asc&limit=$pageSize&offset=$offset"
+                    val request = buildRequest(endpoint, "GET")
+                    val response = httpClient.newCall(request).execute()
+                    val body = response.use {
+                        val text = it.body?.string().orEmpty()
+                        if (!it.isSuccessful) {
+                            Log.w(TAG, "Incremental message sweep HTTP ${it.code}: ${text.take(240)}")
+                            return@withContext null
+                        }
+                        text
+                    }
+                    val page = JSONArray(body)
+                    for (i in 0 until page.length()) {
+                        val row = page.optJSONObject(i) ?: continue
+                        val matchId = row.optString("match_id", "").trim()
+                        val timestamp = row.optLong("timestamp", 0L)
+                        if (matchId.isNotBlank() && timestamp > 0L) rows += RecentChatMessageRef(matchId, timestamp)
+                    }
+                    if (page.length() < pageSize) return@withContext rows.distinctBy { "${it.matchId}:${it.timestamp}" }
+                    offset += pageSize
+                }
+                rows.distinctBy { "${it.matchId}:${it.timestamp}" }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Incremental message sweep failed: ${t.javaClass.simpleName}: ${t.message}")
+                null
+            }
+        }
+
     /**
      * Fetch messages for match/conversation from public.chat_messages with decryption and phone matching.
      */

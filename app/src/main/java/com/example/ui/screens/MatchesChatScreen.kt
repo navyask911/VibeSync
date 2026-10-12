@@ -732,40 +732,20 @@ fun MatchesChatScreen(
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "Connections & Phonebook Contacts",
+                                    text = "App Connections & Matches",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 13.5.sp,
                                     color = Color.White
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = "All your connected friends and direct phonebook contacts who are active on VibeSync are unified here for easy conversation.",
+                                    text = "Confirmed app-connected and matched users are listed here.",
                                     fontSize = 11.sp,
                                     color = Color.White.copy(alpha = 0.8f),
                                     lineHeight = 15.sp
                                 )
                             }
                         }
-                    }
-                }
-
-                // Direct phonebook contacts on VibeSync
-                if (contactsOnVibeSync.isNotEmpty()) {
-                    item {
-                        Text(
-                            text = "Contacts on VibeSync (${contactsOnVibeSync.size})",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = VibeSyncTeal,
-                            modifier = Modifier.padding(top = 6.dp, bottom = 4.dp)
-                        )
-                    }
-                    items(contactsOnVibeSync, key = { "friends_contact_${it.id}" }) { contact ->
-                        ContactOnVibeSyncRow(
-                            contact = contact,
-                            onClick = { onSelectChatContact(contact) },
-                            syncedLocalPhotos = syncedLocalPhotos
-                        )
                     }
                 }
 
@@ -811,7 +791,7 @@ fun MatchesChatScreen(
                     }
                 }
 
-                if (filteredMatches.isEmpty() && contactsOnVibeSync.isEmpty()) {
+                if (filteredMatches.isEmpty()) {
                     item {
                         Box(
                             modifier = Modifier
