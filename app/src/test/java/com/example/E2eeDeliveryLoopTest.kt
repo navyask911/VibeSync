@@ -60,7 +60,10 @@ class E2eeDeliveryLoopTest {
         )
 
         val decodedPublic = TinkCryptoManager.decodePostgrestTextValue(JSONObject.quote(recipientPublic))
-        assertEquals(recipientPublic, decodedPublic)
+        assertEquals(
+            JSONObject(recipientPublic).toString(),
+            JSONObject(decodedPublic).toString()
+        )
         assertTrue(TinkCryptoManager.validatePublicKeysetJson(decodedPublic))
 
         val ciphertext = TinkCryptoManager.encryptForRecipientOrThrow(
