@@ -1174,13 +1174,18 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     record.optString("msg_type", "CHAT_MESSAGE")
                 }
 
-                // Filter Background Control Packets: process silently in the crypto layer and do not insert into Room database
-                val isControlPacket = msgType != "CHAT_MESSAGE" || 
-                    rawText.startsWith("KEY_EXCHANGE") || 
-                    rawText.startsWith("DH_HANDSHAKE") || 
-                    rawText.startsWith("E2EE_SETUP") ||
-                    rawText.equals("Message", ignoreCase = true) ||
-                    mediaType in listOf("KEY_EXCHANGE", "HANDSHAKE", "SETUP", "PROTOCOL", "SYSTEM")
+                // Profile-key exchange uses the same encrypted chat transport, but is consumed silently.
+                val isProfileKeyExchange =
+                    mediaType.equals("PROFILE_KEY_EXCHANGE", ignoreCase = true) ||
+                        rawText.startsWith(com.example.util.ProfileKeyManager.EXCHANGE_PREFIX)
+                val isControlPacket = !isProfileKeyExchange && (
+                    msgType != "CHAT_MESSAGE" ||
+                        rawText.startsWith("KEY_EXCHANGE") ||
+                        rawText.startsWith("DH_HANDSHAKE") ||
+                        rawText.startsWith("E2EE_SETUP") ||
+                        rawText.equals("Message", ignoreCase = true) ||
+                        mediaType in listOf("KEY_EXCHANGE", "HANDSHAKE", "SETUP", "PROTOCOL", "SYSTEM")
+                    )
 
                 if (isControlPacket) {
                     try {
@@ -1310,6 +1315,34 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                             "VibeSyncChat",
                             "Realtime ciphertext decryption returned empty plaintext; delivery ACK withheld for message_id=$msgId."
                         )
+                        return@launch
+                    }
+
+                    if (com.example.util.ProfileKeyManager.isExchangePayload(decryptedText)) {
+                        val localProfileId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty()
+                        val exchange = com.example.util.ProfileKeyManager.consumeExchangePayload(
+                            context = getApplication(),
+                            senderProfileId = senderProfileId.ifBlank { senderIdentity },
+                            currentProfileId = localProfileId,
+                            payload = decryptedText
+                        )
+                        if (exchange == null) {
+                            android.util.Log.w("ProfileKeyExchange", "Rejected inbound exchange because its authenticated identities did not match.")
+                            return@launch
+                        }
+                        if (exchange.dateOfBirth.isNotBlank()) {
+                            val peerProfile = database.profileDao().getProfileByIdSync(exchange.ownerProfileId)
+                                ?: com.example.util.SupabaseClientManager.fetchProfileById(exchange.ownerProfileId)
+                            if (peerProfile != null) {
+                                database.profileDao().insertProfile(peerProfile.copy(dateOfBirth = exchange.dateOfBirth))
+                            }
+                        }
+                        val ack = com.example.util.SupabaseBackendManager.markMessageDelivered(
+                            msgId, senderIdentity, receiverIdentity
+                        )
+                        if (!ack) {
+                            android.util.Log.w("ProfileKeyExchange", "Key was saved locally, but delivery ACK for $msgId will need a later sync.")
+                        }
                         return@launch
                     }
 
