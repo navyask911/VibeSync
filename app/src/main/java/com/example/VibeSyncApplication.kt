@@ -72,7 +72,7 @@ class VibeSyncApplication : Application(), ImageLoaderFactory {
 
         // Restore may have completed before listeners were registered; explicitly cover cold start.
         keyPublishScope.launch {
-            VibeSyncSessionManager.getSession(applicationContext)?.let { session ->
+            com.example.util.VibeSyncSessionManager.getSession(applicationContext)?.let { session ->
                 schedulePublicIdentityKeyPublish(session.profileId)
             }
         }

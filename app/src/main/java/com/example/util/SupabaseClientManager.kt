@@ -1,7 +1,6 @@
 package com.example.util
 
 import android.content.Context
-import android.content.Context
 import android.net.Uri
 import android.util.Log
 import com.example.BuildConfig
