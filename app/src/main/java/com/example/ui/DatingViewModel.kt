@@ -1023,7 +1023,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
         val savedInMyContacts = peerPhone.isNotBlank() &&
             com.example.util.ContactResolver.isNumberSavedOnDevice(context, peerPhone)
-        val mutual = accepted || (match.isDatingMatch && match.hasStartedChat)
+        val mutual = accepted || match.isDatingMatch
         val verifiedContact = savedInMyContacts && (peer.isMobileVerified || peer.isVerified)
         if (!mutual && !verifiedContact) return
 
