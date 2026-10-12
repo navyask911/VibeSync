@@ -3035,14 +3035,29 @@ class SocialConnectRepository(
         replyToText: String? = null,
         replyToSender: String? = null,
         isForwarded: Boolean = false,
-        clientMsgId: String = java.util.UUID.randomUUID().toString()
+        clientMsgId: String = java.util.UUID.randomUUID().toString(),
+        recipientProfileId: String? = null,
+        recipientPhoneNumber: String = ""
     ) {
+        val explicitRecipientId = recipientProfileId.orEmpty().trim()
         var match = matchDao.getMatchByIdSync(matchId)
         if (match == null) {
-            val profId = matchId.removePrefix("match_").substringAfter("_").ifBlank { "contact_user" }
+            // Local match IDs can be pairs of phone hashes; they are not peer profile IDs.
+            val isCompositeHashMatchId = Regex("^match_[0-9a-fA-F]{16}_[0-9a-fA-F]{16}$").matches(matchId)
+            val legacyProfileId = matchId.removePrefix("match_").trim()
+                .takeIf { it.isNotBlank() && !isCompositeHashMatchId }.orEmpty()
+            val resolvedRecipientId = explicitRecipientId.ifBlank { legacyProfileId }
+            if (resolvedRecipientId.isBlank() || resolvedRecipientId.startsWith("match_")) {
+                Log.e(
+                    "VibeSyncOutbox",
+                    "Refusing to enqueue without canonical recipient profile ID: local_match_id=$matchId, " +
+                        "explicit_recipient_id=$explicitRecipientId."
+                )
+                return
+            }
             val newMatch = MatchEntity(
                 matchId = matchId,
-                profileId = profId,
+                profileId = resolvedRecipientId,
                 matchedAt = System.currentTimeMillis(),
                 lastMessage = text.ifBlank { if (mediaType == "VOICE") "Voice message" else "Photo" },
                 lastMessageTime = System.currentTimeMillis(),
@@ -3050,8 +3065,23 @@ class SocialConnectRepository(
             )
             matchDao.insertMatch(newMatch)
             match = newMatch
+        } else if (explicitRecipientId.isNotBlank() &&
+            !match.profileId.trim().equals(explicitRecipientId, ignoreCase = true)
+        ) {
+            Log.i(
+                "VibeSyncOutbox",
+                "Repairing stale local peer identity: local_match_id=$matchId, " +
+                    "old_peer_profile_id=${match.profileId}, canonical_peer_profile_id=$explicitRecipientId."
+            )
+            match = match.copy(profileId = explicitRecipientId)
+            matchDao.insertMatch(match)
         }
-        val targetProfileId = match.profileId
+
+        val targetProfileId = match.profileId.trim()
+        if (targetProfileId.isBlank() || targetProfileId.startsWith("match_")) {
+            Log.e("VibeSyncOutbox", "Refusing message with invalid recipient profile ID for local_match_id=$matchId.")
+            return
+        }
         var profile = profileDao.getProfileByIdSync(targetProfileId)
         if (profile == null) {
             val newProf = ProfileEntity(
@@ -3069,11 +3099,16 @@ class SocialConnectRepository(
                 gradientColorStart = 0xFFFF5E62,
                 gradientColorEnd = 0xFFFF9966,
                 avatarEmoji = "✨",
-                phoneNumber = if (targetProfileId.filter { it.isDigit() }.length >= 10) targetProfileId else "",
+                phoneNumber = recipientPhoneNumber.ifBlank {
+                    if (targetProfileId.filter { it.isDigit() }.length >= 10) targetProfileId else ""
+                },
                 isVerified = true
             )
             profileDao.insertProfile(newProf)
             profile = newProf
+        } else if (profile.phoneNumber.isBlank() && recipientPhoneNumber.isNotBlank()) {
+            profile = profile.copy(phoneNumber = recipientPhoneNumber.trim())
+            profileDao.insertProfile(profile)
         }
 
         val prefs = preferencesDao.getPreferencesSync()
@@ -5411,56 +5446,64 @@ class SocialConnectRepository(
             val prefs = preferencesDao.getPreferencesSync()
             val myPhone = com.example.util.ContactResolver.sanitizePhone(prefs?.verifiedMobileNumber ?: "")
             val myDigits = myPhone.filter { it.isDigit() }
+            val myProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty().trim()
+            if (myProfileId.isNotBlank()) {
+                for (m in matchDao.getAllMatchesSync()) {
+                    val peerProfileId = m.profileId.trim()
+                    if (peerProfileId.isBlank() || peerProfileId == "null" ||
+                        peerProfileId.equals(myProfileId, ignoreCase = true)
+                    ) continue
 
-            if (myPhone.isNotBlank() && myPhone != "null") {
-                val activeMatches = matchDao.getAllMatchesSync()
-                for (m in activeMatches) {
-                    val profId = com.example.util.ContactResolver.sanitizePhone(m.profileId)
-                    if (profId.isBlank() || profId == "null") continue
+                    val canonicalMatchId = com.example.util.SupabaseClientManager.canonicalChatMatchId(myProfileId, peerProfileId)
+                    val queryIds = listOf(canonicalMatchId, m.matchId, getSymmetricMatchId(peerProfileId))
+                        .filter { it.isNotBlank() && it != "null" }.distinct()
+                    for (queryMatchId in queryIds) {
+                        for (remote in com.example.util.SupabaseClientManager.fetchMessagesForMatch(queryMatchId)) {
+                            if (remote.text.isBlank() || remote.text == "null") continue
+                            val control = remote.mediaType in listOf("KEY_EXCHANGE", "HANDSHAKE", "SETUP", "PROTOCOL", "SYSTEM") ||
+                                remote.text.startsWith("KEY_EXCHANGE") || remote.text.startsWith("DH_HANDSHAKE") ||
+                                remote.text.startsWith("E2EE_SETUP") || remote.text.equals("Message", ignoreCase = true)
+                            if (control) continue
 
-                    val symmetricalId = getSymmetricMatchId(profId)
-                    val matchIdsToQuery = setOf(m.matchId, symmetricalId).filter { it.isNotBlank() && it != "null" }
-
-                    for (queryMatchId in matchIdsToQuery) {
-                        val remoteMsgs = com.example.util.SupabaseClientManager.fetchMessagesForMatch(queryMatchId)
-                        for (remoteMsg in remoteMsgs) {
-                            if (remoteMsg.text.isBlank() || remoteMsg.text == "null") continue
-                            
-                            val isControlPacket = remoteMsg.mediaType in listOf("KEY_EXCHANGE", "HANDSHAKE", "SETUP", "PROTOCOL", "SYSTEM") ||
-                                remoteMsg.text.startsWith("KEY_EXCHANGE") ||
-                                remoteMsg.text.startsWith("DH_HANDSHAKE") ||
-                                remoteMsg.text.startsWith("E2EE_SETUP") ||
-                                remoteMsg.text.equals("Message", ignoreCase = true)
-                            if (isControlPacket) continue
-
-                            val existing = chatMessageDao.getMessageById(remoteMsg.messageId)
+                            val digits = remote.senderId.filter { it.isDigit() }
+                            val isMyOwn = remote.senderId == "USER" ||
+                                remote.senderId.equals(myProfileId, ignoreCase = true) ||
+                                remote.senderId == myPhone ||
+                                (myDigits.length >= 7 && digits.length >= 7 && digits.endsWith(myDigits.takeLast(10)))
+                            val existing = chatMessageDao.getMessageById(remote.messageId)
                             if (existing == null) {
-                                val senderDigits = remoteMsg.senderId.filter { it.isDigit() }
-                                val isMyOwn = remoteMsg.senderId == "USER" ||
-                                        remoteMsg.senderId == myPhone ||
-                                        (myDigits.length >= 7 && senderDigits.length >= 7 && senderDigits.endsWith(myDigits.takeLast(10)))
-
-                                val incomingMsg = remoteMsg.copy(
+                                val incoming = remote.copy(
                                     matchId = m.matchId,
-                                    senderId = if (isMyOwn) "USER" else profId,
+                                    senderId = if (isMyOwn) "USER" else peerProfileId,
                                     isDelivered = true,
-                                    isRead = false
+                                    isRead = false,
+                                    deliveryState = "DELIVERED"
                                 )
-                                chatMessageDao.insertMessage(incomingMsg)
-                                messageDao.insertMessage(incomingMsg.toLocalMessage())
-
-                                matchDao.updateLastMessage(
-                                    matchId = m.matchId,
-                                    text = remoteMsg.text,
-                                    timestamp = remoteMsg.timestamp,
-                                    hasUnread = !isMyOwn
+                                chatMessageDao.insertMessage(incoming)
+                                messageDao.insertMessage(incoming.toLocalMessage())
+                                matchDao.updateLastMessage(m.matchId, remote.text, remote.timestamp, !isMyOwn)
+                            }
+                            // Re-ACK already-present messages too; ACK RPC is idempotent and this recovers
+                            // devices that persisted a message while temporarily offline.
+                            if (!isMyOwn) {
+                                val acked = com.example.util.SupabaseBackendManager.markMessageDelivered(
+                                    remote.messageId, remote.senderId, myProfileId
                                 )
+                                if (acked) chatMessageDao.markMessageAsDelivered(remote.messageId)
                             }
                         }
                     }
+
+                    if (canonicalMatchId.isNotBlank()) {
+                        val states = com.example.util.SupabaseClientManager.fetchMessageDeliveryStatesForMatch(canonicalMatchId)
+                        states.filter { it.senderId.equals(myProfileId, ignoreCase = true) && it.isDelivered }
+                            .forEach { chatMessageDao.markMessageAsDelivered(it.messageId) }
+                    }
                 }
             }
-        } catch (_: Exception) {}
+        } catch (e: Throwable) {
+            android.util.Log.e("SocialConnectRepository", "Supabase E2EE message sync failed.", e)
+        }
     }
 
     fun startSupabaseMessagePollingLoop() {

@@ -201,8 +201,13 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     val database = com.example.data.database.DatingDatabase.getDatabase(applicationContext)
                     val messageId = data["message_id"] ?: data["msg_id"] ?: data["id"] ?: java.util.UUID.randomUUID().toString()
                     val ciphertext = data["ciphertext"] ?: data["text"] ?: data["message"] ?: data["body"] ?: ""
-                    val senderPhone = data["sender_phone"] ?: data["sender_id"] ?: senderOrMatchId
-                    val receiverPhone = data["receiver_phone"] ?: data["receiver_id"] ?: ""
+                    val senderProfileId = data["sender_id"]?.trim().orEmpty()
+                    val receiverProfileId = data["receiver_id"]?.trim().orEmpty()
+                    val senderIdentity = senderProfileId.ifBlank { data["sender_phone"] ?: senderOrMatchId }
+                    val receiverIdentity = receiverProfileId.ifBlank { data["receiver_phone"].orEmpty() }
+                    val senderRoomIdentity = senderProfileId.ifBlank {
+                        com.example.util.PhonebookHasher.normalizeToE164(senderIdentity).ifBlank { senderOrMatchId }
+                    }
                     val timestamp = data["timestamp"]?.toLongOrNull() ?: System.currentTimeMillis()
 
                     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
@@ -214,26 +219,31 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                             val decryptedText = com.example.util.TinkCryptoManager.decryptPayload(
                                 context = applicationContext,
                                 payload = ciphertext,
-                                senderPhone = senderPhone,
-                                receiverPhone = receiverPhone
+                                senderPhone = senderIdentity,
+                                receiverPhone = receiverIdentity
                             )
+                            if (decryptedText.isBlank()) {
+                                throw SecurityException("Tink decryption returned empty plaintext; delivery ACK withheld.")
+                            }
 
-                            val normSender = com.example.util.PhonebookHasher.normalizeToE164(senderPhone)
-                            val matchId = data["match_id"] ?: (if (normSender.isNotBlank()) "match_$normSender" else if (senderOrMatchId.startsWith("match_")) senderOrMatchId else "match_$senderOrMatchId")
+                            val matchedLocalConversation = database.matchDao().getMatchByProfileId(senderRoomIdentity)
+                            val fallbackMatchId = data["match_id"] ?: if (senderRoomIdentity.isNotBlank()) "match_$senderRoomIdentity" else senderOrMatchId
+                            val matchId = matchedLocalConversation?.matchId ?: fallbackMatchId
 
                             val existingMsg = database.chatMessageDao().getMessageById(messageId)
                             if (existingMsg == null) {
                                 val incomingEntity = com.example.data.model.ChatMessageEntity(
                                     messageId = messageId,
                                     matchId = matchId,
-                                    senderId = normSender.ifBlank { senderOrMatchId },
+                                    senderId = senderRoomIdentity,
                                     text = decryptedText,
                                     mediaType = mediaType,
                                     mediaUrl = photoUrl,
                                     timestamp = timestamp,
                                     isEncrypted = true,
                                     isDelivered = true,
-                                    isRead = false
+                                    isRead = false,
+                                    deliveryState = "DELIVERED"
                                 )
                                 database.chatMessageDao().insertMessage(incomingEntity)
                                 database.messageDao().insertMessage(incomingEntity.toLocalMessage())
@@ -242,7 +252,7 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                                 if (existingMatch == null) {
                                     val newMatch = com.example.data.model.MatchEntity(
                                         matchId = matchId,
-                                        profileId = normSender.ifBlank { senderOrMatchId },
+                                        profileId = senderRoomIdentity,
                                         matchedAt = timestamp,
                                         lastMessage = decryptedText.ifBlank { if (mediaType == "VOICE") "Voice message" else "Photo" },
                                         lastMessageTime = timestamp,
@@ -260,9 +270,9 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                             }
 
                             // Execute delivery ACK back to Supabase: UPDATE public.chat_messages SET is_delivered = true WHERE id = :messageId
-                            com.example.util.SupabaseBackendManager.markMessageDelivered(messageId, senderPhone, receiverPhone)
+                            com.example.util.SupabaseBackendManager.markMessageDelivered(messageId, senderIdentity, receiverIdentity)
                         } catch (e: Exception) {
-                            Log.w(TAG, "Error processing incoming FCM E2EE message: ${e.message}")
+                            Log.e(TAG, "Error processing incoming FCM E2EE message; delivery ACK not issued: ${e.message}", e)
                         }
                     }
 

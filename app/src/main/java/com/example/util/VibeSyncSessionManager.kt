@@ -437,14 +437,18 @@ object VibeSyncSessionManager {
             var fetched = 0
             var inserted = 0
             val myDigits = myPhone.filter { it.isDigit() }
+            val myProfileId = VibeSyncSessionManager.getProfileId(context).orEmpty().trim()
             database.matchDao().getAllMatchesSync().forEach { match ->
-                val queryMatchId = match.matchId.trim()
+                val peerProfileId = match.profileId.trim()
+                if (peerProfileId.isBlank() || peerProfileId == "null" || myProfileId.isBlank()) return@forEach
+                val canonicalMatchId = SupabaseClientManager.canonicalChatMatchId(myProfileId, peerProfileId)
+                val queryMatchId = canonicalMatchId.ifBlank { match.matchId.trim() }
                 if (queryMatchId.isBlank()) return@forEach
 
                 val remoteMessages = SupabaseClientManager.fetchMessagesForMatch(
                     matchId = queryMatchId,
                     currentUserPhone = myPhone,
-                    partnerPhone = match.profileId
+                    partnerPhone = peerProfileId
                 )
                 fetched += remoteMessages.size
 
@@ -461,17 +465,25 @@ object VibeSyncSessionManager {
 
                     val senderDigits = remote.senderId.filter { it.isDigit() }
                     val isMyOwn = remote.senderId == "USER" ||
+                        remote.senderId.equals(myProfileId, ignoreCase = true) ||
                         remote.senderId == myPhone ||
                         (myDigits.length >= 7 && senderDigits.length >= 7 &&
                             senderDigits.endsWith(myDigits.takeLast(10)))
                     val incoming = remote.copy(
                         matchId = match.matchId,
-                        senderId = if (isMyOwn) "USER" else match.profileId,
+                        senderId = if (isMyOwn) "USER" else peerProfileId,
                         isDelivered = true,
-                        isRead = false
+                        isRead = false,
+                        deliveryState = "DELIVERED"
                     )
                     database.chatMessageDao().insertMessage(incoming)
                     database.messageDao().insertMessage(incoming.toLocalMessage())
+                    if (!isMyOwn) {
+                        val acked = com.example.util.SupabaseBackendManager.markMessageDelivered(
+                            remote.messageId, remote.senderId, myProfileId
+                        )
+                        if (acked) database.chatMessageDao().markMessageAsDelivered(remote.messageId)
+                    }
                     database.matchDao().updateLastMessage(
                         matchId = match.matchId,
                         text = remote.text,

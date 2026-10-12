@@ -1544,7 +1544,9 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 replyToMessageId = replyToMessageId,
                 replyToText = replyToText,
                 replyToSender = replyToSender,
-                clientMsgId = clientMsgId
+                clientMsgId = clientMsgId,
+                recipientProfileId = current.second.id,
+                recipientPhoneNumber = current.second.phoneNumber
             )
         }
     }
@@ -1619,7 +1621,9 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 mediaType = mediaType,
                 mediaUrl = mediaUrl,
                 voiceDurationSeconds = voiceDurationSeconds,
-                clientMsgId = clientMsgId
+                clientMsgId = clientMsgId,
+                recipientProfileId = current.second.id,
+                recipientPhoneNumber = current.second.phoneNumber
             )
             val toast = when (mediaType) {
                 "IMAGE" -> "Photo sent with VibeSync E2EE Protocol E2EE 🔒📷"

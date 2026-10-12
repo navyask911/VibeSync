@@ -394,8 +394,10 @@ fun ChatDetailScreen(
                 throw IllegalStateException("Restore your verified VibeSync session before checking safety numbers.")
             }
             val ownPublicKey = com.example.util.TinkCryptoManager.getMyPublicKeysetJson(context).trim()
-            if (ownPublicKey.isBlank()) {
-                throw IllegalStateException("This device could not create its Google Tink public keyset.")
+            if (ownPublicKey.isBlank() ||
+                !com.example.util.TinkCryptoManager.validatePublicKeysetJson(ownPublicKey)
+            ) {
+                throw IllegalStateException("This device's Google Tink public keyset is missing or invalid.")
             }
             val ownKeyPublished = com.example.util.SupabaseClientManager.publishMyPublicIdentityKey(
                 context,
@@ -410,9 +412,12 @@ fun ChatDetailScreen(
                 profileId = profile.id,
                 fallbackPhoneNumber = profile.phoneNumber
             ).orEmpty().trim()
-            if (peerPublicKey.isBlank()) {
+            if (peerPublicKey.isBlank() ||
+                !com.example.util.TinkCryptoManager.validatePublicKeysetJson(peerPublicKey)
+            ) {
                 throw IllegalStateException(
-                    "The other account has not published a Tink public key yet. Ask them to open VibeSync online, then retry."
+                    "The other account's published Tink public key is missing or invalid. " +
+                        "Keep VibeSync online on both devices and retry key sync."
                 )
             }
 
@@ -2114,7 +2119,7 @@ fun ChatDetailScreen(
                                             strokeWidth = 2.dp,
                                             color = VibeSyncTeal
                                         )
-                                        Text("Publishing your key and fetching the peer key...", fontSize = 11.sp)
+                                        Text("Syncing encryption keys...", fontSize = 11.sp)
                                     }
                                     "VERIFIED" -> {
                                         Row(
