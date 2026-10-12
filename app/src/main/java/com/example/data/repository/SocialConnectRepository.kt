@@ -39,6 +39,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -652,8 +653,10 @@ class SocialConnectRepository(
                 map[key] = m
             }
         }
-        map.values.sortedByDescending { it.lastMessageTime }
-    }
+        map.values
+            .distinctBy { it.matchId.trim().lowercase() }
+            .sortedByDescending { it.lastMessageTime }
+    }.distinctUntilChanged()
 
     val allProfilesForAdmin: Flow<List<ProfileEntity>> = combine(
         profileDao.getAllProfilesForAdmin(),
