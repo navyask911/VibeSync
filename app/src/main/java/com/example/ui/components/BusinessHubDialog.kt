@@ -1113,152 +1113,116 @@ private fun BusinessListItemCard(
     onFollow: () -> Unit,
     onSelect: () -> Unit
 ) {
+    val obsidian = Color(0xFF111214)
+    val sapphire = Color(0xFF2563EB)
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onSelect() }
             .testTag("business_list_item_${business.id}"),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        colors = CardDefaults.cardColors(containerColor = obsidian),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         shape = RoundedCornerShape(18.dp)
     ) {
-        Column {
-            // Thumbnail Banner with Badges
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(130.dp)
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // Clean photo region: the venue image has no text, badge, gradient or metric overlays.
+            AsyncImage(
+                model = business.bannerUrl.ifBlank {
+                    "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=1000&q=80"
+                },
+                contentDescription = "${business.name} venue photo",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxWidth().height(160.dp).clickable { onSelect() }
+            )
+
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(9.dp)
             ) {
-                AsyncImage(
-                    model = business.bannerUrl.ifBlank { "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=800&q=80" },
-                    contentDescription = business.name,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-
-                // Overlay
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(Color.Black.copy(alpha = 0.4f), Color.Black.copy(alpha = 0.7f))
-                            )
-                        )
-                )
-
-                // Verification Badge, Distance, and Customer Star Rating
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = business.name,
+                            color = Color.White,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${business.category} • ${business.city}",
+                            color = Color(0xFFB9C4D5),
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Text(text = business.logoEmoji, fontSize = 22.sp, modifier = Modifier.padding(start = 8.dp))
+                }
+
+                if (business.tagline.isNotBlank()) {
+                    Text(
+                        text = business.tagline,
+                        color = Color(0xFFD0D6E0),
+                        fontSize = 12.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        VerificationBadgeView(tier = business.tierEnum, showRank = true)
-
-                        Surface(
-                            color = Color.Black.copy(alpha = 0.75f),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(Icons.Default.LocationOn, contentDescription = null, tint = Color(0xFFFF5252), modifier = Modifier.size(12.dp))
-                                Spacer(modifier = Modifier.width(3.dp))
-                                Text("${business.distanceKm} km", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Star, contentDescription = "Rating", tint = Color(0xFFFBBF24), modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "${String.format(java.util.Locale.ROOT, "%.1f", business.rating)} • ${business.reviewCount} reviews",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.LocationOn, contentDescription = "Distance", tint = sapphire, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "${String.format(java.util.Locale.ROOT, "%.1f", business.distanceKm)} km away",
+                            color = Color(0xFFD0D6E0),
+                            fontSize = 11.sp
+                        )
+                    }
+                }
 
+                if (business.activeOfferSummary.isNotBlank()) {
                     Surface(
-                        color = Color.Black.copy(alpha = 0.75f),
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Color(0xFF17243D),
                         shape = RoundedCornerShape(10.dp)
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFFFFD54F), modifier = Modifier.size(12.dp))
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text("${business.rating} (${business.reviewCount})", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-
-                // Business Name & Category on bottom of banner
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(business.logoEmoji, fontSize = 20.sp)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Column {
-                        Surface(color = Color(0xFFFFF9E6), shape = RoundedCornerShape(8.dp)) {
-                            Text(
-                                text = business.name,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp,
-                                color = Color(0xFF1E1E1E),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
-                            )
-                        }
-                        Text(
-                            text = "${business.category} • ${business.city}",
-                            fontSize = 10.sp,
-                            color = Color.White.copy(alpha = 0.8f)
-                        )
-                    }
-                }
-            }
-
-            // Body content
-            Column(modifier = Modifier.padding(14.dp)) {
-                if (business.activeOfferSummary.isNotBlank()) {
-                    Surface(
-                        color = Color(0xFFFFF3E0),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFFB300)),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.LocalOffer, contentDescription = null, tint = Color(0xFFE65100), modifier = Modifier.size(14.dp))
+                            Icon(Icons.Default.LocalOffer, contentDescription = "Offer", tint = sapphire, modifier = Modifier.size(15.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = business.activeOfferSummary,
-                                color = Color(0xFFBF360C),
+                                color = Color.White,
                                 fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.height(10.dp))
                 }
-
-                Text(
-                    text = business.tagline,
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1266,18 +1230,15 @@ private fun BusinessListItemCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "👥 ${business.followerCount} followers",
+                        text = "${business.followerCount} followers",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = Color(0xFF9CA8B9)
                     )
-
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = onFollow,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (business.isFollowed) Color(0xFF2E7D32) else Color(0xFFE91E63)
-                            ),
+                            colors = ButtonDefaults.buttonColors(containerColor = if (business.isFollowed) Color(0xFF1D4ED8) else sapphire),
                             shape = RoundedCornerShape(10.dp),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                         ) {
@@ -1289,15 +1250,28 @@ private fun BusinessListItemCard(
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(if (business.isFollowed) "Following" else "Follow", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
-
                         OutlinedButton(
                             onClick = onSelect,
+                            border = BorderStroke(1.dp, sapphire),
                             shape = RoundedCornerShape(10.dp),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                         ) {
-                            Text("View Offers", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text("View Offers", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().testTag("partner_rank_footer"),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Partner Rank • ${business.tierEnum}",
+                        color = Color(0xFF93B4FF),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }
