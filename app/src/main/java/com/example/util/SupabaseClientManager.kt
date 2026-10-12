@@ -1156,7 +1156,7 @@ object SupabaseClientManager {
             }
             try {
                 val objectName = storageObjectName.trim().ifBlank { "$profileId.jpg" }
-                require(objectName in setOf("$profileId.jpg", "$profileId_2.jpg", "$profileId_3.jpg")) {
+                require(objectName in setOf("$profileId.jpg", "${profileId}_2.jpg", "${profileId}_3.jpg")) {
                     "Avatar storage object name must be bound to the active profile ID."
                 }
                 val encodedPath = Uri.encode(objectName)
