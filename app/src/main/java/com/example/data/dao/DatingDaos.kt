@@ -248,8 +248,6 @@ interface ChatMessageDao {
     @Query("DELETE FROM chat_messages WHERE matchId = 'null' OR LOWER(matchId) = 'null' OR senderId = 'null' OR LOWER(senderId) = 'null' OR text = 'null' OR LOWER(text) = 'null' OR TRIM(matchId) = '' OR TRIM(senderId) = ''")
     suspend fun purgeGhostNullMessages()
 
-    @Query("DELETE FROM chat_messages")
-    suspend fun nukeTableOnLogout()
 }
 
 @Dao

@@ -2,6 +2,7 @@ package com.example.util
 
 import android.content.Context
 import android.util.Log
+import androidx.room.withTransaction
 import com.example.data.database.DatingDatabase
 import com.example.data.model.ChatMessageEntity
 import com.example.data.model.MatchEntity
@@ -67,16 +68,22 @@ object MessageDeltaSyncManager {
             for (record in batch.records) {
                 val remote = record.message
                 if (record.deleted) {
-                    dao.deleteMessageById(remote.messageId)
+                    database.withTransaction {
+                        dao.deleteMessageById(remote.messageId)
+                        messageDao.deleteRemoteMessage(remote.messageId)
+                    }
                     synced++
                     continue
                 }
                 val isFromMe = remote.senderId.equals(ownerId, ignoreCase = true)
                 val existing = dao.getMessageById(remote.messageId)
                 val existingPlaintext = existing?.text?.takeIf {
-                    it.isNotBlank() && !it.startsWith(TinkCryptoManager.TINK_PREFIX)
+                    MessageLocalRetentionPolicy.isRenderableText(it)
                 }
-                val canRenderPlaintext = record.decryptionSucceeded || existingPlaintext != null
+                val decryptedPlaintext = remote.text.takeIf {
+                    record.decryptionSucceeded && MessageLocalRetentionPolicy.isRenderableText(it)
+                }
+                val canRenderPlaintext = decryptedPlaintext != null || existingPlaintext != null
 
                 if (isFromMe) {
                     if (existing != null) {
@@ -100,7 +107,26 @@ object MessageDeltaSyncManager {
                     } else {
                         // Another device may have sent this message; preserve a filtered ciphertext row
                         // rather than silently omitting the server row from local synchronization.
-                        dao.upsertMessage(remote.copy(senderId = "USER", text = remote.text, deliveryAckPending = false))
+                        // Messages sent from another device can be encrypted for the recipient's key.
+                        // Persist a tombstone instead of putting ciphertext into the chat UI.
+                        val senderText = decryptedPlaintext ?: existingPlaintext
+                            ?: MessageLocalRetentionPolicy.DECRYPTION_TOMBSTONE_TEXT
+                        val senderMessage = remote.copy(
+                            senderId = "USER",
+                            text = senderText,
+                            deliveryAckPending = false,
+                            deliveryState = if (MessageLocalRetentionPolicy.isRenderableText(senderText)) {
+                                remote.deliveryState
+                            } else {
+                                "PENDING_DECRYPTION"
+                            }
+                        )
+                        database.withTransaction {
+                            dao.upsertMessage(senderMessage)
+                            messageDao.insertMessage(
+                                senderMessage.toLocalMessage().copy(remoteMessageId = senderMessage.messageId)
+                            )
+                        }
                     }
                     synced++
                     continue
@@ -141,7 +167,8 @@ object MessageDeltaSyncManager {
                 }
 
                 if (!canRenderPlaintext) complete = false
-                val localText = if (record.decryptionSucceeded) remote.text else existingPlaintext ?: remote.text
+                val localText = decryptedPlaintext ?: existingPlaintext
+                    ?: MessageLocalRetentionPolicy.DECRYPTION_TOMBSTONE_TEXT
                 val needsAck = canRenderPlaintext && !remote.isDelivered && !remote.isRead
                 val local = remote.copy(
                     matchId = match.matchId,
@@ -181,8 +208,12 @@ object MessageDeltaSyncManager {
                 }
 
                 // Room is the durable inbox commit. ACK is only attempted after this REPLACE succeeds.
-                dao.upsertMessage(local)
-                messageDao.insertMessage(local.toLocalMessage())
+                database.withTransaction {
+                    dao.upsertMessage(local)
+                    messageDao.insertMessage(
+                        local.toLocalMessage().copy(remoteMessageId = local.messageId)
+                    )
+                }
                 synced++
 
                 if (canRenderPlaintext && remote.timestamp >= match.lastMessageTime && local.text.isNotBlank()) {
@@ -213,8 +244,7 @@ object MessageDeltaSyncManager {
                     !AppNotificationManager.isAppInForeground &&
                     !targetMessageId.isNullOrBlank() &&
                     targetMessageId == remote.messageId &&
-                    (existing == null || existing.text.isBlank() ||
-                        existing.text.startsWith(TinkCryptoManager.TINK_PREFIX)) &&
+                    (existing == null || !MessageLocalRetentionPolicy.isRenderableText(existing.text)) &&
                     canRenderPlaintext &&
                     local.text.isNotBlank()
                 ) {

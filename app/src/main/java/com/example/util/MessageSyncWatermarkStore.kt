@@ -1,16 +1,15 @@
 package com.example.util
 
 import android.content.Context
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.longPreferencesKey
-import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
-import kotlinx.coroutines.flow.first
+import androidx.room.withTransaction
+import com.example.data.database.DatingDatabase
+import com.example.data.model.MessageSyncWatermarkEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.security.MessageDigest
 import java.time.Instant
 import java.time.OffsetDateTime
-
-private val Context.vibeSyncMessageWatermarks by preferencesDataStore(name = "vibesync_message_sync_watermarks")
 
 data class MessageSyncCursor(
     val createdAtMs: Long = 0L,
@@ -19,119 +18,143 @@ data class MessageSyncCursor(
 )
 
 /**
- * Monotonic per-conversation watermarks stored in DataStore. The canonical cursor is the exact
- * server created_at string plus message_id; milliseconds remain for compatibility and diagnostics.
+ * Message delta cursors are persisted in the SQLCipher Room database, not plaintext Preferences.
+ * The old Preferences DataStore file is deleted when the encrypted store is first initialized.
  */
 object MessageSyncWatermarkStore {
-    private val globalKey = longPreferencesKey("last_synced_message_timestamp")
+    private const val GLOBAL_KEY = "__global__"
+    private const val LEGACY_DATASTORE_NAME = "vibesync_message_sync_watermarks.preferences_pb"
 
-    private fun timestampKey(localMatchId: String) =
-        longPreferencesKey("last_synced_message_timestamp_" + stableKey(localMatchId))
+    private fun timestampKey(localMatchId: String): String = stableKey(localMatchId)
 
-    private fun createdAtIsoKey(localMatchId: String) =
-        stringPreferencesKey("last_synced_message_created_at_iso_" + stableKey(localMatchId))
-
-    private fun messageIdKey(localMatchId: String) =
-        stringPreferencesKey("last_synced_message_id_" + stableKey(localMatchId))
-
-    suspend fun read(context: Context, localMatchId: String): Long {
-        val preferences = context.applicationContext.vibeSyncMessageWatermarks.data.first()
-        return preferences[timestampKey(localMatchId)] ?: 0L
+    suspend fun read(context: Context, localMatchId: String): Long = withContext(Dispatchers.IO) {
+        removeLegacyPlaintextStore(context)
+        DatingDatabase.getDatabase(context.applicationContext)
+            .messageSyncWatermarkDao().get(timestampKey(localMatchId))?.createdAtMs ?: 0L
     }
 
-    suspend fun readCursor(context: Context, localMatchId: String): MessageSyncCursor {
-        val preferences = context.applicationContext.vibeSyncMessageWatermarks.data.first()
-        val createdAtIso = preferences[createdAtIsoKey(localMatchId)].orEmpty()
-        val createdAtMs = preferences[timestampKey(localMatchId)] ?: parseCreatedAtMillis(createdAtIso)
-        val messageId = preferences[messageIdKey(localMatchId)].orEmpty()
-        return MessageSyncCursor(createdAtMs, createdAtIso, messageId)
-    }
-
-    /** Compatibility path for timestamp-only callers; it deliberately leaves a blank tie-breaker. */
-    suspend fun advance(context: Context, localMatchId: String, serverCreatedAtMs: Long) {
-        if (localMatchId.isBlank() || serverCreatedAtMs <= 0L) return
-        val appContext = context.applicationContext
-        val timeKey = timestampKey(localMatchId)
-        val isoKey = createdAtIsoKey(localMatchId)
-        val idKey = messageIdKey(localMatchId)
-        appContext.vibeSyncMessageWatermarks.edit { preferences ->
-            val current = preferences[timeKey] ?: 0L
-            if (serverCreatedAtMs > current) {
-                preferences[timeKey] = serverCreatedAtMs
-                preferences[isoKey] = Instant.ofEpochMilli(serverCreatedAtMs).toString()
-                preferences[idKey] = ""
-            }
-            val global = preferences[globalKey] ?: 0L
-            if (serverCreatedAtMs > global) preferences[globalKey] = serverCreatedAtMs
+    suspend fun readCursor(context: Context, localMatchId: String): MessageSyncCursor =
+        withContext(Dispatchers.IO) {
+            removeLegacyPlaintextStore(context)
+            val entity = DatingDatabase.getDatabase(context.applicationContext)
+                .messageSyncWatermarkDao().get(timestampKey(localMatchId))
+            MessageSyncCursor(
+                createdAtMs = entity?.createdAtMs ?: 0L,
+                createdAtIso = entity?.createdAtIso.orEmpty(),
+                messageId = entity?.messageId.orEmpty()
+            )
         }
-    }
 
-    /** Persist the cursor only when the candidate tuple is strictly greater than the stored tuple. */
+    /** Compatibility path for timestamp-only callers, preserving the monotonic cursor contract. */
+    suspend fun advance(context: Context, localMatchId: String, serverCreatedAtMs: Long) =
+        withContext(Dispatchers.IO) {
+            if (localMatchId.isBlank() || serverCreatedAtMs <= 0L) return@withContext
+            removeLegacyPlaintextStore(context)
+            advanceInEncryptedRoom(
+                context,
+                MessageSyncWatermarkEntity(
+                    localMatchId = timestampKey(localMatchId),
+                    createdAtMs = serverCreatedAtMs,
+                    createdAtIso = Instant.ofEpochMilli(serverCreatedAtMs).toString(),
+                    messageId = ""
+                )
+            )
+        }
+
     suspend fun advance(
         context: Context,
         localMatchId: String,
         serverCreatedAtIso: String,
         serverMessageId: String,
         serverCreatedAtMs: Long
-    ) {
+    ) = withContext(Dispatchers.IO) {
         if (localMatchId.isBlank() || serverCreatedAtMs <= 0L ||
             serverCreatedAtIso.isBlank() || serverMessageId.isBlank()
-        ) return
+        ) return@withContext
+        removeLegacyPlaintextStore(context)
+        advanceInEncryptedRoom(
+            context,
+            MessageSyncWatermarkEntity(
+                localMatchId = timestampKey(localMatchId),
+                createdAtMs = serverCreatedAtMs,
+                createdAtIso = serverCreatedAtIso,
+                messageId = serverMessageId
+            )
+        )
+    }
 
-        val appContext = context.applicationContext
-        val timeKey = timestampKey(localMatchId)
-        val isoKey = createdAtIsoKey(localMatchId)
-        val idKey = messageIdKey(localMatchId)
-        appContext.vibeSyncMessageWatermarks.edit { preferences ->
-            val currentMs = preferences[timeKey] ?: 0L
-            val currentIso = preferences[isoKey].orEmpty()
-            val currentMessageId = preferences[idKey].orEmpty()
-            if (compareCursor(
-                    serverCreatedAtIso, serverMessageId, serverCreatedAtMs,
-                    currentIso, currentMessageId, currentMs
-                ) > 0
-            ) {
-                preferences[timeKey] = maxOf(currentMs, serverCreatedAtMs)
-                preferences[isoKey] = serverCreatedAtIso
-                preferences[idKey] = serverMessageId
+    suspend fun readGlobal(context: Context): Long = withContext(Dispatchers.IO) {
+        removeLegacyPlaintextStore(context)
+        DatingDatabase.getDatabase(context.applicationContext)
+            .messageSyncWatermarkDao().get(GLOBAL_KEY)?.createdAtMs ?: 0L
+    }
+
+    private suspend fun advanceInEncryptedRoom(
+        context: Context,
+        candidate: MessageSyncWatermarkEntity
+    ) {
+        val database = DatingDatabase.getDatabase(context.applicationContext)
+        database.withTransaction {
+            val dao = database.messageSyncWatermarkDao()
+            val current = dao.get(candidate.localMatchId)
+            if (current == null || compareCursor(candidate, current) > 0) {
+                dao.upsert(candidate.copy(
+                    createdAtMs = maxOf(current?.createdAtMs ?: 0L, candidate.createdAtMs)
+                ))
             }
-            val global = preferences[globalKey] ?: 0L
-            if (serverCreatedAtMs > global) preferences[globalKey] = serverCreatedAtMs
+
+            val global = dao.get(GLOBAL_KEY)
+            if (global == null || candidate.createdAtMs > global.createdAtMs) {
+                dao.upsert(
+                    MessageSyncWatermarkEntity(
+                        localMatchId = GLOBAL_KEY,
+                        createdAtMs = candidate.createdAtMs,
+                        createdAtIso = candidate.createdAtIso,
+                        messageId = candidate.messageId
+                    )
+                )
+            }
         }
     }
 
-    suspend fun readGlobal(context: Context): Long =
-        context.applicationContext.vibeSyncMessageWatermarks.data.first()[globalKey] ?: 0L
-
     private fun compareCursor(
-        leftIso: String, leftId: String, leftMs: Long,
-        rightIso: String, rightId: String, rightMs: Long
+        left: MessageSyncWatermarkEntity,
+        right: MessageSyncWatermarkEntity
     ): Int {
-        val leftInstant = parseInstant(leftIso)
-        val rightInstant = parseInstant(rightIso)
-        val timeComparison = if (leftIso.isNotBlank() && rightIso.isNotBlank() &&
+        val leftInstant = parseInstant(left.createdAtIso)
+        val rightInstant = parseInstant(right.createdAtIso)
+        val timeComparison = if (left.createdAtIso.isNotBlank() && right.createdAtIso.isNotBlank() &&
             leftInstant != null && rightInstant != null
         ) {
             leftInstant.compareTo(rightInstant)
         } else {
-            leftMs.compareTo(rightMs)
+            left.createdAtMs.compareTo(right.createdAtMs)
         }
-        return if (timeComparison != 0) timeComparison else leftId.compareTo(rightId)
+        return if (timeComparison != 0) timeComparison else left.messageId.compareTo(right.messageId)
     }
 
-    private fun parseInstant(raw: String): Instant? {
-        if (raw.isBlank()) return null
-        return runCatching { Instant.parse(raw) }
+    private fun parseInstant(raw: String): Instant? =
+        if (raw.isBlank()) null else runCatching { Instant.parse(raw) }
             .recoverCatching { OffsetDateTime.parse(raw).toInstant() }
             .getOrNull()
-    }
 
-    private fun parseCreatedAtMillis(raw: String): Long =
-        parseInstant(raw)?.toEpochMilli() ?: raw.toLongOrNull() ?: 0L
+    private fun removeLegacyPlaintextStore(context: Context) {
+        val legacyFile = File(
+            File(context.applicationContext.filesDir, "datastore"),
+            LEGACY_DATASTORE_NAME
+        )
+        if (legacyFile.exists()) {
+            check(legacyFile.delete()) {
+                "Could not remove the legacy unencrypted message-sync metadata file."
+            }
+        }
+    }
 
     private fun stableKey(localMatchId: String): String =
         MessageDigest.getInstance("SHA-256")
             .digest(localMatchId.toByteArray(Charsets.UTF_8))
             .take(12)
-            .joinToString("") { byte -> (byte.toInt() and 0xff).toString(16).padStart(2, '0') }
+            .joinToString("") { byte ->
+                (byte.toInt() and 0xff).toString(16).padStart(2, '0')
+            }
 }

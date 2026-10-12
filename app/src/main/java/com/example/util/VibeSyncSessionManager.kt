@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Base64
 import android.util.Log
 import com.example.data.database.DatingDatabase
+import androidx.room.withTransaction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -453,7 +454,7 @@ object VibeSyncSessionManager {
                 fetched += remoteMessages.size
 
                 remoteMessages.forEach remoteLoop@ { remote ->
-                    if (remote.text.isBlank() || remote.text == "null") return@remoteLoop
+                    if (remote.messageId.isBlank()) return@remoteLoop
                     val isControlPacket =
                         remote.mediaType in listOf("KEY_EXCHANGE", "HANDSHAKE", "SETUP", "PROTOCOL", "SYSTEM") ||
                             remote.text.startsWith("KEY_EXCHANGE") ||
@@ -468,33 +469,47 @@ object VibeSyncSessionManager {
                         remote.senderId == myPhone ||
                         (myDigits.length >= 7 && senderDigits.length >= 7 &&
                             senderDigits.endsWith(myDigits.takeLast(10)))
+                    val safeText = MessageLocalRetentionPolicy.displayText(remote.text, existing?.text)
+                    val canRender = MessageLocalRetentionPolicy.isRenderableText(safeText)
+                    val incoming = remote.copy(
+                        matchId = match.matchId,
+                        senderId = if (isMyOwn) "USER" else peerProfileId,
+                        text = safeText,
+                        isDelivered = if (isMyOwn) remote.isDelivered else canRender && remote.isDelivered,
+                        isRead = isMyOwn && remote.isRead,
+                        deliveryAckPending = !isMyOwn && canRender && !remote.isDelivered && !remote.isRead,
+                        deliveryState = when {
+                            !canRender -> "PENDING_DECRYPTION"
+                            !isMyOwn && remote.isDelivered -> "DELIVERED"
+                            !isMyOwn -> "ACK_PENDING"
+                            remote.isRead -> "READ"
+                            remote.isDelivered -> "DELIVERED"
+                            else -> "SENT_TO_SERVER"
+                        }
+                    )
 
-                    if (existing == null) {
-                        val incoming = remote.copy(
-                            matchId = match.matchId,
-                            senderId = if (isMyOwn) "USER" else peerProfileId,
-                            isDelivered = if (isMyOwn) remote.isDelivered else true,
-                            isRead = if (isMyOwn) remote.isRead else false,
-                            deliveryState = when {
-                                !isMyOwn -> "DELIVERED"
-                                remote.isRead -> "READ"
-                                remote.isDelivered -> "DELIVERED"
-                                else -> "SENT_TO_SERVER"
-                            }
-                        )
-                        database.chatMessageDao().insertMessage(incoming)
-                        database.messageDao().insertMessage(incoming.toLocalMessage())
-                        database.matchDao().updateLastMessage(
-                            matchId = match.matchId,
-                            text = remote.text,
-                            timestamp = remote.timestamp,
-                            hasUnread = !isMyOwn
-                        )
+                    // Replace missing/ciphertext placeholders without overwriting readable content
+                    // with a ciphertext response from a later network sweep.
+                    if (existing == null || !MessageLocalRetentionPolicy.isRenderableText(existing.text)) {
+                        database.withTransaction {
+                            database.chatMessageDao().upsertMessage(incoming)
+                            database.messageDao().insertMessage(
+                                incoming.toLocalMessage().copy(remoteMessageId = incoming.messageId)
+                            )
+                        }
+                        if (canRender) {
+                            database.matchDao().updateLastMessage(
+                                matchId = match.matchId,
+                                text = safeText,
+                                timestamp = remote.timestamp,
+                                hasUnread = !isMyOwn
+                            )
+                        }
                         inserted++
                     }
 
-                    // A cached incoming row must not prevent a failed delivery ACK from being retried.
-                    if (!isMyOwn) {
+                    // Delivery ACK is deferred until the decoded message has committed to Room.
+                    if (!isMyOwn && canRender) {
                         val acked = remote.isDelivered ||
                             com.example.util.SupabaseBackendManager.markMessageDelivered(
                                 remote.messageId, remote.senderId, myProfileId
@@ -504,7 +519,7 @@ object VibeSyncSessionManager {
                         } else {
                             Log.w(TAG, "Delivery ACK retry remains pending for message_id=${remote.messageId}.")
                         }
-                    } else {
+                    } else if (isMyOwn) {
                         when {
                             remote.isRead -> database.chatMessageDao().markMessageAsRead(remote.messageId)
                             remote.isDelivered -> database.chatMessageDao().markMessageAsDelivered(remote.messageId)
@@ -512,6 +527,8 @@ object VibeSyncSessionManager {
                                 remote.messageId, System.currentTimeMillis()
                             )
                         }
+                    } else {
+                        Log.w(TAG, "Retained a decryption tombstone for message_id=${remote.messageId}; ACK deferred.")
                     }
                 }
             }

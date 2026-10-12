@@ -13,7 +13,7 @@ plugins {
 
 android {
   namespace = "com.example"
-  compileSdk = 35
+  compileSdk = 36
 
   defaultConfig {
     applicationId = "com.aistudio.freedating.mkwvxq"
@@ -148,6 +148,8 @@ dependencies {
   implementation(libs.androidx.navigation.compose)
   implementation("androidx.room:room-runtime:$roomVersion")
   implementation("androidx.room:room-ktx:$roomVersion")
+  implementation("net.zetetic:sqlcipher-android:4.19.1@aar")
+  implementation("androidx.sqlite:sqlite:2.7.0")
   implementation("androidx.work:work-runtime-ktx:2.9.0")
   implementation("com.google.apis:google-api-services-drive:v3-rev20240123-2.0.0") {
     exclude(group = "org.apache.httpcomponents")

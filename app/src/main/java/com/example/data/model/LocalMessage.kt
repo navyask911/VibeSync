@@ -2,6 +2,7 @@ package com.example.data.model
 
 import androidx.compose.runtime.Immutable
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
@@ -10,19 +11,21 @@ import androidx.room.PrimaryKey
  * Zero-Cost End-to-End Encrypted messaging.
  */
 @Immutable
-@Entity(tableName = "local_messages")
+@Entity(tableName = "local_messages", indices = [Index(value = ["remoteMessageId"], unique = true)])
 data class LocalMessage(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val senderUid: String,
     val textContent: String,
     val timestamp: Long = System.currentTimeMillis(),
     val isSentByMe: Boolean,
-    val matchId: String = ""
+    val matchId: String = "",
+    /** Stable Supabase message_id; null remains permitted for legacy/local-only rows. */
+    val remoteMessageId: String? = null
 ) {
     fun toChatMessageEntity(defaultMatchId: String = ""): ChatMessageEntity {
         val targetMatch = if (matchId.isNotBlank()) matchId else defaultMatchId
         return ChatMessageEntity(
-            messageId = "local_${timestamp}_${id}",
+            messageId = remoteMessageId ?: "local_${timestamp}_${id}",
             matchId = targetMatch,
             senderId = if (isSentByMe) "USER" else senderUid,
             text = textContent,

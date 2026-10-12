@@ -2,6 +2,7 @@ package com.example.data.repository
 
 import android.content.Context
 import android.util.Log
+import androidx.room.withTransaction
 import com.example.data.database.DatingDatabase
 import com.example.data.model.BusinessEntity
 import com.example.data.model.BusinessPostEntity
@@ -262,7 +263,7 @@ class SocialConnectRepository(
         }
         matchDao.clearAllMatches()
         chatMessageDao.clearAllMessages()
-        messageDao.nukeTableOnLogout()
+        messageDao.clearAllMessages()
         statusStoryDao.clearAllStories()
         friendshipRequestDao.clearAllFriendships()
         userContactDao.clearAllContacts()
@@ -2393,7 +2394,7 @@ class SocialConnectRepository(
         // 1. Clear active matches & chat sessions for current device session
         try {
             matchDao.clearAllMatches()
-            chatMessageDao.clearAllMessages()
+            // Chat rows remain in encrypted Room across ordinary logout/session resets.
             swipeDao.clearAllSwipes()
             statusStoryDao.clearAllStories()
             friendshipRequestDao.clearAllFriendships()
@@ -3003,37 +3004,50 @@ class SocialConnectRepository(
         receiverPhone: String = ""
     ) {
         val existingMessage = chatMessageDao.getMessageById(message.messageId)
-        val replacesCiphertextPlaceholder = existingMessage != null &&
-            message.text.isNotBlank() &&
-            !message.text.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX) &&
-            (existingMessage.text.isBlank() ||
-                existingMessage.text.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX))
-        if (existingMessage == null || replacesCiphertextPlaceholder) {
-            // An earlier inbound event may have stored ciphertext before its participant context
-            // was available. Successful decryption replaces it with plaintext in Room; the
-            // chat_messages Flow then emits immediately to DatingViewModel.currentChatMessages.
-            chatMessageDao.upsertMessage(message)
-            messageDao.insertMessage(message.toLocalMessage())
-            
-            // Ensure match exists and update last message
-            var match = matchDao.getMatchByIdSync(message.matchId)
+        val safeText = com.example.util.MessageLocalRetentionPolicy.displayText(
+            message.text, existingMessage?.text
+        )
+        val canRenderText = com.example.util.MessageLocalRetentionPolicy.isRenderableText(safeText)
+        val persistedMessage = message.copy(
+            text = safeText,
+            deliveryState = if (canRenderText) message.deliveryState else "PENDING_DECRYPTION",
+            deliveryAckPending = message.deliveryAckPending && canRenderText
+        )
+
+        if (existingMessage == null ||
+            !com.example.util.MessageLocalRetentionPolicy.isRenderableText(existingMessage.text)
+        ) {
+            // Commit the primary chat row and the legacy projection atomically. remoteMessageId
+            // ensures retried deliveries replace the same projection instead of adding duplicates.
+            database.withTransaction {
+                chatMessageDao.upsertMessage(persistedMessage)
+                messageDao.insertMessage(
+                    persistedMessage.toLocalMessage().copy(remoteMessageId = persistedMessage.messageId)
+                )
+            }
+
+            val match = matchDao.getMatchByIdSync(persistedMessage.matchId)
             if (match == null) {
-                val profId = senderPhone.ifBlank { message.senderId }
+                val profId = senderPhone.ifBlank { persistedMessage.senderId }
                 val newMatch = MatchEntity(
-                    matchId = message.matchId,
+                    matchId = persistedMessage.matchId,
                     profileId = profId,
-                    matchedAt = message.timestamp,
-                    lastMessage = message.text.ifBlank { if (message.mediaType == "VOICE") "Voice message" else "Photo" },
-                    lastMessageTime = message.timestamp,
-                    hasUnread = !message.isRead
+                    matchedAt = persistedMessage.timestamp,
+                    lastMessage = persistedMessage.text.ifBlank {
+                        if (persistedMessage.mediaType == "VOICE") "Voice message" else "Photo"
+                    },
+                    lastMessageTime = persistedMessage.timestamp,
+                    hasUnread = !persistedMessage.isRead
                 )
                 matchDao.insertMatch(newMatch)
             } else {
                 matchDao.updateLastMessage(
-                    matchId = message.matchId,
-                    text = message.text.ifBlank { if (message.mediaType == "VOICE") "Voice message" else "Photo" },
-                    timestamp = message.timestamp,
-                    hasUnread = !message.isRead
+                    matchId = persistedMessage.matchId,
+                    text = persistedMessage.text.ifBlank {
+                        if (persistedMessage.mediaType == "VOICE") "Voice message" else "Photo"
+                    },
+                    timestamp = persistedMessage.timestamp,
+                    hasUnread = !persistedMessage.isRead
                 )
             }
         }
@@ -3149,7 +3163,7 @@ class SocialConnectRepository(
             outboxOwnerProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty().trim()
         )
         chatMessageDao.insertMessage(userMsg)
-        messageDao.insertMessage(userMsg.toLocalMessage())
+        messageDao.insertMessage(userMsg.toLocalMessage().copy(remoteMessageId = userMsg.messageId))
         // Key-exchange envelopes are durable outbox control messages, not visible chat activity.
         if (!mediaType.equals("PROFILE_KEY_EXCHANGE", ignoreCase = true)) {
             matchDao.updateLastMessage(
@@ -5477,7 +5491,7 @@ class SocialConnectRepository(
                         .filter { it.isNotBlank() && it != "null" }.distinct()
                     for (queryMatchId in queryIds) {
                         for (remote in com.example.util.SupabaseClientManager.fetchMessagesForMatch(queryMatchId)) {
-                            if (remote.text.isBlank() || remote.text == "null") continue
+                            if (remote.messageId.isBlank()) continue
                             val control = remote.mediaType in listOf("KEY_EXCHANGE", "HANDSHAKE", "SETUP", "PROTOCOL", "SYSTEM") ||
                                 remote.text.startsWith("KEY_EXCHANGE") || remote.text.startsWith("DH_HANDSHAKE") ||
                                 remote.text.startsWith("E2EE_SETUP") || remote.text.equals("Message", ignoreCase = true)
@@ -5489,24 +5503,42 @@ class SocialConnectRepository(
                                 remote.senderId == myPhone ||
                                 (myDigits.length >= 7 && digits.length >= 7 && digits.endsWith(myDigits.takeLast(10)))
                             val existing = chatMessageDao.getMessageById(remote.messageId)
-                            if (existing == null) {
+                            val safeText = com.example.util.MessageLocalRetentionPolicy.displayText(
+                                remote.text, existing?.text
+                            )
+                            val canRenderText = com.example.util.MessageLocalRetentionPolicy.isRenderableText(safeText)
+                            if (existing == null ||
+                                !com.example.util.MessageLocalRetentionPolicy.isRenderableText(existing.text)
+                            ) {
                                 val incoming = remote.copy(
                                     matchId = m.matchId,
                                     senderId = if (isMyOwn) "USER" else peerProfileId,
-                                    isDelivered = true,
-                                    isRead = false,
-                                    deliveryState = "DELIVERED"
+                                    text = safeText,
+                                    isDelivered = canRenderText && (isMyOwn || remote.isDelivered),
+                                    isRead = isMyOwn && remote.isRead,
+                                    deliveryAckPending = !isMyOwn && canRenderText && !remote.isDelivered,
+                                    deliveryState = if (!canRenderText) "PENDING_DECRYPTION"
+                                        else if (isMyOwn && remote.isRead) "READ"
+                                        else if (remote.isDelivered) "DELIVERED"
+                                        else if (isMyOwn) "SENT_TO_SERVER" else "ACK_PENDING"
                                 )
-                                chatMessageDao.insertMessage(incoming)
-                                messageDao.insertMessage(incoming.toLocalMessage())
-                                matchDao.updateLastMessage(m.matchId, remote.text, remote.timestamp, !isMyOwn)
+                                database.withTransaction {
+                                    chatMessageDao.upsertMessage(incoming)
+                                    messageDao.insertMessage(
+                                        incoming.toLocalMessage().copy(remoteMessageId = incoming.messageId)
+                                    )
+                                }
+                                if (canRenderText) {
+                                    matchDao.updateLastMessage(m.matchId, safeText, remote.timestamp, !isMyOwn)
+                                }
                             }
-                            // Re-ACK already-present messages too; ACK RPC is idempotent and this recovers
-                            // devices that persisted a message while temporarily offline.
-                            if (!isMyOwn) {
-                                val acked = com.example.util.SupabaseBackendManager.markMessageDelivered(
-                                    remote.messageId, remote.senderId, myProfileId
-                                )
+                            // Never ACK unreadable ciphertext. Its tombstone is retained until a
+                            // future authorized decrypt succeeds; repeated sweeps are idempotent.
+                            if (!isMyOwn && canRenderText) {
+                                val acked = remote.isDelivered ||
+                                    com.example.util.SupabaseBackendManager.markMessageDelivered(
+                                        remote.messageId, remote.senderId, myProfileId
+                                    )
                                 if (acked) chatMessageDao.markMessageAsDelivered(remote.messageId)
                             }
                         }

@@ -35,9 +35,11 @@ import com.example.data.model.UserContactEntity
 
 import com.example.data.dao.BlockDao
 import com.example.data.dao.MessageDao
+import com.example.data.dao.MessageSyncWatermarkDao
 import com.example.data.dao.ReportDao
 import com.example.data.model.BlockEntity
 import com.example.data.model.LocalMessage
+import com.example.data.model.MessageSyncWatermarkEntity
 import com.example.data.model.ReportEntity
 
 import com.example.data.dao.MatchedContactDao
@@ -55,6 +57,7 @@ import com.example.data.model.ApiCredentialRequestEntity
         MatchEntity::class,
         ChatMessageEntity::class,
         LocalMessage::class,
+        MessageSyncWatermarkEntity::class,
         UserPreferencesEntity::class,
         RegisteredAccountEntity::class,
         StatusStoryEntity::class,
@@ -72,7 +75,7 @@ import com.example.data.model.ApiCredentialRequestEntity
         LocalBusinessAnalyticsEventEntity::class,
         ApiCredentialRequestEntity::class
     ],
-    version = 47,
+    version = 49,
     exportSchema = false
 )
 abstract class DatingDatabase : RoomDatabase() {
@@ -81,6 +84,7 @@ abstract class DatingDatabase : RoomDatabase() {
     abstract fun matchDao(): MatchDao
     abstract fun chatMessageDao(): ChatMessageDao
     abstract fun messageDao(): MessageDao
+    abstract fun messageSyncWatermarkDao(): MessageSyncWatermarkDao
     abstract fun userPreferencesDao(): UserPreferencesDao
     abstract fun registeredAccountDao(): RegisteredAccountDao
     abstract fun statusStoryDao(): StatusStoryDao
@@ -169,22 +173,7 @@ abstract class DatingDatabase : RoomDatabase() {
 
         private val MIGRATION_29_30 = object : Migration(29, 30) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                val tables = arrayOf(
-                    "profiles", "swipes", "matches", "chat_messages", "local_messages",
-                    "user_preferences", "registered_accounts", "status_stories",
-                    "friendship_requests", "user_contacts", "matched_contacts", "businesses",
-                    "business_posts", "channels", "channel_broadcasts", "blocks", "reports"
-                )
-                for (table in tables) {
-                    try {
-                        val cursor = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='$table'")
-                        val exists = cursor.count > 0
-                        cursor.close()
-                        if (exists) {
-                            db.execSQL("DELETE FROM $table")
-                        }
-                    } catch (_: Exception) {}
-                }
+                // Preserve message and profile history. The historical table wipe is disabled.
             }
         }
 
@@ -248,6 +237,22 @@ abstract class DatingDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 addColumnIfMissing(db, "businesses", "photoGalleryJson", "TEXT NOT NULL DEFAULT ''")
             }
+        }
+
+        private val MIGRATION_34_35 = object : Migration(34, 35) {
+            override fun migrate(db: SupportSQLiteDatabase) = Unit
+        }
+
+        private val MIGRATION_35_36 = object : Migration(35, 36) {
+            override fun migrate(db: SupportSQLiteDatabase) = Unit
+        }
+
+        private val MIGRATION_39_40 = object : Migration(39, 40) {
+            override fun migrate(db: SupportSQLiteDatabase) = Unit
+        }
+
+        private val MIGRATION_40_41 = object : Migration(40, 41) {
+            override fun migrate(db: SupportSQLiteDatabase) = Unit
         }
 
         private val MIGRATION_36_37 = object : Migration(36, 37) {
@@ -328,38 +333,79 @@ abstract class DatingDatabase : RoomDatabase() {
             }
         }
 
-        fun getDatabase(context: Context): DatingDatabase {
-            return INSTANCE ?: synchronized(this) {
-                val instance = Room.databaseBuilder(
-                    context.applicationContext,
-                    DatingDatabase::class.java,
-                    "dating_app.db"
-                ).addMigrations(
-                    MIGRATION_26_27,
-                    MIGRATION_27_28,
-                    MIGRATION_28_29,
-                    MIGRATION_29_30,
-                    MIGRATION_30_31,
-                    MIGRATION_31_32,
-                    MIGRATION_32_33,
-                    MIGRATION_33_34,
-                    MIGRATION_36_37,
-                    MIGRATION_37_38,
-                    MIGRATION_38_39,
-                    MIGRATION_41_42,
-                    MIGRATION_42_43,
-                    MIGRATION_43_44,
-                    MIGRATION_44_45,
-                    MIGRATION_45_46,
-                    MIGRATION_46_47
+        private val MIGRATION_47_48 = object : Migration(47, 48) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                addColumnIfMissing(db, "local_messages", "remoteMessageId", "TEXT")
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_local_messages_remoteMessageId " +
+                        "ON local_messages (remoteMessageId)"
                 )
-                 // Intentionally omit MIGRATION_39_40: upgrading an existing v39 store forces
-                 // Room to rebuild tables from the current entity definitions if schemas drift.
-                 .fallbackToDestructiveMigration()
-                 .fallbackToDestructiveMigrationOnDowngrade()
-                 .build()
-                INSTANCE = instance
-                instance
+            }
+        }
+
+        private val MIGRATION_48_49 = object : Migration(48, 49) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS message_sync_watermarks (" +
+                        "localMatchId TEXT NOT NULL PRIMARY KEY, " +
+                        "createdAtMs INTEGER NOT NULL, " +
+                        "createdAtIso TEXT NOT NULL, " +
+                        "messageId TEXT NOT NULL)"
+                )
+            }
+        }
+
+        fun getDatabase(context: Context): DatingDatabase {
+            val appContext = context.applicationContext
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: run {
+                    val passphrase = DatabaseKeyManager.getOrCreatePassphrase(appContext)
+                    try {
+                        EncryptedDatabaseBootstrap.prepare(appContext, passphrase)
+                        // The support factory retains its own copy so it can reopen the database.
+                        val factoryPassphrase = passphrase.copyOf()
+                        val factory = net.zetetic.database.sqlcipher.SupportOpenHelperFactory(
+                            factoryPassphrase
+                        )
+                        val instance = Room.databaseBuilder(
+                            appContext,
+                            DatingDatabase::class.java,
+                            "dating_app.db"
+                        )
+                            .openHelperFactory(factory)
+                            .addMigrations(
+                                MIGRATION_26_27,
+                                MIGRATION_27_28,
+                                MIGRATION_28_29,
+                                MIGRATION_29_30,
+                                MIGRATION_30_31,
+                                MIGRATION_31_32,
+                                MIGRATION_32_33,
+                                MIGRATION_33_34,
+                                MIGRATION_34_35,
+                                MIGRATION_35_36,
+                                MIGRATION_36_37,
+                                MIGRATION_37_38,
+                                MIGRATION_38_39,
+                                MIGRATION_39_40,
+                                MIGRATION_40_41,
+                                MIGRATION_41_42,
+                                MIGRATION_42_43,
+                                MIGRATION_43_44,
+                                MIGRATION_44_45,
+                                MIGRATION_45_46,
+                                MIGRATION_46_47,
+                                MIGRATION_47_48,
+                                MIGRATION_48_49
+                            )
+                            // Fail closed instead of recreating a database that contains local history.
+                            .build()
+                        INSTANCE = instance
+                        instance
+                    } finally {
+                        passphrase.fill(0)
+                    }
+                }
             }
         }
     }
