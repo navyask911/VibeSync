@@ -114,6 +114,7 @@ fun MatchesChatScreen(
     onOpenAdmin: () -> Unit = {},
     onOpenInteractionsModal: () -> Unit = {},
     profiles: List<ProfileEntity> = emptyList(),
+    onOpenProfileDetail: (ProfileEntity) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -675,9 +676,23 @@ fun MatchesChatScreen(
                         )
                     }
                     items(contactsOnVibeSync, key = { "contacts_tab_${it.id}" }) { contact ->
+                        val linkedProfile = contact.vibeSyncUser
+                            ?: contact.vibeSyncProfileId?.let { id ->
+                                profiles.firstOrNull { it.id.equals(id, ignoreCase = true) }
+                            }
+                            ?: profiles.firstOrNull { it.id.equals(contact.id, ignoreCase = true) }
+                            ?: profiles.firstOrNull {
+                                it.phoneNumber.isNotBlank() && contact.phoneNumber.isNotBlank() &&
+                                    com.example.util.PhonebookHasher.arePhonesMatching(it.phoneNumber, contact.phoneNumber)
+                            }
                         ContactOnVibeSyncRow(
                             contact = contact,
-                            onClick = { onSelectChatContact(contact) },
+                            linkedProfile = linkedProfile,
+                            onViewProfile = onOpenProfileDetail,
+                            onClick = {
+                                if (linkedProfile != null) onOpenProfileDetail(linkedProfile)
+                                else onSelectChatContact(contact)
+                            },
                             syncedLocalPhotos = syncedLocalPhotos
                         )
                     }
@@ -791,6 +806,7 @@ fun MatchesChatScreen(
                             profile = profile,
                             latestMessage = latestMessageMap[match.matchId],
                             onClick = { onOpenChat(match, profile) },
+                            onViewProfile = onOpenProfileDetail,
                             syncedLocalPhotos = syncedLocalPhotos
                         )
                     }
@@ -1127,6 +1143,8 @@ private fun PhonebookContactsInlineHeader(
 @Composable
 private fun ContactOnVibeSyncRow(
     contact: PhoneContact,
+    linkedProfile: ProfileEntity?,
+    onViewProfile: (ProfileEntity) -> Unit,
     onClick: () -> Unit,
     syncedLocalPhotos: androidx.compose.runtime.snapshots.SnapshotStateMap<String, String>
 ) {
@@ -1157,14 +1175,7 @@ private fun ContactOnVibeSyncRow(
             modifier = Modifier
                 .size(46.dp)
                 .clickable {
-                    val phone = contact.phoneNumber.ifBlank { contact.id }
-                    val photoUri = com.example.util.ContactResolver.fetchContactPhotoByPhoneNumber(context, phone)
-                    if (!photoUri.isNullOrBlank()) {
-                        syncedLocalPhotos[phone] = photoUri
-                        android.widget.Toast.makeText(context, "🔄 Profile picture successfully synced from your local device contacts!", android.widget.Toast.LENGTH_SHORT).show()
-                    } else {
-                        android.widget.Toast.makeText(context, "ℹ️ No photo set for this contact in your device's address book.", android.widget.Toast.LENGTH_SHORT).show()
-                    }
+                    if (linkedProfile != null) onViewProfile(linkedProfile) else onClick()
                 },
             contentAlignment = Alignment.Center
         ) {
@@ -1394,6 +1405,7 @@ private fun VibeSyncConversationItem(
     profile: ProfileEntity,
     latestMessage: com.example.data.model.ChatMessageEntity?,
     onClick: () -> Unit,
+    onViewProfile: (ProfileEntity) -> Unit,
     syncedLocalPhotos: androidx.compose.runtime.snapshots.SnapshotStateMap<String, String>
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -1441,20 +1453,7 @@ private fun VibeSyncConversationItem(
             isOnline = profile.activityStatus.contains("Online", ignoreCase = true) || profile.activityStatus.contains("Active", ignoreCase = true),
             avatarUrl = syncedLocalPhotos[avatarLookupKey] ?: profile.avatarUrl,
             avatarCacheVersion = profile.avatarCacheVersion,
-            modifier = Modifier.clickable {
-                val phone = profile.phoneNumber.ifBlank {
-                    profile.id.takeIf { com.example.util.SupabaseClientManager.isPhoneNumberCandidate(it) }.orEmpty()
-                }
-                val photoUri = phone.takeIf { it.isNotBlank() }?.let {
-                    com.example.util.ContactResolver.fetchContactPhotoByPhoneNumber(context, it)
-                }
-                if (!photoUri.isNullOrBlank()) {
-                    syncedLocalPhotos[phone] = photoUri
-                    android.widget.Toast.makeText(context, "🔄 Profile picture successfully synced from your local device contacts!", android.widget.Toast.LENGTH_SHORT).show()
-                } else {
-                    android.widget.Toast.makeText(context, "ℹ️ No photo set for this contact in your device's address book.", android.widget.Toast.LENGTH_SHORT).show()
-                }
-            }
+            modifier = Modifier.clickable { onViewProfile(profile) }
         )
 
         Spacer(modifier = Modifier.width(13.dp))
