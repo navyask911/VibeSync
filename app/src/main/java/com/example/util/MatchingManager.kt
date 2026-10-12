@@ -332,6 +332,15 @@ object MatchingManager {
                 .document(profileData.userId)
                 .set(profileData, SetOptions.merge())
                 .await()
+            // DOB stays in the owner's encrypted local/E2EE profile only; clear legacy public copies.
+            runCatching {
+                firestore.collection(COLLECTION_PROFILES).document(profileData.userId)
+                    .update("dob", com.google.firebase.firestore.FieldValue.delete()).await()
+            }
+            runCatching {
+                firestore.collection("users").document(profileData.userId)
+                    .update("dob", com.google.firebase.firestore.FieldValue.delete()).await()
+            }
             Log.d(TAG, "Successfully saved profile ${profileData.userId} to Firestore")
             true
         } catch (e: Exception) {
