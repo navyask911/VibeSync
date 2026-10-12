@@ -652,7 +652,8 @@ fun DatingAppRoot(
                     onRefreshContacts = { viewModel.loadPhonebookContacts() },
                     onOpenProfile = { coroutineScope.launch { pagerState.scrollToPage(4) } },
                     onOpenAdmin = { viewModel.openAdminPortal() },
-                    onOpenInteractionsModal = { showInteractionsModal = true }
+                    onOpenInteractionsModal = { showInteractionsModal = true },
+                    onOpenProfileDetail = { viewModel.openProfileDetail(it) }
                 )
                 1 -> StatusStoriesScreen(
                     viewModel = viewModel
@@ -803,7 +804,14 @@ fun DatingAppRoot(
             onAskFriendship = { viewModel.swipe(profile.id, "FRIEND_REQUEST") },
             onBlockAndReport = { reason -> viewModel.emergencyBlockAndReportUser(profile.id, null, reason) },
             onOpenReport = { prof -> viewModel.openAccountReport(prof) },
-            onOpenChat = { profileId -> viewModel.startChatWithProfile(profileId) }
+            onOpenChat = { profileId -> viewModel.startChatWithProfile(profileId) },
+            isMutualConnection = acceptedFriends.any { request ->
+                request.status.equals("ACCEPTED", ignoreCase = true) &&
+                    (request.senderId.equals(profile.id, ignoreCase = true) ||
+                        request.receiverId.equals(profile.id, ignoreCase = true))
+            } || matches.any { match ->
+                match.profileId.equals(profile.id, ignoreCase = true) && match.isDatingMatch
+            }
         )
     }
 
