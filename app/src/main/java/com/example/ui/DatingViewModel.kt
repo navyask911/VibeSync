@@ -2044,7 +2044,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     "city" to city.trim(),
                     "latitude" to latitude,
                     "longitude" to longitude,
-                    "avatarUrl" to avatarUrl,
+                    "avatarUrl" to com.example.util.ProfileAvatarStorageManager.serverAvatarReference(verifiedUserId, avatarUrl),
                     "avatarEmoji" to (if (avatarUrl.startsWith("http") || avatarUrl.startsWith("content")) "" else avatarUrl),
                     "interestedIn" to interestedIn,
                     "relationshipGoal" to goal,
