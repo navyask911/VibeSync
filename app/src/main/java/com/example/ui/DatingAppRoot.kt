@@ -886,6 +886,7 @@ fun DatingAppRoot(
                     viewModel.openChat(match, prof)
                 }
             },
+            onOpenProfile = { viewModel.getProfile(it.id)?.let(viewModel::openProfileDetail) ?: viewModel.openProfileDetail(it) },
             onDismiss = { viewModel.closeFriendsList() }
         )
     }
