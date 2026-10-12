@@ -10,6 +10,8 @@ data class ProfileEntity(
     @PrimaryKey val id: String,
     val name: String,
     val age: Int,
+    /** Private DOB from registration; never serialized into public profile fields. */
+    @androidx.room.ColumnInfo(defaultValue = "''") val dateOfBirth: String = "",
     val occupation: String = "",
     val city: String = "",
     val distanceMiles: Int = 0,
