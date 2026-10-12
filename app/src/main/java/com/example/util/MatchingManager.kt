@@ -395,7 +395,7 @@ object MatchingManager {
             occupation = prefs.userOccupation,
             trustScore = prefs.trustRating,
             avatarEmoji = if (prefs.avatarUrl.isNotBlank()) "" else "✨",
-            avatarUrl = prefs.avatarUrl,
+            avatarUrl = ProfileAvatarStorageManager.serverAvatarReference(userId, prefs.avatarUrl),
             gender = prefs.userGender,
             maritalStatus = prefs.userMaritalStatus,
             isRealFaceVerified = prefs.isFaceVerified,
