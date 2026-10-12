@@ -296,7 +296,7 @@ fun MatchesChatScreen(
                             text = "VibeSync",
                             style = MaterialTheme.typography.titleLarge.copy(
                                 fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface,
+                                brush = Brush.horizontalGradient(listOf(Color(0xFF00F0FF), Color(0xFFFF1393), Color(0xFFFF9E00))),
                                 letterSpacing = 0.sp
                             ),
                             modifier = Modifier.testTag("app_logo_chats")
@@ -307,7 +307,7 @@ fun MatchesChatScreen(
                             color = LikeGreen.copy(alpha = 0.15f)
                         ) {
                             Text(
-                                text = "100% GENUINE",
+                                text = "100% PRIVACY",
                                 color = LikeGreen,
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontWeight = FontWeight.ExtraBold,
