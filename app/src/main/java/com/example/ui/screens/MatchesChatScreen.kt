@@ -91,6 +91,7 @@ import com.example.data.model.ProfileEntity
 import com.example.ui.theme.CoralPink
 import com.example.ui.theme.LikeGreen
 import com.example.ui.theme.RomanticViolet
+import com.example.ui.theme.VibeSyncBlue
 import com.example.ui.theme.VibeSyncBlueTick
 import com.example.ui.theme.VibeSyncLightGreen
 import com.example.ui.theme.VibeSyncTeal
