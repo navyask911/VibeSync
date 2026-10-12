@@ -145,7 +145,12 @@ fun MatchesChatScreen(
                 avatarEmoji = linkedContact.avatarEmoji.ifBlank { baseProfile.avatarEmoji }
             )
         } else baseProfile
-        return com.example.util.ContactResolver.matchChatSessionParticipant(context, linkedProfile)
+        val resolved = com.example.util.ContactResolver.matchChatSessionParticipant(context, linkedProfile)
+        // Persisted local contact identity takes precedence over a re-query of public profile data.
+        return resolved.copy(
+            name = match.localContactName.trim().ifBlank { resolved.name },
+            avatarUrl = match.localPhotoUri.trim().ifBlank { resolved.avatarUrl }
+        )
     }
 
     var searchQuery by remember { mutableStateOf("") }

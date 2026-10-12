@@ -610,31 +610,25 @@ private fun ExecutiveMetricCard(
     values: List<Int>,
     modifier: Modifier = Modifier
 ) {
+    val accent = when (title) {
+        "Profile Views" -> Color(0xFF6750A4)
+        "Connects" -> Color(0xFF00897B)
+        "Inquiries" -> Color(0xFFEF6C00)
+        else -> Color(0xFF2563EB)
+    }
     Card(
         modifier = modifier,
         shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        colors = CardDefaults.cardColors(containerColor = accent.copy(alpha = if (MaterialTheme.colorScheme.background == Color(0xFF111214)) 0.22f else 0.10f)),
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.42f))
     ) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(9.dp)
         ) {
-            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
-            Text(
-                title,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                value,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1
-            )
+            Icon(icon, contentDescription = null, tint = accent, modifier = Modifier.size(19.dp))
+            Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = accent, maxLines = 1)
             Row(
                 modifier = Modifier.fillMaxWidth().height(24.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -643,11 +637,10 @@ private fun ExecutiveMetricCard(
                 val maxValue = (values.maxOrNull() ?: 0).coerceAtLeast(1)
                 values.forEach { count ->
                     Box(
-                        modifier = Modifier
-                            .weight(1f)
+                        modifier = Modifier.weight(1f)
                             .height((5f + (count.coerceAtLeast(0).toFloat() / maxValue.toFloat()) * 18f).dp)
                             .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
-                            .background(MaterialTheme.colorScheme.primary.copy(alpha = if (count > 0) 0.82f else 0.18f))
+                            .background(accent.copy(alpha = if (count > 0) 0.86f else 0.22f))
                     )
                 }
             }
