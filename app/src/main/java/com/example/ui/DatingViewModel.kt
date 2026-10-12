@@ -1106,8 +1106,16 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 if (rawText.equals("heartbeat", true) || rawText.equals("ping", true) || rawText.equals("pong", true) || rawText.startsWith("phx_") || rawText.startsWith("phx-") || rawText.equals("phx_reply", true) || rawText.equals("phx_close", true)) return@launch
                 if (rawText.startsWith("{\"topic\":") || rawText.startsWith("{\"event\":") || rawText.startsWith("{\"status\":\"ok\"")) return@launch
 
-                val senderPhone = record.optString("sender_phone", record.optString("sender_id", ""))
-                val receiverPhone = record.optString("receiver_phone", record.optString("receiver_id", ""))
+                // Encryption AAD uses canonical profile IDs from the server. Phone fields are
+                // fallbacks for legacy rows and phone-based conversation matching only.
+                val senderIdentity = record.optString("sender_id", "").ifBlank {
+                    record.optString("sender_phone", "")
+                }
+                val receiverIdentity = record.optString("receiver_id", "").ifBlank {
+                    record.optString("receiver_phone", "")
+                }
+                val senderPhone = record.optString("sender_phone", "").ifBlank { senderIdentity }
+                val receiverPhone = record.optString("receiver_phone", "").ifBlank { receiverIdentity }
                 val recordMatchId = record.optString("match_id", "")
                 val voiceSeconds = record.optInt("voice_duration_seconds", 0)
                 val timestamp = record.optLong("timestamp", System.currentTimeMillis())
@@ -1130,10 +1138,10 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 } else ""
 
                 // Bulletproof phone matching using PhonebookHasher
-                val isSenderMe = senderPhone == currentProfileId ||
+                val isSenderMe = senderIdentity.equals(currentProfileId, ignoreCase = true) ||
                     com.example.util.PhonebookHasher.arePhonesMatching(senderPhone, currentUserPhone) ||
-                    senderPhone == "USER"
-                val isReceiverMe = receiverPhone == currentProfileId ||
+                    senderIdentity == "USER"
+                val isReceiverMe = receiverIdentity.equals(currentProfileId, ignoreCase = true) ||
                     com.example.util.PhonebookHasher.arePhonesMatching(receiverPhone, currentUserPhone)
 
                 val isBelongingToActiveConversation = (activePair != null) && (
@@ -1165,12 +1173,17 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         com.example.util.TinkCryptoManager.decryptPayload(
                             context = getApplication(),
                             payload = rawText,
-                            senderPhone = senderPhone,
-                            receiverPhone = receiverPhone,
+                            senderPhone = senderIdentity,
+                            receiverPhone = receiverIdentity,
                             onMismatchedKey = {
                                 viewModelScope.launch(Dispatchers.IO) {
-                                    com.example.util.SupabaseBackendManager.fetchPublicKeyForPhone(senderPhone)?.let { newKey ->
-                                        val partnerProf = database.profileDao().getProfileByPhone(senderPhone)
+                                    val phoneFallback = senderPhone.takeIf { it.filter { ch -> ch.isDigit() }.length >= 7 }.orEmpty()
+                                    com.example.util.SupabaseClientManager.fetchPublicIdentityKey(
+                                        profileId = senderIdentity,
+                                        fallbackPhoneNumber = phoneFallback
+                                    )?.let { newKey ->
+                                        val partnerProf = database.profileDao().getProfileByIdSync(senderIdentity)
+                                            ?: database.profileDao().getProfileByPhone(phoneFallback)
                                         if (partnerProf != null && newKey.isNotBlank()) {
                                             database.profileDao().insertProfile(partnerProf.copy(publicIdentityKey = newKey))
                                         }
@@ -1183,12 +1196,17 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                             senderUid = senderPhone,
                             rawPayload = rawText,
                             context = getApplication(),
-                            senderPhone = senderPhone,
-                            receiverPhone = receiverPhone,
+                            senderPhone = senderIdentity,
+                            receiverPhone = receiverIdentity,
                             onMismatchedKey = {
                                 viewModelScope.launch(Dispatchers.IO) {
-                                    com.example.util.SupabaseBackendManager.fetchPublicKeyForPhone(senderPhone)?.let { newKey ->
-                                        val partnerProf = database.profileDao().getProfileByPhone(senderPhone)
+                                    val phoneFallback = senderPhone.takeIf { it.filter { ch -> ch.isDigit() }.length >= 7 }.orEmpty()
+                                    com.example.util.SupabaseClientManager.fetchPublicIdentityKey(
+                                        profileId = senderIdentity,
+                                        fallbackPhoneNumber = phoneFallback
+                                    )?.let { newKey ->
+                                        val partnerProf = database.profileDao().getProfileByIdSync(senderIdentity)
+                                            ?: database.profileDao().getProfileByPhone(phoneFallback)
                                         if (partnerProf != null && newKey.isNotBlank()) {
                                             database.profileDao().insertProfile(partnerProf.copy(publicIdentityKey = newKey))
                                         }
@@ -1196,6 +1214,14 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                                 }
                             }
                         )
+                    }
+
+                    if (decryptedText.isBlank()) {
+                        android.util.Log.e(
+                            "VibeSyncChat",
+                            "Realtime ciphertext decryption returned empty plaintext; delivery ACK withheld for message_id=$msgId."
+                        )
+                        return@launch
                     }
 
                     val shouldMarkRead = isBelongingToActiveConversation
@@ -1224,7 +1250,17 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     repository.insertReceivedChatMessage(entity, normSender, normReceiver)
 
                     // Immediately execute delivery ACK back to Supabase: UPDATE public.chat_messages SET is_delivered = true WHERE id = :messageId
-                    com.example.util.SupabaseBackendManager.markMessageDelivered(msgId, senderPhone, receiverPhone)
+                    val ackCommitted = com.example.util.SupabaseBackendManager.markMessageDelivered(
+                        msgId,
+                        senderIdentity,
+                        receiverIdentity
+                    )
+                    if (!ackCommitted) {
+                        android.util.Log.w(
+                            "VibeSyncChat",
+                            "Realtime delivery ACK failed for message_id=$msgId; open-chat/catch-up sync will retry."
+                        )
+                    }
 
                     // If user is currently in active chat with the sender, immediately mark as read on backend and locally
                     if (shouldMarkRead) {
