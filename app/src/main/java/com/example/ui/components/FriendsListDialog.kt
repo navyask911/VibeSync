@@ -47,6 +47,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -71,6 +72,7 @@ fun FriendsListDialog(
     onDismiss: () -> Unit
 ) {
     val profilesMap = allProfiles.associateBy { it.id }
+    val context = LocalContext.current
     var selectedTab by remember { mutableIntStateOf(0) } // 0: Accepted Friends, 1: Sent Requests (Pending)
 
     Dialog(
@@ -268,6 +270,10 @@ fun FriendsListDialog(
                                 val targetId = if (req.senderId == "current_user") req.receiverId else req.senderId
                                 val targetName = if (req.senderId == "current_user") req.receiverName else req.senderName
                                 val profile = profilesMap[targetId]
+                                val resolvedProfile = profile?.let {
+                                    com.example.util.ContactResolver.matchChatSessionParticipant(context, it)
+                                }
+                                val displayName = resolvedProfile?.name ?: targetName
 
                                 Card(
                                     modifier = Modifier.fillMaxWidth(),
@@ -289,29 +295,29 @@ fun FriendsListDialog(
                                             modifier = Modifier.weight(1f)
                                         ) {
                                             DatingAvatar(
-                                                name = targetName,
-                                                emoji = profile?.avatarEmoji ?: req.senderAvatarEmoji,
-                                                colorStart = profile?.gradientColorStart ?: req.senderColorStart,
-                                                colorEnd = profile?.gradientColorEnd ?: req.senderColorEnd,
+                                                name = displayName,
+                                                emoji = resolvedProfile?.avatarEmoji ?: req.senderAvatarEmoji,
+                                                colorStart = resolvedProfile?.gradientColorStart ?: req.senderColorStart,
+                                                colorEnd = resolvedProfile?.gradientColorEnd ?: req.senderColorEnd,
                                                 size = 48.dp,
                                                 isVerified = true,
-                                                avatarUrl = profile?.avatarUrl.orEmpty(),
-                                                avatarCacheVersion = profile?.avatarCacheVersion ?: 0L,
-                                                modifier = Modifier.clickable { profile?.let(onOpenProfile) }
+                                                avatarUrl = resolvedProfile?.avatarUrl.orEmpty(),
+                                                avatarCacheVersion = resolvedProfile?.avatarCacheVersion ?: 0L,
+                                                modifier = Modifier.clickable { resolvedProfile?.let(onOpenProfile) }
                                             )
                                             Spacer(modifier = Modifier.width(12.dp))
                                             Column {
                                                 Text(
-                                                    text = targetName,
+                                                    text = displayName,
                                                     fontWeight = FontWeight.Bold,
                                                     fontSize = 15.sp
                                                 )
                                                 Text(
-                                                    text = profile?.occupation ?: req.senderOccupation,
+                                                    text = resolvedProfile?.occupation ?: req.senderOccupation,
                                                     fontSize = 12.sp,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
-                                                if (profile != null) {
+                                                if (resolvedProfile != null) {
                                                     Text(
                                                         text = "📍 ${profile.city} (${profile.countryFlag})",
                                                         fontSize = 11.sp,
