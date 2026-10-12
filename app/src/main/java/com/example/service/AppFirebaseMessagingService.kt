@@ -246,11 +246,17 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                             val matchId = matchedLocalConversation?.matchId ?: fallbackMatchId
 
                             val existingMsg = database.chatMessageDao().getMessageById(messageId)
-                            if (existingMsg == null) {
+                            val shouldPersistPlaintext = existingMsg == null ||
+                                existingMsg.text.isBlank() ||
+                                existingMsg.text.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)
+                            if (shouldPersistPlaintext) {
+                                // Preserve the local match key if a ciphertext placeholder was already
+                                // stored; replacing it with plaintext triggers the Room-backed chat Flow.
+                                val resolvedLocalMatchId = existingMsg?.matchId?.takeIf { it.isNotBlank() } ?: matchId
                                 val incomingEntity = com.example.data.model.ChatMessageEntity(
                                     messageId = messageId,
-                                    matchId = matchId,
-                                    senderId = senderRoomIdentity,
+                                    matchId = resolvedLocalMatchId,
+                                    senderId = existingMsg?.senderId?.takeIf { it.isNotBlank() && it != "USER" } ?: senderRoomIdentity,
                                     text = decryptedText,
                                     mediaType = mediaType,
                                     mediaUrl = photoUrl,
@@ -260,13 +266,14 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                                     isRead = false,
                                     deliveryState = "DELIVERED"
                                 )
-                                database.chatMessageDao().insertMessage(incomingEntity)
+                                database.chatMessageDao().upsertMessage(incomingEntity)
                                 database.messageDao().insertMessage(incomingEntity.toLocalMessage())
 
-                                val existingMatch = database.matchDao().getMatchByIdSync(matchId) ?: database.matchDao().getMatchByProfileId(senderRoomIdentity)
+                                val existingMatch = database.matchDao().getMatchByIdSync(resolvedLocalMatchId)
+                                    ?: database.matchDao().getMatchByProfileId(senderRoomIdentity)
                                 if (existingMatch == null) {
                                     val newMatch = com.example.data.model.MatchEntity(
-                                        matchId = matchId,
+                                        matchId = resolvedLocalMatchId,
                                         profileId = senderRoomIdentity,
                                         matchedAt = timestamp,
                                         lastMessage = decryptedText.ifBlank { if (mediaType == "VOICE") "Voice message" else "Photo" },
