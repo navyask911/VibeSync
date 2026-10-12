@@ -2037,6 +2037,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     "name" to name.trim(),
                     "userName" to name.trim(),
                     "age" to age,
+                    // Explicitly remove any legacy public DOB instead of merging it forward.
+                    "dob" to com.google.firebase.firestore.FieldValue.delete(),
                     "gender" to gender,
                     "address" to address.trim(),
                     "city" to city.trim(),
