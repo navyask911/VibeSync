@@ -321,9 +321,7 @@ fun ProfileDetailDialog(
 
                     // Always render the privacy card when a number exists; the shared policy decides disclosure.
                     val displayPhone = if (profile.phoneNumber.isNotBlank()) profile.phoneNumber else if (profile.id.filter { it.isDigit() }.length >= 10) profile.id else ""
-                    val isContactSaved = remember(displayPhone, profile.id) {
-                        displayPhone.isNotBlank() && com.example.util.ContactResolver.isNumberSavedOnDevice(context, displayPhone)
-                    }
+                    var isPhoneAccessRequested by remember(profile.id) { mutableStateOf(false) }
 
                     if (displayPhone.isNotBlank()) {
                         Card(
