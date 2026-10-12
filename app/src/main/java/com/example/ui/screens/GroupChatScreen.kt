@@ -240,12 +240,12 @@ fun GroupChatScreen(
                 ) {
                     Surface(
                         shape = RoundedCornerShape(
-                            topStart = 16.dp,
-                            topEnd = 16.dp,
-                            bottomStart = if (isMe) 16.dp else 4.dp,
-                            bottomEnd = if (isMe) 4.dp else 16.dp
+                            topStart = 18.dp,
+                            topEnd = 18.dp,
+                            bottomStart = if (isMe) 18.dp else 4.dp,
+                            bottomEnd = if (isMe) 4.dp else 18.dp
                         ),
-                        color = if (isMe) RomanticViolet else MaterialTheme.colorScheme.surfaceVariant,
+                        color = if (isMe) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
                         modifier = Modifier.widthIn(max = 280.dp)
                     ) {
                         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -260,14 +260,14 @@ fun GroupChatScreen(
                             }
                             Text(
                                 text = msg.text,
-                                fontSize = 13.5.sp,
+                                style = MaterialTheme.typography.bodyLarge,
                                 color = if (isMe) Color.White else MaterialTheme.colorScheme.onSurface
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
                                 text = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(msg.timestamp)),
-                                fontSize = 9.5.sp,
-                                color = if (isMe) Color.White.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isMe) Color.White.copy(alpha = 0.74f) else MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.align(Alignment.End)
                             )
                         }

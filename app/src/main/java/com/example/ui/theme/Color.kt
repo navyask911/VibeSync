@@ -2,60 +2,58 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// VibeSync Chat & Messaging Palette
-val VibeSyncTeal = Color(0xFF00A884)
-val VibeSyncDarkTeal = Color(0xFF128C7E)
-val VibeSyncForestGreen = Color(0xFF075E54)
-val VibeSyncEmerald = Color(0xFF25D366)
-val VibeSyncLightBar = Color(0xFF008069)
+// VibeSync's global messenger palette.
+val VibeSyncBlue = Color(0xFF2563EB)
+val VibeSyncReadTickBlue = Color(0xFF3B82F6)
+val VibeSyncMetadataDark = Color(0xFF8E9398)
+val VibeSyncMetadataLight = Color(0xFF6B7280)
 
-val VibeSyncDarkCanvas = Color(0xFF111B21)
-val VibeSyncDarkSurface = Color(0xFF202C33)
-val VibeSyncDarkSurfaceVariant = Color(0xFF2A3942)
-val VibeSyncDarkHeader = Color(0xFF202C33)
+val VibeSyncTeal = VibeSyncBlue
+val VibeSyncDarkTeal = Color(0xFF1D4ED8)
+val VibeSyncForestGreen = Color(0xFF1E40AF)
+val VibeSyncEmerald = VibeSyncBlue
+val VibeSyncLightBar = VibeSyncBlue
 
-val VibeSyncChatBubbleOutDark = Color(0xFF005C4B)
-val VibeSyncChatBubbleInDark = Color(0xFF202C33)
-val VibeSyncLightBubbleOut = Color(0xFFD9FDD3)
-val VibeSyncLightBubbleIn = Color(0xFFFFFFFF)
-val VibeSyncLightCanvas = Color(0xFFEFEAE2)
+val VibeSyncDarkCanvas = Color(0xFF111214)
+val VibeSyncDarkSurface = Color(0xFF1B1C1E)
+val VibeSyncDarkSurfaceVariant = Color(0xFF26272B)
+val VibeSyncDarkHeader = VibeSyncDarkSurface
+val VibeSyncChatBubbleOutDark = VibeSyncBlue
+val VibeSyncChatBubbleInDark = VibeSyncDarkSurfaceVariant
+val VibeSyncLightBubbleOut = VibeSyncBlue
+val VibeSyncLightBubbleIn = Color(0xFFF0F2F5)
+val VibeSyncLightCanvas = Color(0xFFFFFFFF)
+val VibeSyncLightSurface = Color(0xFFF6F7F9)
+val VibeSyncLightSurfaceVariant = Color(0xFFF0F2F5)
+val VibeSyncBlueTick = VibeSyncReadTickBlue
+val VibeSyncUnreadBadge = VibeSyncBlue
+val VibeSyncLightGreen = VibeSyncBlue
 
-val VibeSyncBlueTick = Color(0xFF53BDEB)
-val VibeSyncUnreadBadge = Color(0xFF25D366)
-val VibeSyncLightGreen = VibeSyncEmerald
+// Dating/action semantics retain distinct success/danger colours. The decorative accent family
+// aliases to blue so legacy screens using these names inherit the clean product identity.
+val CoralPink = VibeSyncBlue
+val PassionRose = Color(0xFF1D4ED8)
+val RomanticViolet = VibeSyncBlue
+val DeepViolet = Color(0xFF1E40AF)
+val SparkTeal = Color(0xFF3B82F6)
 
+val LikeGreen = Color(0xFF16A34A)
+val PassRed = Color(0xFFDC2626)
+val SuperLikeBlue = VibeSyncBlue
+val RewindGold = Color(0xFFD97706)
+val BoostPurple = Color(0xFF7C3AED)
 
+val DarkCanvas = VibeSyncDarkCanvas
+val DarkCardSurface = VibeSyncDarkSurface
+val DarkSurfaceVariant = VibeSyncDarkSurfaceVariant
+val PureWhite = Color(0xFFFFFFFF)
+val OffWhite = VibeSyncLightSurface
+val SoftGrayBorder = Color(0xFFE5E7EB)
+val TextDark = Color(0xFF111827)
+val TextMuted = VibeSyncMetadataLight
+val VerifiedBadgeBlue = VibeSyncBlue
 
-// Primary Dating & Ethics Accents
-val CoralPink = Color(0xFFFF3366)
-val PassionRose = Color(0xFFFF527B)
-val RomanticViolet = Color(0xFF7C4DFF)
-val DeepViolet = Color(0xFF4A148C)
-val SparkTeal = Color(0xFF00D2D3)
-
-// Dating Action Buttons
-val LikeGreen = Color(0xFF25D366)
-val PassRed = Color(0xFFFF3B30)
-val SuperLikeBlue = Color(0xFF3498DB)
-val RewindGold = Color(0xFFFFA801)
-val BoostPurple = Color(0xFF8854D0)
-
-// Surfaces & Neutrals
-val DarkCanvas = Color(0xFF0F172A)
-val DarkCardSurface = Color(0xFF1E293B)
-val DarkSurfaceVariant = Color(0xFF334155)
-val PureWhite = Color(0xFFF8FAFC)
-val OffWhite = Color(0xFFF8FAFC)
-val SoftGrayBorder = Color(0xFF334155)
-val TextDark = Color(0xFF0F172A)
-val TextMuted = Color(0xFF94A3B8)
-val VerifiedBadgeBlue = Color(0xFF6366F1)
-
-
-
-// Nine light, creamy pastel theme accents. Each palette pairs a light canvas with a
-// slightly deeper pastel accent; use dark charcoal/slate text for readable labels.
-// Keep the CREAM_BUTTER ID for saved preferences; present it as Executive Indigo.
+// Kept for backwards-compatible saved palette identifiers and the chat colour picker.
 val CreamButterBackground = Color(0xFFEEF2FF)
 val CreamButterAccent = Color(0xFF6366F1)
 val SoftMintCreamBackground = Color(0xFFE8F5E9)

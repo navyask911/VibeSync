@@ -684,7 +684,7 @@ fun ChatDetailScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFFEFEAE2))
+            .background(MaterialTheme.colorScheme.background)
             .statusBarsPadding()
             .navigationBarsPadding()
             .imePadding()
@@ -3730,7 +3730,7 @@ private fun VibeSyncChatBubble(
     isOutgoing: Boolean,
     maxBubbleWidth: Dp,
     localMessageStatuses: Map<String, String>,
-    chatTextColor: Color = Color(0xFF111B21),
+    chatTextColor: Color = Color(0xFF111827),
     onActionClick: () -> Unit,
     onMediaClick: (String, String) -> Unit
 ) {
@@ -3769,13 +3769,13 @@ private fun VibeSyncChatBubble(
     ) {
         Surface(
             shape = if (isOutgoing) {
-                RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp)
+                RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp)
             } else {
-                RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 4.dp, bottomEnd = 16.dp)
+                RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 4.dp, bottomEnd = 18.dp)
             },
-            color = if (isOutgoing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+            color = if (isOutgoing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
             shadowElevation = if (isOutgoing) 0.5.dp else 1.dp,
-            border = if (isOutgoing) null else BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline),
+            border = if (isOutgoing) null else BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
             modifier = Modifier
                 .widthIn(min = 72.dp, max = maxBubbleWidth)
                 .combinedClickable(
@@ -4435,7 +4435,7 @@ private fun VibeSyncChatBubble(
                     Text(
                         text = formattedTime,
                         style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFF64748B),
+                        color = if (isOutgoing) Color.White.copy(alpha = 0.74f) else MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium
                     )
@@ -4446,14 +4446,11 @@ private fun VibeSyncChatBubble(
                         val isRead = status == "READ" || message.isRead
                         val isDelivered = status == "DELIVERED" || message.isDelivered
 
-                        // Tick Status Colors per specification:
-                        // - Single tick (Sent / Not Delivered): Red color (Color(0xFFE53935)) when !isDelivered && !isRead
-                        // - Double tick (Delivered): Dark Red color (Color(0xFF8B0000)) when isDelivered && !isRead
-                        // - Double tick (Read Receipt): Green color (Color(0xFF2E7D32)) when isRead
+                        // Neutral grey for sent/delivered; electric blue only for read receipts.
                         val (icon, tint) = when {
-                            isRead -> Icons.Default.DoneAll to Color(0xFF2E7D32)
-                            isDelivered -> Icons.Default.DoneAll to Color(0xFF8B0000)
-                            else -> Icons.Default.Check to Color(0xFFE53935)
+                            isRead -> Icons.Default.DoneAll to VibeSyncReadTickBlue
+                            isDelivered -> Icons.Default.DoneAll to VibeSyncMetadataDark
+                            else -> Icons.Default.Check to VibeSyncMetadataDark
                         }
                         Icon(
                             imageVector = icon,

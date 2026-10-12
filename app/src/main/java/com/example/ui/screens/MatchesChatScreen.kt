@@ -265,9 +265,9 @@ fun MatchesChatScreen(
                         Text(
                             text = "VibeSync",
                             style = MaterialTheme.typography.titleLarge.copy(
-                                fontWeight = FontWeight.Black,
-                                brush = Brush.linearGradient(listOf(CoralPink, RomanticViolet, Color(0xFF00F2FE))),
-                                letterSpacing = (-0.5).sp
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                letterSpacing = 0.sp
                             ),
                             modifier = Modifier.testTag("app_logo_chats")
                         )
@@ -421,9 +421,9 @@ fun MatchesChatScreen(
                 )
 
                 Surface(
-                    color = Color(0xFF000000),
-                    shape = RoundedCornerShape(20.dp),
-                    border = BorderStroke(1.dp, Color(0xFF262626)),
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(18.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(bottom = 12.dp)
@@ -439,12 +439,12 @@ fun MatchesChatScreen(
                             val isSelected = selectedFilter == tab.name
                             Surface(
                                 shape = RoundedCornerShape(22.dp),
-                                color = if (isSelected) Color(0xFF005C4B) else Color(0xFF141414),
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
                                 border = BorderStroke(
-                                    width = if (isSelected) 1.5.dp else 1.dp,
-                                    color = if (isSelected) Color(0xFF00E676) else Color(0xFF2C2C2C)
+                                    width = 1.dp,
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
                                 ),
-                                shadowElevation = if (isSelected) 4.dp else 0.dp,
+                                shadowElevation = 0.dp,
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(22.dp))
                                     .clickable { selectedFilter = tab.name }
@@ -458,22 +458,22 @@ fun MatchesChatScreen(
                                     Icon(
                                         imageVector = tab.icon,
                                         contentDescription = null,
-                                        tint = if (isSelected) Color.White else Color(0xFFE0E0E0),
+                                        tint = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.size(16.dp)
                                     )
 
                                     Text(
                                         text = tab.name,
                                         style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color.White,
+                                        fontWeight = FontWeight.Medium,
+                                        color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
                                         fontSize = 13.sp
                                     )
 
                                     if (tab.count > 0 && tab.name != "All") {
                                         Surface(
                                             shape = CircleShape,
-                                            color = if (tab.name == "Unread") Color(0xFF00E676) else if (isSelected) Color.White else Color(0xFF005C4B),
+                                            color = if (isSelected) MaterialTheme.colorScheme.onPrimary else if (tab.name == "Unread") VibeSyncBlue.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant,
                                             modifier = Modifier.height(20.dp).widthIn(min = 20.dp)
                                         ) {
                                             Box(
@@ -484,7 +484,7 @@ fun MatchesChatScreen(
                                                     text = if (tab.count > 99) "99+" else "${tab.count}",
                                                     fontSize = 10.5.sp,
                                                     fontWeight = FontWeight.ExtraBold,
-                                                    color = if (tab.name == "Unread") Color.Black else if (isSelected) Color(0xFF005C4B) else Color.White
+                                                    color = if (isSelected) MaterialTheme.colorScheme.primary else if (tab.name == "Unread") VibeSyncBlue else MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
                                             }
                                         }

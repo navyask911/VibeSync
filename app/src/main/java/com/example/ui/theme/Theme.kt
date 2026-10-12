@@ -29,18 +29,18 @@ val AppAccentPalettes = listOf(
     AppAccentPalette("WARM_VANILLA", "Warm Vanilla", "#FFF9C4", WarmVanillaAccent, "#FFFDE7", WarmVanillaBackground)
 )
 
-private val ThemeLightCanvas = Color(0xFFF8FAFC)
-private val ThemeLightCard = Color(0xFFFFFFFF)
-private val ThemeLightInput = Color(0xFFF1F5F9)
-private val ThemeLightBorder = Color(0xFFE2E8F0)
-private val ThemeLightTextPrimary = Color(0xFF0F172A)
-private val ThemeLightTextSecondary = Color(0xFF64748B)
-private val ThemeDarkCanvas = Color(0xFF0F172A)
-private val ThemeDarkCard = Color(0xFF1E293B)
-private val ThemeDarkInput = Color(0xFF111827)
-private val ThemeDarkBorder = Color(0xFF334155)
-private val ThemeDarkTextPrimary = Color(0xFFF8FAFC)
-private val ThemeDarkTextSecondary = Color(0xFF94A3B8)
+private val ThemeLightCanvas = Color(0xFFFFFFFF)
+private val ThemeLightCard = Color(0xFFF6F7F9)
+private val ThemeLightInput = Color(0xFFF0F2F5)
+private val ThemeLightBorder = Color(0xFFE5E7EB)
+private val ThemeLightTextPrimary = Color(0xFF111827)
+private val ThemeLightTextSecondary = Color(0xFF6B7280)
+private val ThemeDarkCanvas = Color(0xFF111214)
+private val ThemeDarkCard = Color(0xFF1B1C1E)
+private val ThemeDarkInput = Color(0xFF26272B)
+private val ThemeDarkBorder = Color(0xFF34363A)
+private val ThemeDarkTextPrimary = Color(0xFFF3F4F6)
+private val ThemeDarkTextSecondary = Color(0xFF8E9398)
 
 @Composable
 fun MyApplicationTheme(
@@ -60,14 +60,14 @@ fun MyApplicationTheme(
         else -> null
     }
     val resolvedMode = (legacyPreset?.first ?: themeMode).uppercase()
-    val resolvedAccentId = (legacyPreset?.second ?: accentColor).uppercase()
+    // Retain the arguments for saved-preference compatibility, while keeping the core messenger
+    // accent fixed to sapphire blue for a consistent high-contrast visual system.
     val isDark = when (resolvedMode) {
         "DARK" -> true
         "SYSTEM" -> darkTheme
         else -> false
     }
-    val palette = AppAccentPalettes.firstOrNull { it.id == resolvedAccentId } ?: AppAccentPalettes.first()
-    val accent = palette.color
+    val accent = VibeSyncBlue
     val foreground = if (isDark) ThemeDarkTextPrimary else ThemeLightTextPrimary
     val colorScheme = if (isDark) {
         darkColorScheme(
@@ -79,19 +79,19 @@ fun MyApplicationTheme(
             background = ThemeDarkCanvas, onBackground = ThemeDarkTextPrimary,
             surface = ThemeDarkCard, onSurface = ThemeDarkTextPrimary,
             surfaceVariant = ThemeDarkInput, onSurfaceVariant = ThemeDarkTextSecondary,
-            outline = ThemeDarkBorder, outlineVariant = ThemeDarkBorder
+            outline = ThemeDarkBorder, outlineVariant = Color(0xFF2F3135)
         )
     } else {
         lightColorScheme(
             primary = accent, onPrimary = Color(0xFFFFFFFF),
-            primaryContainer = palette.background, onPrimaryContainer = ThemeLightTextPrimary,
+            primaryContainer = Color(0xFFDBEAFE), onPrimaryContainer = Color(0xFF1D4ED8),
             secondary = accent, onSecondary = Color(0xFFFFFFFF),
-            secondaryContainer = palette.background, onSecondaryContainer = ThemeLightTextPrimary,
+            secondaryContainer = ThemeLightInput, onSecondaryContainer = ThemeLightTextPrimary,
             tertiary = accent, onTertiary = Color(0xFFFFFFFF),
             background = ThemeLightCanvas, onBackground = foreground,
             surface = ThemeLightCard, onSurface = foreground,
-            surfaceVariant = palette.background, onSurfaceVariant = ThemeLightTextSecondary,
-            outline = ThemeLightBorder, outlineVariant = ThemeLightBorder
+            surfaceVariant = ThemeLightInput, onSurfaceVariant = ThemeLightTextSecondary,
+            outline = ThemeLightBorder, outlineVariant = Color(0xFFD1D5DB)
         )
     }
     MaterialTheme(colorScheme = colorScheme, typography = Typography, content = content)
