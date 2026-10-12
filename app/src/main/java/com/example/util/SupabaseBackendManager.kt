@@ -573,6 +573,13 @@ object SupabaseBackendManager {
             waitingForSessionChangeAfter401 = false
             reconnectAttempt = 0
             val socket = realtimeWebSocket
+            // Send Phoenix leave before closing the short-lived chat channel.
+            socket?.send(JSONObject().apply {
+                put("topic", CHAT_REALTIME_TOPIC)
+                put("event", "phx_leave")
+                put("payload", JSONObject())
+                put("ref", "leave_chat_${System.currentTimeMillis()}")
+            }.toString())
             realtimeWebSocket = null
             resetRealtimeSocketAuthState(socket)
             _realtimeConnected.value = false
