@@ -461,36 +461,58 @@ object VibeSyncSessionManager {
                             remote.text.startsWith("E2EE_SETUP") ||
                             remote.text.equals("Message", ignoreCase = true)
                     if (isControlPacket) return@remoteLoop
-                    if (database.chatMessageDao().getMessageById(remote.messageId) != null) return@remoteLoop
-
+                    val existing = database.chatMessageDao().getMessageById(remote.messageId)
                     val senderDigits = remote.senderId.filter { it.isDigit() }
                     val isMyOwn = remote.senderId == "USER" ||
                         remote.senderId.equals(myProfileId, ignoreCase = true) ||
                         remote.senderId == myPhone ||
                         (myDigits.length >= 7 && senderDigits.length >= 7 &&
                             senderDigits.endsWith(myDigits.takeLast(10)))
-                    val incoming = remote.copy(
-                        matchId = match.matchId,
-                        senderId = if (isMyOwn) "USER" else peerProfileId,
-                        isDelivered = true,
-                        isRead = false,
-                        deliveryState = "DELIVERED"
-                    )
-                    database.chatMessageDao().insertMessage(incoming)
-                    database.messageDao().insertMessage(incoming.toLocalMessage())
-                    if (!isMyOwn) {
-                        val acked = com.example.util.SupabaseBackendManager.markMessageDelivered(
-                            remote.messageId, remote.senderId, myProfileId
+
+                    if (existing == null) {
+                        val incoming = remote.copy(
+                            matchId = match.matchId,
+                            senderId = if (isMyOwn) "USER" else peerProfileId,
+                            isDelivered = if (isMyOwn) remote.isDelivered else true,
+                            isRead = if (isMyOwn) remote.isRead else false,
+                            deliveryState = when {
+                                !isMyOwn -> "DELIVERED"
+                                remote.isRead -> "READ"
+                                remote.isDelivered -> "DELIVERED"
+                                else -> "SENT_TO_SERVER"
+                            }
                         )
-                        if (acked) database.chatMessageDao().markMessageAsDelivered(remote.messageId)
+                        database.chatMessageDao().insertMessage(incoming)
+                        database.messageDao().insertMessage(incoming.toLocalMessage())
+                        database.matchDao().updateLastMessage(
+                            matchId = match.matchId,
+                            text = remote.text,
+                            timestamp = remote.timestamp,
+                            hasUnread = !isMyOwn
+                        )
+                        inserted++
                     }
-                    database.matchDao().updateLastMessage(
-                        matchId = match.matchId,
-                        text = remote.text,
-                        timestamp = remote.timestamp,
-                        hasUnread = !isMyOwn
-                    )
-                    inserted++
+
+                    // A cached incoming row must not prevent a failed delivery ACK from being retried.
+                    if (!isMyOwn) {
+                        val acked = remote.isDelivered ||
+                            com.example.util.SupabaseBackendManager.markMessageDelivered(
+                                remote.messageId, remote.senderId, myProfileId
+                            )
+                        if (acked) {
+                            database.chatMessageDao().markMessageAsDelivered(remote.messageId)
+                        } else {
+                            Log.w(TAG, "Delivery ACK retry remains pending for message_id=${remote.messageId}.")
+                        }
+                    } else {
+                        when {
+                            remote.isRead -> database.chatMessageDao().markMessageAsRead(remote.messageId)
+                            remote.isDelivered -> database.chatMessageDao().markMessageAsDelivered(remote.messageId)
+                            else -> database.chatMessageDao().markOutboxSentToServerIfPending(
+                                remote.messageId, System.currentTimeMillis()
+                            )
+                        }
+                    }
                 }
             }
 

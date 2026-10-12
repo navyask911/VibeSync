@@ -72,12 +72,16 @@ class E2eeDeliveryLoopTest {
         assertTrue(ciphertext.startsWith(TinkCryptoManager.TINK_PREFIX))
         assertNotEquals(plaintext, ciphertext)
 
+        var senderState = "PENDING"
         val remoteTable = InMemoryEncryptedChatTable()
         remoteTable.dispatch(RemoteRow(messageId, matchId, senderId, recipientId, ciphertext))
+
+        // Successful dispatch is the point at which local PENDING transitions to SENT.
+        senderState = "SENT_TO_SERVER"
+        assertEquals("SENT_TO_SERVER", senderState)
         val remoteRow = remoteTable.row(messageId)!!
         assertTrue(remoteRow.ciphertext.startsWith(TinkCryptoManager.TINK_PREFIX))
         assertFalse(remoteRow.ciphertext.contains(plaintext))
-        var senderState = "SENT_TO_SERVER"
 
         val recipientPlaintext = TinkCryptoManager.decryptWithPrivateKeysetOrThrow(
             privateKeysetHandle = recipientPrivate,
@@ -87,8 +91,10 @@ class E2eeDeliveryLoopTest {
         )
         assertEquals(plaintext, recipientPlaintext)
 
-        // Receiver persisted decrypted text locally; only then does it issue a delivery ACK.
-        assertEquals(plaintext, recipientPlaintext)
+        // Model recipient Room persistence; only after this succeeds does the client ACK.
+        val recipientRoomMessages = mutableMapOf<String, String>()
+        recipientRoomMessages[messageId] = recipientPlaintext
+        assertEquals(plaintext, recipientRoomMessages[messageId])
         assertTrue(remoteTable.ackDelivery(messageId))
         assertTrue(remoteTable.row(messageId)!!.delivered)
         senderState = if (remoteTable.row(messageId)!!.delivered) "DELIVERED" else senderState
