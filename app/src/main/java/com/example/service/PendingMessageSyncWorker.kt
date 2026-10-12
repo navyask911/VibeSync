@@ -106,15 +106,81 @@ internal object PendingMessageOutboxSender {
                 val localMatch = db.matchDao().getMatchByIdSync(message.matchId)
                     ?: return@withContext PendingOutboxAttempt.Retryable("Local conversation is not available yet.")
                 val senderProfileId = session.profileId.trim()
-                val recipientProfileId = localMatch.profileId.trim()
-                if (senderProfileId.isBlank() || recipientProfileId.isBlank() || senderProfileId == recipientProfileId) {
-                    return@withContext PendingOutboxAttempt.Retryable("Sender or recipient profile ID is invalid.")
+                val storedRecipientIdentity = localMatch.profileId.trim()
+                val peerFromMatchId = SupabaseClientManager.recipientProfileIdFromMatchId(
+                    matchId = message.matchId,
+                    senderProfileId = senderProfileId
+                )
+                val storedIdentityIsPhone = SupabaseClientManager.isPhoneNumberCandidate(storedRecipientIdentity)
+                val cachedRecipientId = if (storedIdentityIsPhone) {
+                    db.profileDao().getAllProfilesSync()
+                        .firstOrNull { cached ->
+                            val cachedId = cached.id.trim()
+                            cachedId.isNotBlank() &&
+                                !SupabaseClientManager.isPhoneNumberCandidate(cachedId) &&
+                                !cachedId.equals(senderProfileId, ignoreCase = true) &&
+                                com.example.util.PhonebookHasher.arePhonesMatching(
+                                    cached.phoneNumber,
+                                    storedRecipientIdentity
+                                )
+                        }?.id?.trim()
+                } else {
+                    null
+                }
+                var recipientResolutionSource = "local_profile_id"
+                val recipientProfileId = when {
+                    storedRecipientIdentity.isBlank() && !peerFromMatchId.isNullOrBlank() -> {
+                        recipientResolutionSource = "match_id"
+                        peerFromMatchId
+                    }
+                    storedIdentityIsPhone && !peerFromMatchId.isNullOrBlank() -> {
+                        recipientResolutionSource = "match_id"
+                        peerFromMatchId
+                    }
+                    storedIdentityIsPhone && !cachedRecipientId.isNullOrBlank() -> {
+                        recipientResolutionSource = "phone_cache"
+                        cachedRecipientId
+                    }
+                    storedIdentityIsPhone -> {
+                        recipientResolutionSource = "phone_hash_rpc"
+                        SupabaseClientManager.resolveProfileIdByPhoneNumber(storedRecipientIdentity).orEmpty()
+                    }
+                    else -> storedRecipientIdentity
+                }.trim()
+
+                if (
+                    senderProfileId.isBlank() ||
+                    recipientProfileId.isBlank() ||
+                    recipientProfileId.startsWith("match_", ignoreCase = true) ||
+                    SupabaseClientManager.isPhoneNumberCandidate(recipientProfileId) ||
+                    senderProfileId.equals(recipientProfileId, ignoreCase = true)
+                ) {
+                    Log.w(
+                        TAG,
+                        "Outbox recipient identity is not canonical; retrying without sending: " +
+                            "message_id=$safeMessageId, recipient_resolution=$recipientResolutionSource."
+                    )
+                    return@withContext PendingOutboxAttempt.Retryable(
+                        "Could not resolve the recipient phone/contact to a canonical profile ID."
+                    )
+                }
+
+                // Persist repaired peer identity so future sync/read paths use the same canonical profile ID.
+                if (!localMatch.profileId.trim().equals(recipientProfileId, ignoreCase = true)) {
+                    db.matchDao().insertMatch(localMatch.copy(profileId = recipientProfileId))
+                    Log.i(
+                        TAG,
+                        "Repaired local peer identity; recipient_resolution=$recipientResolutionSource."
+                    )
                 }
 
                 val localRecipient = db.profileDao().getProfileByIdSync(recipientProfileId)
+                val fallbackPhone = localRecipient?.phoneNumber.orEmpty().ifBlank {
+                    storedRecipientIdentity.takeIf { storedIdentityIsPhone }.orEmpty()
+                }
                 val fetchedRecipientKey = SupabaseClientManager.fetchPublicIdentityKey(
                     profileId = recipientProfileId,
-                    fallbackPhoneNumber = localRecipient?.phoneNumber.orEmpty()
+                    fallbackPhoneNumber = fallbackPhone
                 )
                 val cachedRecipientKey = localRecipient?.publicIdentityKey.orEmpty().trim()
                     .takeIf { TinkCryptoManager.validatePublicKeysetJson(it) }

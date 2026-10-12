@@ -175,6 +175,45 @@ object SupabaseClientManager {
         return listOf(a, b).sorted().joinToString("_")
     }
 
+    /** Resolve the peer from a match ID, but only if the pair contains this sender profile. */
+    fun recipientProfileIdFromMatchId(matchId: String, senderProfileId: String): String? =
+        ChatRecipientIdentityResolver.recipientProfileIdFromMatchId(matchId, senderProfileId)
+
+    /** Distinguish a phone number from a canonical VibeSync profile ID. */
+    fun isPhoneNumberCandidate(value: String): Boolean =
+        ChatRecipientIdentityResolver.isPhoneNumberCandidate(value)
+
+    /**
+     * Privacy-preserving fallback for legacy local rows that only have a phone number.
+     * The raw number never leaves the client; the RPC receives only its SHA-256 phone hash.
+     */
+    suspend fun resolveProfileIdByPhoneNumber(phoneNumber: String): String? = withContext(Dispatchers.IO) {
+        val phoneHash = PhonebookHasher.hashPhoneNumberToHex(phoneNumber)
+        if (!Regex("^[0-9a-fA-F]{64}$").matches(phoneHash)) return@withContext null
+
+        try {
+            val body = JSONObject().put("p_hash", phoneHash).toString()
+            val request = buildRequest("rpc/resolve_profile_id_by_phone_hash", "POST", body)
+            httpClient.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Phone-hash profile-ID lookup failed HTTP ${response.code}.")
+                    return@withContext null
+                }
+                val profileId = TinkCryptoManager.decodePostgrestTextValue(responseBody).trim()
+                profileId.takeIf {
+                    it.isNotBlank() &&
+                        !it.equals("null", ignoreCase = true) &&
+                        !isPhoneNumberCandidate(it) &&
+                        !it.startsWith("match_", ignoreCase = true)
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "Phone-hash profile-ID lookup failed: ${t.javaClass.simpleName}: ${t.message}")
+            null
+        }
+    }
+
     /** Validate the bearer accepted by PostgREST and the opaque VibeSync session header. */
     suspend fun verifyChatSession(profileId: String): Result<Unit> = withContext(Dispatchers.IO) {
         if (profileId.isBlank()) return@withContext Result.failure(IllegalStateException("Profile ID is missing."))
@@ -920,10 +959,27 @@ object SupabaseClientManager {
         onRpcResult: ((httpCode: Int?, success: Boolean, failure: String?) -> Unit)? = null
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            val recipient = recipientProfileId.ifBlank { receiverIdentity }
+            val requestedRecipient = recipientProfileId.ifBlank { receiverIdentity }.trim()
+            val peerFromMatchId = recipientProfileIdFromMatchId(msg.matchId, senderIdentity)
+            val recipient = when {
+                isPhoneNumberCandidate(requestedRecipient) ->
+                    peerFromMatchId ?: resolveProfileIdByPhoneNumber(requestedRecipient).orEmpty()
+                requestedRecipient.isBlank() -> peerFromMatchId.orEmpty()
+                else -> requestedRecipient
+            }.trim()
             val ciphertext = msg.text.takeIf { it.startsWith(TinkCryptoManager.TINK_PREFIX) }.orEmpty()
-            if (ciphertext.isBlank() || senderIdentity.isBlank() || recipient.isBlank()) {
-                Log.e(TAG, "Refusing chat sync without Tink ciphertext and stable profile identities.")
+            if (
+                ciphertext.isBlank() ||
+                senderIdentity.isBlank() ||
+                recipient.isBlank() ||
+                recipient.startsWith("match_", ignoreCase = true) ||
+                isPhoneNumberCandidate(recipient) ||
+                recipient.equals(senderIdentity.trim(), ignoreCase = true)
+            ) {
+                Log.e(
+                    TAG,
+                    "Refusing chat sync without Tink ciphertext and distinct canonical sender/recipient profile IDs."
+                )
                 return@withContext false
             }
             val json = JSONObject().apply {
