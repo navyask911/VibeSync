@@ -2996,8 +2996,16 @@ class SocialConnectRepository(
         senderPhone: String = "",
         receiverPhone: String = ""
     ) {
-        val exists = chatMessageDao.getMessageById(message.messageId) != null
-        if (!exists) {
+        val existingMessage = chatMessageDao.getMessageById(message.messageId)
+        val replacesCiphertextPlaceholder = existingMessage != null &&
+            message.text.isNotBlank() &&
+            !message.text.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX) &&
+            (existingMessage.text.isBlank() ||
+                existingMessage.text.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX))
+        if (existingMessage == null || replacesCiphertextPlaceholder) {
+            // An earlier inbound event may have stored ciphertext before its participant context
+            // was available. Successful decryption replaces it with plaintext in Room; the
+            // chat_messages Flow then emits immediately to DatingViewModel.currentChatMessages.
             chatMessageDao.upsertMessage(message)
             messageDao.insertMessage(message.toLocalMessage())
             

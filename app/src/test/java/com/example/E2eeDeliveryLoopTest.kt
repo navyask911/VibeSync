@@ -4,6 +4,7 @@ import com.example.util.TinkCryptoManager
 import com.google.crypto.tink.KeysetHandle
 import com.google.crypto.tink.KeyTemplates
 import org.json.JSONObject
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -47,6 +48,10 @@ class E2eeDeliveryLoopTest {
         val plaintext = "E2EE delivery loop test — plaintext must stay local."
         val messageId = "test-message-91"
         val matchId = listOf(senderId, recipientId).sorted().joinToString("_")
+        val expectedContext = matchId.toByteArray(Charsets.UTF_8)
+        assertArrayEquals(expectedContext, TinkCryptoManager.createDeterministicContext(senderId, recipientId))
+        assertArrayEquals(expectedContext, TinkCryptoManager.createDeterministicContext(recipientId, senderId))
+        assertArrayEquals(expectedContext, TinkCryptoManager.getAssociatedData(senderId, recipientId))
         val senderPrivate = KeysetHandle.generateNew(KeyTemplates.get("ECIES_P256_HKDF_HMAC_SHA256_AES128_GCM"))
         val recipientPrivate = KeysetHandle.generateNew(KeyTemplates.get("ECIES_P256_HKDF_HMAC_SHA256_AES128_GCM"))
         val senderPublic = TinkCryptoManager.serializePublicKeysetJson(senderPrivate)

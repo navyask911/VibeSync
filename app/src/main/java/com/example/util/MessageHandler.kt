@@ -299,7 +299,8 @@ object MessageHandler {
         context: android.content.Context? = null,
         senderPhone: String = "",
         receiverPhone: String = "",
-        onMismatchedKey: (() -> Unit)? = null
+        onMismatchedKey: (() -> Unit)? = null,
+        matchId: String = ""
     ): String {
         if (rawPayload.isBlank()) return ""
 
@@ -307,18 +308,23 @@ object MessageHandler {
 
         // 0. Handle Google Tink ECIES Decryption
         if (rawPayload.startsWith(TinkCryptoManager.TINK_PREFIX)) {
-            if (effectiveContext != null) {
-                val sPhone = senderPhone.ifBlank { senderUid }
+            val participants = TinkCryptoManager.resolveAadParticipantIds(
+                senderProfileId = senderPhone.ifBlank { senderUid },
+                receiverProfileId = receiverPhone,
+                matchId = matchId,
+                currentProfileId = VibeSyncSessionManager.getProfileId().orEmpty()
+            )
+            if (effectiveContext != null && participants != null) {
                 val tinkDecrypted = TinkCryptoManager.decryptPayload(
                     context = effectiveContext,
                     payload = rawPayload,
-                    senderPhone = sPhone,
-                    receiverPhone = receiverPhone,
+                    senderPhone = participants.first,
+                    receiverPhone = participants.second,
                     onMismatchedKey = onMismatchedKey
                 )
-                if (tinkDecrypted.isNotBlank()) {
-                    return tinkDecrypted
-                }
+                if (tinkDecrypted.isNotBlank()) return tinkDecrypted
+            } else {
+                Log.e(TAG, "Tink decryption failed closed: canonical participant context could not be resolved.")
             }
             Log.e(TAG, "Tink decryption failed closed.")
             return ""

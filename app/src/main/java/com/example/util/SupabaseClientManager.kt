@@ -1161,18 +1161,35 @@ object SupabaseClientManager {
                     val senderId = obj.optSafeString("sender_id", "")
                     val receiverId = obj.optSafeString("receiver_id", "")
                     val ciphertext = obj.optSafeString("ciphertext", "")
-                    if (msgId.isBlank() || senderId.isBlank() || receiverId.isBlank() || ciphertext.isBlank()) continue
-                    val decrypted = if (context != null && ciphertext.startsWith(TinkCryptoManager.TINK_PREFIX)) {
-                        TinkCryptoManager.decryptPayload(context, ciphertext, senderId, receiverId)
+                    val remoteMatchId = obj.optSafeString("match_id", matchId)
+                    if (msgId.isBlank() || ciphertext.isBlank()) continue
+                    val aadParticipants = TinkCryptoManager.resolveAadParticipantIds(
+                        senderProfileId = senderId,
+                        receiverProfileId = receiverId,
+                        matchId = remoteMatchId,
+                        currentProfileId = VibeSyncSessionManager.getProfileId().orEmpty()
+                    )
+                    val decrypted = if (
+                        context != null &&
+                        ciphertext.startsWith(TinkCryptoManager.TINK_PREFIX) &&
+                        aadParticipants != null
+                    ) {
+                        TinkCryptoManager.decryptPayload(
+                            context = context,
+                            payload = ciphertext,
+                            senderPhone = aadParticipants.first,
+                            receiverPhone = aadParticipants.second
+                        )
                     } else ""
                     if (decrypted.isBlank()) continue
+                    val resolvedSenderId = senderId.ifBlank { aadParticipants?.first.orEmpty() }
                     val mediaType = obj.optSafeString("media_type", "TEXT")
                     val rawMedia = obj.optSafeString("media_url", "")
                     val ts = obj.optLong("timestamp", 0L).takeIf { it > 0 } ?: System.currentTimeMillis()
                     list.add(ChatMessageEntity(
                         messageId = msgId,
-                        matchId = obj.optSafeString("match_id", matchId),
-                        senderId = senderId,
+                        matchId = remoteMatchId,
+                        senderId = resolvedSenderId,
                         text = decrypted,
                         timestamp = ts,
                         isDelivered = obj.optBoolean("is_delivered", false),

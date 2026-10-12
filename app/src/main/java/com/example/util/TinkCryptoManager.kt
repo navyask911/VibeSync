@@ -10,7 +10,7 @@ import com.google.crypto.tink.JsonKeysetReader
 import com.google.crypto.tink.JsonKeysetWriter
 import com.google.crypto.tink.KeyTemplates
 import com.google.crypto.tink.KeysetHandle
-import com.google.crypto.tink.config.TinkConfig
+import com.google.crypto.tink.aead.AeadConfig
 import com.google.crypto.tink.hybrid.HybridConfig
 import com.google.crypto.tink.integration.android.AndroidKeysetManager
 import java.io.ByteArrayOutputStream
@@ -66,10 +66,10 @@ object TinkCryptoManager {
         synchronized(this) {
             if (!isInitialized) {
                 try {
-                    TinkConfig.register()
+                    AeadConfig.register()
                     HybridConfig.register()
                     isInitialized = true
-                    Log.i(TAG, "Google Tink ECIES HybridConfig registered successfully.")
+                    Log.i(TAG, "Google Tink AeadConfig and HybridConfig registered successfully.")
                 } catch (e: Throwable) {
                     Log.e(TAG, "Failed to register TinkConfig: ${e.message}", e)
                 }
@@ -222,18 +222,76 @@ object TinkCryptoManager {
     }
 
     /**
-     * Generates deterministic sorted associatedData context info for sender and receiver.
+     * Creates the exact same authenticated context on either participant device.
+     * AAD is the UTF-8 bytes of the canonical pair match ID: smaller profile ID first.
      */
-    fun getAssociatedData(senderPhone: String, receiverPhone: String): ByteArray {
-        // Bind encryption to stable VibeSync profile identities, not raw phone numbers.
-        // This keeps phone numbers out of the message transport/database while making the
-        // authenticated sender/recipient identities part of the AEAD context.
-        val sender = senderPhone.trim().lowercase()
-        val receiver = receiverPhone.trim().lowercase()
-        require(sender.isNotBlank() && receiver.isNotBlank()) { "message identities required" }
-        val sorted = listOf(sender, receiver).sorted()
-        return ("VibeSync:v1:" + sorted[0] + ":" + sorted[1]).toByteArray(Charsets.UTF_8)
+    fun createDeterministicContext(idA: String, idB: String): ByteArray {
+        val a = idA.trim().lowercase(java.util.Locale.ROOT)
+        val b = idB.trim().lowercase(java.util.Locale.ROOT)
+        require(a.isNotBlank() && b.isNotBlank() && a != b) {
+            "Two distinct participant profile IDs are required for the message AAD context."
+        }
+        val canonicalMatchId = if (a < b) "${a}_${b}" else "${b}_${a}"
+        return canonicalMatchId.toByteArray(Charsets.UTF_8)
     }
+
+    private fun participantPairFromMatchId(matchId: String): Pair<String, String>? {
+        val normalized = matchId.trim().replace(Regex("(?i)^match_"), "")
+        val parts = normalized.split('_')
+        val profileIdPattern = Regex("^[0-9a-fA-F]{16}$")
+        if (parts.size != 2 || parts.any { !profileIdPattern.matches(it) }) return null
+        val a = parts[0].lowercase(java.util.Locale.ROOT)
+        val b = parts[1].lowercase(java.util.Locale.ROOT)
+        if (a == b) return null
+        return if (a < b) a to b else b to a
+    }
+
+    /**
+     * Resolves participants before decrypting an inbound message. Raw phone-number fields
+     * are not valid AAD identities; missing IDs may only be recovered from a canonical match ID.
+     */
+    fun resolveAadParticipantIds(
+        senderProfileId: String,
+        receiverProfileId: String,
+        matchId: String,
+        currentProfileId: String = ""
+    ): Pair<String, String>? {
+        fun canonicalId(value: String): String =
+            value.trim().lowercase(java.util.Locale.ROOT)
+                .takeUnless { it.isBlank() || ChatRecipientIdentityResolver.isPhoneNumberCandidate(it) }
+                .orEmpty()
+
+        val sender = canonicalId(senderProfileId)
+        val receiver = canonicalId(receiverProfileId)
+        val current = canonicalId(currentProfileId)
+        val matchPair = participantPairFromMatchId(matchId)
+
+        if (sender.isNotBlank() && receiver.isNotBlank()) {
+            if (sender == receiver) return null
+            if (matchPair != null &&
+                !((matchPair.first == sender && matchPair.second == receiver) ||
+                  (matchPair.first == receiver && matchPair.second == sender))
+            ) return null
+            return sender to receiver
+        }
+
+        val pair = matchPair ?: return null
+        return when {
+            sender.isNotBlank() && sender == pair.first -> sender to pair.second
+            sender.isNotBlank() && sender == pair.second -> sender to pair.first
+            sender.isNotBlank() -> null
+            receiver.isNotBlank() && receiver == pair.first -> pair.second to receiver
+            receiver.isNotBlank() && receiver == pair.second -> pair.first to receiver
+            receiver.isNotBlank() -> null
+            current.isNotBlank() && current == pair.first -> pair.second to current
+            current.isNotBlank() && current == pair.second -> pair.first to current
+            else -> pair.first to pair.second
+        }
+    }
+
+    /** Kept as the common API: always returns canonical match-ID UTF-8 context bytes. */
+    fun getAssociatedData(senderPhone: String, receiverPhone: String): ByteArray =
+        createDeterministicContext(senderPhone, receiverPhone)
 
     /**
      * Encrypts raw message string using recipient's Tink public keyset JSON string.
@@ -252,9 +310,8 @@ object TinkCryptoManager {
         try {
             val handle = CleartextKeysetHandle.read(JsonKeysetReader.withString(recipientPublicKeysetJson.trim()))
             val encryptor = handle.getPrimitive(HybridEncrypt::class.java)
-            val contextInfo = if (senderPhone.isNotBlank() && receiverPhone.isNotBlank()) {
-                getAssociatedData(senderPhone, receiverPhone)
-            } else null
+            // Fail closed rather than encrypting with null/empty context. Decrypt uses these same bytes.
+            val contextInfo = createDeterministicContext(senderPhone, receiverPhone)
             val cipherBytes = encryptor.encrypt(rawText.toByteArray(Charsets.UTF_8), contextInfo)
             check(cipherBytes.isNotEmpty()) { "Tink HybridEncrypt returned zero ciphertext bytes." }
             return "$TINK_PREFIX${Base64.encodeToString(cipherBytes, Base64.NO_WRAP)}"

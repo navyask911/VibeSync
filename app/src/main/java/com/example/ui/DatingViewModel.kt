@@ -1108,15 +1108,11 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
                 // Encryption AAD uses canonical profile IDs from the server. Phone fields are
                 // fallbacks for legacy rows and phone-based conversation matching only.
-                val senderIdentity = record.optString("sender_id", "").ifBlank {
-                    record.optString("sender_phone", "")
-                }
-                val receiverIdentity = record.optString("receiver_id", "").ifBlank {
-                    record.optString("receiver_phone", "")
-                }
-                val senderPhone = record.optString("sender_phone", "").ifBlank { senderIdentity }
-                val receiverPhone = record.optString("receiver_phone", "").ifBlank { receiverIdentity }
-                val recordMatchId = record.optString("match_id", "")
+                val senderProfileId = record.optString("sender_id", "").trim()
+                val receiverProfileId = record.optString("receiver_id", "").trim()
+                val senderPhone = record.optString("sender_phone", "").trim()
+                val receiverPhone = record.optString("receiver_phone", "").trim()
+                val recordMatchId = record.optString("match_id", "").trim()
                 val voiceSeconds = record.optInt("voice_duration_seconds", 0)
                 val timestamp = record.optLong("timestamp", System.currentTimeMillis())
                 val isRead = record.optBoolean("is_read", false)
@@ -1128,6 +1124,14 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 val prefs = repository.userPreferences.firstOrNull()
                 val currentUserPhone = prefs?.verifiedMobileNumber ?: ""
                 val currentProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
+                val aadParticipants = com.example.util.TinkCryptoManager.resolveAadParticipantIds(
+                    senderProfileId = senderProfileId,
+                    receiverProfileId = receiverProfileId,
+                    matchId = recordMatchId,
+                    currentProfileId = currentProfileId
+                )
+                val senderIdentity = senderProfileId.ifBlank { aadParticipants?.first ?: senderPhone }
+                val receiverIdentity = receiverProfileId.ifBlank { aadParticipants?.second ?: receiverPhone }
 
                 val activePair = _activeChat.value
                 val activePartnerProfile = activePair?.second
@@ -1164,17 +1168,28 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     val targetMatchId = when {
                         isBelongingToActiveConversation && activeMatchId != null -> activeMatchId
                         recordMatchId.isNotBlank() -> recordMatchId
+                        aadParticipants != null -> com.example.util.SupabaseClientManager.canonicalChatMatchId(
+                            aadParticipants.first, aadParticipants.second
+                        )
                         normSender.isNotBlank() -> "match_$normSender"
                         else -> "match_$senderPhone"
                     }
 
                     // Decrypt incoming payload with Google Tink HybridDecrypt
                     val decryptedText = if (rawText.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
+                        val participants = aadParticipants
+                        if (participants == null) {
+                            android.util.Log.e(
+                                "VibeSyncChat",
+                                "Realtime Tink decryption withheld: canonical participants unresolved for message_id=$msgId, match_id=$recordMatchId."
+                            )
+                            return@launch
+                        }
                         com.example.util.TinkCryptoManager.decryptPayload(
                             context = getApplication(),
                             payload = rawText,
-                            senderPhone = senderIdentity,
-                            receiverPhone = receiverIdentity,
+                            senderPhone = participants.first,
+                            receiverPhone = participants.second,
                             onMismatchedKey = {
                                 viewModelScope.launch(Dispatchers.IO) {
                                     val phoneFallback = senderPhone.takeIf { it.filter { ch -> ch.isDigit() }.length >= 7 }.orEmpty()
@@ -1229,7 +1244,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     val entity = ChatMessageEntity(
                         messageId = msgId,
                         matchId = targetMatchId,
-                        senderId = normSender.ifBlank { senderPhone },
+                        senderId = senderProfileId.ifBlank { aadParticipants?.first ?: normSender.ifBlank { senderPhone } },
                         text = decryptedText,
                         timestamp = timestamp,
                         isDelivered = true,
