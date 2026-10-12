@@ -444,7 +444,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         repository.insertReceivedChatMessage(localMessage, remote.senderId, prefs.verifiedMobileNumber)
                         if (!isFromMe && !remote.isDelivered) {
                             com.example.util.SupabaseBackendManager.markMessageDelivered(
-                                remote.messageId, remote.senderId, ownerProfileId
+                                remote.messageId, partnerPhone, prefs.verifiedMobileNumber
                             )
                         }
                         if (remote.timestamp >= match.lastMessageTime && remote.text.isNotBlank()) {

@@ -693,7 +693,7 @@ fun DiscoverScreen(
                                 Modifier.size(width = 104.dp, height = 118.dp).clip(RoundedCornerShape(13.dp)).background(MaterialTheme.colorScheme.surfaceVariant),
                                 contentAlignment = Alignment.Center
                             ) {
-                                val photo = business.bannerUrl.ifBlank { business.photosList.firstOrNull().orEmpty() }
+                                val photo = business.bannerUrl.ifBlank { business.photoGalleryJson.split("|").firstOrNull { it.isNotBlank() }.orEmpty() }
                                 if (photo.isNotBlank()) {
                                     AsyncImage(model = photo, contentDescription = "${business.name} photo", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                                 } else Text(business.logoEmoji.ifBlank { "🏪" }, fontSize = 34.sp)
