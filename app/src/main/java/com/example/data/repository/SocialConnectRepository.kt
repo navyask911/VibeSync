@@ -2088,6 +2088,7 @@ class SocialConnectRepository(
                 id = cleanDigits.ifBlank { "user_${System.currentTimeMillis()}" },
                 name = effectiveName,
                 age = effectiveAge,
+                dateOfBirth = current.userDob,
                 occupation = effectiveOccupation,
                 city = effectiveCity,
                 distanceMiles = 0,
