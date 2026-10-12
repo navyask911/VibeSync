@@ -690,8 +690,15 @@ fun MatchesChatScreen(
                             linkedProfile = linkedProfile,
                             onViewProfile = onOpenProfileDetail,
                             onClick = {
-                                if (linkedProfile != null) onOpenProfileDetail(linkedProfile)
-                                else onSelectChatContact(contact)
+                                if (linkedProfile != null) {
+                                    onOpenProfileDetail(
+                                        linkedProfile.copy(
+                                            name = contact.name.ifBlank { linkedProfile.name },
+                                            phoneNumber = contact.phoneNumber.ifBlank { linkedProfile.phoneNumber },
+                                            avatarUrl = contact.photoUrl.ifBlank { linkedProfile.avatarUrl }
+                                        )
+                                    )
+                                } else onSelectChatContact(contact)
                             },
                             syncedLocalPhotos = syncedLocalPhotos
                         )
@@ -1175,7 +1182,15 @@ private fun ContactOnVibeSyncRow(
             modifier = Modifier
                 .size(46.dp)
                 .clickable {
-                    if (linkedProfile != null) onViewProfile(linkedProfile) else onClick()
+                    if (linkedProfile != null) {
+                        onViewProfile(
+                            linkedProfile.copy(
+                                name = contactDisplayName.ifBlank { linkedProfile.name },
+                                phoneNumber = contact.phoneNumber.ifBlank { linkedProfile.phoneNumber },
+                                avatarUrl = contact.photoUrl.ifBlank { linkedProfile.avatarUrl }
+                            )
+                        )
+                    } else onClick()
                 },
             contentAlignment = Alignment.Center
         ) {
