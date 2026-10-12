@@ -73,9 +73,8 @@ fun ProfileDetailDialog(
     isMutualConnection: Boolean = false
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val canRevealSensitive = remember(profile.id, profile.phoneNumber, profile.dateOfBirth, isMutualConnection) {
+    val canRevealSensitive =
         com.example.util.ProfilePrivacyManager.canRevealSensitiveFields(context, profile, isMutualConnection)
-    }
     val photoList = remember(profile.avatarUrl, profile.id) {
         profile.getPhotoList()
     }
