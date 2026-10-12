@@ -3150,12 +3150,15 @@ class SocialConnectRepository(
         )
         chatMessageDao.insertMessage(userMsg)
         messageDao.insertMessage(userMsg.toLocalMessage())
-        matchDao.updateLastMessage(
-            matchId = matchId,
-            text = text.ifBlank { if (mediaType == "VOICE") "Voice message" else "Photo" },
-            timestamp = userMsg.timestamp,
-            hasUnread = false
-        )
+        // Key-exchange envelopes are durable outbox control messages, not visible chat activity.
+        if (!mediaType.equals("PROFILE_KEY_EXCHANGE", ignoreCase = true)) {
+            matchDao.updateLastMessage(
+                matchId = matchId,
+                text = text.ifBlank { if (mediaType == "VOICE") "Voice message" else "Photo" },
+                timestamp = userMsg.timestamp,
+                hasUnread = false
+            )
+        }
 
         // Eager-send after the durable local Room write. WorkManager is enqueued only when the
         // immediate attempt cannot commit, preserving a reliable retry path without delaying normal sends.
