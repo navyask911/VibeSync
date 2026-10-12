@@ -522,6 +522,7 @@ fun BusinessHubContent(
                         businesses = allBusinesses,
                         searchQuery = globalSearchQuery,
                         cityQuery = globalCityQuery,
+                        onSearchQueryChange = { globalSearchQuery = it },
                         onFollow = { viewModel.toggleFollowBusiness(it.id) },
                         onSelect = { selectedBusinessForProfile = it }
                     )
@@ -715,6 +716,7 @@ private fun NearestBusinessesTab(
     businesses: List<BusinessEntity>,
     searchQuery: String = "",
     cityQuery: String = "",
+    onSearchQueryChange: (String) -> Unit = {},
     onFollow: (BusinessEntity) -> Unit,
     onSelect: (BusinessEntity) -> Unit
 ) {

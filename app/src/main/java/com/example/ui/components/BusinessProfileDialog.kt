@@ -844,56 +844,6 @@ fun BusinessProfileDialog(
                             }
                         }
                         2 -> {
-                            // Verified Store Visitor Reviews (Requirement 4)
-                            item {
-                                Card(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 18.dp, vertical = 8.dp),
-                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF8E1)),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFFB300)),
-                                    shape = RoundedCornerShape(14.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(14.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFFFFB300), modifier = Modifier.size(20.dp))
-                                                Spacer(modifier = Modifier.width(4.dp))
-                                                Text(
-                                                    text = "${business.rating} / 5.0",
-                                                    fontWeight = FontWeight.ExtraBold,
-                                                    fontSize = 18.sp,
-                                                    color = Color(0xFFE65100)
-                                                )
-                                                Spacer(modifier = Modifier.width(8.dp))
-                                                VerificationBadgeView(tier = business.tierEnum)
-                                            }
-                                            Text(
-                                                text = "Based on ${business.reviewCount} GPS-authenticated store visits",
-                                                fontSize = 11.sp,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-
-                                        Button(
-                                            onClick = { showCheckInDialog = true },
-                                            shape = RoundedCornerShape(10.dp),
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE65100))
-                                        ) {
-                                            Icon(Icons.Default.RateReview, contentDescription = null, modifier = Modifier.size(14.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Check-In & Rate", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                        }
-                                    }
-                                }
-                            }
-
                             item {
                                 val totalRatings = reviews.size
                                 val fiveStarCount = reviews.count { it.rating.toInt().coerceIn(1, 5) == 5 }
@@ -940,7 +890,7 @@ fun BusinessProfileDialog(
                                         ) {
                                             BusinessMetricDonut(
                                                 modifier = Modifier.weight(1f),
-                                                progress = (business.rating / 5f).coerceIn(0f, 1f),
+                                                progress = (business.rating.toFloat() / 5f).coerceIn(0f, 1f),
                                                 centerText = String.format(Locale.ROOT, "%.1f", business.rating),
                                                 label = "Venue rating",
                                                 detail = "out of 5.0",
