@@ -613,7 +613,12 @@ object SupabaseClientManager {
         val occupation = ContactResolver.sanitizeName(if (encOccupation.isNotBlank()) HackFreeSecurityShield.decrypt(encOccupation) else "").ifBlank { "Member" }
         val qualification = ContactResolver.sanitizeName(if (encQualification.isNotBlank()) HackFreeSecurityShield.decrypt(encQualification) else "").ifBlank { "Verified" }
         val marital = ContactResolver.sanitizeName(if (encMarital.isNotBlank()) HackFreeSecurityShield.decrypt(encMarital) else "").ifBlank { "Single" }
-        val avatarUrl = ContactResolver.sanitizeName(if (encAvatarUrl.isNotBlank()) HackFreeSecurityShield.decrypt(encAvatarUrl) else "")
+        val rawAvatarUrl = ContactResolver.sanitizeName(
+            if (encAvatarUrl.isNotBlank()) HackFreeSecurityShield.decrypt(encAvatarUrl) else ""
+        )
+        // Public profile records may carry only opaque encrypted-avatar references. Legacy raw
+        // public URLs are deliberately suppressed rather than rendered as server-readable photos.
+        val avatarUrl = rawAvatarUrl.takeIf { it.startsWith("vibesync-avatar-enc://") }.orEmpty()
         val gender = ContactResolver.sanitizeName(if (encGender.isNotBlank()) HackFreeSecurityShield.decrypt(encGender) else "").ifBlank { "User" }
 
         val publicIdentityKey = obj.optSafeString("public_identity_key", "")
