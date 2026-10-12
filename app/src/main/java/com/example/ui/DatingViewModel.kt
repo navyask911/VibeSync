@@ -1330,12 +1330,18 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                             android.util.Log.w("ProfileKeyExchange", "Rejected inbound exchange because its authenticated identities did not match.")
                             return@launch
                         }
-                        if (exchange.dateOfBirth.isNotBlank()) {
-                            val peerProfile = database.profileDao().getProfileByIdSync(exchange.ownerProfileId)
-                                ?: com.example.util.SupabaseClientManager.fetchProfileById(exchange.ownerProfileId)
-                            if (peerProfile != null) {
-                                database.profileDao().insertProfile(peerProfile.copy(dateOfBirth = exchange.dateOfBirth))
-                            }
+                        val peerProfile = database.profileDao().getProfileByIdSync(exchange.ownerProfileId)
+                            ?: com.example.util.SupabaseClientManager.fetchProfileById(exchange.ownerProfileId)
+                        if (peerProfile != null && exchange.dateOfBirth.isNotBlank()) {
+                            database.profileDao().insertProfile(peerProfile.copy(dateOfBirth = exchange.dateOfBirth))
+                        }
+                        // Force the open profile dialog to re-check contact reciprocity after the
+                        // peer's authenticated key exchange has been committed to local storage.
+                        val currentlySelected = _selectedProfileDetail.value
+                        if (currentlySelected?.id?.equals(exchange.ownerProfileId, ignoreCase = true) == true) {
+                            _selectedProfileDetail.value = currentlySelected.copy(
+                                dateOfBirth = exchange.dateOfBirth.ifBlank { currentlySelected.dateOfBirth }
+                            )
                         }
                         val ack = com.example.util.SupabaseBackendManager.markMessageDelivered(
                             msgId, senderIdentity, receiverIdentity
