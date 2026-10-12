@@ -1,6 +1,7 @@
 package com.example.ui.screens.profile
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -38,7 +39,8 @@ fun FriendsConnectionsCard(
     onOpenFriendsList: () -> Unit,
     onOpenChat: (String) -> Unit,
     isExpanded: Boolean,
-    onToggleExpand: () -> Unit
+    onToggleExpand: () -> Unit,
+    onOpenProfile: (ProfileEntity) -> Unit = {}
 ) {
     val totalFriends = acceptedFriends.size
     val statusText = "$totalFriends Connection${if (totalFriends != 1) "s" else ""} • Chat Active"
@@ -139,22 +141,16 @@ fun FriendsConnectionsCard(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(38.dp)
-                                        .clip(CircleShape)
-                                        .background(
-                                            androidx.compose.ui.graphics.Brush.linearGradient(
-                                                listOf(Color(colorStart), Color(colorEnd))
-                                            )
-                                        ),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = emoji.ifBlank { name.take(1) },
-                                        fontSize = 18.sp
-                                    )
-                                }
+                                com.example.ui.components.DatingAvatar(
+                                    name = name,
+                                    emoji = emoji,
+                                    colorStart = colorStart,
+                                    colorEnd = colorEnd,
+                                    size = 38.dp,
+                                    avatarUrl = prof?.avatarUrl.orEmpty(),
+                                    avatarCacheVersion = prof?.avatarCacheVersion ?: 0L,
+                                    modifier = Modifier.clickable { prof?.let(onOpenProfile) }
+                                )
 
                                 Spacer(modifier = Modifier.width(10.dp))
 
@@ -221,25 +217,16 @@ fun FriendsConnectionsCard(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(38.dp)
-                                        .clip(CircleShape)
-                                        .background(
-                                            androidx.compose.ui.graphics.Brush.linearGradient(
-                                                listOf(
-                                                    Color(mutualProf.gradientColorStart),
-                                                    Color(mutualProf.gradientColorEnd)
-                                                )
-                                            )
-                                        ),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = mutualProf.avatarEmoji.ifBlank { mutualProf.name.take(1) },
-                                        fontSize = 18.sp
-                                    )
-                                }
+                                com.example.ui.components.DatingAvatar(
+                                    name = mutualProf.name,
+                                    emoji = mutualProf.avatarEmoji,
+                                    colorStart = mutualProf.gradientColorStart,
+                                    colorEnd = mutualProf.gradientColorEnd,
+                                    size = 38.dp,
+                                    avatarUrl = mutualProf.avatarUrl,
+                                    avatarCacheVersion = mutualProf.avatarCacheVersion,
+                                    modifier = Modifier.clickable { onOpenProfile(mutualProf) }
+                                )
 
                                 Spacer(modifier = Modifier.width(10.dp))
 
