@@ -12,30 +12,28 @@ import androidx.compose.ui.platform.LocalContext
 
 data class AppAppearance(
     val themeMode: String = "LIGHT",
-    val accentColor: String = "CREAM_BUTTER"
+    val accentColor: String = "VIBESYNC_BLUE"
 )
 
 /**
  * Local-only appearance preferences. They are intentionally stored outside backend/profile data:
- * changing colors never triggers a network request or modifies messaging/authentication state.
+ * only Light and Dark appearance modes are allowed; the VibeSync Blue accent is fixed.
  */
 object AppPreferences {
     internal const val PREFERENCES_NAME = "vibesync_app_preferences"
     internal const val KEY_THEME_MODE = "theme_mode"
     internal const val KEY_ACCENT_COLOR = "accent_color"
 
-    private val validModes = setOf("LIGHT", "DARK", "SYSTEM")
-    private val validAccents = setOf(
-        "CREAM_BUTTER", "SOFT_MINT_CREAM", "PEACH_CREAM", "LAVENDER_MIST", "PALE_AQUA", "ROSE_CREAM", "ALMOND_BISQUE", "PALE_SAGE", "WARM_VANILLA"
-    )
+    private val validModes = setOf("LIGHT", "DARK")
+    private val validAccents = setOf("VIBESYNC_BLUE")
 
     fun getAppearance(context: Context): AppAppearance {
         val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
         val mode = preferences.getString(KEY_THEME_MODE, "LIGHT")?.uppercase()
-        val accent = preferences.getString(KEY_ACCENT_COLOR, "CREAM_BUTTER")?.uppercase()
+        val accent = preferences.getString(KEY_ACCENT_COLOR, "VIBESYNC_BLUE")?.uppercase()
         return AppAppearance(
             themeMode = mode?.takeIf { it in validModes } ?: "LIGHT",
-            accentColor = accent?.takeIf { it in validAccents } ?: "CREAM_BUTTER"
+            accentColor = accent?.takeIf { it in validAccents } ?: "VIBESYNC_BLUE"
         )
     }
 
@@ -48,7 +46,7 @@ object AppPreferences {
     }
 
     fun setAccentColor(context: Context, accent: String) {
-        val normalized = accent.uppercase().takeIf { it in validAccents } ?: "ELECTRIC_BLUE"
+        val normalized = accent.uppercase().takeIf { it in validAccents } ?: "VIBESYNC_BLUE"
         context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_ACCENT_COLOR, normalized)
