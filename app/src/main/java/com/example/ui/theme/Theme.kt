@@ -1,6 +1,5 @@
 package com.example.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -16,17 +15,9 @@ data class AppAccentPalette(
     val background: Color
 )
 
-/** Exactly nine user-selectable light and creamy pastel palettes. */
+/** One fixed VibeSync brand accent retained for source compatibility. */
 val AppAccentPalettes = listOf(
-    AppAccentPalette("CREAM_BUTTER", "Executive Indigo", "#6366F1", CreamButterAccent, "#EEF2FF", CreamButterBackground),
-    AppAccentPalette("SOFT_MINT_CREAM", "Soft Mint Cream", "#C8E6C9", SoftMintCreamAccent, "#E8F5E9", SoftMintCreamBackground),
-    AppAccentPalette("PEACH_CREAM", "Peach Cream", "#FFE0B2", PeachCreamAccent, "#FFF3E0", PeachCreamBackground),
-    AppAccentPalette("LAVENDER_MIST", "Lavender Mist", "#E1BEE7", LavenderMistAccent, "#F3E5F5", LavenderMistBackground),
-    AppAccentPalette("PALE_AQUA", "Pale Aqua / Soft Sky", "#B3E5FC", PaleAquaAccent, "#E1F5FE", PaleAquaBackground),
-    AppAccentPalette("ROSE_CREAM", "Rose Cream", "#F8BBD0", RoseCreamAccent, "#FCE4EC", RoseCreamBackground),
-    AppAccentPalette("ALMOND_BISQUE", "Almond Bisque", "#F5DEB3", AlmondBisqueAccent, "#FDF5E6", AlmondBisqueBackground),
-    AppAccentPalette("PALE_SAGE", "Pale Sage", "#B2DFDB", PaleSageAccent, "#E0F2F1", PaleSageBackground),
-    AppAccentPalette("WARM_VANILLA", "Warm Vanilla", "#FFF9C4", WarmVanillaAccent, "#FFFDE7", WarmVanillaBackground)
+    AppAccentPalette("VIBESYNC_BLUE", "VibeSync Blue", "#2563EB", VibeSyncBlue, "#DBEAFE", Color(0xFFDBEAFE))
 )
 
 private val ThemeLightCanvas = Color(0xFFFFFFFF)
@@ -46,27 +37,18 @@ private val ThemeDarkTextSecondary = Color(0xFF8E9398)
 fun MyApplicationTheme(
     presetId: String? = null,
     themeMode: String = "LIGHT",
-    accentColor: String = "CREAM_BUTTER",
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    accentColor: String = "VIBESYNC_BLUE",
+    darkTheme: Boolean = false,
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
-    val legacyPreset = when (presetId?.uppercase()) {
-        "PURE_LIGHT" -> "LIGHT" to "CREAM_BUTTER"
-        "MIDNIGHT_DARK" -> "DARK" to "CREAM_BUTTER"
-        "SUNLIGHT_GOLD" -> "LIGHT" to "WARM_VANILLA"
-        "AFTERNOON_AZURE" -> "LIGHT" to "PALE_AQUA"
-        "EVENING_SUNSET" -> "DARK" to "PEACH_CREAM"
-        else -> null
+    // Old preset IDs normalize to Light/Dark; SYSTEM falls back to Light.
+    val resolvedMode = when (presetId?.uppercase()) {
+        "MIDNIGHT_DARK", "EVENING_SUNSET" -> "DARK"
+        "PURE_LIGHT", "SUNLIGHT_GOLD", "AFTERNOON_AZURE" -> "LIGHT"
+        else -> if (themeMode.equals("DARK", ignoreCase = true)) "DARK" else "LIGHT"
     }
-    val resolvedMode = (legacyPreset?.first ?: themeMode).uppercase()
-    // Retain the arguments for saved-preference compatibility, while keeping the core messenger
-    // accent fixed to sapphire blue for a consistent high-contrast visual system.
-    val isDark = when (resolvedMode) {
-        "DARK" -> true
-        "SYSTEM" -> darkTheme
-        else -> false
-    }
+    val isDark = resolvedMode == "DARK"
     val accent = VibeSyncBlue
     val foreground = if (isDark) ThemeDarkTextPrimary else ThemeLightTextPrimary
     val colorScheme = if (isDark) {

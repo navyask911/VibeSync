@@ -47,7 +47,12 @@ data class ChatMessageEntity(
     val lastSyncAttemptAt: Long = 0L,
     /** Profile that created the outbox row; prevents retries crossing account switches. */
     @ColumnInfo(defaultValue = "''")
-    val outboxOwnerProfileId: String = ""
+    val outboxOwnerProfileId: String = "",
+    /** Local-only display metadata so resolved sender identity survives process restarts. */
+    @ColumnInfo(defaultValue = "''")
+    val senderDisplayName: String = "",
+    @ColumnInfo(defaultValue = "''")
+    val senderPhotoUri: String = ""
 ) {
     @androidx.room.Ignore
     val senderUid: String = senderId

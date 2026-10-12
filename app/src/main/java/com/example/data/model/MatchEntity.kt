@@ -19,5 +19,8 @@ data class MatchEntity(
     val status: String = "ACTIVE", // "ACTIVE", "BROKEN_UP", "MUTUAL_BROKEN_UP"
     val relationshipStatus: String = "FRIENDS", // "FRIENDS", "PROPOSAL_SENT", "PROPOSAL_RECEIVED", "IN_RELATIONSHIP", "BREAKUP_PENDING_USER", "BREAKUP_PENDING_PARTNER", "MUTUAL_BROKEN_UP"
     val hasStartedChat: Boolean = true,
-    val isPhonebookContact: Boolean = false
+    val isPhonebookContact: Boolean = false,
+    /** Resolved local contact identity; local-only and never synced to Supabase. */
+    @androidx.room.ColumnInfo(defaultValue = "''") val localContactName: String = "",
+    @androidx.room.ColumnInfo(defaultValue = "''") val localPhotoUri: String = ""
 )

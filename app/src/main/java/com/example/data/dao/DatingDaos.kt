@@ -197,6 +197,9 @@ interface ChatMessageDao {
     @Update
     suspend fun updateMessage(message: ChatMessageEntity)
 
+    @Query("UPDATE chat_messages SET senderDisplayName = :displayName, senderPhotoUri = :photoUri WHERE matchId = :matchId AND senderId != 'USER'")
+    suspend fun persistIncomingContactMetadata(matchId: String, displayName: String, photoUri: String)
+
     @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryState = 'READ' WHERE messageId = :messageId")
     suspend fun markMessageAsRead(messageId: String)
 

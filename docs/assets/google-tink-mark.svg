@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="84" viewBox="0 0 360 84" role="img" aria-labelledby="title desc">
+  <title id="title">Google Tink encryption disclosure mark</title>
+  <desc id="desc">A neutral shield mark with Google Tink text for VibeSync's encryption disclosure.</desc>
+  <rect width="360" height="84" rx="16" fill="#F1F6FF"/>
+  <path d="M42 13 66 22v18c0 16-10 25-24 31C28 65 18 56 18 40V22z" fill="#2563EB"/>
+  <path d="M32 42l7 7 14-16" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="84" y="36" fill="#202124" font-family="Arial,sans-serif" font-size="15" font-weight="700">GOOGLE</text>
+  <text x="84" y="60" fill="#174EA6" font-family="Arial,sans-serif" font-size="27" font-weight="700">Tink</text>
+</svg>
