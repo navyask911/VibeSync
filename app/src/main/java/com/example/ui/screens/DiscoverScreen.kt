@@ -626,7 +626,7 @@ fun DiscoverScreen(
                             )
                             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("${profile.name.ifBlank { "VibeSync User" }} · ${profile.age}", fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1)
+                                    Text("${profile.name.ifBlank { "VibeSync User" }} · Age: ${profile.age} • DOB Hidden", fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1)
                                     if (profile.isVerified) {
                                         Spacer(Modifier.width(4.dp))
                                         Text("✓", color = VibeSyncTeal, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
