@@ -2247,7 +2247,7 @@ class SocialConnectRepository(
                     "maritalStatus" to updatedPrefs.userMaritalStatus,
                     "isOpenForDating" to updatedPrefs.isOpenForDating,
                     "avatarEmoji" to if (updatedPrefs.avatarUrl.isNotBlank()) "" else "✨",
-                    "avatarUrl" to updatedPrefs.avatarUrl,
+                    "avatarUrl" to com.example.util.ProfileAvatarStorageManager.serverAvatarReference(userId, updatedPrefs.avatarUrl),
                     "isVerified" to true,
                     "isRealFaceVerified" to updatedPrefs.isFaceVerified,
                     "trustScore" to updatedPrefs.trustRating,
