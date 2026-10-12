@@ -1287,7 +1287,8 @@ object SupabaseClientManager {
                 }
                 val page = JSONArray(pageText)
                 for (i in 0 until page.length()) {
-                    val row = page.optJSONObject(i) ?: run {
+                    val row = page.optJSONObject(i)
+                    if (row == null) {
                         complete = false
                         continue
                     }
