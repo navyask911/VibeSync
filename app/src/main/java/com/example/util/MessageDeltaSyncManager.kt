@@ -106,6 +106,40 @@ object MessageDeltaSyncManager {
                     continue
                 }
 
+                // Profile-key envelopes are delivered via the durable delta path too; do not
+                // persist them as chat bubbles or advance the cursor before a valid import/ACK.
+                val incomingKeyEnvelope =
+                    canRenderPlaintext && ProfileKeyManager.isExchangePayload(remote.text)
+                if (incomingKeyEnvelope) {
+                    val exchange = ProfileKeyManager.consumeExchangePayload(
+                        context = context.applicationContext,
+                        senderProfileId = remote.senderId,
+                        currentProfileId = ownerId,
+                        payload = remote.text
+                    )
+                    if (exchange == null) {
+                        complete = false
+                        Log.w(TAG, "Rejected profile-key exchange in delta sync for message ${remote.messageId}.")
+                        continue
+                    }
+                    if (exchange.dateOfBirth.isNotBlank()) {
+                        val peerProfile = database.profileDao().getProfileByIdSync(exchange.ownerProfileId)
+                            ?: SupabaseClientManager.fetchProfileById(exchange.ownerProfileId)
+                        if (peerProfile != null) {
+                            database.profileDao().insertProfile(peerProfile.copy(dateOfBirth = exchange.dateOfBirth))
+                        }
+                    }
+                    val acked = remote.isDelivered || remote.isRead ||
+                        SupabaseBackendManager.markMessageDelivered(remote.messageId, remote.senderId, ownerId)
+                    if (!acked) {
+                        ackFailures++
+                        complete = false
+                        Log.w(TAG, "Profile-key envelope ACK remains pending for ${remote.messageId}.")
+                    }
+                    synced++
+                    continue
+                }
+
                 if (!canRenderPlaintext) complete = false
                 val localText = if (record.decryptionSucceeded) remote.text else existingPlaintext ?: remote.text
                 val needsAck = canRenderPlaintext && !remote.isDelivered && !remote.isRead
