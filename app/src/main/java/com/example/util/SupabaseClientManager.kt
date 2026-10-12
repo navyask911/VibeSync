@@ -868,36 +868,46 @@ object SupabaseClientManager {
         fallbackPhoneNumber: String = ""
     ): String? = withContext(Dispatchers.IO) {
         val safeProfileId = profileId.trim()
-        if (safeProfileId.isBlank()) return@withContext null
-
-        // Preferred lookup: canonical opaque profile ID returned by the VibeSync APIs.
+        if (safeProfileId.isBlank() || safeProfileId.startsWith("match_", ignoreCase = true)) {
+            Log.w(TAG, "Rejecting invalid recipient profile ID for key lookup: profile_id=$safeProfileId")
+            return@withContext null
+        }
+        var directRows = 0
         try {
             val safeId = java.net.URLEncoder.encode(safeProfileId, "UTF-8")
             val request = buildRequest(
-                endpoint = "vibesync_profiles_public?select=public_identity_key&id=eq.$safeId&limit=1",
+                endpoint = "vibesync_profiles_public?select=id,public_identity_key&id=eq.$safeId&limit=1",
                 method = "GET"
             )
             httpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
                 if (response.isSuccessful) {
-                    val arr = JSONArray(response.body?.string() ?: "[]")
-                    arr.optJSONObject(0)?.optSafeString("public_identity_key", "")?.ifBlank { null }
-                        ?.let { return@withContext it }
+                    val arr = JSONArray(body)
+                    directRows = arr.length()
+                    val rawKey = arr.optJSONObject(0)?.optSafeString("public_identity_key", "").orEmpty()
+                    if (rawKey.isNotBlank()) {
+                        val decoded = TinkCryptoManager.decodePostgrestTextValue(rawKey)
+                        if (TinkCryptoManager.validatePublicKeysetJson(decoded)) {
+                            Log.i(TAG, "Resolved valid peer Tink key by profile ID; key_chars=${decoded.length()}.")
+                            return@withContext decoded
+                        }
+                        Log.e(TAG, "Profile-ID lookup returned malformed key: profile_id=$safeProfileId, raw_row=${body}, returned_value=${rawKey}, decoded_value=${decoded}")
+                    } else {
+                        Log.w(TAG, "Profile-ID key lookup found no published key: profile_id=$safeProfileId, rows=${arr.length()}.")
+                    }
                 } else {
-                    Log.w(TAG, "Profile-ID public-key lookup returned HTTP ${response.code}.")
+                    Log.w(TAG, "Profile-ID key lookup failed HTTP ${response.code}: profile_id=$safeProfileId, response=${body}")
                 }
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "Profile-ID public-key lookup notice: ${e.javaClass.simpleName}: ${e.message}")
+            Log.e(TAG, "Profile-ID public-key lookup exception for $safeProfileId: ${e.javaClass.simpleName}: ${e.message}", e)
         }
-
-        // Older/local contact rows may hold phone identity rather than canonical Supabase profile ID.
         val phone = fallbackPhoneNumber.trim()
         if (phone.isNotBlank()) {
-            Log.i(TAG, "No public key resolved by profile ID; trying the privacy-preserving phone-hash RPC.")
-            return@withContext SupabaseBackendManager.fetchPublicKeyForPhone(phone)?.ifBlank { null }
+            Log.i(TAG, "No valid key for profile_id=$safeProfileId (rows=$directRows); trying phone-hash RPC.")
+            return@withContext SupabaseBackendManager.fetchPublicKeyForPhone(phone)
         }
-
-        Log.w(TAG, "No published Tink public key found for profile_id=$safeProfileId; outbox should retry after peer registration.")
+        Log.w(TAG, "No published peer Tink key found for profile_id=$safeProfileId and no fallback phone is available.")
         null
     }
     suspend fun upsertChatMessage(

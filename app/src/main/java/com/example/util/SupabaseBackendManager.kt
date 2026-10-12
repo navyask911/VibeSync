@@ -841,11 +841,25 @@ object SupabaseBackendManager {
                     .post(body)
                     .build()
                 httpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) return@withContext null
-                    response.body?.string()?.trim()?.trim('"')?.takeIf { it.isNotBlank() }
+                    val rawBody = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        Log.e("TinkE2EE", "Phone-hash public-key RPC failed: HTTP ${response.code}; raw_response=${rawBody}")
+                        return@withContext null
+                    }
+                    val keyset = TinkCryptoManager.decodePostgrestTextValue(rawBody)
+                    if (keyset.isBlank()) {
+                        Log.w("TinkE2EE", "Phone-hash public-key RPC returned empty/null: raw_response=${rawBody}; decoded_value=${keyset}")
+                        return@withContext null
+                    }
+                    if (!TinkCryptoManager.validatePublicKeysetJson(keyset)) {
+                        Log.e("TinkE2EE", "Phone-hash RPC returned an invalid Tink keyset: raw_response=${rawBody}; decoded_value=${keyset}")
+                        return@withContext null
+                    }
+                    Log.i("TinkE2EE", "Phone-hash key lookup returned a valid Tink public keyset (chars=${keyset.length()}).")
+                    keyset
                 }
             } catch (e: Exception) {
-                Log.w("TinkE2EE", "Public key lookup notice: ${e.message}")
+                Log.e("TinkE2EE", "Public key lookup exception: ${e.javaClass.simpleName}: ${e.message}", e)
                 null
             }
         }

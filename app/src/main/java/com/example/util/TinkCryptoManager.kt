@@ -15,6 +15,13 @@ import com.google.crypto.tink.hybrid.HybridConfig
 import com.google.crypto.tink.integration.android.AndroidKeysetManager
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
+import org.json.JSONArray
+import org.json.JSONObject
+import org.json.JSONTokener
+
+class RecipientKeyNotFoundException(message: String) : IllegalStateException(message)
+
+class TinkEncryptionException(message: String, cause: Throwable) : IllegalStateException(message, cause)
 
 /**
  * TinkCryptoManager
@@ -98,17 +105,82 @@ object TinkCryptoManager {
     /**
      * Serializes public keyset handle to JSON string for profile distribution.
      */
+    fun serializePublicKeysetJson(keysetHandle: KeysetHandle): String {
+        val baos = ByteArrayOutputStream()
+        CleartextKeysetHandle.write(keysetHandle.publicKeysetHandle, JsonKeysetWriter.withOutputStream(baos))
+        return baos.toString("UTF-8")
+    }
+
     fun getMyPublicKeysetJson(context: Context): String {
         val handle = getOrCreateMyKeysetHandle(context) ?: return ""
         return try {
-            val publicHandle = handle.publicKeysetHandle
-            val baos = ByteArrayOutputStream()
-            CleartextKeysetHandle.write(publicHandle, JsonKeysetWriter.withOutputStream(baos))
-            baos.toString("UTF-8")
+            serializePublicKeysetJson(handle)
         } catch (e: Throwable) {
             Log.e(TAG, "Error serializing public keyset handle: ${e.message}", e)
             ""
         }
+    }
+
+    /** Decode a PostgREST scalar text result, including a quoted/escaped JSON value. */
+    fun decodePostgrestTextValue(rawResponseBody: String): String {
+        val raw = rawResponseBody.trim()
+        if (raw.isBlank()) return ""
+        return try {
+            when (val value = JSONTokener(raw).nextValue()) {
+                is String -> value.trim()
+                is JSONObject -> value.toString()
+                is JSONArray -> value.toString()
+                else -> if (value === JSONObject.NULL) "" else value.toString()
+            }
+        } catch (_: Throwable) {
+            raw
+        }
+    }
+
+    /** Validate Tink keyset structure and ensure a usable HybridEncrypt primitive can be created. */
+    fun validatePublicKeysetJson(publicKeysetJson: String): Boolean {
+        if (publicKeysetJson.isBlank()) return false
+        return try {
+            initTink()
+            val handle = CleartextKeysetHandle.read(JsonKeysetReader.withString(publicKeysetJson.trim()))
+            handle.getPrimitive(HybridEncrypt::class.java)
+            true
+        } catch (e: Throwable) {
+            Log.e(TAG, "Public Tink keyset validation failed: ${e.javaClass.simpleName}: ${e.message}; returned_keyset=${publicKeysetJson}", e)
+            false
+        }
+    }
+
+    private fun canonicalJsonValue(value: Any?): String {
+        if (value == null || value === JSONObject.NULL) return "null"
+        return when (value) {
+            is JSONObject -> value.keys().asSequence().toList().sorted().joinToString(prefix = "{", postfix = "}", separator = ",") {
+                key -> JSONObject.quote(key) + ":" + canonicalJsonValue(value.get(key))
+            }
+            is JSONArray -> (0 until value.length()).joinToString(prefix = "[", postfix = "]", separator = ",") {
+                index -> canonicalJsonValue(value.get(index))
+            }
+            is String -> JSONObject.quote(value)
+            is Number, is Boolean -> value.toString()
+            else -> JSONObject.quote(value.toString())
+        }
+    }
+
+    private fun canonicalPublicKeyBytes(publicKeysetJson: String): ByteArray {
+        require(publicKeysetJson.isNotBlank()) { "A public Tink keyset is required for fingerprint calculation." }
+        val parsed = JSONTokener(publicKeysetJson.trim()).nextValue()
+        require(parsed is JSONObject) { "The published Tink public keyset is not a JSON object." }
+        return canonicalJsonValue(parsed).toByteArray(Charsets.UTF_8)
+    }
+
+    private fun compareUnsignedBytes(left: ByteArray, right: ByteArray): Int {
+        val length = minOf(left.size, right.size)
+        for (index in 0 until length) {
+            val a = left[index].toInt() and 0xFF
+            val b = right[index].toInt() and 0xFF
+            if (a != b) return a.compareTo(b)
+        }
+        return left.size.compareTo(right.size)
     }
 
     /**
@@ -124,28 +196,23 @@ object TinkCryptoManager {
     ): String {
         val aId = profileAId.trim().lowercase(java.util.Locale.ROOT)
         val bId = profileBId.trim().lowercase(java.util.Locale.ROOT)
-        val aKey = publicKeyAJson.trim()
-        val bKey = publicKeyBJson.trim()
         require(aId.isNotBlank() && bId.isNotBlank() && aId != bId) {
             "Two distinct VibeSync profile IDs are required to calculate a safety fingerprint."
         }
-        require(aKey.isNotBlank() && bKey.isNotBlank()) {
-            "Both participants must publish their Tink public keysets before verification."
-        }
+        return createSafetyFingerprint(publicKeyAJson, publicKeyBJson)
+    }
 
-        val identities = listOf(aId to aKey, bId to bKey).sortedBy { it.first }
-        val canonical = buildString {
-            append("VibeSync safety fingerprint v1\n")
-            identities.forEach { (profileId, publicKeyset) ->
-                append(profileId.length).append(':').append(profileId).append('\n')
-                append(publicKeyset.length).append(':').append(publicKeyset).append('\n')
-            }
-        }
+    /** Canonicalize both keysets, sort bytes lexicographically, then hash in the same order on each device. */
+    fun createSafetyFingerprint(publicKeyAJson: String, publicKeyBJson: String): String {
+        val sortedKeys = listOf(canonicalPublicKeyBytes(publicKeyAJson), canonicalPublicKeyBytes(publicKeyBJson))
+            .sortedWith(Comparator { left, right -> compareUnsignedBytes(left, right) })
         val digest = MessageDigest.getInstance("SHA-256")
-            .digest(canonical.toByteArray(Charsets.UTF_8))
+        digest.update(sortedKeys[0])
+        digest.update(sortedKeys[1])
+        val hash = digest.digest()
         val hexDigits = "0123456789ABCDEF"
-        val hex = buildString(digest.size * 2) {
-            digest.forEach { byte ->
+        val hex = buildString(hash.size * 2) {
+            hash.forEach { byte ->
                 val value = byte.toInt() and 0xFF
                 append(hexDigits[value ushr 4])
                 append(hexDigits[value and 0x0F])
@@ -173,36 +240,57 @@ object TinkCryptoManager {
      * Uses identical associatedData context bytes (sorted sender/receiver phones) when provided.
      * Returns "TINK_ENC:" + Base64(ciphertext)
      */
-    fun encryptForRecipient(
+    fun encryptForRecipientOrThrow(
         recipientPublicKeysetJson: String,
         rawText: String,
         senderPhone: String = "",
         receiverPhone: String = ""
     ): String {
-        if (rawText.isBlank()) return ""
-        if (recipientPublicKeysetJson.isBlank()) {
-            Log.w(TAG, "Refusing plaintext encryption fallback: recipient public key is missing.")
-            return ""
-        }
+        if (recipientPublicKeysetJson.isBlank()) throw RecipientKeyNotFoundException("Recipient Tink public key is missing or blank.")
+        require(rawText.isNotBlank()) { "Cannot encrypt an empty message payload." }
         initTink()
-
-        return try {
-            val publicKeysetHandle = CleartextKeysetHandle.read(
-                JsonKeysetReader.withString(recipientPublicKeysetJson)
-            )
-            val encryptor = publicKeysetHandle.getPrimitive(HybridEncrypt::class.java)
+        try {
+            val handle = CleartextKeysetHandle.read(JsonKeysetReader.withString(recipientPublicKeysetJson.trim()))
+            val encryptor = handle.getPrimitive(HybridEncrypt::class.java)
             val contextInfo = if (senderPhone.isNotBlank() && receiverPhone.isNotBlank()) {
                 getAssociatedData(senderPhone, receiverPhone)
-            } else {
-                null
-            }
-            val ciphertextBytes = encryptor.encrypt(rawText.toByteArray(Charsets.UTF_8), contextInfo)
-            val encodedCipher = Base64.encodeToString(ciphertextBytes, Base64.NO_WRAP)
-            "$TINK_PREFIX$encodedCipher"
-        } catch (e: Throwable) {
-            Log.e("TinkE2EE", "Tink hybrid encryption failed closed: ${e.message}", e)
-            ""
+            } else null
+            val cipherBytes = encryptor.encrypt(rawText.toByteArray(Charsets.UTF_8), contextInfo)
+            check(cipherBytes.isNotEmpty()) { "Tink HybridEncrypt returned zero ciphertext bytes." }
+            return "$TINK_PREFIX${Base64.encodeToString(cipherBytes, Base64.NO_WRAP)}"
+        } catch (e: RecipientKeyNotFoundException) {
+            throw e
+        } catch (t: Throwable) {
+            Log.e(TAG, "Tink encryption failure: ${t.javaClass.simpleName}: ${t.message}; recipient_key_chars=${recipientPublicKeysetJson.length()}, sender_profile_id=$senderPhone, recipient_profile_id=$receiverPhone.", t)
+            throw TinkEncryptionException("Tink hybrid encryption failed: ${t.javaClass.simpleName}: ${t.message ?: "unknown error"}", t)
         }
+    }
+
+    /** Compatibility wrapper for legacy call sites; durable outbox uses the typed method above. */
+    fun encryptForRecipient(
+        recipientPublicKeysetJson: String,
+        rawText: String,
+        senderPhone: String = "",
+        receiverPhone: String = ""
+    ): String = try {
+        encryptForRecipientOrThrow(recipientPublicKeysetJson, rawText, senderPhone, receiverPhone)
+    } catch (e: Throwable) {
+        Log.e(TAG, "Tink encryption failed closed: ${e.javaClass.simpleName}: ${e.message}", e)
+        ""
+    }
+
+    /** Primitive-level decrypt entrypoint used by JVM/Robolectric contract tests. */
+    fun decryptWithPrivateKeysetOrThrow(
+        privateKeysetHandle: KeysetHandle,
+        payload: String,
+        senderPhone: String,
+        receiverPhone: String
+    ): String {
+        require(payload.startsWith(TINK_PREFIX)) { "Only Tink-prefixed ciphertext can be decrypted." }
+        require(senderPhone.isNotBlank() && receiverPhone.isNotBlank()) { "Sender/receiver binding context is required." }
+        val cipherBytes = Base64.decode(payload.removePrefix(TINK_PREFIX), Base64.NO_WRAP)
+        val decryptor = privateKeysetHandle.getPrimitive(HybridDecrypt::class.java)
+        return String(decryptor.decrypt(cipherBytes, getAssociatedData(senderPhone, receiverPhone)), Charsets.UTF_8)
     }
 
     /**

@@ -112,19 +112,19 @@ internal object PendingMessageOutboxSender {
                 }
 
                 val localRecipient = db.profileDao().getProfileByIdSync(recipientProfileId)
-                val recipientPublicKey = localRecipient?.publicIdentityKey.orEmpty().ifBlank {
-                    // The remote ID query is primary; older contact rows may only hold a phone number,
-                    // so retry via the privacy-preserving phone-hash RPC when that number is available.
-                    SupabaseClientManager.fetchPublicIdentityKey(
-                        profileId = recipientProfileId,
-                        fallbackPhoneNumber = localRecipient?.phoneNumber.orEmpty()
-                    ).orEmpty()
-                }
+                val fetchedRecipientKey = SupabaseClientManager.fetchPublicIdentityKey(
+                    profileId = recipientProfileId,
+                    fallbackPhoneNumber = localRecipient?.phoneNumber.orEmpty()
+                )
+                val cachedRecipientKey = localRecipient?.publicIdentityKey.orEmpty().trim()
+                    .takeIf { TinkCryptoManager.validatePublicKeysetJson(it) }
+                val recipientPublicKey = fetchedRecipientKey ?: cachedRecipientKey.orEmpty()
                 if (recipientPublicKey.isBlank()) {
-                    return@withContext PendingOutboxAttempt.Retryable(
-                        "Recipient Tink public key is unavailable for profile_id=$recipientProfileId; " +
-                            "profile-ID and eligible phone-hash lookups returned no published key."
+                    val missing = com.example.util.RecipientKeyNotFoundException(
+                        "No published Tink public key resolved for canonical recipient profile_id=$recipientProfileId."
                     )
+                    Log.w(TAG, "Recipient key fetch deferred: ${missing.message}")
+                    return@withContext PendingOutboxAttempt.Retryable("RecipientKeyNotFoundException: ${missing.message}")
                 }
 
                 val rawText = message.text.ifBlank {
@@ -145,15 +145,30 @@ internal object PendingMessageOutboxSender {
                 val ciphertext = if (message.text.startsWith(TinkCryptoManager.TINK_PREFIX)) {
                     message.text
                 } else {
-                    TinkCryptoManager.encryptForRecipient(
-                        recipientPublicKeysetJson = recipientPublicKey,
-                        rawText = rawText,
-                        senderPhone = senderProfileId,
-                        receiverPhone = recipientProfileId
-                    )
+                    try {
+                        TinkCryptoManager.encryptForRecipientOrThrow(
+                            recipientPublicKeysetJson = recipientPublicKey,
+                            rawText = rawText,
+                            senderPhone = senderProfileId,
+                            receiverPhone = recipientProfileId
+                        )
+                    } catch (missing: com.example.util.RecipientKeyNotFoundException) {
+                        Log.w(TAG, "RecipientKeyNotFoundException for message_id=$safeMessageId: ${missing.message}", missing)
+                        return@withContext PendingOutboxAttempt.Retryable("RecipientKeyNotFoundException: ${missing.message}")
+                    } catch (failure: com.example.util.TinkEncryptionException) {
+                        Log.e(TAG, "Tink encryption failure for message_id=$safeMessageId.", failure)
+                        return@withContext PendingOutboxAttempt.Retryable("TinkEncryptionException: ${failure.message ?: "unknown encryption failure"}")
+                    } catch (failure: Throwable) {
+                        Log.e(TAG, "Unexpected Tink encryption failure for message_id=$safeMessageId.", failure)
+                        return@withContext PendingOutboxAttempt.Retryable("Tink encryption exception ${failure.javaClass.simpleName}: ${failure.message ?: "unknown failure"}")
+                    }
                 }
-                if (!ciphertext.startsWith(TinkCryptoManager.TINK_PREFIX)) {
-                    return@withContext PendingOutboxAttempt.Retryable("Tink encryption did not produce a ciphertext.")
+                if (!ciphertext.startsWith(TinkCryptoManager.TINK_PREFIX) ||
+                    ciphertext.removePrefix(TinkCryptoManager.TINK_PREFIX).isBlank()
+                ) {
+                    val failure = IllegalStateException("Tink encryption returned empty or unprefixed ciphertext.")
+                    Log.e(TAG, "Tink encryption produced no usable ciphertext for message_id=$safeMessageId.", failure)
+                    return@withContext PendingOutboxAttempt.Retryable("TinkEncryptionException: ${failure.message}")
                 }
 
                 // Both devices use the same sorted profile-ID pair, independent of local Room match IDs.
