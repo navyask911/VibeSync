@@ -1577,7 +1577,7 @@ fun StatusCaptionUploadPreviewDialog(
             // Bottom Caption Bar & Upload Send Button with safe area edge-to-edge window insets
             Surface(
                 color = Color(0xF20B1220),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().navigationBarsPadding().imePadding()
             ) {
                 Row(
                     modifier = Modifier

@@ -792,69 +792,10 @@ fun ChatDetailScreen(
                         onDismissRequest = { showMenu = false }
                     ) {
                         DropdownMenuItem(
-                            text = { Text("View Profile 👤") },
-                            onClick = {
-                                showMenu = false
-                                onViewProfile()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("Customize Chat Color 🎨", fontWeight = FontWeight.SemiBold)
-                                }
-                            },
+                            text = { Text("Settings ⚙") },
                             onClick = {
                                 showMenu = false
                                 showChatColorDialog = true
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("End-to-End Encryption 🔒") },
-                            onClick = {
-                                showMenu = false
-                                showE2eeDetailsDialog = true
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = if (isNetworkOnline) Icons.Default.Wifi else Icons.Default.WifiOff,
-                                        contentDescription = null,
-                                        tint = if (isNetworkOnline) VibeSyncTeal else Color.Gray,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = if (isNetworkOnline) "Network: Go Offline 🔌" else "Network: Go Online 🌐",
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isNetworkOnline) Color.Gray else VibeSyncTeal
-                                    )
-                                }
-                            },
-                            onClick = {
-                                showMenu = false
-                                isNetworkOnline = !isNetworkOnline
-                            }
-                        )
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = Icons.Default.Shield,
-                                        contentDescription = null,
-                                        tint = Color(0xFFE53935),
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("🚨 Emergency Block & Report", color = Color(0xFFE53935), fontWeight = FontWeight.Bold)
-                                }
-                            },
-                            onClick = {
-                                showMenu = false
-                                showEmergencyBlockReportDialog = true
                             }
                         )
                     }

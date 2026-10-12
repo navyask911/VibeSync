@@ -47,6 +47,8 @@ import androidx.compose.material.icons.filled.Store
 import androidx.compose.material.icons.filled.Tune
 import coil.compose.AsyncImage
 import com.example.data.model.BusinessEntity
+import com.example.data.model.tierPriorityRank
+import com.example.data.model.photosList
 import com.example.ui.DatingViewModel
 import com.example.ui.theme.VibeSyncTeal
 import com.example.ui.components.BusinessCard
@@ -520,7 +522,7 @@ fun DiscoverScreen(
             OutlinedTextField(
                 value = discoverSearchQuery,
                 onValueChange = { discoverSearchQuery = it },
-                modifier = Modifier.fillMaxWidth().height(54.dp).testTag("discover_fixed_search"),
+                modifier = Modifier.fillMaxWidth().height(56.dp).testTag("discover_fixed_search"),
                 singleLine = true,
                 maxLines = 1,
                 textStyle = MaterialTheme.typography.bodyMedium,
