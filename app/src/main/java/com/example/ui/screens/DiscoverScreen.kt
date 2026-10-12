@@ -468,11 +468,10 @@ fun DiscoverScreen(
 
         // Discover list: fixed search bar, preference filters and at most 25 profile rows.
         var discoverSearchQuery by rememberSaveable { mutableStateOf("") }
+        val initialMinAge = (userPreferences?.minAge ?: 18).coerceIn(18, 99)
+        val initialMaxAge = (userPreferences?.maxAge ?: 99).coerceIn(initialMinAge, 99)
         var ageRange by remember {
-            mutableStateOf(
-                (userPreferences?.minAge ?: 18).coerceIn(18, 99).toFloat()..
-                    (userPreferences?.maxAge ?: 99).coerceIn(18, 99).toFloat()
-            )
+            mutableStateOf(initialMinAge.toFloat()..initialMaxAge.toFloat())
         }
         var genderFilter by rememberSaveable { mutableStateOf("All") }
         var maxDistanceKm by rememberSaveable {
@@ -634,7 +633,7 @@ fun DiscoverScreen(
                             }
                             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(profile.name.ifBlank { "VibeSync User" }, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1)
+                                    Text("${profile.name.ifBlank { "VibeSync User" }} · ${profile.age}", fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1)
                                     if (profile.isVerified) {
                                         Spacer(Modifier.width(4.dp))
                                         Text("✓", color = VibeSyncTeal, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)

@@ -419,6 +419,12 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     val remoteMessages = com.example.util.SupabaseClientManager.fetchMessagesForMatch(
                         remoteMatchId, prefs.verifiedMobileNumber, partnerPhone
                     )
+                    if (remoteMessages.isEmpty()) {
+                        // A remote reference existed for this conversation. Don't move the cursor
+                        // if its detail request was blocked or transiently failed.
+                        fullyMapped = false
+                        continue
+                    }
                     for (remote in remoteMessages) {
                         val isFromMe = remote.senderId.equals(ownerProfileId, ignoreCase = true) ||
                             (prefs.verifiedMobileNumber.isNotBlank() && remote.senderId == prefs.verifiedMobileNumber)
