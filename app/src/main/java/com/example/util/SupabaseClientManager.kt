@@ -959,7 +959,18 @@ object SupabaseClientManager {
                 if (!response.isSuccessful) {
                     Log.w(TAG, "VibeSync profile RPC failed HTTP ${response.code}: ${response.body?.string()?.take(250)}")
                 }
-                response.isSuccessful
+                val updated = response.isSuccessful
+                val activeProfileId = VibeSyncSessionManager.getProfileId().orEmpty().trim()
+                val publishContext = AppNotificationManager.appContext ?: MessageHandler.appContext
+                if (updated && publicIdentityKey.isNotBlank() &&
+                    activeProfileId.equals(profile.id.trim(), ignoreCase = true) &&
+                    publishContext != null
+                ) {
+                    TinkCryptoManager.markMyPublicIdentityKeyPublished(
+                        publishContext, activeProfileId, publicIdentityKey
+                    )
+                }
+                updated
             }
         } catch (e: Throwable) {
             Log.w(TAG, "VibeSync profile update notice: ${e.message}")
@@ -1004,6 +1015,7 @@ object SupabaseClientManager {
                 val body = response.body?.string().orEmpty().trim().trim('"')
                 val updated = response.isSuccessful && body.equals("true", ignoreCase = true)
                 if (updated) {
+                    TinkCryptoManager.markMyPublicIdentityKeyPublished(context, activeProfileId, publicKeyset)
                     Log.i(TAG, "Published Tink public identity key for active VibeSync profile.")
                 } else {
                     Log.w(
@@ -1571,7 +1583,8 @@ object SupabaseClientManager {
         partnerPhone: String,
         afterCreatedAtMs: Long,
         afterCreatedAtRaw: String = "",
-        afterMessageId: String = ""
+        afterMessageId: String = "",
+        onPeerPublicKeyRefreshed: (suspend (String, String) -> Unit)? = null
     ): MessageDeltaBatch? = withContext(Dispatchers.IO) {
         val records = mutableListOf<MessageDeltaRecord>()
         var complete = true
@@ -1668,21 +1681,33 @@ object SupabaseClientManager {
                         matchId = remoteMatch,
                         currentProfileId = currentProfileId
                     )
+                    val ownMessage = senderId.equals(currentProfileId, ignoreCase = true)
                     val decrypted = if (
                         context != null &&
+                        !ownMessage &&
                         cipherText.startsWith(TinkCryptoManager.TINK_PREFIX) &&
                         aad != null
                     ) {
-                        runCatching {
-                            TinkCryptoManager.decryptPayload(
+                        try {
+                            MessageHandler.verifyAndDecryptPayloadWithImmediateKeyRefresh(
+                                senderUid = senderId,
+                                rawPayload = cipherText,
                                 context = context,
-                                payload = cipherText,
                                 senderPhone = aad.first,
-                                receiverPhone = aad.second
+                                receiverPhone = aad.second,
+                                matchId = remoteMatch,
+                                inboundEventPayload = row,
+                                peerProfileId = senderId,
+                                fallbackPhoneNumber = partnerPhone,
+                                onPeerPublicKeyRefreshed = onPeerPublicKeyRefreshed
                             )
-                        }.getOrDefault("")
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                            throw cancelled
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "Delta Tink decrypt/recovery failed for message_id=$id: ${t.javaClass.simpleName}")
+                            ""
+                        }
                     } else ""
-                    val ownMessage = senderId.equals(currentProfileId, ignoreCase = true)
                     val decryptionSucceeded = decrypted.isNotBlank()
                     // A sender normally cannot decrypt ciphertext encrypted to the recipient's key.
                     // This is expected; the local Room outbox owns its plaintext copy.
