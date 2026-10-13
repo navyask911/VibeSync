@@ -2709,7 +2709,8 @@ class SocialConnectRepository(
                     lastMessageTime = System.currentTimeMillis(),
                     hasUnread = true,
                     isDatingMatch = false,
-                    relationshipStatus = "FRIENDS"
+                    relationshipStatus = "FRIENDS",
+                    isAnonymousPeer = true
                 )
                 matchDao.insertMatch(match)
                 profileDao.incrementFriendsCount(profile.id)
