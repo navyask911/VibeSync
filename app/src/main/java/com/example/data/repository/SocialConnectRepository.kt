@@ -3038,17 +3038,22 @@ class SocialConnectRepository(
     }
 
     suspend fun markMatchAsRead(matchId: String, currentUserPhone: String = "", partnerPhone: String = "") {
-        chatMessageDao.markIncomingMessagesAsReadForMatch(matchId)
+        val prefs = preferencesDao.getPreferencesSync()
+        val match = matchDao.getMatchByIdSync(matchId)
+        // Opening a chat clears the local unread dot, but disabled receipts must never send a READ ACK.
         matchDao.markAsRead(matchId)
+        if (prefs?.readReceiptsEnabled == false) return
 
+        val readAt = System.currentTimeMillis()
+        chatMessageDao.markIncomingMessagesAsReadWithExpiry(
+            matchId = matchId,
+            readAt = readAt,
+            timerSeconds = match?.disappearingTimerSeconds ?: 0
+        )
         appScope.launch(Dispatchers.IO) {
             try {
-                val prefs = preferencesDao.getPreferencesSync()
                 val myPhone = currentUserPhone.ifBlank { prefs?.verifiedMobileNumber ?: "" }
-                val targetPhone = partnerPhone.ifBlank {
-                    val m = matchDao.getMatchByIdSync(matchId)
-                    m?.profileId ?: ""
-                }
+                val targetPhone = partnerPhone.ifBlank { match?.profileId.orEmpty() }
                 if (myPhone.isNotBlank() && targetPhone.isNotBlank()) {
                     com.example.util.SupabaseBackendManager.markMessagesAsRead(myPhone, targetPhone, matchId)
                     com.example.util.SupabaseClientManager.markMessagesAsRead(myPhone, targetPhone, matchId)
@@ -3057,6 +3062,23 @@ class SocialConnectRepository(
                 android.util.Log.w("SocialConnectRepository", "markMatchAsRead remote sync error: ${e.message}")
             }
         }
+    }
+
+    suspend fun setDisappearingTimer(matchId: String, seconds: Int): Boolean {
+        if (seconds !in setOf(0, 86_400, 604_800)) return false
+        val match = matchDao.getMatchByIdSync(matchId) ?: return false
+        if (match.disappearingTimerSeconds == seconds) return true
+        matchDao.insertMatch(match.copy(disappearingTimerSeconds = seconds))
+        val peer = profileDao.getProfileByIdSync(match.profileId)
+        sendMessage(
+            matchId = matchId,
+            text = com.example.util.ChatMessageEventCodec.createDisappearingTimerEvent(seconds),
+            mediaType = com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DISAPPEARING_TIMER,
+            clientMsgId = java.util.UUID.randomUUID().toString(),
+            recipientProfileId = match.profileId,
+            recipientPhoneNumber = peer?.phoneNumber.orEmpty()
+        )
+        return true
     }
 
     suspend fun insertReceivedChatMessage(
@@ -3237,7 +3259,9 @@ class SocialConnectRepository(
         val isProtocolControl = mediaType.uppercase() in setOf(
             "PROFILE_KEY_EXCHANGE",
             com.example.util.ChatMessageEventCodec.MEDIA_TYPE_REACTION,
-            com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DELETE
+            com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DELETE,
+            com.example.util.ChatMessageEventCodec.MEDIA_TYPE_EDIT,
+            com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DISAPPEARING_TIMER
         )
         if (!isProtocolControl) {
             matchDao.updateLastMessage(
@@ -3312,17 +3336,27 @@ class SocialConnectRepository(
     suspend fun editMessage(messageId: String, newText: String): Boolean {
         val msg = chatMessageDao.getMessageById(messageId) ?: return false
         val now = System.currentTimeMillis()
-        val tenMinutesMillis = 10 * 60 * 1000L
-        if (now - msg.timestamp > tenMinutesMillis) {
-            return false // 10 minutes exceeded
-        }
-        val updated = msg.copy(
-            text = newText,
-            isEdited = true,
-            editedTimestamp = now
-        )
+        if (msg.senderId != "USER" || newText.isBlank() || now < msg.timestamp ||
+            now - msg.timestamp > 15 * 60 * 1000L || msg.isDeleted || msg.isDeletedForEveryone ||
+            msg.mediaType != "TEXT"
+        ) return false
+
+        val updated = msg.copy(text = newText, isEdited = true, editedTimestamp = now)
         chatMessageDao.updateMessage(updated)
-        matchDao.updateLastMessage(msg.matchId, newText, now, false)
+        messageDao.insertMessage(updated.toLocalMessage().copy(remoteMessageId = updated.messageId))
+        val conversation = matchDao.getMatchByIdSync(msg.matchId) ?: return false
+        if (conversation.lastMessageTime <= msg.timestamp || conversation.lastMessage == msg.text) {
+            matchDao.updateLastMessage(msg.matchId, newText, now, false)
+        }
+        val peer = profileDao.getProfileByIdSync(conversation.profileId)
+        sendMessage(
+            matchId = msg.matchId,
+            text = com.example.util.ChatMessageEventCodec.createEditEvent(messageId, newText, now),
+            mediaType = com.example.util.ChatMessageEventCodec.MEDIA_TYPE_EDIT,
+            clientMsgId = java.util.UUID.randomUUID().toString(),
+            recipientProfileId = conversation.profileId,
+            recipientPhoneNumber = peer?.phoneNumber.orEmpty()
+        )
         return true
     }
 
