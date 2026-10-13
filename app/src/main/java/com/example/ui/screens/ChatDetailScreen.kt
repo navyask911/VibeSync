@@ -16,6 +16,9 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -268,6 +271,11 @@ fun ChatDetailScreen(
     currentUserId: String? = null,
     onStartRealtime: () -> Unit = {},
     onStopRealtime: () -> Unit = {},
+    isPartnerTyping: Boolean = false,
+    readReceiptsEnabled: Boolean = true,
+    typingIndicatorsEnabled: Boolean = true,
+    onTypingStatus: (Boolean) -> Unit = {},
+    onSetDisappearingTimer: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     IncognitoKeyboard {
@@ -293,6 +301,11 @@ fun ChatDetailScreen(
             currentUserId = currentUserId,
             onStartRealtime = onStartRealtime,
             onStopRealtime = onStopRealtime,
+            isPartnerTyping = isPartnerTyping,
+            readReceiptsEnabled = readReceiptsEnabled,
+            typingIndicatorsEnabled = typingIndicatorsEnabled,
+            onTypingStatus = onTypingStatus,
+            onSetDisappearingTimer = onSetDisappearingTimer,
             modifier = modifier
         )
     }
@@ -322,6 +335,11 @@ private fun ChatDetailScreenContent(
     currentUserId: String?,
     onStartRealtime: () -> Unit,
     onStopRealtime: () -> Unit,
+    isPartnerTyping: Boolean,
+    readReceiptsEnabled: Boolean,
+    typingIndicatorsEnabled: Boolean,
+    onTypingStatus: (Boolean) -> Unit,
+    onSetDisappearingTimer: (Int) -> Unit,
     modifier: Modifier
 ) {
     DisposableEffect(profile.id, match?.matchId) {
@@ -452,6 +470,8 @@ private fun ChatDetailScreenContent(
 
     var showMenu by remember { mutableStateOf(false) }
     var showChatColorDialog by remember { mutableStateOf(false) }
+    var showDisappearingTimerDialog by remember { mutableStateOf(false) }
+    var voiceRecordGestureActive by remember { mutableStateOf(false) }
     var selectedChatColorHex by remember {
         mutableStateOf(com.example.util.ChatColorPreferences.getSelectedColorHex(context))
     }
@@ -823,7 +843,7 @@ private fun ChatDetailScreenContent(
                             }
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (presenceStatus == "typing...") {
+                            if (typingIndicatorsEnabled && isPartnerTyping) {
                                 Text(
                                     text = "typing...",
                                     style = MaterialTheme.typography.bodySmall.copy(fontStyle = FontStyle.Italic),
@@ -885,6 +905,13 @@ private fun ChatDetailScreenContent(
                         expanded = showMenu,
                         onDismissRequest = { showMenu = false }
                     ) {
+                        DropdownMenuItem(
+                            text = { Text("Disappearing messages") },
+                            onClick = {
+                                showMenu = false
+                                showDisappearingTimerDialog = true
+                            }
+                        )
                         DropdownMenuItem(
                             text = { Text("Settings ⚙") },
                             onClick = {
@@ -1921,7 +1948,10 @@ private fun ChatDetailScreenContent(
 
                         OutlinedTextField(
                             value = inputText,
-                            onValueChange = { inputText = it },
+                            onValueChange = {
+                                inputText = it
+                                if (typingIndicatorsEnabled) onTypingStatus(it.isNotBlank())
+                            },
                             placeholder = { Text("Message", fontSize = 15.sp) },
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = Color.Transparent,
@@ -1978,6 +2008,7 @@ private fun ChatDetailScreenContent(
                                     reply?.text?.ifBlank { if (reply.mediaType == "VOICE") "Voice message" else "Photo" },
                                     if (reply?.senderId == "USER") "You" else profile.name
                                 )
+                                onTypingStatus(false)
                                 inputText = ""
                                 replyingToMessage = null
                             } else {
@@ -2301,8 +2332,10 @@ private fun ChatDetailScreenContent(
             matchProfileId = match?.matchId,
             currentUserId = currentUserId
         )
-        val isWithin10Mins = (System.currentTimeMillis() - msg.timestamp) <= 10 * 60 * 1000L
-        val canEdit = isOutgoing && isWithin10Mins && !msg.isDeleted && !msg.isDeletedForEveryone
+        val ageSinceSend = System.currentTimeMillis() - msg.timestamp
+        val isWithin15Mins = ageSinceSend in 0L..(15 * 60 * 1000L)
+        val canEdit = isOutgoing && msg.mediaType == "TEXT" && isWithin15Mins &&
+            !msg.isDeleted && !msg.isDeletedForEveryone
 
         ModalBottomSheet(
             onDismissRequest = { selectedMessageForAction = null },
@@ -2419,7 +2452,7 @@ private fun ChatDetailScreenContent(
                             Column {
                                 Text("Edit Message", fontWeight = FontWeight.Medium)
                                 Text(
-                                    text = if (isWithin10Mins) "Allowed within 10 mins" else "Expired (>10 mins limit)",
+                                    text = if (isWithin15Mins) "Allowed within 15 mins" else "Expired (>15 mins limit)",
                                     fontSize = 10.sp,
                                     color = if (isWithin10Mins) VibeSyncTeal else Color.Gray
                                 )
@@ -2480,7 +2513,7 @@ private fun ChatDetailScreenContent(
             text = {
                 Column {
                     Text(
-                        "You can edit messages within 10 minutes of sending. An 'Edited' label will be displayed.",
+                        "You can edit your text messages within 15 minutes of sending. Your edit and timestamp sync securely.",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -2782,6 +2815,46 @@ private fun ChatDetailScreenContent(
                 TextButton(onClick = { showEmergencyBlockReportDialog = false }) {
                     Text("Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+            }
+        )
+    }
+
+    if (showDisappearingTimerDialog) {
+        val choices = listOf(0 to "Off", 86_400 to "24 Hours", 604_800 to "7 Days")
+        AlertDialog(
+            onDismissRequest = { showDisappearingTimerDialog = false },
+            title = { Text("Disappearing messages") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "The timer starts when a message is read. Expired messages are removed from this device.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp
+                    )
+                    choices.forEach { (seconds, label) ->
+                        TextButton(
+                            onClick = {
+                                onSetDisappearingTimer(seconds)
+                                showDisappearingTimerDialog = false
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(label)
+                                if ((match?.disappearingTimerSeconds ?: 0) == seconds) {
+                                    Text("Current", color = VibeSyncTeal, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDisappearingTimerDialog = false }) { Text("Close") }
             }
         )
     }
@@ -4439,7 +4512,7 @@ private fun VibeSyncChatBubble(
                 ) {
                     if (message.isEdited && !message.isDeleted && !message.isDeletedForEveryone) {
                         Text(
-                            text = "Edited",
+                            text = "(Edited)",
                             style = MaterialTheme.typography.labelSmall,
                             color = Color(0xFF64748B),
                             fontSize = 9.sp,
