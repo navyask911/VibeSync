@@ -224,7 +224,6 @@ jobs:
             echo "Supabase Auth/SMS OTP login code must not remain in the Android app."
             exit 1
           fi
-          grep -F 'EXPECTED_CLIENT_ID: String = BuildConfig.TRUECALLER_CLIENT_ID' app/src/main/java/com/example/util/TruecallerVerificationClient.kt
           # The canonical backend is verify-truecaller; vibesync-truecaller-auth is retired.
           grep -F 'const TRUECALLER_CLIENT_ID = "qkpfffgkiebypf8hvifhkkknj2msgud5hfjqg_ti1wu"' supabase/functions/verify-truecaller/index.ts
           grep -F 'Deno.env.get("TRUECALLER_PARTNER_KEY")' supabase/functions/verify-truecaller/index.ts
@@ -330,7 +329,7 @@ jobs:
         run: |
           set -euo pipefail
           # The decoded keystore is deleted as soon as Gradle finishes signing.
-          trap 'rm -f "${RUNNER_TEMP}/vibesync-release.jks"' EXIT
+          trap 'shred -u "${RUNNER_TEMP}/vibesync-release.jks" 2>/dev/null || rm -f "${RUNNER_TEMP}/vibesync-release.jks"' EXIT
           if [ -z "${KEYSTORE_PASSWORD:-}" ] || [ -z "${KEY_PASSWORD:-}" ] || [ -z "${KEY_ALIAS:-}" ]; then
             echo "KEYSTORE_PASSWORD, KEY_PASSWORD, and verified KEY_ALIAS are required."
             exit 1

@@ -32,7 +32,7 @@ android {
     versionCode = 4
     versionName = "1.1.0"
 
-    buildConfigField("String", "TRUECALLER_CLIENT_ID", "\\"$escapedTruecallerClientId\\"")
+    buildConfigField("String", "TRUECALLER_CLIENT_ID", "\"$escapedTruecallerClientId\"")
     manifestPlaceholders["truecallerClientId"] = truecallerClientId
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
