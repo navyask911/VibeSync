@@ -53,15 +53,6 @@ object PhonebookHelper {
         return first.isNotBlank() && first == second
     }
 
-    /** Compatibility alias: returns normalized E.164 text, never a cryptographic hash. */
-    @Deprecated("Use normalizeToE164; contact matching no longer hashes phone numbers")
-    fun generatePhoneHash(rawPhone: String, defaultCountryCode: String = DEFAULT_COUNTRY_CODE): String =
-        normalizeToE164(rawPhone, defaultCountryCode)
-
-    /** Compatibility alias retained while legacy local Room rows are upgraded. */
-    @Deprecated("Use normalizeToE164; contact matching no longer hashes phone numbers")
-    fun getPhoneHash(rawPhone: String): String = normalizeToE164(rawPhone)
-
     /**
      * Reads contacts from Android device ContactsContract if permission is granted.
      */
@@ -94,13 +85,13 @@ object PhonebookHelper {
 
                     if (normalizedE164.isNotBlank() && seenNumbers.add(normalizedE164)) {
                         val uniqueContactId = "c_${id}_${normalizedE164.filter { it.isDigit() }}"
-                        val hash16 = normalizeToE164(normalizedE164)
+                        val phoneIdentity = normalizeToE164(normalizedE164)
                         contacts.add(
                             PhoneContact(
                                 id = uniqueContactId,
                                 name = name.trim(),
                                 phoneNumber = number.trim(),
-                                phoneHash = hash16
+                                phoneHash = phoneIdentity
                             )
                         )
                     }
@@ -234,7 +225,7 @@ object PhonebookHelper {
         val byPhone = mutableMapOf<String, ProfileEntity>()
         val byId = profiles.filter { it.id.isNotBlank() }.associateBy { it.id }.toMutableMap()
         profiles.forEach { profile ->
-            val phone = normalizeToE164(profile.phoneNumber.ifBlank { profile.phoneHash })
+            val phone = normalizeToE164(profile.phoneNumber)
             if (phone.isNotBlank()) byPhone.putIfAbsent(phone, profile)
         }
         registeredUsersMap.forEach { (key, profile) ->
@@ -266,7 +257,7 @@ object PhonebookHelper {
         val seenIds = results.mapNotNull { it.vibeSyncProfileId }.toMutableSet()
         val seenPhones = results.map { normalizeToE164(it.phoneNumber) }.filter { it.isNotBlank() }.toMutableSet()
         for (profile in profiles) {
-            val phone = normalizeToE164(profile.phoneNumber.ifBlank { profile.phoneHash })
+            val phone = normalizeToE164(profile.phoneNumber)
             val isSelf = selfPhone.isNotBlank() && selfPhone == phone
             val present = seenIds.contains(profile.id) || (phone.isNotBlank() && seenPhones.contains(phone))
             if (!isSelf && profile.id.isNotBlank() && profile.id != "current_user" &&
