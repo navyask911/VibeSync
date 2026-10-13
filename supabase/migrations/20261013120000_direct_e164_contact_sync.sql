@@ -104,8 +104,8 @@ begin
 end;
 $$;
 
-revoke all on function public.match_contacts_by_phone_numbers(text[]) from public, anon;
-grant execute on function public.match_contacts_by_phone_numbers(text[]) to authenticated;
+revoke all on function public.match_contacts_by_phone_numbers(text[]) from public, anon, authenticated;
+grant execute on function public.match_contacts_by_phone_numbers(text[]) to anon;
 
 -- Retire legacy client access to blind/hash lookup procedures.
 do $$
