@@ -203,7 +203,8 @@ fun BusinessHubContent(
     }
     val primaryVenue = myCreatedBusinesses.firstOrNull()
     LaunchedEffect(myCreatedBusinesses.isEmpty(), selectedTab) {
-        if (myCreatedBusinesses.isEmpty() && selectedTab == 3) selectedTab = 0
+        // Public users can browse the catalogue or open the Join flow, not owner-only tabs.
+        if (myCreatedBusinesses.isEmpty() && selectedTab !in setOf(0, 1)) selectedTab = 0
     }
     var selectedBusinessForProfile by remember { mutableStateOf<BusinessEntity?>(null) }
     var selectedVenueForDashboard by remember { mutableStateOf<BusinessEntity?>(null) }
@@ -495,9 +496,11 @@ fun BusinessHubContent(
                     ) {
                         val tabs = buildList {
                             add(Triple(0, "Nearest (${allBusinesses.size})", Icons.Default.Store))
-                            add(Triple(2, "My Venues (${myCreatedBusinesses.size})", Icons.Default.Business))
-                            if (myCreatedBusinesses.isNotEmpty()) add(Triple(3, "Analytics", Icons.Default.ShowChart))
-                            add(Triple(4, "QR Stickers", Icons.Default.QrCode2))
+                            if (myCreatedBusinesses.isNotEmpty()) {
+                                add(Triple(2, "My Venues (${myCreatedBusinesses.size})", Icons.Default.Business))
+                                add(Triple(3, "Analytics", Icons.Default.ShowChart))
+                                add(Triple(4, "QR Stickers", Icons.Default.QrCode2))
+                            }
                         }
                         tabs.forEach { (index, title, icon) ->
                             val isSelected = selectedTab == index
