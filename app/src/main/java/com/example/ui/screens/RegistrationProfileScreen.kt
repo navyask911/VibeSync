@@ -142,12 +142,16 @@ fun RegistrationProfileScreen(
 
     // 1. Profile Photo. Compress before previewing or saving a user-selected image.
     var avatarUri by remember { mutableStateOf(initialAvatarUrl) }
+    var isAvatarUploading by remember { mutableStateOf(false) }
     val photoPreparationScope = rememberCoroutineScope()
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
         if (uri != null) {
             photoPreparationScope.launch {
+                val previousAvatar = avatarUri
+                isAvatarUploading = true
+                var stagedAvatar: com.example.util.ProfileAvatarStorageManager.PreparedAvatar? = null
                 try {
                     val profileId = com.example.util.VibeSyncSessionManager.getProfileId(context).orEmpty().trim()
                     require(profileId.isNotBlank()) {
@@ -159,22 +163,34 @@ fun RegistrationProfileScreen(
                         profileId = profileId,
                         slot = 1
                     )
-                    // Render the compressed internal-cache JPEG immediately, then use its remote URL.
+                    stagedAvatar = prepared
+                    // Local preview only; the form's submit button is disabled until the encrypted
+                    // upload resolves and only the opaque reference can become profile metadata.
                     avatarUri = prepared.uri
                     val remoteUrl = com.example.util.ProfileAvatarStorageManager.uploadPreparedAvatar(prepared)
                     if (remoteUrl.isNullOrBlank()) {
+                        prepared.file.delete()
+                        prepared.encryptedFile?.delete()
+                        avatarUri = previousAvatar
                         Toast.makeText(
                             context,
-                            "Photo compressed and cached locally, but upload failed. Retry in Edit Profile.",
+                            "Encrypted photo upload failed. Please choose the photo again.",
                             Toast.LENGTH_LONG
                         ).show()
+                    } else {
+                        avatarUri = remoteUrl
                     }
                 } catch (t: Throwable) {
+                    stagedAvatar?.file?.delete()
+                    stagedAvatar?.encryptedFile?.delete()
+                    avatarUri = previousAvatar
                     Toast.makeText(
                         context,
                         t.message?.takeIf { it.isNotBlank() } ?: "Could not prepare the selected profile photo.",
                         Toast.LENGTH_LONG
                     ).show()
+                } finally {
+                    isAvatarUploading = false
                 }
             }
         }
@@ -738,7 +754,7 @@ fun RegistrationProfileScreen(
                         Toast.makeText(context, "Please enter your name and select date of birth.", Toast.LENGTH_SHORT).show()
                     }
                 },
-                enabled = isFormValid,
+                enabled = isFormValid && !isAvatarUploading,
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = VibeSyncTeal,
