@@ -33,6 +33,265 @@ where coalesce(p.is_deleted, false) = false
 on conflict (profile_id) do update
 set phone_e164 = excluded.phone_e164, updated_at = now();
 
+-- Keep the privileged phone index synchronized when profiles register or change phone identity.
+-- Client roles cannot write or read this table directly; the trigger runs with owner privileges.
+create or replace function public.sync_phone_lookup_index_from_profile()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $
+declare
+    normalized_phone text;
+begin
+    normalized_phone := case
+        when coalesce(new.phone_number_e164, '') ~ '^[+][1-9][0-9]{7,14}
+returns table (
+    phone_e164 text,
+    id text,
+    name text,
+    profile_photo_url text,
+    avatar_emoji text
+)
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+    caller_profile_id text := public.vibesync_current_profile_id();
+begin
+    if caller_profile_id is null or btrim(caller_profile_id) = '' then
+        raise exception 'verified VibeSync session required' using errcode = '28000';
+    end if;
+    if coalesce(array_length(phone_numbers, 1), 0) > 1000 then
+        raise exception 'too many phone numbers' using errcode = '22023';
+    end if;
+
+    return query
+    with supplied as (
+        select distinct
+            case
+              when btrim(u.raw_phone) like '+%' and length(d.digits) between 8 and 15
+                   and left(d.digits, 1) <> '0' then '+' || d.digits
+              when d.digits ~ '^0[0-9]{10}$' then '+91' || right(d.digits, 10)
+              when d.digits ~ '^[0-9]{10}$' then '+91' || d.digits
+              when d.digits ~ '^00[1-9][0-9]{7,14}$' then '+' || substr(d.digits, 3)
+              when d.digits ~ '^[1-9][0-9]{7,14}$' then '+' || d.digits
+              else null
+            end as normalized_phone
+        from unnest(coalesce(phone_numbers, array[]::text[])) as u(raw_phone)
+        cross join lateral (
+            select regexp_replace(btrim(u.raw_phone), '[^0-9]', '', 'g') as digits
+        ) as d
+        where u.raw_phone is not null and btrim(u.raw_phone) <> ''
+    )
+    select idx.phone_e164,
+           p.id::text,
+           coalesce(p.name, 'VibeSync Member')::text,
+           coalesce(p.avatar_url, '')::text,
+           coalesce(p.avatar_emoji, '✨')::text
+    from supplied s
+    join public.phone_lookup_index idx on idx.phone_e164 = s.normalized_phone
+    join public.profiles p on p.id::text = idx.profile_id
+    where s.normalized_phone is not null
+      and idx.profile_id <> caller_profile_id
+      and coalesce(p.is_deleted, false) = false
+      and coalesce(p.account_status, 'ACTIVE') = 'ACTIVE'
+    limit 1000;
+end;
+$$;
+
+revoke all on function public.match_contacts_by_phone_numbers(text[]) from public, anon;
+grant execute on function public.match_contacts_by_phone_numbers(text[]) to authenticated;
+
+-- Legacy hash-based discovery is retired for client roles. Keep definitions for rollback.
+do $$
+begin
+  if to_regprocedure('public.match_contacts(text[])') is not null then
+    execute 'revoke all on function public.match_contacts(text[]) from public, anon, authenticated';
+  end if;
+  if to_regprocedure('public.resolve_profile_id_by_phone_hash(text)') is not null then
+    execute 'revoke all on function public.resolve_profile_id_by_phone_hash(text) from public, anon, authenticated';
+  end if;
+  if to_regprocedure('public.get_public_identity_key_by_phone_hash(text)') is not null then
+    execute 'revoke all on function public.get_public_identity_key_by_phone_hash(text) from public, anon, authenticated';
+  end if;
+end;
+$$;
+ then new.phone_number_e164
+        when coalesce(new.phone_number, '') ~ '^[+][1-9][0-9]{7,14}
+returns table (
+    phone_e164 text,
+    id text,
+    name text,
+    profile_photo_url text,
+    avatar_emoji text
+)
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+    caller_profile_id text := public.vibesync_current_profile_id();
+begin
+    if caller_profile_id is null or btrim(caller_profile_id) = '' then
+        raise exception 'verified VibeSync session required' using errcode = '28000';
+    end if;
+    if coalesce(array_length(phone_numbers, 1), 0) > 1000 then
+        raise exception 'too many phone numbers' using errcode = '22023';
+    end if;
+
+    return query
+    with supplied as (
+        select distinct
+            case
+              when btrim(u.raw_phone) like '+%' and length(d.digits) between 8 and 15
+                   and left(d.digits, 1) <> '0' then '+' || d.digits
+              when d.digits ~ '^0[0-9]{10}$' then '+91' || right(d.digits, 10)
+              when d.digits ~ '^[0-9]{10}$' then '+91' || d.digits
+              when d.digits ~ '^00[1-9][0-9]{7,14}$' then '+' || substr(d.digits, 3)
+              when d.digits ~ '^[1-9][0-9]{7,14}$' then '+' || d.digits
+              else null
+            end as normalized_phone
+        from unnest(coalesce(phone_numbers, array[]::text[])) as u(raw_phone)
+        cross join lateral (
+            select regexp_replace(btrim(u.raw_phone), '[^0-9]', '', 'g') as digits
+        ) as d
+        where u.raw_phone is not null and btrim(u.raw_phone) <> ''
+    )
+    select idx.phone_e164,
+           p.id::text,
+           coalesce(p.name, 'VibeSync Member')::text,
+           coalesce(p.avatar_url, '')::text,
+           coalesce(p.avatar_emoji, '✨')::text
+    from supplied s
+    join public.phone_lookup_index idx on idx.phone_e164 = s.normalized_phone
+    join public.profiles p on p.id::text = idx.profile_id
+    where s.normalized_phone is not null
+      and idx.profile_id <> caller_profile_id
+      and coalesce(p.is_deleted, false) = false
+      and coalesce(p.account_status, 'ACTIVE') = 'ACTIVE'
+    limit 1000;
+end;
+$$;
+
+revoke all on function public.match_contacts_by_phone_numbers(text[]) from public, anon;
+grant execute on function public.match_contacts_by_phone_numbers(text[]) to authenticated;
+
+-- Legacy hash-based discovery is retired for client roles. Keep definitions for rollback.
+do $$
+begin
+  if to_regprocedure('public.match_contacts(text[])') is not null then
+    execute 'revoke all on function public.match_contacts(text[]) from public, anon, authenticated';
+  end if;
+  if to_regprocedure('public.resolve_profile_id_by_phone_hash(text)') is not null then
+    execute 'revoke all on function public.resolve_profile_id_by_phone_hash(text) from public, anon, authenticated';
+  end if;
+  if to_regprocedure('public.get_public_identity_key_by_phone_hash(text)') is not null then
+    execute 'revoke all on function public.get_public_identity_key_by_phone_hash(text) from public, anon, authenticated';
+  end if;
+end;
+$$;
+ then new.phone_number
+        when coalesce(new.clean_phone, '') ~ '^[+][1-9][0-9]{7,14}
+returns table (
+    phone_e164 text,
+    id text,
+    name text,
+    profile_photo_url text,
+    avatar_emoji text
+)
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+    caller_profile_id text := public.vibesync_current_profile_id();
+begin
+    if caller_profile_id is null or btrim(caller_profile_id) = '' then
+        raise exception 'verified VibeSync session required' using errcode = '28000';
+    end if;
+    if coalesce(array_length(phone_numbers, 1), 0) > 1000 then
+        raise exception 'too many phone numbers' using errcode = '22023';
+    end if;
+
+    return query
+    with supplied as (
+        select distinct
+            case
+              when btrim(u.raw_phone) like '+%' and length(d.digits) between 8 and 15
+                   and left(d.digits, 1) <> '0' then '+' || d.digits
+              when d.digits ~ '^0[0-9]{10}$' then '+91' || right(d.digits, 10)
+              when d.digits ~ '^[0-9]{10}$' then '+91' || d.digits
+              when d.digits ~ '^00[1-9][0-9]{7,14}$' then '+' || substr(d.digits, 3)
+              when d.digits ~ '^[1-9][0-9]{7,14}$' then '+' || d.digits
+              else null
+            end as normalized_phone
+        from unnest(coalesce(phone_numbers, array[]::text[])) as u(raw_phone)
+        cross join lateral (
+            select regexp_replace(btrim(u.raw_phone), '[^0-9]', '', 'g') as digits
+        ) as d
+        where u.raw_phone is not null and btrim(u.raw_phone) <> ''
+    )
+    select idx.phone_e164,
+           p.id::text,
+           coalesce(p.name, 'VibeSync Member')::text,
+           coalesce(p.avatar_url, '')::text,
+           coalesce(p.avatar_emoji, '✨')::text
+    from supplied s
+    join public.phone_lookup_index idx on idx.phone_e164 = s.normalized_phone
+    join public.profiles p on p.id::text = idx.profile_id
+    where s.normalized_phone is not null
+      and idx.profile_id <> caller_profile_id
+      and coalesce(p.is_deleted, false) = false
+      and coalesce(p.account_status, 'ACTIVE') = 'ACTIVE'
+    limit 1000;
+end;
+$$;
+
+revoke all on function public.match_contacts_by_phone_numbers(text[]) from public, anon;
+grant execute on function public.match_contacts_by_phone_numbers(text[]) to authenticated;
+
+-- Legacy hash-based discovery is retired for client roles. Keep definitions for rollback.
+do $$
+begin
+  if to_regprocedure('public.match_contacts(text[])') is not null then
+    execute 'revoke all on function public.match_contacts(text[]) from public, anon, authenticated';
+  end if;
+  if to_regprocedure('public.resolve_profile_id_by_phone_hash(text)') is not null then
+    execute 'revoke all on function public.resolve_profile_id_by_phone_hash(text) from public, anon, authenticated';
+  end if;
+  if to_regprocedure('public.get_public_identity_key_by_phone_hash(text)') is not null then
+    execute 'revoke all on function public.get_public_identity_key_by_phone_hash(text) from public, anon, authenticated';
+  end if;
+end;
+$$;
+ then new.clean_phone
+        else null
+    end;
+
+    if coalesce(new.is_deleted, false)
+       or coalesce(new.account_status, 'ACTIVE') <> 'ACTIVE'
+       or normalized_phone is null then
+        delete from public.phone_lookup_index where profile_id = new.id::text;
+    else
+        insert into public.phone_lookup_index(profile_id, phone_e164, updated_at)
+        values (new.id::text, normalized_phone, now())
+        on conflict (profile_id) do update
+        set phone_e164 = excluded.phone_e164,
+            updated_at = now();
+    end if;
+
+    return new;
+end;
+$;
+
+drop trigger if exists profiles_sync_phone_lookup_index on public.profiles;
+create trigger profiles_sync_phone_lookup_index
+after insert or update of phone_number_e164, phone_number, clean_phone, is_deleted, account_status
+on public.profiles
+for each row execute function public.sync_phone_lookup_index_from_profile();
+
 create or replace function public.match_contacts_by_phone_numbers(phone_numbers text[])
 returns table (
     phone_e164 text,
