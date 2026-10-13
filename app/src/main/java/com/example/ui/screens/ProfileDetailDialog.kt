@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -102,10 +103,38 @@ fun ProfileDetailDialog(
     var resolvedActivePhoto by remember(activePhoto, profile.avatarCacheVersion) {
         mutableStateOf(if (activePhoto.startsWith("vibesync-avatar-enc://")) "" else activePhoto)
     }
+    var resolvedActivePhotoBitmap by remember(activePhoto, profile.avatarCacheVersion) {
+        mutableStateOf<Bitmap?>(null)
+    }
     LaunchedEffect(activePhoto, profile.avatarCacheVersion) {
-        resolvedActivePhoto = if (activePhoto.startsWith("vibesync-avatar-enc://")) {
-            com.example.util.ProfileAvatarStorageManager.resolveAvatarForDisplay(context, activePhoto, profile.avatarCacheVersion).orEmpty()
-        } else activePhoto
+        if (activePhoto.startsWith("vibesync-avatar-enc://")) {
+            resolvedActivePhoto = ""
+            resolvedActivePhotoBitmap = com.example.util.ProfileAvatarStorageManager
+                .resolveAvatarForDisplay(context, activePhoto, profile.avatarCacheVersion)
+        } else {
+            resolvedActivePhoto = activePhoto
+            resolvedActivePhotoBitmap = null
+        }
+    }
+    val resolvedPhotoModel = remember(resolvedActivePhoto, resolvedActivePhotoBitmap, profile.id, profile.avatarCacheVersion) {
+        if (resolvedActivePhotoBitmap != null) {
+            // A decrypted avatar must never be written into Coil's disk or secondary memory cache.
+            ImageRequest.Builder(context)
+                .data(resolvedActivePhotoBitmap)
+                .crossfade(true)
+                .diskCachePolicy(CachePolicy.DISABLED)
+                .memoryCachePolicy(CachePolicy.DISABLED)
+                .build()
+        } else if (resolvedActivePhoto.isNotBlank()) {
+            ImageRequest.Builder(context)
+                .data(resolvedActivePhoto)
+                .memoryCacheKey("profile-avatar:${profile.id}:$resolvedActivePhoto:${profile.avatarCacheVersion}")
+                .diskCacheKey("profile-avatar:${profile.id}:$resolvedActivePhoto:${profile.avatarCacheVersion}")
+                .crossfade(true)
+                .diskCachePolicy(CachePolicy.ENABLED)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .build()
+        } else null
     }
 
     Dialog(
@@ -127,7 +156,7 @@ fun ProfileDetailDialog(
                         .fillMaxWidth()
                         .height(320.dp)
                         .then(
-                            if (resolvedActivePhoto.isBlank()) {
+                            if (resolvedActivePhoto.isBlank() && resolvedActivePhotoBitmap == null) {
                                 Modifier.background(
                                     Brush.verticalGradient(
                                         colors = listOf(
@@ -141,16 +170,9 @@ fun ProfileDetailDialog(
                             }
                         )
                 ) {
-                    if (resolvedActivePhoto.isNotBlank()) {
+                    if (resolvedPhotoModel != null) {
                         SubcomposeAsyncImage(
-                            model = ImageRequest.Builder(context)
-                                .data(resolvedActivePhoto)
-                                .memoryCacheKey("profile-avatar:${profile.id}:$resolvedActivePhoto:${profile.avatarCacheVersion}")
-                                .diskCacheKey("profile-avatar:${profile.id}:$resolvedActivePhoto:${profile.avatarCacheVersion}")
-                                .crossfade(true)
-                                .diskCachePolicy(CachePolicy.ENABLED)
-                                .memoryCachePolicy(CachePolicy.ENABLED)
-                                .build(),
+                            model = resolvedPhotoModel,
                             contentDescription = "${profile.name} photo",
                             modifier = Modifier
                                 .fillMaxSize()
@@ -217,7 +239,7 @@ fun ProfileDetailDialog(
                                 colorEnd = profile.gradientColorEnd,
                                 size = 120.dp,
                                 isVerified = profile.isVerified,
-                                avatarUrl = resolvedActivePhoto,
+                                avatarUrl = "",
                                 avatarCacheVersion = profile.avatarCacheVersion
                             )
                         }
