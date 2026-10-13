@@ -753,7 +753,7 @@ private fun ChatDetailScreenContent(
     var messageSelectionMode by remember { mutableStateOf(false) }
     val selectedMessageIds = remember { mutableStateListOf<String>() }
     var pinnedMessageId by remember(profile.id, match?.matchId) {
-        mutableStateOf(com.example.util.ChatThreadPreferences.pinnedMessageId(context, profile.id).ifBlank { null })
+        mutableStateOf(com.example.util.ChatThreadPreferences.pinnedMessageId(context, profile.id).takeIf { it.isNotBlank() })
     }
     val clipboardManager = LocalClipboardManager.current
     // Intercept phone back button to dismiss child dialogs/sheets/selection first, or return to chat list
