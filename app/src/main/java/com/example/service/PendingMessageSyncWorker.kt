@@ -21,7 +21,10 @@ import com.example.util.SupabaseClientManager
 import com.example.util.TinkCryptoManager
 import com.example.util.VibeSyncSessionManager
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.util.concurrent.TimeUnit
