@@ -1273,6 +1273,12 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 ) || mediaType.equals(
                     com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DELETE,
                     ignoreCase = true
+                ) || mediaType.equals(
+                    com.example.util.ChatMessageEventCodec.MEDIA_TYPE_EDIT,
+                    ignoreCase = true
+                ) || mediaType.equals(
+                    com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DISAPPEARING_TIMER,
+                    ignoreCase = true
                 )
                 val isControlPacket = !isProfileKeyExchange && !isChatInteractionEvent && (
                     msgType != "CHAT_MESSAGE" ||
@@ -1540,7 +1546,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         return@launch
                     }
 
-                    val shouldMarkRead = isBelongingToActiveConversation
+                    val shouldMarkRead = isBelongingToActiveConversation &&
+                        database.userPreferencesDao().getPreferencesSync()?.readReceiptsEnabled != false
 
                     val entity = ChatMessageEntity(
                         messageId = msgId,
@@ -1551,7 +1558,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         isDelivered = true,
                         isRead = if (shouldMarkRead) true else isRead,
                         mediaType = mediaType,
-                        mediaUrl = mediaUrl,
+                        mediaUrl = decodedPayload.mediaUrl ?: mediaUrl,
                         voiceDurationSeconds = voiceSeconds,
                         replyToMessageId = decodedPayload.replyToMessageId ?: replyToId,
                         replyToText = decodedPayload.replyToText ?: replyToText,
@@ -1942,10 +1949,20 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             val success = repository.editMessage(messageId, newText)
             if (success) {
-                _toastMessage.emit("Message edited ✨")
+                _toastMessage.emit("Message edited and synced securely ✨")
             } else {
-                _toastMessage.emit("Cannot edit: 10-minute editing window expired.")
+                _toastMessage.emit("Cannot edit: only your text messages can be edited within 15 minutes.")
             }
+        }
+    }
+
+    fun setDisappearingTimer(seconds: Int) {
+        val current = _activeChat.value ?: return
+        viewModelScope.launch {
+            val saved = repository.setDisappearingTimer(current.first.matchId, seconds)
+            _toastMessage.emit(
+                if (saved) "Disappearing message timer updated." else "Couldn't update the disappearing timer."
+            )
         }
     }
 
