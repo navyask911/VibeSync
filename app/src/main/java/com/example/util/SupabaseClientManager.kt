@@ -27,11 +27,9 @@ import java.util.concurrent.TimeUnit
  * SupabaseClientManager
  * Redesigned & Rescaled Direct Supabase PostgREST client.
  *
- * Enforces:
- * 1. 100% Client-Side End-to-End Encryption (E2EE) for all personal profiles & chats.
- * 2. Truncated SHA-256 Phone Identifiers for Zero-Knowledge match-indexing.
- * 3. 90% Database Compression to serve >1,000,000 users on Supabase's 500MB free tier.
- * 4. Zero Raw Personal Data in the Cloud.
+ * Handles authenticated Supabase API calls and canonical profile identity.
+ * Private chat/media payload encryption uses Google Tink; contact matching sends normalized E.164
+ * phone numbers over HTTPS to a restricted server-side index and is not itself end-to-end encrypted.
  */
 object SupabaseClientManager {
 
@@ -74,7 +72,7 @@ object SupabaseClientManager {
     // Real-time telemetry fields observed by Admin Diagnostic Panel
     @Volatile var lastCheckConnected: Boolean = true
     @Volatile var lastCheckHttpStatus: Int = 200
-    @Volatile var lastCheckErrorMessage: String = "E2EE Zero-Knowledge DB Active. Connection Secured."
+    @Volatile var lastCheckErrorMessage: String = "Supabase HTTPS API ready."
     @Volatile var lastCheckLatencyMs: Long = 32
     @Volatile var lastCheckTimestamp: Long = System.currentTimeMillis()
     @Volatile var totalSyncsAttempted: Int = 1
@@ -112,11 +110,11 @@ object SupabaseClientManager {
                 val code = response.code
                 val errMsg = if (success) {
                     totalSyncsSucceeded++
-                    "E2EE Zero-Knowledge DB Online (HTTP $code)"
+                    "Supabase HTTPS API online (HTTP $code)"
                 } else {
                     totalSyncsFailed++
                     val body = response.body?.string() ?: ""
-                    "E2EE API Error $code: ${body.take(150)}"
+                    "Supabase API error $code: ${body.take(150)}"
                 }
 
                 lastCheckConnected = success
@@ -130,7 +128,7 @@ object SupabaseClientManager {
         } catch (e: Throwable) {
             val latency = System.currentTimeMillis() - startTime
             totalSyncsFailed++
-            val errMsg = "Network Exception: ${e.message ?: "Connection Timeout / E2EE Node Offline"}"
+            val errMsg = "Network exception: ${e.message ?: "Connection timeout / Supabase unavailable"}"
             
             lastCheckConnected = false
             lastCheckHttpStatus = 503
@@ -1800,14 +1798,12 @@ object SupabaseClientManager {
     }
 
     /**
-     * Preserves contacts locally on device (Zero-Knowledge Architecture).
-     * Raw address books and user contacts remain strictly on-device in Android Room DB
-     * to comply with zero-knowledge encryption and Google Play privacy policies.
-     * Discovery is performed via truncated 16-character SHA-256 phone hashes in 'profiles'.
+     * Local names/contact rows remain in Room. Matching requests transfer normalized E.164 phone
+     * numbers via authenticated HTTPS to Supabase and receive only canonical profile IDs.
      */
     suspend fun upsertContactsBatch(contacts: List<com.example.data.model.UserContactEntity>): Boolean = withContext(Dispatchers.IO) {
         if (contacts.isEmpty()) return@withContext true
-        Log.i(TAG, "Zero-Knowledge Local Storage: Preserved ${contacts.size} contact(s) on-device (0 byte cloud footprint)")
+        Log.i(TAG, "Preserved ${contacts.size} local contact row(s); matched phone numbers are sent to Supabase only for explicit friend matching.")
         true
     }
 

@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS `profiles` (
     `qualification` TEXT NOT NULL DEFAULT 'Bachelors'
 );
 
--- 2. Matched Contacts Table (Zero-Knowledge SHA-256 Hashed Phonebook Matches)
+-- 2. Matched Contacts Table (local cache of direct E.164 contact matches; legacy phoneHash column stores E.164 text)
 CREATE TABLE IF NOT EXISTS `matched_contacts` (
     `id` TEXT NOT NULL PRIMARY KEY,
     `contactName` TEXT NOT NULL DEFAULT '',
