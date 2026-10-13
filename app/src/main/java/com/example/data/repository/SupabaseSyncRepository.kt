@@ -63,7 +63,7 @@ object SupabaseSyncRepository {
     }
 
     /**
-     * Syncs own profile to Supabase 'profiles' table with 16-character SHA-256 phone_hash.
+     * Syncs the canonical profile to Supabase; E.164 contact matching is indexed server-side without client-derived lookup tokens.
      */
     suspend fun syncOwnProfile(profile: ProfileEntity): Boolean = withContext(Dispatchers.IO) {
         val success = SupabaseClientManager.upsertProfile(profile)
