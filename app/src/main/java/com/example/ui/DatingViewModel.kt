@@ -686,6 +686,33 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     private val _showStatusUploadSheet = MutableStateFlow(false)
     val showStatusUploadSheet: StateFlow<Boolean> = _showStatusUploadSheet.asStateFlow()
 
+    // Contact discovery and explicit phone-number disclosure requests.
+    private val _incomingPhoneNumberRequests = MutableStateFlow<List<com.example.data.model.PhoneNumberAccessRequest>>(emptyList())
+    val incomingPhoneNumberRequests: StateFlow<List<com.example.data.model.PhoneNumberAccessRequest>> =
+        _incomingPhoneNumberRequests.asStateFlow()
+
+    fun refreshIncomingPhoneNumberRequests() {
+        viewModelScope.launch(Dispatchers.IO) {
+            com.example.util.SupabaseClientManager.fetchIncomingPhoneNumberRequests()
+                .onSuccess { _incomingPhoneNumberRequests.value = it }
+                .onFailure { android.util.Log.w("PhoneNumberRequests", "Refresh deferred: ${it.message}") }
+        }
+    }
+
+    fun respondToPhoneNumberRequest(requestId: String, accept: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val status = if (accept) "ACCEPTED" else "BLOCKED"
+            val saved = com.example.util.SupabaseClientManager.respondToPhoneNumberRequest(requestId, status)
+            if (saved) {
+                _incomingPhoneNumberRequests.value = _incomingPhoneNumberRequests.value.filterNot { it.id == requestId }
+                _toastMessage.emit(if (accept) "Phone-number request accepted." else "Future phone-number requests from this user blocked.")
+            } else {
+                _toastMessage.emit("Could not update that phone-number request. Please retry.")
+                refreshIncomingPhoneNumberRequests()
+            }
+        }
+    }
+
     // Phonebook Contact Gated Chat & Invites
     val isPhonebookSyncing: StateFlow<Boolean> = com.example.util.PhonebookSyncManager.isSyncing
     private val _rawDeviceContacts = MutableStateFlow<List<PhoneContact>>(emptyList())

@@ -411,6 +411,111 @@ object SupabaseClientManager {
         }
     }
 
+    /** Submit an explicit request for a peer to disclose their phone number. */
+    suspend fun createPhoneNumberAccessRequest(
+        targetProfileId: String,
+        requesterName: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val requesterId = VibeSyncSessionManager.getProfileId().orEmpty()
+        if (requesterId.isBlank() || targetProfileId.isBlank() ||
+            requesterId.equals(targetProfileId, ignoreCase = true)
+        ) return@withContext Result.failure(IllegalArgumentException("A valid peer profile is required."))
+        try {
+            val payload = JSONObject()
+                .put("requester_profile_id", requesterId)
+                .put("target_profile_id", targetProfileId)
+                .put("requester_name", requesterName.trim().take(80).ifBlank { "VibeSync member" })
+                .put("status", "PENDING")
+                .toString()
+            httpClient.newCall(buildRequest(
+                endpoint = "phone_number_requests",
+                method = "POST",
+                bodyJson = payload,
+                preferHeader = "return=minimal"
+            )).execute().use { response ->
+                if (response.isSuccessful) Result.success(Unit)
+                else Result.failure(IllegalStateException("Phone request failed (HTTP ${response.code})."))
+            }
+        } catch (failure: Throwable) {
+            Result.failure(failure)
+        }
+    }
+
+    suspend fun fetchIncomingPhoneNumberRequests(): Result<List<com.example.data.model.PhoneNumberAccessRequest>> =
+        withContext(Dispatchers.IO) {
+            val profileId = VibeSyncSessionManager.getProfileId().orEmpty()
+            if (profileId.isBlank()) return@withContext Result.failure(IllegalStateException("Verified session is unavailable."))
+            try {
+                val encodedProfile = java.net.URLEncoder.encode(profileId, "UTF-8")
+                val endpoint = "phone_number_requests?select=id,requester_profile_id,target_profile_id,requester_name,status,created_at" +
+                    "&target_profile_id=eq.$encodedProfile&status=eq.PENDING&order=created_at.desc&limit=20"
+                httpClient.newCall(buildRequest(endpoint, "GET")).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        return@withContext Result.failure(IllegalStateException("Phone request fetch failed (HTTP ${response.code})."))
+                    }
+                    val rows = JSONArray(body)
+                    val requests = (0 until rows.length()).mapNotNull { index ->
+                        rows.optJSONObject(index)?.let { row ->
+                            com.example.data.model.PhoneNumberAccessRequest(
+                                id = row.optString("id"),
+                                requesterProfileId = row.optString("requester_profile_id"),
+                                targetProfileId = row.optString("target_profile_id"),
+                                requesterName = row.optString("requester_name", "VibeSync member"),
+                                status = row.optString("status", "PENDING"),
+                                createdAt = row.optString("created_at")
+                            )
+                        }
+                    }
+                    Result.success(requests)
+                }
+            } catch (failure: Throwable) {
+                Result.failure(failure)
+            }
+        }
+
+    /** Only the target may accept/block; PATCH uses return=representation to detect stale requests. */
+    suspend fun respondToPhoneNumberRequest(requestId: String, responseStatus: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val profileId = VibeSyncSessionManager.getProfileId().orEmpty()
+            val normalizedStatus = responseStatus.trim().uppercase()
+            if (profileId.isBlank() || requestId.isBlank() ||
+                normalizedStatus !in setOf("ACCEPTED", "BLOCKED")
+            ) return@withContext false
+            try {
+                val encodedId = java.net.URLEncoder.encode(requestId, "UTF-8")
+                val encodedProfile = java.net.URLEncoder.encode(profileId, "UTF-8")
+                val body = JSONObject()
+                    .put("status", normalizedStatus)
+                    .put("responded_at", java.time.Instant.now().toString())
+                    .toString()
+                val endpoint = "phone_number_requests?id=eq.$encodedId&target_profile_id=eq.$encodedProfile&status=eq.PENDING"
+                httpClient.newCall(buildRequest(endpoint, "PATCH", body, preferHeader = "return=representation")).execute().use { response ->
+                    if (!response.isSuccessful) return@withContext false
+                    JSONArray(response.body?.string().orEmpty()).length() > 0
+                }
+            } catch (failure: Throwable) {
+                Log.w(TAG, "Phone request response deferred: ${failure.javaClass.simpleName}")
+                false
+            }
+        }
+
+    suspend fun hasAcceptedPhoneNumberRequest(targetProfileId: String): Boolean = withContext(Dispatchers.IO) {
+        val requesterId = VibeSyncSessionManager.getProfileId().orEmpty()
+        if (requesterId.isBlank() || targetProfileId.isBlank()) return@withContext false
+        try {
+            val requester = java.net.URLEncoder.encode(requesterId, "UTF-8")
+            val target = java.net.URLEncoder.encode(targetProfileId, "UTF-8")
+            val endpoint = "phone_number_requests?select=id&requester_profile_id=eq.$requester" +
+                "&target_profile_id=eq.$target&status=eq.ACCEPTED&limit=1"
+            httpClient.newCall(buildRequest(endpoint, "GET")).execute().use { response ->
+                response.isSuccessful && JSONArray(response.body?.string().orEmpty()).length() > 0
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     /** Stores metadata only after the media is available in storage; RLS checks the active session. */
     suspend fun upsertStatusStoryRemote(
         story: StatusStoryEntity,

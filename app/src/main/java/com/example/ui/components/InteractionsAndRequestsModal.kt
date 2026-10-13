@@ -3,6 +3,7 @@ package com.example.ui.components
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import com.example.ui.components.DatingAvatar
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -255,25 +256,15 @@ private fun ReceivedRequestsTab(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            // Avatar
-                            if (avatar.isNotBlank()) {
-                                AsyncImage(
-                                    model = avatar,
-                                    contentDescription = name,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.size(46.dp).clip(CircleShape)
-                                )
-                            } else {
-                                Box(
-                                    modifier = Modifier
-                                        .size(46.dp)
-                                        .clip(CircleShape)
-                                        .background(VibeSyncTeal.copy(alpha = 0.15f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(emoji.ifBlank { name.take(1) }, fontSize = 20.sp)
-                                }
-                            }
+                            DatingAvatar(
+                                name = name,
+                                emoji = emoji,
+                                colorStart = profile?.gradientColorStart ?: 0xFF00A884,
+                                colorEnd = profile?.gradientColorEnd ?: 0xFF128C7E,
+                                size = 46.dp,
+                                avatarUrl = avatar,
+                                avatarCacheVersion = profile?.avatarCacheVersion ?: 0L
+                            )
 
                             Spacer(modifier = Modifier.width(12.dp))
 
@@ -381,21 +372,15 @@ private fun SentRequestsTab(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                            if (avatar.isNotBlank()) {
-                                AsyncImage(
-                                    model = avatar,
-                                    contentDescription = name,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.size(44.dp).clip(CircleShape)
-                                )
-                            } else {
-                                Box(
-                                    modifier = Modifier.size(44.dp).clip(CircleShape).background(Color(0xFF00B0FF).copy(alpha = 0.15f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(name.take(1), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00B0FF))
-                                }
-                            }
+                            DatingAvatar(
+                                name = name,
+                                emoji = profile?.avatarEmoji ?: name.take(1),
+                                colorStart = profile?.gradientColorStart ?: 0xFF00A884,
+                                colorEnd = profile?.gradientColorEnd ?: 0xFF128C7E,
+                                size = 44.dp,
+                                avatarUrl = avatar,
+                                avatarCacheVersion = profile?.avatarCacheVersion ?: 0L
+                            )
 
                             Spacer(modifier = Modifier.width(10.dp))
 

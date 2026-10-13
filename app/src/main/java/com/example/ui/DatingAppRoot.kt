@@ -174,6 +174,7 @@ fun DatingAppRoot(
     val phonebookContacts by viewModel.phonebookContacts.collectAsStateWithLifecycle()
     val isPhonebookSyncing by viewModel.isPhonebookSyncing.collectAsStateWithLifecycle()
     val showPhonebookScreen by viewModel.showPhonebookScreen.collectAsStateWithLifecycle()
+    val incomingPhoneNumberRequests by viewModel.incomingPhoneNumberRequests.collectAsStateWithLifecycle()
     val selectedContactToInvite by viewModel.selectedContactToInvite.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val appearance = rememberAppAppearance()
@@ -202,6 +203,10 @@ fun DatingAppRoot(
     val allApiRequests by viewModel.allApiRequests.collectAsStateWithLifecycle()
     val pendingDeepLinkBizId by com.example.util.DeepLinkManager.pendingBusinessId.collectAsStateWithLifecycle()
     var showInteractionsModal by remember { mutableStateOf(false) }
+
+    LaunchedEffect(showPhonebookScreen) {
+        if (showPhonebookScreen) viewModel.refreshIncomingPhoneNumberRequests()
+    }
 
     LaunchedEffect(pendingDeepLinkBizId) {
         pendingDeepLinkBizId?.let { bizId ->
@@ -938,7 +943,11 @@ fun DatingAppRoot(
             onInviteContact = { contact -> viewModel.openInviteContactDialog(contact) },
             onRefreshContacts = { viewModel.loadPhonebookContacts(forceRefresh = true) },
             onBack = { viewModel.closePhonebookScreen() },
-            onStartChatWithNumber = { num -> viewModel.startChatWithNumber(num) }
+            onStartChatWithNumber = { num -> viewModel.startChatWithNumber(num) },
+            phoneNumberRequests = incomingPhoneNumberRequests,
+            onRespondToPhoneNumberRequest = { requestId, accept ->
+                viewModel.respondToPhoneNumberRequest(requestId, accept)
+            }
         )
     }
 

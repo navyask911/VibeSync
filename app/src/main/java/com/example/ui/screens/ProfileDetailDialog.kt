@@ -37,6 +37,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -73,7 +77,14 @@ fun ProfileDetailDialog(
     isMutualConnection: Boolean = false
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val canRevealSensitive =
+    val requestScope = rememberCoroutineScope()
+    var approvedPhoneRequest by remember(profile.id) { mutableStateOf(false) }
+    LaunchedEffect(profile.id) {
+        approvedPhoneRequest = withContext(Dispatchers.IO) {
+            com.example.util.SupabaseClientManager.hasAcceptedPhoneNumberRequest(profile.id)
+        }
+    }
+    val canRevealSensitive = (approvedPhoneRequest && isMutualConnection) ||
         com.example.util.ProfilePrivacyManager.canRevealSensitiveFields(context, profile, isMutualConnection)
     val photoList = remember(profile.avatarUrl, profile.id) {
         profile.getPhotoList()
@@ -434,11 +445,15 @@ fun ProfileDetailDialog(
                                             }
                                             IconButton(
                                                 onClick = {
-                                                    com.example.util.PhonebookHelper.sendInstantMessagingInvite(
-                                                        context = context,
-                                                        phoneNumber = displayPhone,
-                                                        message = "Hi ${profile.name}! Connecting with you on VibeSync."
-                                                    )
+                                                    if (onOpenChat != null) {
+                                                        onOpenChat.invoke(profile.id)
+                                                    } else {
+                                                        com.example.util.PhonebookHelper.sendInstantMessagingInvite(
+                                                            context = context,
+                                                            phoneNumber = displayPhone,
+                                                            message = "Hi ${profile.name}! Connecting with you on VibeSync."
+                                                        )
+                                                    }
                                                 },
                                                 modifier = Modifier.size(36.dp)
                                             ) {
@@ -500,12 +515,18 @@ fun ProfileDetailDialog(
                                         } else {
                                             Button(
                                                 onClick = {
-                                                    isPhoneAccessRequested = true
-                                                    android.widget.Toast.makeText(
-                                                        context,
-                                                        "Phone number request sent to ${profile.name}!",
-                                                        android.widget.Toast.LENGTH_SHORT
-                                                    ).show()
+                                                    requestScope.launch {
+                                                        val result = com.example.util.SupabaseClientManager.createPhoneNumberAccessRequest(
+                                                            targetProfileId = profile.id,
+                                                            requesterName = "VibeSync member"
+                                                        )
+                                                        isPhoneAccessRequested = result.isSuccess
+                                                        android.widget.Toast.makeText(
+                                                            context,
+                                                            if (result.isSuccess) "Phone number request sent to ${profile.name}." else "Request could not be sent. Please retry.",
+                                                            android.widget.Toast.LENGTH_SHORT
+                                                        ).show()
+                                                    }
                                                 },
                                                 modifier = Modifier.fillMaxWidth(),
                                                 shape = RoundedCornerShape(12.dp),
