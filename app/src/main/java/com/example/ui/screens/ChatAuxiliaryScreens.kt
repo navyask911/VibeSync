@@ -1,5 +1,14 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.content.ContentUris
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -47,6 +56,61 @@ fun dateSeparatorLabel(date: LocalDate): String {
         today -> "Today"
         today.minusDays(1) -> "Yesterday"
         else -> date.format(DateTimeFormatter.ofPattern("MMMM d, yyyy", Locale.getDefault()))
+    }
+}
+
+@Composable
+fun RecentDeviceMediaStrip(onPick: (Uri) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var recentPhotos by remember { mutableStateOf<List<Pair<Uri, String>>>(emptyList()) }
+    LaunchedEffect(context) {
+        recentPhotos = withContext(Dispatchers.IO) {
+            runCatching {
+                val canRead = when {
+                    Build.VERSION.SDK_INT >= 34 -> ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED ||
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == PackageManager.PERMISSION_GRANTED
+                    Build.VERSION.SDK_INT >= 33 -> ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
+                    else -> ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+                }
+                if (!canRead) return@runCatching emptyList<Pair<Uri, String>>()
+                val values = mutableListOf<Pair<Uri, String>>()
+                val projection = arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME)
+                context.contentResolver.query(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    projection,
+                    null,
+                    null,
+                    MediaStore.Images.Media.DATE_ADDED + " DESC"
+                )?.use { cursor ->
+                    val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+                    val nameColumn = cursor.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
+                    while (cursor.moveToNext() && values.size < 12) {
+                        val id = cursor.getLong(idColumn)
+                        val name = if (nameColumn >= 0) cursor.getString(nameColumn).orEmpty() else "Photo"
+                        values += ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id) to name
+                    }
+                }
+                values
+            }.getOrElse { emptyList() }
+        }
+    }
+    Text("Recent photos on this device", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    if (recentPhotos.isEmpty()) {
+        Text("No accessible recent photos. Use Gallery to browse and select an image.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    } else {
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 3.dp)) {
+            items(recentPhotos, key = { it.first.toString() }) { (uri, name) ->
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier.size(76.dp).clickable { onPick(uri) }
+                ) {
+                    Box {
+                        AsyncImage(model = uri, contentDescription = name, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -132,7 +196,7 @@ fun AllMediaScreen(messages: List<ChatMessageEntity>, onBack: () -> Unit, onOpen
     var gridMode by remember { mutableStateOf(true) }
     var sortExpanded by remember { mutableStateOf(false) }
     var newestFirst by remember { mutableStateOf(true) }
-    val linkRegex = remember { Regex("https?://[^\\\\s]+", RegexOption.IGNORE_CASE) }
+    val linkRegex = remember { Regex("https?://[^\\s]+", RegexOption.IGNORE_CASE) }
     val attachments = messages.filter { !it.isDeleted && !it.isDeletedForEveryone && (it.mediaType !in setOf("TEXT", "MESSAGE_DELETE", "MESSAGE_EDIT", "REACTION") || linkRegex.containsMatchIn(it.text)) }
     val filtered = attachments.filter { msg ->
         when (category) {

@@ -40,7 +40,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.stickyHeader
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -1414,25 +1413,13 @@ private fun ChatDetailScreenContent(
                             .align(Alignment.CenterHorizontally)
                     )
                     Spacer(modifier = Modifier.height(12.dp))
-                    val recentChatMedia = visibleMessages
-                        .filter { it.mediaType.uppercase(Locale.ROOT) in setOf("IMAGE", "VIDEO", "PHOTO") && it.mediaUrl.isNotBlank() }
-                        .takeLast(10).asReversed()
-                    Text("Recent media in this chat", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (recentChatMedia.isEmpty()) {
-                        Text("No recent photo or video shared here yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    } else {
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 3.dp)) {
-                            items(recentChatMedia, key = { "quick-media-" + it.messageId }) { media ->
-                                Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.size(76.dp).clickable {
-                                    fullScreenMediaUrl = media.mediaUrl
-                                    fullScreenMediaType = media.mediaType
-                                    showAttachmentSheet = false
-                                }) {
-                                    AsyncImage(model = media.mediaUrl, contentDescription = "Recent shared media", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                                }
-                            }
+                    RecentDeviceMediaStrip(
+                        onPick = { uri ->
+                            showAttachmentSheet = false
+                            pendingMediaType = "IMAGE"
+                            pendingMediaUriForCaption = uri
                         }
-                    }
+                    )
                     Spacer(modifier = Modifier.height(10.dp))
 
                     // Row 1: required quick actions - Gallery, File, Poll, Contact
