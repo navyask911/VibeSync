@@ -1194,7 +1194,7 @@ object SupabaseClientManager {
         }
         val phone = fallbackPhoneNumber.trim()
         if (phone.isNotBlank()) {
-            Log.i(TAG, "No valid key for profile_id=$safeProfileId (rows=$directRows); trying phone-hash RPC.")
+            Log.i(TAG, "No valid key for profile_id=$safeProfileId (rows=$directRows); trying direct E.164 contact RPC.")
             return@withContext SupabaseBackendManager.fetchPublicKeyForPhone(phone)
         }
         Log.w(TAG, "No published peer Tink key found for profile_id=$safeProfileId and no fallback phone is available.")
@@ -1216,7 +1216,7 @@ object SupabaseClientManager {
                 .distinct()
             val requestedRecipient = recipientInputs.firstOrNull().orEmpty()
             // A supplied phone number outranks a cached peer ID and any stale peer inferred
-            // from local_match_id. Only the phone-hash RPC can convert it to a profile ID.
+            // from local_match_id. Only the authenticated E.164 lookup RPC can resolve a phone number to a canonical profile ID.
             val phoneIdentity = ChatRecipientIdentityResolver.phoneIdentityCandidate(
                 *recipientInputs.toTypedArray()
             )
