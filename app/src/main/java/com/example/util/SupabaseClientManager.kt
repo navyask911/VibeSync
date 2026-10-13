@@ -1821,7 +1821,6 @@ object SupabaseClientManager {
                 name = match.name,
                 age = 24,
                 phoneNumber = match.phoneE164,
-                phoneHash = match.phoneE164,
                 avatarUrl = match.photoUrl.orEmpty(),
                 avatarEmoji = match.avatarEmoji,
                 isVerified = true
