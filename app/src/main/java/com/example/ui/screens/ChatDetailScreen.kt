@@ -1034,6 +1034,20 @@ private fun ChatDetailScreenContent(
                             onClick = { showMenu = false; showChatSearch = true }
                         )
                         DropdownMenuItem(
+                            text = { Text(if (chatMuted) "Unmute" else "Mute") },
+                            onClick = {
+                                showMenu = false
+                                val nextMuted = !chatMuted
+                                chatMuted = nextMuted
+                                com.example.util.ChatThreadPreferences.setMuted(context, profile.id, nextMuted)
+                                Toast.makeText(
+                                    context,
+                                    if (nextMuted) "Chat muted" else "Chat unmuted",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        )
+                        DropdownMenuItem(
                             text = { Text("Add to home screen") },
                             onClick = {
                                 showMenu = false
