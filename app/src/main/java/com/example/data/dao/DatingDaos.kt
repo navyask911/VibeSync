@@ -7,6 +7,7 @@ import androidx.room.Query
 import androidx.room.Update
 import com.example.data.model.BlockEntity
 import com.example.data.model.ChatMessageEntity
+import com.example.data.model.ExpiredChatMessageEntity
 import com.example.data.model.FriendshipRequestEntity
 import com.example.data.model.MatchEntity
 import com.example.data.model.ProfileEntity
@@ -480,3 +481,17 @@ interface ReportDao {
 }
 
 
+
+
+/** Persistent content-free IDs so expired ciphertext cannot reappear through delayed sync. */
+@Dao
+interface ExpiredChatMessageDao {
+    @Query("SELECT EXISTS(SELECT 1 FROM expired_chat_messages WHERE messageId = :messageId)")
+    suspend fun isExpiredMessage(messageId: String): Boolean
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertExpiredMessage(message: ExpiredChatMessageEntity)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertExpiredMessages(messages: List<ExpiredChatMessageEntity>)
+}
