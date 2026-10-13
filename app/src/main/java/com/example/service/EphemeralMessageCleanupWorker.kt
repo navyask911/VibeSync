@@ -28,6 +28,14 @@ class EphemeralMessageCleanupWorker(
                 com.example.util.VoiceNoteCryptoManager.purgeCachedVoiceNote(applicationContext, id)
             }
             database.withTransaction {
+                database.expiredChatMessageDao().insertExpiredMessages(
+                    expiredIds.map { id ->
+                        com.example.data.model.ExpiredChatMessageEntity(
+                            messageId = id,
+                            expiredAt = now
+                        )
+                    }
+                )
                 expiredIds.forEach { id ->
                     database.messageDao().deleteRemoteMessage(id)
                     database.chatMessageDao().deleteMessageById(id)
