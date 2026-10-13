@@ -3086,6 +3086,7 @@ class SocialConnectRepository(
         senderPhone: String = "",
         receiverPhone: String = ""
     ) {
+        if (database.expiredChatMessageDao().isExpiredMessage(message.messageId)) return
         val existingMessage = chatMessageDao.getMessageById(message.messageId)
         // A replay of the original INSERT must never resurrect plaintext after a shared delete event.
         if (existingMessage?.isDeleted == true || existingMessage?.isDeletedForEveryone == true) return
