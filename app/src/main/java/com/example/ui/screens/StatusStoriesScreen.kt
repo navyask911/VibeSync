@@ -819,7 +819,10 @@ fun TypeAStatusComposerScreen(
                 .imePadding()
         ) {
             Column(
-                modifier = Modifier.fillMaxSize().imePadding()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .imePadding()
             ) {
                 // Top Action Bar
                 Row(
@@ -895,7 +898,7 @@ fun TypeAStatusComposerScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f)
+                        .heightIn(min = 220.dp)
                         .padding(horizontal = 24.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -931,7 +934,7 @@ fun TypeAStatusComposerScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 18.dp, start = 14.dp, end = 14.dp)
+                        .padding(bottom = 8.dp, top = 8.dp, start = 14.dp, end = 14.dp)
                 ) {
                     Row(
                         modifier = Modifier

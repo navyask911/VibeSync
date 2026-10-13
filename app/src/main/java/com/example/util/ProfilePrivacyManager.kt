@@ -13,8 +13,11 @@ object ProfilePrivacyManager {
         val phone = profile.phoneNumber.ifBlank {
             profile.id.takeIf { SupabaseClientManager.isPhoneNumberCandidate(it) }.orEmpty()
         }
+        // A number already present in ContactsContract is an established local relationship.
+        // Reveal it immediately rather than waiting for cross-device key-exchange metadata.
         val localSaved = phone.isNotBlank() && ContactResolver.isNumberSavedOnDevice(app, phone)
-        return localSaved && ProfileKeyManager.peerHasConfirmedSavingMyNumber(app, profile.id)
+        if (localSaved) return true
+        return isMutualConnection && ProfileKeyManager.peerHasConfirmedSavingMyNumber(app, profile.id)
     }
 
     fun maskedPhone(phoneNumber: String): String {

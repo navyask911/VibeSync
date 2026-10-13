@@ -947,9 +947,8 @@ class SocialConnectRepository(
                 return@withContext
             }
             val existingById = statusStoryDao.getAllStoriesSync().associateBy { it.id }
+            // Do not clear remote cache rows before a successful server read and usable replacement set.
             statusStoryDao.deleteExpiredStories(cutoff)
-            statusStoryDao.clearFriendsStories()
-
             val storiesToCache = remoteStories
                 .filter { it.timestamp >= cutoff && !it.isExpired }
                 .map { remote ->

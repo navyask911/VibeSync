@@ -196,7 +196,7 @@ class ContactRepository(
                     isOnVibeSync = isOnVibeSync,
                     vibeSyncProfileId = vibeSyncUserId,
                     avatarEmoji = matchedProfile?.avatarEmoji ?: contact.avatarEmoji,
-                    photoUrl = matchedProfile?.avatarUrl?.ifBlank { "" } ?: contact.photoUrl,
+                    photoUrl = matchedProfile?.avatarUrl?.takeIf { it.isNotBlank() } ?: contact.photoUrl,
                     statusTagline = matchedProfile?.bio?.ifBlank { "" } ?: contact.statusTagline,
                     vibeSyncUser = matchedProfile ?: contact.vibeSyncUser,
                     phoneHash = lookupHash

@@ -488,8 +488,9 @@ object SupabaseClientManager {
                     val musicUrl = if (rawMusicPath.isNotBlank() && !rawMusicPath.startsWith("http")) {
                         createSignedStatusMediaUrl(rawMusicPath).getOrElse { "" }
                     } else rawMusicPath
+                    val visibility = obj.optString("privacy", "FRIENDS_AND_MATCHES").trim().uppercase()
                     val isAdmittedViewer = userId == profileId ||
-                        obj.optString("privacy", "FRIENDS_AND_MATCHES") in setOf("EVERYONE", "ALL_NETWORK") ||
+                        visibility in setOf("EVERYONE", "ALL_NETWORK", "PUBLIC", "ALL") ||
                         run {
                             val viewers = obj.optJSONArray("allowedViewerProfileIds") ?: JSONArray()
                             (0 until viewers.length()).any { viewers.optString(it) == profileId }

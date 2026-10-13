@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -41,13 +42,15 @@ import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Launch
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Store
 import androidx.compose.material.icons.filled.Tune
 import coil.compose.AsyncImage
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import androidx.compose.runtime.derivedStateOf
 import com.example.data.model.BusinessEntity
 import com.example.data.model.tierPriorityRank
 import com.example.data.model.photosList
@@ -151,7 +154,8 @@ fun DiscoverScreen(
     var showConnectPreferences by remember { mutableStateOf(false) }
     var dismissedRequestIds by rememberSaveable { mutableStateOf(setOf<String>()) }
     var followedBusinessIds by rememberSaveable { mutableStateOf(setOf<String>()) }
-    var businessSearchQuery by rememberSaveable { mutableStateOf("") }
+    val discoverListState = rememberLazyListState()
+    val isDiscoverScrolled by remember { derivedStateOf { discoverListState.firstVisibleItemIndex > 0 || discoverListState.firstVisibleItemScrollOffset > 96 } }
 
     val pendingFriendRequestsState = viewModel?.pendingFriendRequests?.collectAsState()
     val pendingRequests = pendingFriendRequestsState?.value ?: emptyList()

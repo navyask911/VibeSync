@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -77,6 +78,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -291,8 +293,14 @@ fun MatchesChatScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Gradient VibeSync Brand Logo & Verified Genuine Badge
+                    // Same colorful mark as Connect, Find, Business Suite and onboarding.
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        Image(
+                            painter = painterResource(id = com.example.R.drawable.ic_launcher_foreground),
+                            contentDescription = "VibeSync logo",
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Spacer(Modifier.width(5.dp))
                         Text(
                             text = "VibeSync",
                             style = MaterialTheme.typography.titleLarge.copy(
