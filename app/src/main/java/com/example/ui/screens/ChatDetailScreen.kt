@@ -2505,7 +2505,7 @@ private fun ChatDetailScreenContent(
                     }
                 )
 
-                // Edit Message (Strict 10-minute constraint)
+                // Edit sender-authored text within a strict 15-minute constraint
                 if (isOutgoing && !msg.isDeletedForEveryone) {
                     DropdownMenuItem(
                         text = {
@@ -2514,7 +2514,7 @@ private fun ChatDetailScreenContent(
                                 Text(
                                     text = if (isWithin15Mins) "Allowed within 15 mins" else "Expired (>15 mins limit)",
                                     fontSize = 10.sp,
-                                    color = if (isWithin10Mins) VibeSyncTeal else Color.Gray
+                                    color = if (isWithin15Mins) VibeSyncTeal else Color.Gray
                                 )
                             }
                         },
@@ -2522,7 +2522,7 @@ private fun ChatDetailScreenContent(
                             Icon(
                                 Icons.Default.Edit,
                                 contentDescription = null,
-                                tint = if (isWithin10Mins) VibeSyncTeal else Color.Gray
+                                tint = if (isWithin15Mins) VibeSyncTeal else Color.Gray
                             )
                         },
                         enabled = canEdit,
@@ -2564,7 +2564,7 @@ private fun ChatDetailScreenContent(
         }
     }
 
-    // Edit Message Dialog (Within 10 mins)
+    // Edit Message Dialog (Within 15 minutes)
     editingMessage?.let { msg ->
         var editTextValue by remember(msg.messageId) { mutableStateOf(msg.text) }
         AlertDialog(
