@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -47,13 +48,41 @@ fun DatingAvatar(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    var resolvedAvatarBitmap by remember(avatarUrl, avatarCacheVersion) {
+        mutableStateOf<Bitmap?>(null)
+    }
     var resolvedAvatarUrl by remember(avatarUrl, avatarCacheVersion) {
         mutableStateOf(if (avatarUrl.startsWith("vibesync-avatar-enc://")) "" else avatarUrl)
     }
     LaunchedEffect(avatarUrl, avatarCacheVersion) {
-        resolvedAvatarUrl = if (avatarUrl.startsWith("vibesync-avatar-enc://")) {
-            com.example.util.ProfileAvatarStorageManager.resolveAvatarForDisplay(context, avatarUrl, avatarCacheVersion).orEmpty()
-        } else avatarUrl
+        if (avatarUrl.startsWith("vibesync-avatar-enc://")) {
+            resolvedAvatarUrl = ""
+            resolvedAvatarBitmap = com.example.util.ProfileAvatarStorageManager
+                .resolveAvatarForDisplay(context, avatarUrl, avatarCacheVersion)
+        } else {
+            resolvedAvatarBitmap = null
+            resolvedAvatarUrl = avatarUrl
+        }
+    }
+    val avatarImageModel = remember(resolvedAvatarUrl, resolvedAvatarBitmap, avatarUrl, avatarCacheVersion) {
+        when {
+            resolvedAvatarBitmap != null -> ImageRequest.Builder(context)
+                .data(resolvedAvatarBitmap)
+                .memoryCacheKey("profile-avatar:$avatarUrl:$avatarCacheVersion")
+                .crossfade(true)
+                .diskCachePolicy(CachePolicy.DISABLED)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .build()
+            resolvedAvatarUrl.isNotBlank() -> ImageRequest.Builder(context)
+                .data(resolvedAvatarUrl)
+                .memoryCacheKey("profile-avatar:$resolvedAvatarUrl:$avatarCacheVersion")
+                .diskCacheKey("profile-avatar:$resolvedAvatarUrl:$avatarCacheVersion")
+                .crossfade(true)
+                .diskCachePolicy(CachePolicy.ENABLED)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .build()
+            else -> null
+        }
     }
     val fallbackLabel = remember(name, emoji) {
         val cleanEmoji = emoji.trim()
@@ -85,16 +114,9 @@ fun DatingAvatar(
                 .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape),
             contentAlignment = Alignment.Center
         ) {
-            if (resolvedAvatarUrl.isNotBlank()) {
+            if (avatarImageModel != null) {
                 AsyncImage(
-                    model = ImageRequest.Builder(context)
-                        .data(resolvedAvatarUrl)
-                        .memoryCacheKey("profile-avatar:$resolvedAvatarUrl:$avatarCacheVersion")
-                        .diskCacheKey("profile-avatar:$resolvedAvatarUrl:$avatarCacheVersion")
-                        .crossfade(true)
-                        .diskCachePolicy(CachePolicy.ENABLED)
-                        .memoryCachePolicy(CachePolicy.ENABLED)
-                        .build(),
+                    model = avatarImageModel,
                     contentDescription = "$name's profile photo",
                     modifier = Modifier.size(size),
                     contentScale = ContentScale.Crop

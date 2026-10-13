@@ -75,6 +75,8 @@ object ProfileAvatarStorageManager {
             require(localFile.isFile && localFile.length() in 1 until MAX_BYTES.toLong()) {
                 "Compressed avatar must be strictly below 150,000 bytes."
             }
+            // Bump the opaque profile version on avatar rotation so peers invalidate stale caches.
+            ProfileKeyManager.incrementProfileVersion(context, profileId)
             // Encrypt the JPEG on-device. Only this ciphertext is sent to Supabase Storage.
             val ciphertext = ProfileKeyManager.encryptLocalAvatar(context, profileId, cleanSlot, bytes)
             val encryptedName = if (cleanSlot == 1) profileId + ".enc" else profileId + "_" + cleanSlot + ".enc"
@@ -110,7 +112,15 @@ object ProfileAvatarStorageManager {
                 contentType = "application/octet-stream",
                 storageObjectName = prepared.objectName
             )
-            if (uploaded.isNullOrBlank()) null else encryptedAvatarReference(prepared.profileId, prepared.slot)
+            if (uploaded.isNullOrBlank()) {
+                null
+            } else {
+                // Do not leave the sanitized plaintext staging image or temporary ciphertext on disk
+                // after Supabase confirms the ciphertext upload.
+                prepared.file.delete()
+                encrypted.delete()
+                encryptedAvatarReference(prepared.profileId, prepared.slot)
+            }
         }
 
     fun encryptedAvatarReference(profileId: String, slot: Int = 1): String =

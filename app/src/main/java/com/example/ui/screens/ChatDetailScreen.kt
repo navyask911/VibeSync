@@ -1099,6 +1099,7 @@ private fun ChatDetailScreenContent(
                         isOutgoing = isOutgoing,
                         maxBubbleWidth = maxBubbleWidth,
                         localMessageStatuses = localMessageStatuses,
+                        readReceiptsEnabled = readReceiptsEnabled,
                         chatTextColor = chatTextColor,
                         onReactToMessage = onReactToMessage,
                         onActionClick = {
@@ -3886,6 +3887,7 @@ private fun VibeSyncChatBubble(
     isOutgoing: Boolean,
     maxBubbleWidth: Dp,
     localMessageStatuses: Map<String, String>,
+    readReceiptsEnabled: Boolean = true,
     chatTextColor: Color = Color(0xFF111827),
     onReactToMessage: (messageId: String, emoji: String) -> Unit,
     onActionClick: () -> Unit,

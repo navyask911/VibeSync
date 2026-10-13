@@ -10,6 +10,10 @@ import com.google.crypto.tink.JsonKeysetReader
 import com.google.crypto.tink.JsonKeysetWriter
 import com.google.crypto.tink.KeyTemplates
 import com.google.crypto.tink.integration.android.AndroidKeysetManager
+import com.example.data.database.DatingDatabase
+import com.example.data.model.PeerProfileKeyEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import org.json.JSONObject
@@ -27,6 +31,22 @@ object ProfileKeyManager {
     private const val WRAPPER_KEYSET_NAME = "vibesync_profile_key_wrapper_keyset"
     private const val PEER_KEYS_PREFS = "vibesync_shared_profile_keysets"
     private const val SHARE_STATE_PREFS = "vibesync_profile_key_share_state"
+    private const val PROFILE_VERSION_PREFS = "vibesync_profile_avatar_versions"
+
+    /** Monotonic profile-avatar version used by peers to invalidate cached rendered images. */
+    fun currentProfileVersion(context: Context, profileId: String): Int =
+        context.applicationContext.getSharedPreferences(PROFILE_VERSION_PREFS, Context.MODE_PRIVATE)
+            .getInt("profile_version_" + stableKey(profileId), 1).coerceAtLeast(1)
+
+    /** Advance the avatar metadata version when a new sanitized avatar is prepared. */
+    fun incrementProfileVersion(context: Context, profileId: String): Int {
+        require(profileId.isNotBlank())
+        val prefs = context.applicationContext.getSharedPreferences(PROFILE_VERSION_PREFS, Context.MODE_PRIVATE)
+        val key = "profile_version_" + stableKey(profileId)
+        val next = (prefs.getInt(key, 1) + 1).coerceAtMost(Int.MAX_VALUE)
+        check(prefs.edit().putInt(key, next).commit()) { "Could not persist avatar profile version." }
+        return next
+    }
 
     data class ReceivedExchange(
         val ownerProfileId: String,
@@ -104,6 +124,7 @@ object ProfileKeyManager {
         val keysetJson = exportLocalKeysetJson(context.applicationContext, ownerProfileId)
         val body = JSONObject()
             .put("version", 1)
+            .put("profile_version", currentProfileVersion(context, ownerProfileId))
             .put("owner_profile_id", ownerProfileId)
             .put("recipient_profile_id", recipientProfileId)
             .put("aes256_gcm_keyset", Base64.encodeToString(keysetJson.toByteArray(Charsets.UTF_8), Base64.NO_WRAP))
@@ -147,11 +168,29 @@ object ProfileKeyManager {
 
             val prefs = context.applicationContext.getSharedPreferences(PEER_KEYS_PREFS, Context.MODE_PRIVATE)
             val wrapped = wrappingAead(context).encrypt(keysetJson.toByteArray(Charsets.UTF_8), peerKeyAad(owner))
+            val profileVersion = json.optInt("profile_version", 1).coerceAtLeast(1)
             val committed = prefs.edit()
                 .putString("wrapped_key_" + stableKey(owner), Base64.encodeToString(wrapped, Base64.NO_WRAP))
                 .putBoolean("peer_saved_my_number_" + stableKey(owner), json.optBoolean("sender_has_recipient_saved", false))
                 .commit()
             if (!committed) return null
+
+            // Store the locally wrapped keyset in SQLCipher Room as the durable peer keyring.
+            // This BLOB is the wrapper-AEAD ciphertext, not plaintext key material.
+            runCatching {
+                runBlocking(Dispatchers.IO) {
+                    DatingDatabase.getDatabase(context.applicationContext).peerProfileKeyDao().upsert(
+                        PeerProfileKeyEntity(
+                            peerId = owner,
+                            profileKey = wrapped,
+                            profileVersion = profileVersion,
+                            cachedPath = null
+                        )
+                    )
+                }
+            }.onFailure {
+                Log.w(TAG, "Room peer-keyring write failed; retaining the encrypted local key fallback.")
+            }
 
             ReceivedExchange(
                 ownerProfileId = owner,
@@ -167,10 +206,18 @@ object ProfileKeyManager {
 
     private fun getSharedProfileAead(context: Context, profileId: String): Aead? {
         return try {
+            // Prefer Room keyring, falling back to its legacy SharedPreferences copy for upgrades.
             val prefs = context.getSharedPreferences(PEER_KEYS_PREFS, Context.MODE_PRIVATE)
-            val encoded = prefs.getString("wrapped_key_" + stableKey(profileId), null) ?: return null
+            val roomWrapped = runCatching {
+                runBlocking(Dispatchers.IO) {
+                    DatingDatabase.getDatabase(context.applicationContext)
+                        .peerProfileKeyDao().getPeerProfileKey(profileId)?.profileKey
+                }
+            }.getOrNull()
+            val legacyEncoded = prefs.getString("wrapped_key_" + stableKey(profileId), null)
+            val wrapped = roomWrapped ?: legacyEncoded?.let { Base64.decode(it, Base64.NO_WRAP) } ?: return null
             val keysetJson = String(
-                wrappingAead(context).decrypt(Base64.decode(encoded, Base64.NO_WRAP), peerKeyAad(profileId)),
+                wrappingAead(context).decrypt(wrapped, peerKeyAad(profileId)),
                 Charsets.UTF_8
             )
             CleartextKeysetHandle.read(JsonKeysetReader.withString(keysetJson)).getPrimitive(Aead::class.java)
