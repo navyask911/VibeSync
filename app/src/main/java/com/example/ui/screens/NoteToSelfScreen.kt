@@ -87,7 +87,7 @@ fun NoteToSelfScreen(
     val database = remember(context) { DatingDatabase.getDatabase(context) }
     val noteMatchId = remember(currentUserId) { NoteToSelfCryptoManager.matchId(currentUserId) }
     val storedNotesFlow = remember(database, noteMatchId) {
-        database.chatMessageDao().getMessagesForMatch(noteMatchId)
+        database.chatMessageDao().getMessagesForNoteToSelf(noteMatchId, currentUserId)
     }
     val storedNotes by storedNotesFlow.collectAsState(initial = emptyList())
 

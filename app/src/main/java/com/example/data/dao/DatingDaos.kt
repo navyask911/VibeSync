@@ -185,6 +185,10 @@ interface ChatMessageDao {
     @Query("SELECT * FROM chat_messages WHERE matchId = :matchId ORDER BY timestamp ASC")
     suspend fun getMessagesForMatchSync(matchId: String): List<ChatMessageEntity>
 
+    /** Strict self-note inbox: a note must be addressed to the same profile that owns it. */
+    @Query("SELECT * FROM chat_messages WHERE matchId = :matchId AND recipient_id = :currentUserId ORDER BY timestamp ASC")
+    fun getMessagesForNoteToSelf(matchId: String, currentUserId: String): Flow<List<ChatMessageEntity>>
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertMessage(message: ChatMessageEntity)
 
