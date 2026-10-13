@@ -207,6 +207,9 @@ fun DatingAppRoot(
     LaunchedEffect(showPhonebookScreen) {
         if (showPhonebookScreen) viewModel.refreshIncomingPhoneNumberRequests()
     }
+    LaunchedEffect(showInteractionsModal) {
+        if (showInteractionsModal) viewModel.refreshFriendshipRequestsFromSupabase()
+    }
 
     LaunchedEffect(pendingDeepLinkBizId) {
         pendingDeepLinkBizId?.let { bizId ->

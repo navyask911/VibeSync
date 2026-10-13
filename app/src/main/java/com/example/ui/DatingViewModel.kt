@@ -199,6 +199,12 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     val pendingOutgoingRequests: StateFlow<List<FriendshipRequestEntity>> = repository.pendingOutgoingRequests
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    fun refreshFriendshipRequestsFromSupabase() {
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.syncFriendshipRequestsFromSupabase()
+        }
+    }
+
     val acceptedFriendsCount: StateFlow<Int> = repository.acceptedFriendsCount
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 

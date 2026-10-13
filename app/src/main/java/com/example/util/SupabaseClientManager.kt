@@ -5,6 +5,7 @@ import android.net.Uri
 import android.util.Log
 import com.example.BuildConfig
 import com.example.data.model.ChatMessageEntity
+import com.example.data.model.FriendshipRequestEntity
 import com.example.data.model.ProfileEntity
 import com.example.data.model.RegisteredAccountEntity
 import com.example.data.model.StatusStoryEntity
@@ -168,6 +169,165 @@ object SupabaseClientManager {
 
         return builder.build()
     }
+
+    /** Persist a locally-created friendship request for cross-device delivery. */
+    suspend fun createFriendshipRequestRemote(request: FriendshipRequestEntity): Boolean =
+        withContext(Dispatchers.IO) {
+            val senderProfileId = VibeSyncSessionManager.getProfileId().orEmpty()
+            val receiverProfileId = request.receiverId.trim()
+            if (senderProfileId.isBlank() || receiverProfileId.isBlank() ||
+                senderProfileId.equals(receiverProfileId, ignoreCase = true)
+            ) return@withContext false
+            try {
+                val payload = JSONObject()
+                    .put("id", request.id)
+                    .put("sender_id", senderProfileId)
+                    .put("sender_name", request.senderName)
+                    .put("sender_age", request.senderAge)
+                    .put("sender_occupation", request.senderOccupation)
+                    .put("sender_city", request.senderCity)
+                    .put("sender_country", request.senderCountry)
+                    .put("sender_country_flag", request.senderCountryFlag)
+                    .put("sender_bio", request.senderBio)
+                    .put("sender_avatar_emoji", request.senderAvatarEmoji)
+                    .put("sender_color_start", request.senderColorStart)
+                    .put("sender_color_end", request.senderColorEnd)
+                    .put("sender_interests", request.senderInterests)
+                    .put("receiver_id", receiverProfileId)
+                    .put("receiver_name", request.receiverName)
+                    .put("status", request.status.uppercase())
+                    .put("timestamp", request.timestamp)
+                    .put("accepted_timestamp", request.acceptedTimestamp ?: JSONObject.NULL)
+                    .put("is_swipe_down_initiated", request.isSwipeDownInitiated)
+                    .toString()
+                httpClient.newCall(buildRequest(
+                    endpoint = "friendship_requests",
+                    method = "POST",
+                    bodyJson = payload,
+                    preferHeader = "resolution=merge-duplicates,return=minimal"
+                )).execute().use { it.isSuccessful }
+            } catch (failure: Throwable) {
+                Log.w(TAG, "Friendship request upload deferred: ${failure.javaClass.simpleName}")
+                false
+            }
+        }
+
+    /** Fetch both directions. Server IDs are normalized to Room's current_user sentinel for flows. */
+    suspend fun fetchFriendshipRequestsForCurrentProfile(): Result<List<FriendshipRequestEntity>> =
+        withContext(Dispatchers.IO) {
+            val profileId = VibeSyncSessionManager.getProfileId().orEmpty()
+            if (profileId.isBlank()) {
+                return@withContext Result.failure(IllegalStateException("Verified VibeSync session is unavailable."))
+            }
+            try {
+                val encoded = java.net.URLEncoder.encode(profileId, "UTF-8")
+                val select = "select=id,sender_id,sender_name,sender_age,sender_occupation,sender_city,sender_country,sender_country_flag,sender_bio,sender_avatar_emoji,sender_color_start,sender_color_end,sender_interests,receiver_id,receiver_name,status,timestamp,accepted_timestamp,is_swipe_down_initiated"
+                val base = "friendship_requests?$select&"
+                val endpoints = listOf(
+                    "${base}sender_id=eq.$encoded&order=timestamp.desc&limit=100",
+                    "${base}receiver_id=eq.$encoded&order=timestamp.desc&limit=100"
+                )
+                val collected = linkedMapOf<String, FriendshipRequestEntity>()
+                for (endpoint in endpoints) {
+                    httpClient.newCall(buildRequest(endpoint, "GET")).execute().use { response ->
+                        val body = response.body?.string().orEmpty()
+                        if (!response.isSuccessful) {
+                            return@withContext Result.failure(
+                                IllegalStateException("Friendship request fetch failed (HTTP ${response.code}).")
+                            )
+                        }
+                        val rows = JSONArray(body)
+                        for (index in 0 until rows.length()) {
+                            val row = rows.optJSONObject(index) ?: continue
+                            val id = row.optString("id").trim()
+                            val senderId = row.optString("sender_id").trim()
+                            val receiverId = row.optString("receiver_id").trim()
+                            if (id.isBlank() || senderId.isBlank() || receiverId.isBlank()) continue
+                            val isOutgoing = senderId.equals(profileId, ignoreCase = true)
+                            val acceptedAt = if (row.isNull("accepted_timestamp")) null else row.optLong("accepted_timestamp")
+                            collected[id] = FriendshipRequestEntity(
+                                id = id,
+                                senderId = if (isOutgoing) "current_user" else senderId,
+                                senderName = row.optString("sender_name", "VibeSync member"),
+                                senderAge = row.optInt("sender_age", 24),
+                                senderOccupation = row.optString("sender_occupation", ""),
+                                senderCity = row.optString("sender_city", ""),
+                                senderCountry = row.optString("sender_country", ""),
+                                senderCountryFlag = row.optString("sender_country_flag", "🇺🇸"),
+                                senderBio = row.optString("sender_bio", ""),
+                                senderAvatarEmoji = row.optString("sender_avatar_emoji", "☕"),
+                                senderColorStart = row.optLong("sender_color_start", 0xFFFF5E62),
+                                senderColorEnd = row.optLong("sender_color_end", 0xFFFF9966),
+                                senderInterests = row.optString("sender_interests", ""),
+                                receiverId = if (!isOutgoing) "current_user" else receiverId,
+                                receiverName = row.optString("receiver_name", "VibeSync member"),
+                                status = row.optString("status", "PENDING").uppercase(),
+                                timestamp = row.optLong("timestamp", System.currentTimeMillis()),
+                                acceptedTimestamp = acceptedAt,
+                                isSwipeDownInitiated = row.optBoolean("is_swipe_down_initiated", true)
+                            )
+                        }
+                    }
+                }
+                Result.success(collected.values.toList())
+            } catch (failure: Throwable) {
+                Result.failure(failure)
+            }
+        }
+
+    /** Only the addressed recipient can change a pending request's server state. */
+    suspend fun respondToFriendshipRequestRemote(
+        requestId: String,
+        status: String,
+        acceptedTimestamp: Long? = null
+    ): Boolean = withContext(Dispatchers.IO) {
+        val profileId = VibeSyncSessionManager.getProfileId().orEmpty()
+        val normalized = status.trim().uppercase()
+        if (profileId.isBlank() || requestId.isBlank() || normalized !in setOf("ACCEPTED", "DECLINED")) {
+            return@withContext false
+        }
+        try {
+            val id = java.net.URLEncoder.encode(requestId, "UTF-8")
+            val profile = java.net.URLEncoder.encode(profileId, "UTF-8")
+            val payload = JSONObject()
+                .put("status", normalized)
+                .put("accepted_timestamp", if (normalized == "ACCEPTED") acceptedTimestamp ?: System.currentTimeMillis() else JSONObject.NULL)
+                .toString()
+            val endpoint = "friendship_requests?id=eq.$id&receiver_id=eq.$profile&status=eq.PENDING"
+            httpClient.newCall(buildRequest(
+                endpoint = endpoint,
+                method = "PATCH",
+                bodyJson = payload,
+                preferHeader = "return=representation"
+            )).execute().use { response ->
+                response.isSuccessful && JSONArray(response.body?.string().orEmpty()).length() > 0
+            }
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Friendship response upload deferred: ${failure.javaClass.simpleName}")
+            false
+        }
+    }
+
+    suspend fun deletePendingFriendshipRequestRemote(requestId: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val profileId = VibeSyncSessionManager.getProfileId().orEmpty()
+            if (profileId.isBlank() || requestId.isBlank()) return@withContext false
+            try {
+                val id = java.net.URLEncoder.encode(requestId, "UTF-8")
+                val profile = java.net.URLEncoder.encode(profileId, "UTF-8")
+                val endpoint = "friendship_requests?id=eq.$id&sender_id=eq.$profile&status=eq.PENDING"
+                httpClient.newCall(buildRequest(
+                    endpoint = endpoint,
+                    method = "DELETE",
+                    preferHeader = "return=representation"
+                )).execute().use { response ->
+                    response.isSuccessful && JSONArray(response.body?.string().orEmpty()).length() > 0
+                }
+            } catch (failure: Throwable) {
+                Log.w(TAG, "Friendship cancellation upload deferred: ${failure.javaClass.simpleName}")
+                false
+            }
+        }
 
     /** A stable remote conversation key independent of which participant computes it. */
     fun canonicalChatMatchId(profileA: String, profileB: String): String {

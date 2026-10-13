@@ -392,7 +392,11 @@ class SocialConnectRepository(
     }
 
     suspend fun cancelPendingFriendshipRequest(requestId: String) {
+        val request = friendshipRequestDao.getRequestById(requestId)
         friendshipRequestDao.deleteRequest(requestId)
+        if (request?.senderId == "current_user") {
+            com.example.util.SupabaseClientManager.deletePendingFriendshipRequestRemote(requestId)
+        }
     }
 
     suspend fun sendFriendshipRequest(targetProfileId: String): FriendshipRequestEntity =
@@ -444,13 +448,20 @@ class SocialConnectRepository(
                 dailyFriendRequestsSent = todayPrefs.dailyFriendRequestsSent + 1,
                 lastFriendRequestResetTimestamp = midnight
             ))
+            // Local flow emits immediately; server persistence lets the recipient see the request on another device.
+            val synced = com.example.util.SupabaseClientManager.createFriendshipRequestRemote(request)
+            if (!synced) Log.w("SocialConnectRepository", "Friendship request remains local-pending; next Requests & Interactions refresh retries it.")
             request
         }
 
     suspend fun acceptFriendshipRequest(requestId: String) {
         val req = friendshipRequestDao.getRequestById(requestId) ?: return
         val now = System.currentTimeMillis()
+        // Update Room first so the UI is immediate; server confirmation is retried on next refresh.
         friendshipRequestDao.acceptRequest(requestId, now)
+        if (req.receiverId == "current_user") {
+            com.example.util.SupabaseClientManager.respondToFriendshipRequestRemote(requestId, "ACCEPTED", now)
+        }
 
         val otherUserId = if (req.senderId == "current_user") req.receiverId else req.senderId
         val otherUserName = if (req.senderId == "current_user") req.receiverName else req.senderName
@@ -502,7 +513,11 @@ class SocialConnectRepository(
     }
 
     suspend fun declineFriendshipRequest(requestId: String) {
+        val request = friendshipRequestDao.getRequestById(requestId)
         friendshipRequestDao.declineRequest(requestId)
+        if (request?.receiverId == "current_user") {
+            com.example.util.SupabaseClientManager.respondToFriendshipRequestRemote(requestId, "DECLINED")
+        }
     }
 
     suspend fun getMutualFriends(profileId: String): List<ProfileEntity> {
@@ -522,10 +537,62 @@ class SocialConnectRepository(
     val userPreferences: Flow<UserPreferencesEntity?> = preferencesDao.getPreferences()
 
     val pendingOutgoingRequests: Flow<List<FriendshipRequestEntity>> = friendshipRequestDao.getPendingOutgoingRequestsForUser("current_user")
+
+    /**
+     * Reconcile sent and received requests without clearing Room on empty/error. Any local
+     * decision wins over a stale pending row, and unsynced outgoing requests are retried.
+     */
+    suspend fun syncFriendshipRequestsFromSupabase() = withContext(Dispatchers.IO) {
+        val result = com.example.util.SupabaseClientManager.fetchFriendshipRequestsForCurrentProfile()
+        val remote = result.getOrElse { failure ->
+            Log.w("SocialConnectRepository", "Friendship requests remain cached after sync failure: ${failure.message}")
+            return@withContext
+        }
+        val local = friendshipRequestDao.getAllRequestsSync().associateBy { it.id }
+        val remoteIds = remote.mapTo(mutableSetOf()) { it.id }
+        val merged = remote.map { serverRow ->
+            val cached = local[serverRow.id]
+            when {
+                cached != null && cached.status.equals("ACCEPTED", true) &&
+                    serverRow.status.equals("PENDING", true) -> cached
+                cached != null && cached.status.equals("DECLINED", true) &&
+                    serverRow.status.equals("PENDING", true) -> cached
+                else -> serverRow
+            }
+        }
+        if (merged.isNotEmpty()) friendshipRequestDao.insertRequests(merged)
+
+        // Retry local outbound PENDING writes after a successful server read (including an empty list).
+        friendshipRequestDao.getPendingOutgoingRequestsSync("current_user")
+            .filter { it.id !in remoteIds }
+            .forEach { pending ->
+                if (!com.example.util.SupabaseClientManager.createFriendshipRequestRemote(pending)) {
+                    Log.w("SocialConnectRepository", "Outgoing friendship request remains queued locally: ${pending.id}")
+                }
+            }
+
+        // Retry a target decision when Room already changed but the previous network attempt failed.
+        local.values.filter { cached ->
+            cached.receiverId == "current_user" &&
+                cached.status.uppercase() in setOf("ACCEPTED", "DECLINED") &&
+                remote.find { it.id == cached.id }?.status.equals("PENDING", ignoreCase = true)
+        }.forEach { cached ->
+            com.example.util.SupabaseClientManager.respondToFriendshipRequestRemote(
+                requestId = cached.id,
+                status = cached.status,
+                acceptedTimestamp = cached.acceptedTimestamp
+            )
+        }
+    }
+
     val allSwipes: Flow<List<SwipeEntity>> = swipeDao.getAllSwipes()
 
     suspend fun cancelFriendshipRequest(requestId: String) {
+        val request = friendshipRequestDao.getRequestById(requestId)
         friendshipRequestDao.deleteRequest(requestId)
+        if (request?.senderId == "current_user") {
+            com.example.util.SupabaseClientManager.deletePendingFriendshipRequestRemote(requestId)
+        }
     }
 
     // Filter candidate profiles by current user preferences, active status, gender preference algorithm, and location & demand ranking

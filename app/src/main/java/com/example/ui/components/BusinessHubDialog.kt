@@ -367,7 +367,7 @@ fun BusinessHubContent(
                         Spacer(modifier = Modifier.height(6.dp))
                     }
 
-                    if (selectedTab != 3) {
+                    if (selectedTab != 3 && myCreatedBusinesses.isNotEmpty()) {
                         // Wallet & Broadcast Dropdown Summary Chip
                         val primaryVenue = myCreatedBusinesses.firstOrNull()
                         val walletPoints = primaryVenue?.walletPoints ?: 500
