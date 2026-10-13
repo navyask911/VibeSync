@@ -209,6 +209,12 @@ fun DiscoverScreen(
             .padding(horizontal = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        AnimatedVisibility(
+            visible = !isDiscoverScrolled,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+        ) {
+            Column {
         // App Top Bar
         Row(
             modifier = Modifier
@@ -217,8 +223,14 @@ fun DiscoverScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Brand Title & Verified Badge
+            // Shared colorful VibeSync app mark
             Row(verticalAlignment = Alignment.CenterVertically) {
+                Image(
+                    painter = painterResource(id = com.example.R.drawable.ic_launcher_foreground),
+                    contentDescription = "VibeSync logo",
+                    modifier = Modifier.size(28.dp)
+                )
+                Spacer(Modifier.width(5.dp))
                 Text(
                     text = "VibeSync",
                     style = MaterialTheme.typography.titleLarge.copy(
@@ -309,6 +321,9 @@ fun DiscoverScreen(
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("Follow", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = VibeSyncTeal)
                 }
+            }
+        }
+
             }
         }
 
@@ -418,7 +433,7 @@ fun DiscoverScreen(
         }
 
         // Discover list: fixed search bar, preference filters and at most 25 profile rows.
-        var discoverSearchQuery by rememberSaveable { mutableStateOf("") }
+        // The Preferences drawer is the source of discovery filters.
         val initialMinAge = (userPreferences?.minAge ?: 18).coerceIn(18, 99)
         val initialMaxAge = (userPreferences?.maxAge ?: 99).coerceIn(initialMinAge, 99)
         var ageRange by remember {
@@ -431,7 +446,7 @@ fun DiscoverScreen(
         var verifiedOnly by rememberSaveable { mutableStateOf(userPreferences?.onlyVerified ?: false) }
         var intentFilter by rememberSaveable { mutableStateOf(userPreferences?.goalFilter ?: "All") }
 
-        val filteredCandidates = remember(candidates, discoverSearchQuery, ageRange, genderFilter, maxDistanceKm, verifiedOnly, intentFilter) {
+        val filteredCandidates = remember(candidates, ageRange, genderFilter, maxDistanceKm, verifiedOnly, intentFilter) {
             candidates.asSequence()
                 .filter { it.age in ageRange.start.toInt()..ageRange.endInclusive.toInt() }
                 .filter { profile ->
@@ -453,20 +468,11 @@ fun DiscoverScreen(
                         else -> profile.relationshipGoal.contains(intentFilter, ignoreCase = true)
                     }
                 }
-                .filter { discoverSearchQuery.isBlank() ||
-                    it.name.contains(discoverSearchQuery, ignoreCase = true) ||
-                    it.city.contains(discoverSearchQuery, ignoreCase = true) ||
-                    it.occupation.contains(discoverSearchQuery, ignoreCase = true) }
                 .take(25)
                 .toList()
         }
-        val nearbyBusinessMatches = remember(sortedNearestBusinesses, discoverSearchQuery) {
-            sortedNearestBusinesses.filter { business ->
-                discoverSearchQuery.isBlank() ||
-                    business.name.contains(discoverSearchQuery, ignoreCase = true) ||
-                    business.category.contains(discoverSearchQuery, ignoreCase = true) ||
-                    business.city.contains(discoverSearchQuery, ignoreCase = true)
-            }.take(25)
+        val nearbyBusinessMatches = remember(sortedNearestBusinesses) {
+            sortedNearestBusinesses.take(25)
         }
         val businessCardBackground = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) {
             Color(0xFF162032)
@@ -591,21 +597,9 @@ fun DiscoverScreen(
                 }
             }
 
-                OutlinedTextField(
-                    value = discoverSearchQuery,
-                    onValueChange = { discoverSearchQuery = it },
-                    modifier = Modifier.fillMaxWidth().height(56.dp).testTag("discover_fixed_search"),
-                    singleLine = true,
-                    maxLines = 1,
-                    textStyle = MaterialTheme.typography.bodyMedium,
-                    placeholder = { Text("Search people, places or businesses…", maxLines = 1) },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                    shape = RoundedCornerShape(14.dp),
-                    colors = OutlinedTextFieldDefaults.colors()
-                )
 
             Text(
-                text = "People nearby • ${filteredCandidates.size}/25",
+                text = "People & others nearby to connect",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onBackground,
@@ -613,6 +607,7 @@ fun DiscoverScreen(
             )
 
             LazyColumn(
+                state = discoverListState,
                 modifier = Modifier.fillMaxWidth().weight(1f).testTag("discover_people_list"),
                 verticalArrangement = Arrangement.spacedBy(9.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 12.dp)
@@ -722,8 +717,19 @@ fun DiscoverScreen(
                                     Text(business.category, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 Text(business.tagline.ifBlank { business.description }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
-                                OutlinedButton(onClick = { selectedBusinessForDetail = business }, modifier = Modifier.height(34.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
-                                    Text("Details", fontSize = 11.sp)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    OutlinedButton(
+                                        onClick = { viewModel?.toggleFollowBusiness(business.id) },
+                                        modifier = Modifier.height(34.dp),
+                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(if (business.isFollowed) "Following" else "Follow", fontSize = 11.sp)
+                                    }
+                                    OutlinedButton(
+                                        onClick = { selectedBusinessForDetail = business },
+                                        modifier = Modifier.height(34.dp),
+                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                    ) { Text("Details", fontSize = 11.sp) }
                                 }
                             }
                         }
