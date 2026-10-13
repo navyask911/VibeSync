@@ -93,9 +93,7 @@ object SupabaseClientManager {
      * Helper to generate truncated 16-character SHA-256 hashes of contact identifiers using PhonebookHasher.
      * Prevents storing raw, unencrypted phone numbers on the server database.
      */
-    fun getPhoneHash(phoneNumber: String): String {
-        return PhonebookHasher.generate16CharHash(phoneNumber)
-    }
+    fun getPhoneHash(phoneNumber: String): String = PhonebookHelper.normalizeToE164(phoneNumber)
 
     /**
      * Executes connectivity test with the E2EE PostgREST endpoints.
@@ -343,36 +341,14 @@ object SupabaseClientManager {
         ChatRecipientIdentityResolver.isPhoneNumberCandidate(value)
 
     /**
-     * Privacy-preserving fallback for legacy local rows that only have a phone number.
-     * The raw number never leaves the client; the RPC receives only its SHA-256 phone hash.
+     * Resolves a legacy phone-valued peer through the authenticated direct E.164 RPC.
+     * The canonical profile ID returned by Supabase is the conversation recipient identity.
      */
     suspend fun resolveProfileIdByPhoneNumber(phoneNumber: String): String? = withContext(Dispatchers.IO) {
-        val phoneHash = PhonebookHasher.hashPhoneNumberToHex(phoneNumber)
-        if (!Regex("^[0-9a-fA-F]{64}$").matches(phoneHash)) return@withContext null
-
-        try {
-            val body = JSONObject().put("p_hash", phoneHash).toString()
-            val request = buildRequest("rpc/resolve_profile_id_by_phone_hash", "POST", body)
-            httpClient.newCall(request).execute().use { response ->
-                val responseBody = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    Log.w(TAG, "Phone-hash profile-ID lookup failed HTTP ${response.code}.")
-                    return@withContext null
-                }
-                val profileId = TinkCryptoManager.decodePostgrestTextValue(responseBody).trim()
-                // The RPC result is the authoritative profiles.id from Supabase.
-                // Older/legacy deployments may use a phone-shaped profile ID, so do not
-                // reclassify a server-resolved ID as raw phone input here.
-                profileId.takeIf {
-                    it.isNotBlank() &&
-                        !it.equals("null", ignoreCase = true) &&
-                        !it.startsWith("match_", ignoreCase = true)
-                }
-            }
-        } catch (t: Throwable) {
-            Log.w(TAG, "Phone-hash profile-ID lookup failed: ${t.javaClass.simpleName}: ${t.message}")
-            null
-        }
+        val phone = PhonebookHelper.normalizeToE164(phoneNumber)
+        if (phone.isBlank()) return@withContext null
+        matchContactsByPhoneNumbers(listOf(phone)).firstOrNull()?.id
+            ?.takeIf { it.isNotBlank() && !it.startsWith("match_", ignoreCase = true) }
     }
 
     /** Validate the bearer accepted by PostgREST and the opaque VibeSync session header. */
@@ -870,9 +846,8 @@ object SupabaseClientManager {
             rawId.filter { it.isDigit() }.length >= 7 -> rawId
             else -> ""
         }
-        val phoneHash = obj.optSafeString("phone_hash", "")
-            .ifBlank { obj.optSafeString("clean_phone", "") }
-            .ifBlank { if (phone.isNotBlank()) PhonebookHasher.generate16CharHash(phone) else "" }
+        // Legacy field name only; no client-side hashing is performed.
+        val phoneHash = PhonebookHelper.normalizeToE164(phone)
 
         // Remote profiles intentionally do not expose phone numbers. Identity is the profile ID.
         if (rawId.isBlank() || rawId.equals("null", ignoreCase = true) ||
@@ -1116,8 +1091,8 @@ object SupabaseClientManager {
      */
     suspend fun upsertRegisteredAccount(account: RegisteredAccountEntity): Boolean = withContext(Dispatchers.IO) {
         try {
-            val cleanPhone = account.phoneNumber.filter { it.isDigit() }
-            val docId = if (cleanPhone.length >= 10) getPhoneHash(cleanPhone) else account.id
+            // Truecaller registration supplies the canonical profile ID.
+            val docId = account.id.trim()
             if (docId.isBlank() || docId == "current_user" || docId == "null") return@withContext false
             val json = JSONObject().apply {
                 put("id", docId)
@@ -1837,70 +1812,26 @@ object SupabaseClientManager {
     }
 
     /**
-     * Performs private contact lookup through the authenticated match_contacts RPC.
+     * Direct indexed phone lookup through the authenticated HTTPS RPC.
      */
     suspend fun fetchProfilesByE164Phones(phones: List<String>): List<ProfileEntity> = withContext(Dispatchers.IO) {
-        val hashes = phones.filter { it.isNotBlank() }.distinct().take(50)
-            .map { PhonebookHasher.hashPhoneNumberToHex(it) }
-            .filter { it.length == 64 }
-        if (hashes.isEmpty()) return@withContext emptyList()
-        matchContactsRpc(hashes).map {
+        val normalized = phones.map { PhonebookHelper.normalizeToE164(it) }
+            .filter { it.matches(Regex("^\\+[1-9][0-9]{7,14}$")) }
+            .distinct()
+        if (normalized.isEmpty()) return@withContext emptyList()
+        matchContactsByPhoneNumbers(normalized).map { match ->
             ProfileEntity(
-                id = it.id,
-                name = it.name,
+                id = match.id,
+                name = match.name,
                 age = 24,
-                phoneNumber = "",
-                avatarUrl = it.photoUrl.orEmpty(),
-                avatarEmoji = it.avatarEmoji,
+                phoneNumber = match.phoneE164,
+                phoneHash = match.phoneE164,
+                avatarUrl = match.photoUrl.orEmpty(),
+                avatarEmoji = match.avatarEmoji,
                 isVerified = true
             )
         }
     }
-
-
-    /**
-     * Performs secure contact lookup through the private matching RPC.
-     */
-    suspend fun fetchProfilesByHashes(hashes: List<String>): List<ProfileEntity> = withContext(Dispatchers.IO) {
-        val valid = hashes.filter { it.matches(Regex("^[0-9a-fA-F]{64}$")) }.distinct().take(50)
-        if (valid.isEmpty()) return@withContext emptyList()
-        matchContactsRpc(valid).map {
-            ProfileEntity(
-                id = it.id,
-                name = it.name,
-                age = 24,
-                phoneNumber = "",
-                avatarUrl = it.photoUrl.orEmpty(),
-                avatarEmoji = it.avatarEmoji,
-                isVerified = true
-            )
-        }
-    }
-
-
-    /**
-     * Executes private contact lookup against the server-side hash index.
-     */
-    suspend fun fetchProfilesByBatch10DigitPhones(
-        phoneChunk: List<String>
-    ): List<ProfileEntity> = withContext(Dispatchers.IO) {
-        val hashes = phoneChunk.filter { it.length == 10 }.distinct().take(50)
-            .map { PhonebookHasher.hashPhoneNumberToHex(it) }
-        if (hashes.isEmpty()) return@withContext emptyList()
-        fetchProfilesByHashes(hashes)
-    }
-
-
-    /**
-     * Performs indexed, selective lookup by computing matching phone hashes and querying clean_phone with strict LIMIT 50.
-     */
-    suspend fun fetchProfilesByCleanPhones(cleanPhones: List<String>): List<ProfileEntity> = withContext(Dispatchers.IO) {
-        val hashes = cleanPhones.filter { it.isNotBlank() }.distinct().take(50)
-            .map { PhonebookHasher.hashPhoneNumberToHex(it) }
-        if (hashes.isEmpty()) return@withContext emptyList()
-        fetchProfilesByHashes(hashes)
-    }
-
 
     /**
      * Registers the current device FCM token in Supabase.
@@ -1942,89 +1873,73 @@ object SupabaseClientManager {
         platform: String = "android"
     ): Boolean = registerFcmTokenRpc(token)
 
-    /**
-     * Matched contact record returned by Zero-Knowledge RPC / lookup.
-     */
+    /** Minimal, indexed contact match returned by Supabase. */
     data class MatchedSupabaseContact(
         val id: String,
         val name: String,
         val photoUrl: String?,
         val avatarEmoji: String = "✨",
-        val phoneHash: String = ""
+        val phoneE164: String
     )
 
     /**
-     * Syncs a user's phone hash into the dedicated lightweight 'phone_sync' table (BYTEA binary column).
-     * 32-byte binary format ensures 1,000,000 users occupy only ~110 MB.
+     * Sends normalized E.164 contact identifiers in an authenticated HTTPS POST body. Supabase
+     * returns only canonical IDs and minimal metadata for registered matches; input phones are
+     * never logged or put into URLs.
      */
+    suspend fun matchContactsByPhoneNumbers(phones: List<String>): List<MatchedSupabaseContact> =
+        withContext(Dispatchers.IO) {
+            val normalized = phones.asSequence()
+                .map { PhonebookHelper.normalizeToE164(it) }
+                .filter { it.matches(Regex("^\\+[1-9][0-9]{7,14}$")) }
+                .distinct()
+                .take(1000)
+                .toList()
+            if (normalized.isEmpty()) return@withContext emptyList()
 
-    /**
-     * Privacy-Preserving Contact Match RPC: match_contacts
-     * Accepts an array of up to 50 hex hashes (64-char strings), decodes them into binary BYTEA
-     * in Postgres, joins with profiles, and returns matched user records.
-     * No direct profile-table fallback is permitted; contact discovery remains behind the RPC boundary.
-     */
-    suspend fun matchContactsRpc(hexHashes: List<String>): List<MatchedSupabaseContact> = withContext(Dispatchers.IO) {
-        val validHashes = hexHashes.filter { it.isNotBlank() }.distinct().take(50)
-        if (validHashes.isEmpty()) return@withContext emptyList()
-
-        val results = mutableListOf<MatchedSupabaseContact>()
-
-        try {
-            val jsonArray = JSONArray()
-            validHashes.forEach { jsonArray.put(it) }
-
-            val rpcBody = JSONObject().apply {
-                put("hashes", jsonArray)
-            }
-
-            val request = buildRequest(
-                endpoint = "rpc/match_contacts",
-                method = "POST",
-                bodyJson = rpcBody.toString()
-            )
-
-            httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val bodyStr = response.body?.string() ?: "[]"
-                    val respArray = JSONArray(bodyStr)
-                    for (i in 0 until respArray.length()) {
-                        val obj = respArray.getJSONObject(i)
-                        val id = obj.optSafeString("id", "")
-                        val rawName = obj.optSafeString("name", "VibeSync Friend")
-                        val photoUrl = obj.optSafeString("profile_photo_url", "").ifBlank { null }
-                        val avatarEmoji = obj.optSafeString("avatar_emoji", "✨")
-                        val hash = obj.optSafeString("phone_hash", "")
-
-                        val decryptedName = if (rawName.isNotBlank()) {
-                            try { HackFreeSecurityShield.decrypt(rawName) } catch (_: Exception) { rawName }
-                        } else "VibeSync Friend"
-
-                        if (id.isNotBlank()) {
-                            results.add(
+            try {
+                val values = JSONArray()
+                normalized.forEach { values.put(it) }
+                val request = buildRequest(
+                    endpoint = "rpc/match_contacts_by_phone_numbers",
+                    method = "POST",
+                    bodyJson = JSONObject().put("phone_numbers", values).toString()
+                )
+                httpClient.newCall(request).execute().use { response ->
+                    val responseBody = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        Log.w(TAG, "Direct contact-match RPC failed HTTP ${response.code}.")
+                        return@withContext emptyList()
+                    }
+                    val rows = JSONArray(responseBody)
+                    val matches = buildList {
+                        for (i in 0 until rows.length()) {
+                            val row = rows.optJSONObject(i) ?: continue
+                            val id = row.optSafeString("id", "").trim()
+                            val phone = PhonebookHelper.normalizeToE164(row.optSafeString("phone_e164", ""))
+                            if (id.isBlank() || phone.isBlank()) continue
+                            val rawName = row.optSafeString("name", "VibeSync Friend")
+                            val name = runCatching { HackFreeSecurityShield.decrypt(rawName) }.getOrDefault(rawName)
+                            add(
                                 MatchedSupabaseContact(
                                     id = id,
-                                    name = ContactResolver.sanitizeName(decryptedName, "VibeSync Friend"),
-                                    photoUrl = photoUrl,
-                                    avatarEmoji = avatarEmoji,
-                                    phoneHash = hash
+                                    name = ContactResolver.sanitizeName(name, "VibeSync Friend"),
+                                    photoUrl = row.optSafeString("profile_photo_url", "").ifBlank { null },
+                                    avatarEmoji = row.optSafeString("avatar_emoji", "✨"),
+                                    phoneE164 = phone
                                 )
                             )
                         }
                     }
-                    Log.i(TAG, "⚡ Privacy match RPC 'match_contacts' matched ${results.size} user(s) in <2ms indexed join.")
-                    return@withContext results
-                } else {
-                    Log.d(TAG, "match_contacts RPC HTTP ${response.code}, falling back to selective query.")
+                    Log.i(TAG, "Direct HTTPS contact matching returned ${matches.size} matches from ${normalized.size} submitted contacts.")
+                    matches
                 }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Direct contact-match RPC error: ${t.javaClass.simpleName}.")
+                emptyList()
             }
-        } catch (e: Throwable) {
-            Log.w(TAG, "match_contacts RPC notice: ${e.message}, executing fallback query.")
         }
 
-        // No direct profile-table fallback: privacy requires the RPC boundary.
-        return@withContext results
-    }
     suspend fun blockUserRemote(profileId: String, reason: String = "USER_BLOCK"): Boolean = withContext(Dispatchers.IO) {
         val token = SUPABASE_PUBLISHABLE_KEY
         try {
