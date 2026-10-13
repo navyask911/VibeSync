@@ -365,7 +365,9 @@ abstract class DatingDatabase : RoomDatabase() {
                         // The support factory retains its own copy so it can reopen the database.
                         val factoryPassphrase = passphrase.copyOf()
                         val factory = net.zetetic.database.sqlcipher.SupportOpenHelperFactory(
-                            factoryPassphrase
+                            factoryPassphrase,
+                            DatabaseKeyManager.createSqlCipherHook(),
+                            false
                         )
                         val instance = Room.databaseBuilder(
                             appContext,

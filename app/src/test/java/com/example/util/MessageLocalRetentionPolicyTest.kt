@@ -28,6 +28,21 @@ class MessageLocalRetentionPolicyTest {
     }
 
     @Test
+    fun repeatedDecryptionFailureRemainsVisibleAsTombstone() {
+        assertEquals(
+            MessageLocalRetentionPolicy.DECRYPTION_TOMBSTONE_TEXT,
+            MessageLocalRetentionPolicy.displayText(
+                "TINK_ENC:still-unreadable",
+                MessageLocalRetentionPolicy.DECRYPTION_TOMBSTONE_TEXT
+            )
+        )
+        assertEquals(
+            MessageLocalRetentionPolicy.DECRYPTION_TOMBSTONE_TEXT,
+            MessageLocalRetentionPolicy.displayText("", null)
+        )
+    }
+
+    @Test
     fun successfulDecryptionReplacesTombstone() {
         assertEquals(
             "Decrypted body",

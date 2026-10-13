@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
 import com.example.data.database.DatingDatabase
 import com.example.data.model.AdminEmployee
 import com.example.data.model.AdminRole
@@ -1130,7 +1131,10 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
                 // If record signals a deletion, immediately remove from local Room DB
                 if (isDeleted && msgId.isNotBlank()) {
-                    database.chatMessageDao().deleteMessageById(msgId)
+                    database.withTransaction {
+                        database.chatMessageDao().deleteMessageById(msgId)
+                        database.messageDao().deleteRemoteMessage(msgId)
+                    }
                     val activeMatchId = _activeChat.value?.first?.matchId
                     if (activeMatchId != null) {
                         val remaining = database.chatMessageDao().getMessagesForMatchSync(activeMatchId)
@@ -1311,9 +1315,71 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         )
 
                     if (decryptedText.isBlank()) {
-                        android.util.Log.e(
+                        // Commit an explicit tombstone rather than dropping the inbound server row.
+                        // Do not ACK it: the durable delta worker will retry decryption on its next sweep.
+                        val prior = database.chatMessageDao().getMessageById(msgId)
+                        val renderablePriorText = prior?.text?.takeIf {
+                            com.example.util.MessageLocalRetentionPolicy.isRenderableText(it)
+                        }
+                        val fallbackSenderId = senderProfileId.ifBlank {
+                            aadParticipants?.first ?: normSender.ifBlank { senderPhone }
+                        }
+                        val fallbackMatchId = targetMatchId.ifBlank {
+                            prior?.matchId ?: "match_$fallbackSenderId"
+                        }
+                        val localMatch = database.matchDao().getMatchByIdSync(fallbackMatchId)
+                        val fallbackText = renderablePriorText
+                            ?: com.example.util.MessageLocalRetentionPolicy.DECRYPTION_TOMBSTONE_TEXT
+                        val unresolved = (prior ?: ChatMessageEntity(
+                            messageId = msgId,
+                            matchId = fallbackMatchId,
+                            senderId = fallbackSenderId,
+                            text = fallbackText,
+                            timestamp = timestamp,
+                            mediaType = mediaType.ifBlank { "TEXT" },
+                            mediaUrl = mediaUrl,
+                            voiceDurationSeconds = voiceSeconds,
+                            replyToMessageId = replyToId,
+                            replyToText = replyToText,
+                            replyToSender = replyToSender,
+                            isForwarded = isForwarded,
+                            isEncrypted = true
+                        )).copy(
+                            matchId = fallbackMatchId,
+                            senderId = fallbackSenderId,
+                            text = fallbackText,
+                            timestamp = prior?.timestamp?.takeIf { it > 0L } ?: timestamp,
+                            isDelivered = prior?.isDelivered ?: false,
+                            isRead = prior?.isRead ?: false,
+                            mediaType = mediaType.ifBlank { prior?.mediaType ?: "TEXT" },
+                            mediaUrl = mediaUrl.ifBlank { prior?.mediaUrl.orEmpty() },
+                            voiceDurationSeconds = maxOf(prior?.voiceDurationSeconds ?: 0, voiceSeconds),
+                            replyToMessageId = replyToId ?: prior?.replyToMessageId,
+                            replyToText = replyToText ?: prior?.replyToText,
+                            replyToSender = replyToSender ?: prior?.replyToSender,
+                            isForwarded = isForwarded || (prior?.isForwarded == true),
+                            isEncrypted = true,
+                            deliveryState = if (renderablePriorText != null) {
+                                prior?.deliveryState ?: "DELIVERED"
+                            } else {
+                                "PENDING_DECRYPTION"
+                            },
+                            deliveryAckPending = if (renderablePriorText != null) {
+                                prior?.deliveryAckPending ?: false
+                            } else {
+                                false
+                            },
+                            senderDisplayName = prior?.senderDisplayName?.ifBlank {
+                                localMatch?.localContactName.orEmpty()
+                            } ?: localMatch?.localContactName.orEmpty(),
+                            senderPhotoUri = prior?.senderPhotoUri?.ifBlank {
+                                localMatch?.localPhotoUri.orEmpty()
+                            } ?: localMatch?.localPhotoUri.orEmpty()
+                        )
+                        repository.insertReceivedChatMessage(unresolved, normSender, normReceiver)
+                        android.util.Log.w(
                             "VibeSyncChat",
-                            "Realtime ciphertext decryption returned empty plaintext; delivery ACK withheld for message_id=$msgId."
+                            "Persisted encrypted-room decryption tombstone for message_id=$msgId; delivery ACK withheld for retry."
                         )
                         return@launch
                     }
@@ -1425,7 +1491,10 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
                 // If record signals a deletion, immediately remove from local Room DB
                 if (isDeleted && msgId.isNotBlank()) {
-                    database.chatMessageDao().deleteMessageById(msgId)
+                    database.withTransaction {
+                        database.chatMessageDao().deleteMessageById(msgId)
+                        database.messageDao().deleteRemoteMessage(msgId)
+                    }
                     val activeMatchId = _activeChat.value?.first?.matchId
                     if (activeMatchId != null) {
                         val remaining = database.chatMessageDao().getMessagesForMatchSync(activeMatchId)

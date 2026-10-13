@@ -83,6 +83,10 @@ internal object EncryptedDatabaseBootstrap {
                 null,
                 SqlCipherSQLiteDatabase.OPEN_READWRITE
             )
+            // The source is a legacy plaintext SQLite file. Minimize exposure while it is
+            // read for conversion; the verified SQLCipher export replaces this file below.
+            source.rawExecSQL("PRAGMA cipher_memory_security = ON")
+            source.rawExecSQL("PRAGMA secure_delete = ON")
             originalVersion = source.version
             expectedRowCounts = tableRowCounts(source)
 

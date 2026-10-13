@@ -8,6 +8,8 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
 import com.example.BuildConfig
+import net.zetetic.database.sqlcipher.SQLiteConnection
+import net.zetetic.database.sqlcipher.SQLiteDatabaseHook
 import java.security.KeyStore
 import java.security.SecureRandom
 import javax.crypto.Cipher
@@ -21,6 +23,19 @@ import javax.crypto.spec.GCMParameterSpec
  * The wrapping key itself is non-exportable and required to be hardware-backed.
  */
 internal object DatabaseKeyManager {
+    /**
+     * Harden each keyed SQLCipher connection. These PRAGMAs are connection-scoped, so they
+     * belong in postKey rather than only being issued once through the Room database handle.
+     */
+    fun createSqlCipherHook(): SQLiteDatabaseHook = object : SQLiteDatabaseHook {
+        override fun preKey(connection: SQLiteConnection) = Unit
+
+        override fun postKey(connection: SQLiteConnection) {
+            connection.execute("PRAGMA cipher_memory_security = ON", null, null)
+            connection.execute("PRAGMA secure_delete = ON", null, null)
+        }
+    }
+
     private const val MASTER_KEY_ALIAS = "com.aistudio.freedating.mkwvxq.room.db.wrap.v1"
     private const val WRAPPED_KEY_PREFS = "vibesync_sqlcipher_wrapped_key"
     private const val WRAPPED_PASSPHRASE = "wrapped_passphrase_v1"
