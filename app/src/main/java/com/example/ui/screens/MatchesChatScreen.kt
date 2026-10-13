@@ -136,7 +136,7 @@ fun MatchesChatScreen(
                 contact.vibeSyncProfileId?.equals(baseProfile.id, ignoreCase = true) == true ||
                 contact.vibeSyncUser?.id?.equals(baseProfile.id, ignoreCase = true) == true ||
                 (baseProfile.phoneNumber.isNotBlank() && contact.phoneNumber.isNotBlank() &&
-                    com.example.util.PhonebookHasher.arePhonesMatching(contact.phoneNumber, baseProfile.phoneNumber))
+                    com.example.util.PhonebookHelper.arePhonesMatching(contact.phoneNumber, baseProfile.phoneNumber))
         }
         val linkedProfile = if (linkedContact != null) {
             baseProfile.copy(
@@ -221,16 +221,14 @@ fun MatchesChatScreen(
             matchesSearch && matchesFilter
         }
 
-        // Additional STRICT deduplication block in UI using 16-character phone_hash as canonical key
+        // Conversation identity is the canonical Supabase profile ID, never a phone-derived hash.
         val map = mutableMapOf<String, MatchEntity>()
-        for (m in filtered) {
-            val profId = com.example.util.ContactResolver.sanitizePhone(m.profileId)
-            val profile = profileMap[m.profileId]
-            val partnerPhone = profile?.phoneNumber ?: profId
-            val key = com.example.util.PhonebookHasher.generate16CharHash(partnerPhone)
-            val existing = map[key]
-            if (existing == null || m.lastMessageTime > existing.lastMessageTime) {
-                map[key] = m
+        for (match in filtered) {
+            val canonicalProfileId = match.profileId.trim()
+            if (canonicalProfileId.isBlank()) continue
+            val existing = map[canonicalProfileId]
+            if (existing == null || match.lastMessageTime > existing.lastMessageTime) {
+                map[canonicalProfileId] = match
             }
         }
         map.values.sortedByDescending { it.lastMessageTime }
@@ -691,7 +689,7 @@ fun MatchesChatScreen(
                             ?: profiles.firstOrNull { it.id.equals(contact.id, ignoreCase = true) }
                             ?: profiles.firstOrNull {
                                 it.phoneNumber.isNotBlank() && contact.phoneNumber.isNotBlank() &&
-                                    com.example.util.PhonebookHasher.arePhonesMatching(it.phoneNumber, contact.phoneNumber)
+                                    com.example.util.PhonebookHelper.arePhonesMatching(it.phoneNumber, contact.phoneNumber)
                             }
                         ContactOnVibeSyncRow(
                             contact = contact,
