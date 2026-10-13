@@ -1050,13 +1050,13 @@ fun AdminBackendScreen(
                         ) {
                             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Text("🔎 CrPC Sec 91 / BNSS Sec 94 Metadata Retrieval", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                                Text("Extract authorized legal-compliance metadata by phone hash or identifier, preserving cryptographic E2EE locks.", fontSize = 11.sp, color = Color.Gray)
+                                Text("Search the currently loaded profiles by canonical profile ID or phone number. This local lookup does not submit a legal disclosure request.", fontSize = 11.sp, color = Color.Gray)
                                 
                                 OutlinedTextField(
                                     value = metadataQueryInput,
                                     onValueChange = { metadataQueryInput = it },
-                                    label = { Text("Enter truncated 16-character SHA-256 hash or number") },
-                                    placeholder = { Text("e.g. \"a1b2c3d4e5f67890\"") },
+                                    label = { Text("Enter canonical profile ID or phone number") },
+                                    placeholder = { Text("e.g. 0123456789abcdef or +91 98765 43210") },
                                     modifier = Modifier.fillMaxWidth()
                                 )
                                 
@@ -1066,22 +1066,23 @@ fun AdminBackendScreen(
                                             metadataQueryResult = "Please enter a valid target identifier."
                                         } else {
                                             val cleanInput = metadataQueryInput.trim()
-                                            val targetHash = if (cleanInput.length == 16) cleanInput else com.example.util.SupabaseClientManager.getPhoneHash(cleanInput)
-                                            val matchingProfile = profiles.firstOrNull { it.id == targetHash || it.phoneNumber.contains(cleanInput) }
-                                                ?: profiles.firstOrNull() ?: ProfileEntity(id = targetHash, name = "VibeSync Member", age = 24)
-                                                
-                                            metadataQueryResult = """
-                                                [AUTHORIZED DATA DOSSIER]
-                                                Reference Authority: CrPC Section 91 Order / Section 94 BNSS
-                                                Target Hash: $targetHash
-                                                Account Status: ${matchingProfile.accountStatus}
-                                                Registration Timestamp: ${System.currentTimeMillis() - 604800000} (7 days ago)
-                                                Latest Server API Handshake: ${System.currentTimeMillis() - 1200000} (20 mins ago)
-                                                Connection IP: 157.44.82.${(10..250).random()} (Jio Infocomm Ltd)
-                                                Registered Email Hash: ${matchingProfile.email.hashCode().toLong().let { Math.abs(it) }.toString(16)}
-                                                FCM Target Endpoint: fcm_endpoint_id_srv_${matchingProfile.id}
-                                                Status: Verified Genuine (Biometrics Match score: 98%)
-                                            """.trimIndent()
+                                            val targetIdentifier = cleanInput
+                                            val normalizedPhone = com.example.util.PhonebookHelper.normalizeToE164(cleanInput)
+                                            val matchingProfile = profiles.firstOrNull { profile ->
+                                                profile.id.equals(targetIdentifier, ignoreCase = true) ||
+                                                    (normalizedPhone.isNotBlank() &&
+                                                        com.example.util.PhonebookHelper.normalizeToE164(profile.phoneNumber) == normalizedPhone)
+                                            }
+
+                                            metadataQueryResult = matchingProfile?.let { profile ->
+                                                """
+                                                [LOCAL PROFILE LOOKUP — NOT A LEGAL DISCLOSURE]
+                                                Canonical Profile ID: ${profile.id}
+                                                Account Status: ${profile.accountStatus}
+                                                Verified: ${profile.isVerified || profile.isMobileVerified}
+                                                No IP address, device identifier, biometric assessment, or server-side disclosure was queried by this panel.
+                                                """.trimIndent()
+                                            } ?: "No matching profile is present in the currently loaded profiles. No server-side lookup or legal-disclosure request was sent."
                                         }
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF37474F)),

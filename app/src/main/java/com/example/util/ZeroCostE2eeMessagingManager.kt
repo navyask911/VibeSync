@@ -38,45 +38,19 @@ object ZeroCostE2eeMessagingManager {
         return false
     }
 
-    @Deprecated("Legacy registration bundle removed. Tink public identity keys are published with the VibeSync profile.")
+    @Deprecated("Registration now publishes Tink keys only for the verified canonical profile.")
     suspend fun publishRegistrationBundle(phoneNumber: String): Boolean {
-        val context = appContext ?: return false
-        val publicKey = TinkCryptoManager.getMyPublicKeysetJson(context)
-        if (publicKey.isBlank()) return false
-        return try {
-            val prefs = database?.userPreferencesDao()?.getPreferencesSync()
-            val profile = prefs?.let {
-                com.example.data.model.ProfileEntity(
-                    id = SupabaseClientManager.getPhoneHash(phoneNumber),
-                    name = it.userName.ifBlank { "VibeSync Member" },
-                    age = it.userAge,
-                    occupation = it.userOccupation,
-                    city = it.userCity,
-                    distanceMiles = 0,
-                    bio = it.userBio,
-                    interests = it.userInterests,
-                    relationshipGoal = it.userRelationshipGoal,
-                    promptQuestion = "",
-                    promptAnswer = "",
-                    gradientColorStart = 0xFFFF5E62,
-                    gradientColorEnd = 0xFFFF9966,
-                    avatarEmoji = "✨",
-                    avatarUrl = it.avatarUrl,
-                    isVerified = it.isMobileVerified,
-                    publicIdentityKey = publicKey
-                )
-            }
-            if (profile == null) return false
-            SupabaseClientManager.upsertProfile(profile)
-        } catch (e: Throwable) {
-            Log.w(TAG, "Tink public identity publication notice: ${e.message}")
-            false
-        }
+        // Never recreate a local phone-derived profile ID. Registration/session provisioning owns
+        // the canonical profile and Tink public-key publication.
+        Log.i(TAG, "Ignored legacy registration-bundle request; verified profile sync is authoritative.")
+        return false
     }
 
     /**
-     * Compatibility send method. New callers should use SocialConnectRepository.sendMessage.
+     * Compatibility send method. Resolves the recipient to a canonical Supabase profile ID before
+     * obtaining its Tink key or writing a message. The caller-supplied sender ID is not trusted.
      */
+    @Suppress("UNUSED_PARAMETER")
     suspend fun sendEncryptedMessage(
         senderUid: String,
         recipientPhoneNumber: String,
@@ -85,44 +59,65 @@ object ZeroCostE2eeMessagingManager {
     ): Boolean = withContext(Dispatchers.IO) {
         val context = appContext ?: return@withContext false
         val db = database ?: DatingDatabase.getDatabase(context)
-        val cleanRecipient = normalizePhone(recipientPhoneNumber)
-        if (cleanRecipient.isBlank() || textContent.isBlank()) return@withContext false
+        val recipientPhone = PhonebookHelper.normalizeToE164(recipientPhoneNumber)
+        val senderProfileId = VibeSyncSessionManager.getProfileId(context).orEmpty().trim()
+        if (recipientPhone.isBlank() || textContent.isBlank() || senderProfileId.isBlank()) {
+            return@withContext false
+        }
 
         try {
-            val profile = db.profileDao().getProfileByPhone(cleanRecipient)
-                ?: db.profileDao().getProfileByIdSync(cleanRecipient)
+            // The direct HTTPS RPC returns the canonical registered profile ID. Never fall back
+            // to a hash, contact-row ID, or phone-number placeholder for conversation routing.
+            val recipientProfileId = SupabaseClientManager.resolveProfileIdByPhoneNumber(recipientPhone)
+                ?.trim()
+                ?.takeIf {
+                    it.isNotBlank() &&
+                        !it.startsWith("match_", ignoreCase = true) &&
+                        !it.equals(senderProfileId, ignoreCase = true)
+                }
                 ?: return@withContext false
-            val recipientKey = profile.publicIdentityKey
-            if (recipientKey.isBlank()) return@withContext false
+
+            val cachedRecipient = db.profileDao().getProfileByIdSync(recipientProfileId)
+            val recipientKey = cachedRecipient?.publicIdentityKey
+                ?.takeIf { TinkCryptoManager.validatePublicKeysetJson(it) }
+                ?: SupabaseClientManager.fetchPublicIdentityKey(recipientProfileId)
+                ?: return@withContext false
 
             val ciphertext = TinkCryptoManager.encryptForRecipient(
                 recipientPublicKeysetJson = recipientKey,
                 rawText = textContent,
-                senderPhone = SupabaseClientManager.getPhoneHash(senderUid),
-                receiverPhone = profile.id
+                senderPhone = senderProfileId,
+                receiverPhone = recipientProfileId
             )
             if (!ciphertext.startsWith(TinkCryptoManager.TINK_PREFIX)) return@withContext false
 
             val messageId = UUID.randomUUID().toString()
+            val canonicalMatchId = SupabaseClientManager.canonicalChatMatchId(
+                senderProfileId,
+                recipientProfileId
+            )
+            if (canonicalMatchId.isBlank()) return@withContext false
+
             val entity = ChatMessageEntity(
                 messageId = messageId,
-                matchId = matchId.ifBlank { "match_${profile.id}" },
-                senderId = SupabaseClientManager.getPhoneHash(senderUid),
+                matchId = canonicalMatchId,
+                senderId = senderProfileId,
                 text = ciphertext,
                 timestamp = System.currentTimeMillis(),
                 isEncrypted = true,
                 isDelivered = false,
                 isRead = false
             )
-            db.chatMessageDao().insertMessage(entity.copy(text = textContent))
+            // Persist only ciphertext locally; never write the plaintext copy into the chat table.
+            db.chatMessageDao().insertMessage(entity)
             SupabaseClientManager.upsertChatMessage(
                 msg = entity,
-                senderIdentity = entity.senderId,
-                receiverIdentity = profile.id,
-                recipientProfileId = profile.id
+                senderIdentity = senderProfileId,
+                receiverIdentity = recipientProfileId,
+                recipientProfileId = recipientProfileId
             )
         } catch (e: Throwable) {
-            Log.w(TAG, "Compatibility send notice: ${e.message}")
+            Log.w(TAG, "Canonical compatibility send failed: ${e.javaClass.simpleName}")
             false
         }
     }

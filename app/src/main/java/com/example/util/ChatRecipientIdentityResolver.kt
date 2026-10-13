@@ -20,7 +20,7 @@ object ChatRecipientIdentityResolver {
 
     /**
      * Pick a phone identity ahead of a potentially stale cached profile ID.
-     * The returned value is an input to the authoritative phone-hash RPC, not a profile ID.
+     * The returned value is a phone-number input to the direct E.164 HTTPS RPC, not a profile ID.
      */
     fun phoneIdentityCandidate(vararg values: String): String? =
         values.asSequence()

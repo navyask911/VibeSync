@@ -17,6 +17,7 @@ on:
       - "settings.gradle.kts"
       - "gradle.properties"
       - "scripts/**"
+      - "supabase/**"
       - ".github/workflows/android-ci.yml"
       - "README.md"
       - "PRIVACY.md"
@@ -220,13 +221,19 @@ jobs:
             echo "Supabase Auth/SMS OTP login code must not remain in the Android app."
             exit 1
           fi
+          if grep -R -n -E 'getPhoneHash|PhonebookHasher|resolve_profile_id_by_phone_hash|get_public_identity_key_by_phone_hash' app/src/main; then
+            echo "Retired client-side phone-hash discovery code must not be present in the Android sources."
+            exit 1
+          fi
+          grep -F 'rpc/match_contacts_by_phone_numbers' app/src/main/java/com/example/util/SupabaseClientManager.kt
+
           # The canonical backend is verify-truecaller; vibesync-truecaller-auth is retired.
           grep -F 'const TRUECALLER_CLIENT_ID = "qkpfffgkiebypf8hvifhkkknj2msgud5hfjqg_ti1wu"' supabase/functions/verify-truecaller/index.ts
           grep -F 'Deno.env.get("TRUECALLER_PARTNER_KEY")' supabase/functions/verify-truecaller/index.ts
           grep -F 'body.code ?? body.authorization_code' supabase/functions/verify-truecaller/index.ts
           grep -F 'put("code", profile.authorizationCode)' app/src/main/java/com/example/util/TruecallerAuthGateway.kt
           grep -F '/functions/v1/verify-truecaller' app/src/main/java/com/example/util/TruecallerAuthGateway.kt
-          if grep -R -n -E '9449878908|919449878908' app/src/main/java app/src/main/res --exclude='PhonebookHasher.kt' 2>/dev/null; then
+          if grep -R -n -E '9449878908|919449878908' app/src/main/java app/src/main/res 2>/dev/null; then
             echo "Known Truecaller test number leaked into production app source."
             exit 1
           fi
