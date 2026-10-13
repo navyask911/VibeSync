@@ -65,7 +65,7 @@ data class ChatMessageEntity(
     @ColumnInfo(name = "reactions_json", defaultValue = "'{}'")
     val reactionsJson: String = "{}",
     @ColumnInfo(name = "is_deleted", defaultValue = "0")
-    val isDeleted: Boolean = false
+    val isDeleted: Boolean = false,
     /** Local retention deadline; 0 means the conversation has disappearing messages disabled or not yet read. */
     @ColumnInfo(defaultValue = "0")
     val expiresAt: Long = 0L
