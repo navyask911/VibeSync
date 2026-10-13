@@ -88,6 +88,7 @@ object SupabaseBackendManager {
     // Callbacks for incoming realtime events
     @Volatile private var onInsertCallback: ((JSONObject) -> Unit)? = null
     @Volatile private var onUpdateCallback: ((JSONObject) -> Unit)? = null
+    @Volatile private var onTypingCallback: ((String, Boolean) -> Unit)? = null
 
     // A ViewModel can ask for Realtime before MainActivity's off-main session restore finishes.
     // SessionManager notifies this listener after restore/save so credentials arriving later
@@ -134,7 +135,8 @@ object SupabaseBackendManager {
     fun connectRealtimeWebsocket(
         onInsert: (JSONObject) -> Unit,
         onUpdate: (JSONObject) -> Unit = {},
-        matchId: String? = null
+        matchId: String? = null,
+        onTyping: ((String, Boolean) -> Unit)? = null
     ) {
         val requestedMatch = matchId?.trim().orEmpty().ifBlank { null }
         if (realtimeWebSocket != null && realtimeRequestedMatchId != requestedMatch) {
@@ -143,6 +145,7 @@ object SupabaseBackendManager {
         realtimeRequestedMatchId = requestedMatch
         onInsertCallback = onInsert
         onUpdateCallback = onUpdate
+        onTypingCallback = onTyping
         isIntentionallyClosed = false
         registerSessionChangeListener()
         if (_realtimeConnected.value && realtimeWebSocket != null) {
@@ -292,8 +295,17 @@ object SupabaseBackendManager {
                             return
                         }
 
-                        // Live READ_RECEIPT event/broadcast handler
+                        // Ephemeral typing broadcasts are presence metadata, never chat message rows.
                         val payloadType = payload.optString("type", "").ifBlank { payload.optString("event", "") }.uppercase()
+                        if (payloadType == "CHAT_TYPING" || payloadType == "TYPING_STATUS") {
+                            val senderId = payload.optString("sender_id", payload.optString("sender_profile_id", "")).trim()
+                            if (senderId.isNotBlank()) {
+                                onTypingCallback?.invoke(senderId, payload.optBoolean("is_typing", false))
+                            }
+                            return
+                        }
+
+                        // Live READ_RECEIPT event/broadcast handler
                         if (event.equals("READ_RECEIPT", ignoreCase = true) || payloadType == "READ_RECEIPT" || topic.contains("read_receipt", ignoreCase = true)) {
                             val msgId = payload.optString("message_id", payload.optString("messageId", payload.optString("id", "")))
                             if (msgId.isNotBlank()) {
@@ -626,6 +638,27 @@ object SupabaseBackendManager {
             realtimeWebSocket?.send(broadcastMsg.toString())
         } catch (e: Exception) {
             Log.w(TAG, "WebSocket broadcast exception: ${e.message}")
+        }
+    }
+
+    /** Broadcast live typing metadata only when the account privacy preference permits it. */
+    fun broadcastTypingStatus(matchId: String, senderProfileId: String, isTyping: Boolean) {
+        if (matchId.isBlank() || senderProfileId.isBlank()) return
+        try {
+            val message = JSONObject().apply {
+                put("topic", CHAT_REALTIME_TOPIC)
+                put("event", "broadcast")
+                put("payload", JSONObject().apply {
+                    put("type", "CHAT_TYPING")
+                    put("match_id", matchId)
+                    put("sender_id", senderProfileId)
+                    put("is_typing", isTyping)
+                })
+                put("ref", "typing_${System.currentTimeMillis()}")
+            }
+            realtimeWebSocket?.send(message.toString())
+        } catch (e: Exception) {
+            Log.w(TAG, "Typing broadcast failed: ${e.javaClass.simpleName}")
         }
     }
 
