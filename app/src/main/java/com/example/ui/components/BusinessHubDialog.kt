@@ -15,7 +15,12 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -34,6 +39,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -108,6 +114,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -122,6 +129,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -172,10 +180,15 @@ fun BusinessHubContent(
     onDismissRequest: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
-    var selectedTab by remember { mutableIntStateOf(initialTab) }
+    var selectedTab by remember(initialTab) { mutableIntStateOf(initialTab) }
+    var catalogScrolled by remember { mutableStateOf(false) }
     val allBusinesses by viewModel.allBusinesses.collectAsState()
     val myCreatedBusinesses by viewModel.myCreatedBusinesses.collectAsState()
-    val primaryVenue = myCreatedBusinesses.firstOrNull() ?: allBusinesses.firstOrNull()
+    // Owner controls must never fall back to a public catalogue venue.
+    val primaryVenue = myCreatedBusinesses.firstOrNull()
+    LaunchedEffect(myCreatedBusinesses.isEmpty(), selectedTab) {
+        if (myCreatedBusinesses.isEmpty() && selectedTab == 3) selectedTab = 0
+    }
     var selectedBusinessForProfile by remember { mutableStateOf<BusinessEntity?>(null) }
     var selectedVenueForDashboard by remember { mutableStateOf<BusinessEntity?>(null) }
     var showAdCampaignWizard by remember { mutableStateOf(false) }
@@ -223,6 +236,12 @@ fun BusinessHubContent(
                                 }
                                 Spacer(modifier = Modifier.width(4.dp))
                             }
+                            Image(
+                                painter = painterResource(id = com.example.R.drawable.ic_launcher_foreground),
+                                contentDescription = "VibeSync logo",
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
                             Column {
                                 Text(
                                     text = "VibeSync • Business Suite",
@@ -286,86 +305,71 @@ fun BusinessHubContent(
                     Spacer(modifier = Modifier.height(8.dp))
 
                     if (selectedTab != 3) {
-                        // Enterprise search; filter chips remain in the content area below.
-                        // Fixed, single-line search remains pinned in the header and never expands on focus.
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                        AnimatedVisibility(
+                            visible = !catalogScrolled,
+                            enter = expandVertically() + fadeIn(),
+                            exit = shrinkVertically() + fadeOut()
                         ) {
-                            OutlinedTextField(
-                                value = globalSearchQuery,
-                                onValueChange = { query ->
-                                    globalSearchQuery = query
-                                    if (selectedTab != 0 && selectedTab != 2 && query.isNotBlank()) selectedTab = 0
-                                },
-                                modifier = Modifier
-                                    .weight(if (selectedTab == 0) 1.45f else 1f)
-                                    .height(52.dp)
-                                    .testTag("top_pinned_search_bar"),
-                                singleLine = true,
-                                maxLines = 1,
-                                placeholder = { Text("Search businesses, deals, cafes…", maxLines = 1, fontSize = 12.sp) },
-                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search", tint = MaterialTheme.colorScheme.primary) },
-                                trailingIcon = {
-                                    if (globalSearchQuery.isNotEmpty()) {
-                                        IconButton(onClick = { globalSearchQuery = "" }) {
-                                            Icon(Icons.Default.Close, contentDescription = "Clear search")
-                                        }
-                                    }
-                                },
-                                shape = RoundedCornerShape(16.dp),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = Color(0xFF2563EB),
-                                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
-                                    focusedContainerColor = MaterialTheme.colorScheme.surface,
-                                    unfocusedContainerColor = MaterialTheme.colorScheme.surface
-                                )
-                            )
-                            if (selectedTab == 0) {
-                                OutlinedTextField(
-                                    value = globalCityQuery,
-                                    onValueChange = { globalCityQuery = it },
-                                    modifier = Modifier.weight(0.9f).height(52.dp).testTag("find_inline_city_selector"),
-                                    singleLine = true,
-                                    maxLines = 1,
-                                    placeholder = { Text("City", maxLines = 1, fontSize = 12.sp) },
-                                    leadingIcon = { Icon(Icons.Default.LocationOn, contentDescription = "Filter by city", modifier = Modifier.size(17.dp)) },
-                                    trailingIcon = {
-                                        if (globalCityQuery.isNotBlank()) {
-                                            IconButton(onClick = { globalCityQuery = "" }) {
-                                                Icon(Icons.Default.Close, contentDescription = "Clear city")
-                                            }
-                                        }
-                                    },
-                                    shape = RoundedCornerShape(16.dp),
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedBorderColor = Color(0xFF2563EB),
-                                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
-                                        focusedContainerColor = MaterialTheme.colorScheme.surface,
-                                        unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    OutlinedTextField(
+                                        value = globalSearchQuery,
+                                        onValueChange = { query ->
+                                            globalSearchQuery = query
+                                            if (selectedTab != 0 && selectedTab != 2 && query.isNotBlank()) selectedTab = 0
+                                        },
+                                        modifier = Modifier.weight(1f).height(40.dp).testTag("top_pinned_search_bar"),
+                                        singleLine = true,
+                                        maxLines = 1,
+                                        textStyle = MaterialTheme.typography.bodySmall,
+                                        placeholder = { Text("Search venues…", maxLines = 1, fontSize = 10.sp) },
+                                        shape = RoundedCornerShape(10.dp),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = Color(0xFF2563EB),
+                                            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                                            focusedContainerColor = MaterialTheme.colorScheme.surface,
+                                            unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                                        )
                                     )
-                                )
+                                    if (selectedTab == 0) {
+                                        OutlinedTextField(
+                                            value = globalCityQuery,
+                                            onValueChange = { globalCityQuery = it },
+                                            modifier = Modifier.weight(0.5f).height(40.dp).testTag("find_inline_city_selector"),
+                                            singleLine = true,
+                                            maxLines = 1,
+                                            textStyle = MaterialTheme.typography.bodySmall,
+                                            placeholder = { Text("City", maxLines = 1, fontSize = 10.sp) },
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedBorderColor = Color(0xFF2563EB),
+                                                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                                                focusedContainerColor = MaterialTheme.colorScheme.surface,
+                                                unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                                            )
+                                        )
+                                    }
+                                }
+                                if (globalSearchQuery.isNotBlank()) {
+                                    Text(
+                                        "Searching businesses, services and listings",
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
-
-                        if (globalSearchQuery.isNotBlank()) {
-                            Text(
-                                "Searching businesses, services and listings",
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
                         Spacer(modifier = Modifier.height(6.dp))
-    
-    
                     }
 
                     if (selectedTab != 3) {
                         // Wallet & Broadcast Dropdown Summary Chip
-                        val primaryVenue = myCreatedBusinesses.firstOrNull() ?: allBusinesses.firstOrNull()
+                        val primaryVenue = myCreatedBusinesses.firstOrNull()
                         val walletPoints = primaryVenue?.walletPoints ?: 500
                         val walletInr = walletPoints * 0.01
                         var showWalletDropdown by remember { mutableStateOf(false) }
@@ -473,12 +477,12 @@ fun BusinessHubContent(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        val tabs = listOf(
-                            Triple(0, "Nearest (${allBusinesses.size})", Icons.Default.Store),
-                            Triple(2, "My Venues (${myCreatedBusinesses.size})", Icons.Default.Business),
-                            Triple(3, "Analytics", Icons.Default.ShowChart),
-                            Triple(4, "QR Stickers", Icons.Default.QrCode2)
-                        )
+                        val tabs = buildList {
+                            add(Triple(0, "Nearest (${allBusinesses.size})", Icons.Default.Store))
+                            add(Triple(2, "My Venues (${myCreatedBusinesses.size})", Icons.Default.Business))
+                            if (myCreatedBusinesses.isNotEmpty()) add(Triple(3, "Analytics", Icons.Default.ShowChart))
+                            add(Triple(4, "QR Stickers", Icons.Default.QrCode2))
+                        }
                         tabs.forEach { (index, title, icon) ->
                             val isSelected = selectedTab == index
                             Surface(
@@ -524,7 +528,8 @@ fun BusinessHubContent(
                         cityQuery = globalCityQuery,
                         onSearchQueryChange = { globalSearchQuery = it },
                         onFollow = { viewModel.toggleFollowBusiness(it.id) },
-                        onSelect = { selectedBusinessForProfile = it }
+                        onSelect = { selectedBusinessForProfile = it },
+                        onCatalogScrolled = { catalogScrolled = it }
                     )
                     1 -> AddWithUsTab(
                         viewModel = viewModel,
@@ -547,13 +552,13 @@ fun BusinessHubContent(
                         onRestore = { viewModel.restoreUserBusinesses() }
                     )
                         3 -> {
-                            val activeVenue = selectedVenueForDashboard 
-                                ?: myCreatedBusinesses.firstOrNull() 
-                                ?: allBusinesses.firstOrNull()
-                            if (activeVenue != null) {
+                            val activeVenue = selectedVenueForDashboard
+                                ?.takeIf { selected -> myCreatedBusinesses.any { it.id == selected.id } }
+                                ?: myCreatedBusinesses.firstOrNull()
+                            if (activeVenue != null && myCreatedBusinesses.isNotEmpty()) {
                                 BusinessDashboardScreen(
                                     venue = activeVenue,
-                                    allVenues = if (myCreatedBusinesses.isNotEmpty()) myCreatedBusinesses else allBusinesses,
+                                    allVenues = myCreatedBusinesses,
                                     onSelectVenue = { selectedVenueForDashboard = it },
                                     onNavigateBack = { selectedTab = 0 }
                                 )
@@ -567,7 +572,7 @@ fun BusinessHubContent(
                             }
                         }
                         4 -> {
-                            val activeVenue = primaryVenue ?: allBusinesses.firstOrNull()
+                            val activeVenue = primaryVenue
                             if (activeVenue != null) {
                                 Box(
                                     modifier = Modifier
@@ -718,10 +723,16 @@ private fun NearestBusinessesTab(
     cityQuery: String = "",
     onSearchQueryChange: (String) -> Unit = {},
     onFollow: (BusinessEntity) -> Unit,
-    onSelect: (BusinessEntity) -> Unit
+    onSelect: (BusinessEntity) -> Unit,
+    onCatalogScrolled: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val venueListState = rememberLazyListState()
+    val isVenueListScrolled by remember { derivedStateOf {
+        venueListState.firstVisibleItemIndex > 0 || venueListState.firstVisibleItemScrollOffset > 72
+    } }
+    LaunchedEffect(isVenueListScrolled) { onCatalogScrolled(isVenueListScrolled) }
 
     var selectedCategory by remember { mutableStateOf(BusinessCategories.ALL) }
     var selectedSubCategory by remember { mutableStateOf<String?>(null) }
@@ -808,6 +819,7 @@ private fun NearestBusinessesTab(
     }
 
     LazyColumn(
+        state = venueListState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -2612,70 +2624,84 @@ private fun UserLocationTag(
         border = if (coordinate.isRealTimeGps) BorderStroke(1.dp, Color(0xFF81C784)) else null,
         modifier = Modifier.fillMaxWidth()
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                Icon(
-                    imageVector = if (coordinate.isRealTimeGps) Icons.Default.MyLocation else Icons.Default.NearMe,
-                    contentDescription = null,
-                    tint = if (coordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(14.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Column {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Icon(
+                        imageVector = if (coordinate.isRealTimeGps) Icons.Default.MyLocation else Icons.Default.NearMe,
+                        contentDescription = null,
+                        tint = if (coordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = if (coordinate.isRealTimeGps) "Current Location: ${coordinate.label}" else "Search Area: ${coordinate.label}",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (coordinate.isRealTimeGps) Color(0xFF1B5E20) else MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = if (coordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outlineVariant
+                            ) {
+                                Text(
+                                    text = if (coordinate.isRealTimeGps) "GPS ACTIVE" else "SEARCH AREA",
+                                    color = Color.White,
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
                         Text(
-                            text = if (coordinate.isRealTimeGps) "Current Location: ${coordinate.label}" else "Search Area: ${coordinate.label}",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (coordinate.isRealTimeGps) Color(0xFF1B5E20) else MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
+                            text = "Priority: Gold > Silver > Blue Tick > Standard • $filteredVenueCount venues",
+                            fontSize = 10.sp,
+                            color = if (coordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = if (coordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outlineVariant
-                        ) {
-                            Text(
-                                text = if (coordinate.isRealTimeGps) "GPS ACTIVE" else "SEARCH AREA",
-                                color = Color.White,
-                                fontSize = 8.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                            )
-                        }
                     }
-                    Text(
-                        text = "Priority: ⭐ Gold > 🛡️ Silver > ✓ Blue Tick > Standard, then Rating & GPS Proximity • $filteredVenueCount venues",
-                        fontSize = 10.sp,
-                        color = if (coordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                }
+                if (!hasLocationPermission) {
+                    OutlinedButton(
+                        onClick = onEnableGps,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.height(28.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) { Text("Enable GPS", fontSize = 10.sp, fontWeight = FontWeight.Bold) }
+                } else {
+                    IconButton(
+                        onClick = onRefreshGps,
+                        modifier = Modifier.size(32.dp).clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                    ) {
+                        Icon(
+                            Icons.Default.Refresh,
+                            contentDescription = "Refresh GPS Location",
+                            tint = if (coordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
                 }
             }
-            if (!hasLocationPermission) {
-                OutlinedButton(
-                    onClick = onEnableGps,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                    modifier = Modifier.height(28.dp),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("Enable GPS", fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                }
-            } else {
-                IconButton(onClick = onRefreshGps, modifier = Modifier.size(28.dp)) {
-                    Icon(
-                        Icons.Default.Refresh,
-                        contentDescription = "Refresh GPS Location",
-                        tint = if (coordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
+            if (coordinate.isRealTimeGps) {
+                Text(
+                    text = "GPS coordinates: ${String.format(java.util.Locale.ROOT, "%.6f", coordinate.latitude)}, ${String.format(java.util.Locale.ROOT, "%.6f", coordinate.longitude)}",
+                    modifier = Modifier.fillMaxWidth().padding(top = 2.dp, end = 4.dp),
+                    textAlign = TextAlign.End,
+                    fontSize = 9.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                    maxLines = 1
+                )
             }
         }
     }
