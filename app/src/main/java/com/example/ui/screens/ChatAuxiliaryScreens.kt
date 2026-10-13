@@ -132,6 +132,32 @@ fun RecentDeviceMediaStrip(onPick: (Uri) -> Unit) {
     }
 }
 
+/** Decrypt locally for search and media indexing; never fall back to displaying a ciphertext envelope. */
+private fun resolveMessageBodyForAuxiliaryUi(message: ChatMessageEntity): String {
+    val original = message.text.trim()
+    val encrypted = original.startsWith("V2_SIG:") || original.startsWith("V1_ENC:") || original.startsWith("ENC:")
+    var body = if (encrypted) {
+        com.example.util.MessageHandler.verifyAndDecryptPayload(message.senderId, original)
+    } else original
+    if (encrypted && (body == original || body.startsWith("V2_SIG:") || body.startsWith("V1_ENC:") || body.startsWith("ENC:"))) {
+        return ""
+    }
+    if (body.startsWith("{") && body.endsWith("}")) {
+        try {
+            val json = org.json.JSONObject(body)
+            if (json.has("vibesync_event")) return ""
+            val extracted = sequenceOf("message_text", "text", "message", "content", "caption", "body")
+                .map { json.optString(it, "") }
+                .firstOrNull { it.isNotBlank() }
+            if (!extracted.isNullOrBlank()) body = extracted
+            else if (encrypted) return ""
+        } catch (_: Exception) {
+            if (encrypted) return ""
+        }
+    }
+    return body.trim()
+}
+
 private data class EmojiCategory(val name: String, val icon: androidx.compose.ui.graphics.vector.ImageVector, val values: List<Pair<String, String>>)
 private val emojiCategories = listOf(
     EmojiCategory("Recently Used", Icons.Default.AccessTime, emptyList()),
@@ -215,13 +241,14 @@ fun AllMediaScreen(messages: List<ChatMessageEntity>, onBack: () -> Unit, onOpen
     var sortExpanded by remember { mutableStateOf(false) }
     var newestFirst by remember { mutableStateOf(true) }
     val linkRegex = remember { Regex("https?://[^\\s]+", RegexOption.IGNORE_CASE) }
-    val attachments = messages.filter { !it.isDeleted && !it.isDeletedForEveryone && (it.mediaType !in setOf("TEXT", "MESSAGE_DELETE", "MESSAGE_EDIT", "REACTION") || linkRegex.containsMatchIn(it.text)) }
+    val resolvedBodies = remember(messages) { messages.associate { it.messageId to resolveMessageBodyForAuxiliaryUi(it) } }
+    val attachments = messages.filter { !it.isDeleted && !it.isDeletedForEveryone && (it.mediaType !in setOf("TEXT", "MESSAGE_DELETE", "MESSAGE_EDIT", "REACTION") || linkRegex.containsMatchIn(resolvedBodies[it.messageId].orEmpty())) }
     val filtered = attachments.filter { msg ->
         when (category) {
             "Media" -> msg.mediaType.uppercase(Locale.ROOT) in setOf("IMAGE", "VIDEO", "PHOTO")
             "Files" -> msg.mediaType.uppercase(Locale.ROOT) in setOf("DOCUMENT", "FILE", "PDF")
             "Audio" -> msg.mediaType.uppercase(Locale.ROOT) in setOf("VOICE", "AUDIO")
-            "Links" -> linkRegex.containsMatchIn(msg.text) || linkRegex.containsMatchIn(msg.mediaUrl)
+            "Links" -> linkRegex.containsMatchIn(resolvedBodies[msg.messageId].orEmpty()) || linkRegex.containsMatchIn(msg.mediaUrl)
             else -> true
         }
     }.let { if (newestFirst) it.sortedByDescending { msg -> msg.timestamp } else it.sortedBy { msg -> msg.timestamp } }
@@ -263,7 +290,7 @@ fun AllMediaScreen(messages: List<ChatMessageEntity>, onBack: () -> Unit, onOpen
                             if (msg.mediaType.uppercase(Locale.ROOT) in setOf("IMAGE", "VIDEO", "PHOTO") && msg.mediaUrl.isNotBlank()) AsyncImage(model = msg.mediaUrl, contentDescription = "Shared media", modifier = Modifier.fillMaxSize())
                             Column(Modifier.align(Alignment.BottomStart).fillMaxWidth().background(Color.Black.copy(alpha = 0.56f)).padding(7.dp)) {
                                 Text(msg.mediaType, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                Text(msg.text.ifBlank { msg.mediaType }, color = Color.White, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                Text(resolvedBodies[msg.messageId].orEmpty().ifBlank { msg.mediaType }, color = Color.White, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                             }
                         }
                     }
@@ -277,7 +304,7 @@ fun AllMediaScreen(messages: List<ChatMessageEntity>, onBack: () -> Unit, onOpen
                             Icon(when (msg.mediaType.uppercase(Locale.ROOT)) { "VOICE", "AUDIO" -> Icons.Default.AudioFile; "LINK" -> Icons.Default.InsertLink; "IMAGE", "VIDEO", "PHOTO" -> Icons.Default.Image; else -> Icons.Default.Description }, contentDescription = null, modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.primary)
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(msg.text.ifBlank { msg.mediaType }, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+                                Text(resolvedBodies[msg.messageId].orEmpty().ifBlank { msg.mediaType }, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
                                 Text(msg.mediaType + " • " + java.text.SimpleDateFormat("MMM d, yyyy", Locale.getDefault()).format(java.util.Date(msg.timestamp)), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
@@ -291,7 +318,13 @@ fun AllMediaScreen(messages: List<ChatMessageEntity>, onBack: () -> Unit, onOpen
 @Composable
 fun ChatSearchDialog(messages: List<ChatMessageEntity>, onDismiss: () -> Unit, onOpenMessage: (ChatMessageEntity) -> Unit) {
     var query by remember { mutableStateOf("") }
-    val results = if (query.isBlank()) emptyList() else messages.filter { !it.isDeleted && !it.isDeletedForEveryone && it.text.contains(query.trim(), ignoreCase = true) }.sortedByDescending { it.timestamp }
+    val results = remember(messages, query) {
+        if (query.isBlank()) emptyList()
+        else messages.filter {
+            !it.isDeleted && !it.isDeletedForEveryone &&
+                resolveMessageBodyForAuxiliaryUi(it).contains(query.trim(), ignoreCase = true)
+        }.sortedByDescending { it.timestamp }
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Search in chat") },
@@ -303,7 +336,7 @@ fun ChatSearchDialog(messages: List<ChatMessageEntity>, onDismiss: () -> Unit, o
                     items(results, key = { it.messageId }) { msg ->
                         Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth().clickable { onOpenMessage(msg) }) {
                             Column(Modifier.padding(10.dp)) {
-                                Text(msg.text.ifBlank { msg.mediaType }, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                Text(resolveMessageBodyForAuxiliaryUi(msg).ifBlank { msg.mediaType }, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                 Text(java.text.SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(java.util.Date(msg.timestamp)), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
