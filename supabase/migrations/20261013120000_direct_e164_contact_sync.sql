@@ -4,7 +4,7 @@ create table if not exists public.phone_lookup_index (
     phone_e164 text not null,
     updated_at timestamptz not null default now(),
     constraint phone_lookup_index_e164_format
-      check (phone_e164 ~ '^\\+[1-9][0-9]{7,14}$')
+      check (phone_e164 ~ '^[+][1-9][0-9]{7,14}$')
 );
 create unique index if not exists idx_phone_lookup_index_phone_e164
     on public.phone_lookup_index using btree (phone_e164);
@@ -18,17 +18,17 @@ grant all on table public.phone_lookup_index to service_role;
 insert into public.phone_lookup_index(profile_id, phone_e164, updated_at)
 select p.id::text,
        case
-         when p.phone_number_e164 ~ '^\\+[1-9][0-9]{7,14}$' then p.phone_number_e164
-         when p.phone_number ~ '^\\+[1-9][0-9]{7,14}$' then p.phone_number
+         when p.phone_number_e164 ~ '^[+][1-9][0-9]{7,14}$' then p.phone_number_e164
+         when p.phone_number ~ '^[+][1-9][0-9]{7,14}$' then p.phone_number
          else p.clean_phone
        end,
        now()
 from public.profiles p
 where coalesce(p.is_deleted, false) = false
   and (
-    coalesce(p.phone_number_e164, '') ~ '^\\+[1-9][0-9]{7,14}$'
-    or coalesce(p.phone_number, '') ~ '^\\+[1-9][0-9]{7,14}$'
-    or coalesce(p.clean_phone, '') ~ '^\\+[1-9][0-9]{7,14}$'
+    coalesce(p.phone_number_e164, '') ~ '^[+][1-9][0-9]{7,14}$'
+    or coalesce(p.phone_number, '') ~ '^[+][1-9][0-9]{7,14}$'
+    or coalesce(p.clean_phone, '') ~ '^[+][1-9][0-9]{7,14}$'
   )
 on conflict (profile_id) do update
 set phone_e164 = excluded.phone_e164, updated_at = now();
