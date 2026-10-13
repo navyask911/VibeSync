@@ -1203,31 +1203,17 @@ private fun ContactOnVibeSyncRow(
                 },
             contentAlignment = Alignment.Center
         ) {
-            val contactPhoto = syncedLocalPhotos[contact.phoneNumber.ifBlank { contact.id }] ?: contact.photoUrl.ifBlank { contact.vibeSyncUser?.avatarUrl ?: "" }
-            if (contactPhoto.isNotBlank()) {
-                coil.compose.AsyncImage(
-                    model = contactPhoto,
-                    contentDescription = contactDisplayName,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape),
-                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .background(
-                            Brush.linearGradient(
-                                listOf(CoralPink, RomanticViolet)
-                            )
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(text = contact.avatarEmoji.ifBlank { "👤" }, fontSize = 20.sp)
-                }
-            }
+            val contactPhoto = syncedLocalPhotos[contact.phoneNumber.ifBlank { contact.id }]
+                ?: contact.photoUrl.ifBlank { contact.vibeSyncUser?.avatarUrl.orEmpty() }
+            DatingAvatar(
+                name = contactDisplayName.ifBlank { contact.name },
+                emoji = contact.avatarEmoji.ifBlank { "👤" },
+                colorStart = contact.vibeSyncUser?.gradientColorStart ?: 0xFFFF5E62,
+                colorEnd = contact.vibeSyncUser?.gradientColorEnd ?: 0xFFFF9966,
+                size = 44.dp,
+                avatarUrl = contactPhoto,
+                avatarCacheVersion = contact.vibeSyncUser?.avatarCacheVersion ?: 0L
+            )
 
             Box(
                 modifier = Modifier
@@ -1328,18 +1314,15 @@ private fun ContactToInviteRow(
         ) {
             val contactPhoto = syncedLocalPhotos[localPhotoKey]
                 ?: contact.photoUrl.ifBlank { contact.vibeSyncUser?.avatarUrl.orEmpty() }
-            if (contactPhoto.isNotBlank()) {
-                coil.compose.AsyncImage(
-                    model = contactPhoto,
-                    contentDescription = contact.name,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape),
-                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                )
-            } else {
-                Text(text = contact.avatarEmoji.ifBlank { "👤" }, fontSize = 20.sp)
-            }
+            DatingAvatar(
+                name = contact.name.ifBlank { "VibeSync contact" },
+                emoji = contact.avatarEmoji.ifBlank { "👤" },
+                colorStart = contact.vibeSyncUser?.gradientColorStart ?: 0xFFFF5E62,
+                colorEnd = contact.vibeSyncUser?.gradientColorEnd ?: 0xFFFF9966,
+                size = 44.dp,
+                avatarUrl = contactPhoto,
+                avatarCacheVersion = contact.vibeSyncUser?.avatarCacheVersion ?: 0L
+            )
         }
 
         Spacer(modifier = Modifier.width(12.dp))
