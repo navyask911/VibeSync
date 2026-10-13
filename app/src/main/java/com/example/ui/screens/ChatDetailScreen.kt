@@ -661,6 +661,11 @@ private fun ChatDetailScreenContent(
         }
     }
 
+    // Stop any in-flight typing broadcast as soon as the privacy toggle is switched off.
+    LaunchedEffect(typingIndicatorsEnabled) {
+        if (!typingIndicatorsEnabled) onTypingStatus(false)
+    }
+
     // Timer effect for voice recording duration
     LaunchedEffect(isRecordingVoice) {
         if (isRecordingVoice) {
@@ -730,7 +735,9 @@ private fun ChatDetailScreenContent(
         val filtered = deduplicatedMessages.filter { msg ->
             if (msg.isDeletedForMe) return@filter false
             if (msg.mediaType.equals(com.example.util.ChatMessageEventCodec.MEDIA_TYPE_REACTION, true) ||
-                msg.mediaType.equals(com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DELETE, true)
+                msg.mediaType.equals(com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DELETE, true) ||
+                msg.mediaType.equals(com.example.util.ChatMessageEventCodec.MEDIA_TYPE_EDIT, true) ||
+                msg.mediaType.equals(com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DISAPPEARING_TIMER, true)
             ) return@filter false
             if (msg.isDeleted || msg.isDeletedForEveryone) return@filter true
 
@@ -844,7 +851,9 @@ private fun ChatDetailScreenContent(
                             }
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (typingIndicatorsEnabled && isPartnerTyping) {
+                            if (typingIndicatorsEnabled &&
+                                (isPartnerTyping || presenceStatus.equals("typing...", ignoreCase = true))
+                            ) {
                                 Text(
                                     text = "typing...",
                                     style = MaterialTheme.typography.bodySmall.copy(fontStyle = FontStyle.Italic),
