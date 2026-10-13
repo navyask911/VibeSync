@@ -942,7 +942,7 @@ class SocialConnectRepository(
             }
         }
 
-        val isPublicStory = privacy.uppercase() in setOf("EVERYONE", "ALL_NETWORK")
+        val isPublicStory = privacy.trim().uppercase() in setOf("EVERYONE", "ALL_NETWORK", "PUBLIC", "ALL")
         val contactProfileIds = if (isPublicStory) {
             emptyList()
         } else {
@@ -1014,8 +1014,8 @@ class SocialConnectRepository(
                 return@withContext
             }
             val existingById = statusStoryDao.getAllStoriesSync().associateBy { it.id }
-            // Do not clear remote cache rows before a successful server read and usable replacement set.
-            statusStoryDao.deleteExpiredStories(cutoff)
+            // The request above completed successfully. Reconcile the friends projection atomically;
+            // never sweep the cache on a failed/unauthenticated network read.
             val storiesToCache = remoteStories
                 .filter { it.timestamp >= cutoff && !it.isExpired }
                 .map { remote ->
@@ -1028,7 +1028,11 @@ class SocialConnectRepository(
                         isLikedByMe = existing?.isLikedByMe ?: false
                     )
                 }
-            if (storiesToCache.isNotEmpty()) statusStoryDao.insertStories(storiesToCache)
+            database.withTransaction {
+                statusStoryDao.deleteExpiredStories(cutoff)
+                statusStoryDao.clearFriendsStories()
+                if (storiesToCache.isNotEmpty()) statusStoryDao.insertStories(storiesToCache)
+            }
             android.util.Log.i("VibeSyncStories", "Supabase active story sync completed: ${storiesToCache.size} rows.")
         } catch (e: Exception) {
             android.util.Log.e("VibeSyncStories", "Supabase story sync failed: ${e.message}", e)

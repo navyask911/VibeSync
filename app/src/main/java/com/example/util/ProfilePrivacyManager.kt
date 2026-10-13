@@ -5,6 +5,17 @@ import com.example.data.model.ProfileEntity
 
 /** Single policy gate for revealing private phone and DOB values. */
 object ProfilePrivacyManager {
+    /** Phone disclosure policy is stricter than profile details: self or a locally saved contact only. */
+    fun canRevealPhoneNumber(context: Context, profile: ProfileEntity): Boolean {
+        val app = context.applicationContext
+        val currentId = VibeSyncSessionManager.getProfileId(app).orEmpty()
+        if (currentId.isNotBlank() && currentId.equals(profile.id, ignoreCase = true)) return true
+        val phone = profile.phoneNumber.ifBlank {
+            profile.id.takeIf { SupabaseClientManager.isPhoneNumberCandidate(it) }.orEmpty()
+        }
+        return phone.isNotBlank() && ContactResolver.isNumberSavedOnDevice(app, phone)
+    }
+
     fun canRevealSensitiveFields(context: Context, profile: ProfileEntity, isMutualConnection: Boolean): Boolean {
         val app = context.applicationContext
         val currentId = VibeSyncSessionManager.getProfileId(app).orEmpty()

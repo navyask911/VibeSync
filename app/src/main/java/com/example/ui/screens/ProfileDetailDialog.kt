@@ -84,8 +84,12 @@ fun ProfileDetailDialog(
             com.example.util.SupabaseClientManager.hasAcceptedPhoneNumberRequest(profile.id)
         }
     }
-    val canRevealSensitive = (approvedPhoneRequest && isMutualConnection) ||
+    // DOB can follow connection privacy; a phone number additionally requires local contact
+    // recognition or an explicit accepted phone request after a friendship is established.
+    val canRevealSensitive =
         com.example.util.ProfilePrivacyManager.canRevealSensitiveFields(context, profile, isMutualConnection)
+    val canRevealPhone = (approvedPhoneRequest && isMutualConnection) ||
+        com.example.util.ProfilePrivacyManager.canRevealPhoneNumber(context, profile)
     val photoList = remember(profile.avatarUrl, profile.id) {
         profile.getPhotoList()
     }
@@ -365,7 +369,7 @@ fun ProfileDetailDialog(
                                             )
                                         )
                                     }
-                                    if (canRevealSensitive) {
+                                    if (canRevealPhone) {
                                         Surface(
                                             shape = RoundedCornerShape(12.dp),
                                             color = LikeGreen.copy(alpha = 0.15f)
@@ -406,7 +410,7 @@ fun ProfileDetailDialog(
                                 }
                                 Spacer(modifier = Modifier.height(10.dp))
 
-                                if (canRevealSensitive) {
+                                if (canRevealPhone) {
                                     // Full number display for known contacts or after granted access
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
@@ -489,7 +493,13 @@ fun ProfileDetailDialog(
                                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
                                         )
                                         Spacer(modifier = Modifier.height(2.dp))
-                                        if (isPhoneAccessRequested) {
+                                        if (approvedPhoneRequest && !isMutualConnection) {
+                                            Text(
+                                                text = "Request accepted. Phone sharing unlocks when the friendship is accepted.",
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        } else if (isPhoneAccessRequested) {
                                             Row(
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 modifier = Modifier
