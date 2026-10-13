@@ -16,6 +16,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
@@ -1839,7 +1840,7 @@ private fun ChatDetailScreenContent(
         }
 
         // Clean Bottom Input Bar
-        if (isRecordingVoice) {
+        if (isRecordingVoice && !voiceRecordGestureActive) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1952,7 +1953,14 @@ private fun ChatDetailScreenContent(
                                 inputText = it
                                 if (typingIndicatorsEnabled) onTypingStatus(it.isNotBlank())
                             },
-                            placeholder = { Text("Message", fontSize = 15.sp) },
+                            placeholder = {
+                                Text(
+                                    if (isRecordingVoice && voiceRecordGestureActive) {
+                                        "Recording… release to send · slide left to cancel"
+                                    } else "Message",
+                                    fontSize = 15.sp
+                                )
+                            },
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = Color.Transparent,
                                 unfocusedBorderColor = Color.Transparent,
@@ -1998,34 +2006,77 @@ private fun ChatDetailScreenContent(
                     modifier = Modifier
                         .size(48.dp)
                         .clip(CircleShape)
-                        .background(VibeSyncTeal)
-                        .clickable {
-                            if (inputText.isNotBlank()) {
-                                val reply = replyingToMessage
-                                onSendMessageWithReply(
-                                    inputText,
-                                    reply?.messageId,
-                                    reply?.text?.ifBlank { if (reply.mediaType == "VOICE") "Voice message" else "Photo" },
-                                    if (reply?.senderId == "USER") "You" else profile.name
-                                )
-                                onTypingStatus(false)
-                                inputText = ""
-                                replyingToMessage = null
-                            } else {
-                                // Phone Microphone Voice Note Trigger
-                                val hasPermission = ContextCompat.checkSelfPermission(
-                                    context,
-                                    Manifest.permission.RECORD_AUDIO
-                                ) == PackageManager.PERMISSION_GRANTED
-
-                                if (hasPermission) {
-                                    val started = voiceRecorderHelper.startRecording()
-                                    if (started) {
-                                        isRecordingVoice = true
-                                        recordingDurationSeconds = 0
+                        .background(if (isRecordingVoice && voiceRecordGestureActive) Color.Red else VibeSyncTeal)
+                        .pointerInput(inputText.isNotBlank()) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                val longPress = awaitLongPressOrCancellation(down.id)
+                                if (longPress == null) {
+                                    if (inputText.isNotBlank()) {
+                                        val reply = replyingToMessage
+                                        onSendMessageWithReply(
+                                            inputText,
+                                            reply?.messageId,
+                                            reply?.text?.ifBlank { if (reply.mediaType == "VOICE") "Voice message" else "Photo" },
+                                            if (reply?.senderId == "USER") "You" else profile.name
+                                        )
+                                        onTypingStatus(false)
+                                        inputText = ""
+                                        replyingToMessage = null
                                     }
                                 } else {
-                                    micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    if (inputText.isNotBlank()) return@awaitEachGesture
+                                    val hasPermission = ContextCompat.checkSelfPermission(
+                                        context,
+                                        Manifest.permission.RECORD_AUDIO
+                                    ) == PackageManager.PERMISSION_GRANTED
+                                    if (!hasPermission) {
+                                        micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                        return@awaitEachGesture
+                                    }
+
+                                    val started = voiceRecorderHelper.startRecording()
+                                    if (!started) return@awaitEachGesture
+                                    voiceRecordGestureActive = true
+                                    isRecordingVoice = true
+                                    recordingDurationSeconds = 0
+                                    var shouldCancel = false
+                                    var pointerDone = false
+                                    while (!pointerDone) {
+                                        val event = awaitPointerEvent()
+                                        val change = event.changes.firstOrNull { it.id == down.id }
+                                        if (change == null) {
+                                            pointerDone = true
+                                        } else {
+                                            if (change.position.x < down.position.x - 60f) shouldCancel = true
+                                            if (!change.pressed) {
+                                                pointerDone = true
+                                            } else {
+                                                change.consume()
+                                            }
+                                        }
+                                    }
+
+                                    val duration = recordingDurationSeconds.coerceAtLeast(1)
+                                    val audioFile = if (shouldCancel) {
+                                        voiceRecorderHelper.cancelRecording()
+                                        null
+                                    } else {
+                                        voiceRecorderHelper.stopRecording()
+                                    }
+                                    isRecordingVoice = false
+                                    voiceRecordGestureActive = false
+                                    if (!shouldCancel && audioFile != null && audioFile.length() > 0L) {
+                                        val label = String.format(
+                                            Locale.US,
+                                            "Voice note (%02d:%02d)",
+                                            duration / 60,
+                                            duration % 60
+                                        )
+                                        onSendMedia("VOICE", label, audioFile.absolutePath, duration)
+                                    } else {
+                                        recordingDurationSeconds = 0
+                                    }
                                 }
                             }
                         }
