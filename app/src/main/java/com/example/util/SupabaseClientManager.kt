@@ -88,12 +88,6 @@ object SupabaseClientManager {
     )
 
     /**
-     * Helper to generate truncated 16-character SHA-256 hashes of contact identifiers using PhonebookHasher.
-     * Prevents storing raw, unencrypted phone numbers on the server database.
-     */
-    fun getPhoneHash(phoneNumber: String): String = PhonebookHelper.normalizeToE164(phoneNumber)
-
-    /**
      * Executes connectivity test with the E2EE PostgREST endpoints.
      */
     suspend fun checkSupabaseConnectivity(): DiagnosticResult = withContext(Dispatchers.IO) {
@@ -844,8 +838,7 @@ object SupabaseClientManager {
             rawId.filter { it.isDigit() }.length >= 7 -> rawId
             else -> ""
         }
-        // Legacy field name only; no client-side hashing is performed.
-        val phoneHash = PhonebookHelper.normalizeToE164(phone)
+        // Remote profile phone data is intentionally not used as contact identity; ID remains canonical.
 
         // Remote profiles intentionally do not expose phone numbers. Identity is the profile ID.
         if (rawId.isBlank() || rawId.equals("null", ignoreCase = true) ||
@@ -912,8 +905,9 @@ object SupabaseClientManager {
     }
 
     /**
-     * Upsert profile into Supabase 'profiles' table and syncs phone hash to 'phone_sync' table.
-     * REDESIGNED FOR ZERO-KNOWLEDGE E2EE AND MAXIMUM STORAGE SAVINGS (Fits 1M+ users in 500MB).
+     * Upsert the authenticated user's public profile fields through the session-bound Supabase RPC.
+     * Tink public identity metadata may be published here; private keys and phone lookup data are not.
+     * Phone matching is handled separately by the verified Truecaller flow and direct E.164 RPC.
      * Strictly limits name <= 60 characters and bio <= 160 characters.
      */
     suspend fun upsertProfile(profile: ProfileEntity): Boolean = withContext(Dispatchers.IO) {
@@ -1085,7 +1079,7 @@ object SupabaseClientManager {
     }
     /**
      * Upsert registered account credentials.
-     * ENFORCES ZERO-KNOWLEDGE ENCRYPTION ON USER ACCOUNTS.
+     * Publishes only the user's public Tink identity metadata; message payloads remain end-to-end encrypted.
      */
     suspend fun upsertRegisteredAccount(account: RegisteredAccountEntity): Boolean = withContext(Dispatchers.IO) {
         try {
