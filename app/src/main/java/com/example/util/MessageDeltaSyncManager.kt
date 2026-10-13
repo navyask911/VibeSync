@@ -55,7 +55,14 @@ object MessageDeltaSyncManager {
             partnerPhone = partnerPhone,
             afterCreatedAtMs = cursor.createdAtMs,
             afterCreatedAtRaw = cursor.createdAtIso,
-            afterMessageId = cursor.messageId
+            afterMessageId = cursor.messageId,
+            onPeerPublicKeyRefreshed = { refreshedProfileId, newKey ->
+                val peerProfile = database.profileDao().getProfileByIdSync(refreshedProfileId)
+                    ?: SupabaseClientManager.fetchProfileById(refreshedProfileId)
+                if (peerProfile != null && newKey.isNotBlank()) {
+                    database.profileDao().insertProfile(peerProfile.copy(publicIdentityKey = newKey))
+                }
+            }
         )
         var complete = batch?.complete == true
         var synced = 0
