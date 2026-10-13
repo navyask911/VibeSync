@@ -946,14 +946,9 @@ private fun ChatDetailScreenContent(
             }
         }
 
-        val isPhonebookOrFriendsCircle = match?.isPhonebookContact == true ||
-            match?.lastMessage?.contains("Phonebook", ignoreCase = true) == true ||
-            match?.lastMessage?.contains("Phone Contact", ignoreCase = true) == true ||
-            match?.lastMessage?.contains("Contacts", ignoreCase = true) == true ||
-            match?.lastMessage?.contains("Friendship", ignoreCase = true) == true
-
-        if (!isPhonebookOrFriendsCircle) {
-            // Anonymous Safety Protocol Banner for pre-relationship chatting
+        // Shield is opt-in metadata set only for matches created by anonymous social discovery.
+        // Contact/direct chats never infer anonymity from missing phonebook data.
+        if (match?.isAnonymousPeer == true && match.isPhonebookContact.not()) {
             Surface(
                 color = VibeSyncTeal.copy(alpha = 0.12f),
                 border = BorderStroke(1.dp, VibeSyncTeal.copy(alpha = 0.3f)),
@@ -994,7 +989,6 @@ private fun ChatDetailScreenContent(
                             )
                         }
                     }
-
                     TextButton(
                         onClick = { showSafetyProtocolsSheet = true },
                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
@@ -1005,45 +999,6 @@ private fun ChatDetailScreenContent(
                             fontWeight = FontWeight.Bold,
                             color = VibeSyncTeal
                         )
-                    }
-                }
-            }
-        } else {
-            // Direct Phonebook Contact / Family & Friends Circle Header Badge (No Anonymous Restrictions)
-            Surface(
-                color = VibeSyncTeal.copy(alpha = 0.1f),
-                border = BorderStroke(1.dp, VibeSyncTeal.copy(alpha = 0.25f)),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("📱", fontSize = 16.sp)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column {
-                            Text(
-                                text = "Phonebook Contact & Circle Chat",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.5.sp,
-                                color = VibeSyncTeal
-                            )
-                            Text(
-                                text = "Known contact from phonebook / friends circle. Anonymous shield active masking disabled.",
-                                fontSize = 9.5.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
                     }
                 }
             }
@@ -1070,7 +1025,7 @@ private fun ChatDetailScreenContent(
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                    text = "End-to-end encrypted with VibeSync E2EE Protocol. No third party can read messages.",
+                    text = "End-to-end encrypted · Tap to verify",
                     fontSize = 10.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
