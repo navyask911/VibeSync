@@ -2,6 +2,7 @@ package com.example.util
 
 import android.content.Context
 import android.util.Log
+import com.example.BuildConfig
 import com.example.data.model.ChatMessageEntity
 import com.example.data.model.ProfileEntity
 import kotlinx.coroutines.CoroutineScope
