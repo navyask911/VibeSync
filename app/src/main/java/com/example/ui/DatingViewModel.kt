@@ -351,6 +351,10 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     @Volatile private var activeRealtimeRemoteMatchId: String? = null
     private var realtimeStartJob: kotlinx.coroutines.Job? = null
     private var realtimeStatusSyncJob: kotlinx.coroutines.Job? = null
+    private var typingStopJob: kotlinx.coroutines.Job? = null
+    private var typingBroadcastActive = false
+    private val _isPartnerTyping = MutableStateFlow(false)
+    val isPartnerTyping: StateFlow<Boolean> = _isPartnerTyping.asStateFlow()
 
     /** Called only by ChatDetailScreen while its 1-on-1 route is resumed. */
     fun startChatRealtime(match: MatchEntity, profile: ProfileEntity) {
@@ -437,7 +441,16 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         handleRealtimeChatMessageUpdate(record)
                     }
                 },
-                matchId = remoteMatchId
+                matchId = remoteMatchId,
+                onTyping = { senderId, isTyping ->
+                    val myId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty()
+                    if (activeRealtimeRemoteMatchId == remoteMatchId &&
+                        !senderId.equals(myId, ignoreCase = true) &&
+                        userPreferences.value?.typingIndicatorsEnabled != false
+                    ) {
+                        _isPartnerTyping.value = isTyping
+                    }
+                }
             )
 
             realtimeStatusSyncJob?.cancel()
@@ -461,6 +474,10 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         activeRealtimeRemoteMatchId = null
         realtimeStatusSyncJob?.cancel()
         realtimeStatusSyncJob = null
+        typingStopJob?.cancel()
+        typingStopJob = null
+        typingBroadcastActive = false
+        _isPartnerTyping.value = false
         try {
             com.example.util.SupabaseBackendManager.disconnectRealtimeWebsocket()
         } catch (e: Exception) {
@@ -1963,6 +1980,42 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             _toastMessage.emit(
                 if (saved) "Disappearing message timer updated." else "Couldn't update the disappearing timer."
             )
+        }
+    }
+
+    /** Throttled typing presence; disabled settings emit no typing broadcasts. */
+    fun onChatTyping(isTyping: Boolean) {
+        val active = _activeChat.value ?: return
+        if (userPreferences.value?.typingIndicatorsEnabled == false) {
+            typingStopJob?.cancel()
+            typingStopJob = null
+            typingBroadcastActive = false
+            _isPartnerTyping.value = false
+            return
+        }
+        val senderId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+        val remoteMatchId = activeRealtimeRemoteMatchId.orEmpty()
+        if (senderId.isBlank() || remoteMatchId.isBlank()) return
+
+        if (isTyping && !typingBroadcastActive) {
+            com.example.util.SupabaseBackendManager.broadcastTypingStatus(remoteMatchId, senderId, true)
+            typingBroadcastActive = true
+        }
+        typingStopJob?.cancel()
+        typingStopJob = if (isTyping) {
+            viewModelScope.launch {
+                delay(2_200L)
+                if (typingBroadcastActive) {
+                    com.example.util.SupabaseBackendManager.broadcastTypingStatus(remoteMatchId, senderId, false)
+                }
+                typingBroadcastActive = false
+            }
+        } else {
+            if (typingBroadcastActive) {
+                com.example.util.SupabaseBackendManager.broadcastTypingStatus(remoteMatchId, senderId, false)
+            }
+            typingBroadcastActive = false
+            null
         }
     }
 
