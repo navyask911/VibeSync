@@ -206,6 +206,20 @@ object ProfileKeyManager {
                 json.optInt("version", 0) != 1
             ) return null
 
+            val profileVersion = json.optInt("profile_version", 0)
+            if (profileVersion < 1) return null
+            val storedVersion = peerProfileVersion(context.applicationContext, owner)
+            if (profileVersion < storedVersion) {
+                // A delayed/out-of-order old exchange must not roll a peer's keyring backwards.
+                // Return an ACKable no-op so Supabase does not redeliver the stale control forever.
+                return ReceivedExchange(
+                    ownerProfileId = owner,
+                    recipientProfileId = recipient,
+                    dateOfBirth = "",
+                    senderHasRecipientSaved = false
+                )
+            }
+
             val keysetJson = String(
                 Base64.decode(json.getString("aes256_gcm_keyset"), Base64.NO_WRAP),
                 Charsets.UTF_8
@@ -218,7 +232,6 @@ object ProfileKeyManager {
 
             val prefs = context.applicationContext.getSharedPreferences(PEER_KEYS_PREFS, Context.MODE_PRIVATE)
             val wrapped = wrappingAead(context).encrypt(keysetJson.toByteArray(Charsets.UTF_8), peerKeyAad(owner))
-            val profileVersion = json.optInt("profile_version", 1).coerceAtLeast(1)
             val committed = prefs.edit()
                 .putString("wrapped_key_" + stableKey(owner), Base64.encodeToString(wrapped, Base64.NO_WRAP))
                 .putBoolean("peer_saved_my_number_" + stableKey(owner), json.optBoolean("sender_has_recipient_saved", false))

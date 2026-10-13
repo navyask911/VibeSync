@@ -87,7 +87,12 @@ object ProfileAvatarStorageManager {
             // it until Supabase confirms the ciphertext upload.
             val profileVersion = ProfileKeyManager.nextProfileVersion(context, profileId)
             // Bitmap decode + JPEG re-encoding strips EXIF/GPS/device metadata before encryption.
-            val ciphertext = ProfileKeyManager.encryptLocalAvatar(context, profileId, cleanSlot, bytes, profileVersion)
+            val ciphertext = try {
+                ProfileKeyManager.encryptLocalAvatar(context, profileId, cleanSlot, bytes, profileVersion)
+            } finally {
+                // Avoid keeping an extra plaintext image copy alive after AEAD encryption.
+                bytes.fill(0)
+            }
             val encryptedName = if (cleanSlot == 1) profileId + ".enc" else profileId + "_" + cleanSlot + ".enc"
             val encryptedFile = File(dir, safeHash(profileId) + "_" + cleanSlot + ".enc")
             encryptedFile.outputStream().use { output -> output.write(ciphertext); output.flush() }
