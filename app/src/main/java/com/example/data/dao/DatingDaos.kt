@@ -176,18 +176,18 @@ interface MatchDao {
 
 @Dao
 interface ChatMessageDao {
-    @Query("SELECT * FROM chat_messages ORDER BY timestamp ASC")
-    suspend fun getAllMessagesSync(): List<ChatMessageEntity>
+    @Query("SELECT * FROM chat_messages WHERE expiresAt = 0 OR expiresAt > :now ORDER BY timestamp ASC")
+    suspend fun getAllMessagesSync(now: Long = System.currentTimeMillis()): List<ChatMessageEntity>
 
-    @Query("SELECT * FROM chat_messages WHERE matchId = :matchId ORDER BY timestamp ASC")
-    fun getMessagesForMatch(matchId: String): Flow<List<ChatMessageEntity>>
+    @Query("SELECT * FROM chat_messages WHERE matchId = :matchId AND (expiresAt = 0 OR expiresAt > :now) ORDER BY timestamp ASC")
+    fun getMessagesForMatch(matchId: String, now: Long = System.currentTimeMillis()): Flow<List<ChatMessageEntity>>
 
-    @Query("SELECT * FROM chat_messages WHERE matchId = :matchId ORDER BY timestamp ASC")
-    suspend fun getMessagesForMatchSync(matchId: String): List<ChatMessageEntity>
+    @Query("SELECT * FROM chat_messages WHERE matchId = :matchId AND (expiresAt = 0 OR expiresAt > :now) ORDER BY timestamp ASC")
+    suspend fun getMessagesForMatchSync(matchId: String, now: Long = System.currentTimeMillis()): List<ChatMessageEntity>
 
     /** Strict self-note inbox: a note must be addressed to the same profile that owns it. */
-    @Query("SELECT * FROM chat_messages WHERE matchId = :matchId AND recipient_id = :currentUserId ORDER BY timestamp ASC")
-    fun getMessagesForNoteToSelf(matchId: String, currentUserId: String): Flow<List<ChatMessageEntity>>
+    @Query("SELECT * FROM chat_messages WHERE matchId = :matchId AND recipient_id = :currentUserId AND (expiresAt = 0 OR expiresAt > :now) ORDER BY timestamp ASC")
+    fun getMessagesForNoteToSelf(matchId: String, currentUserId: String, now: Long = System.currentTimeMillis()): Flow<List<ChatMessageEntity>>
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertMessage(message: ChatMessageEntity)
@@ -237,6 +237,12 @@ interface ChatMessageDao {
     @Query("DELETE FROM chat_messages WHERE messageId = :messageId")
     suspend fun deleteMessageById(messageId: String)
 
+    @Query("SELECT messageId FROM chat_messages WHERE expiresAt > 0 AND expiresAt <= :now")
+    suspend fun getExpiredMessageIds(now: Long): List<String>
+
+    @Query("DELETE FROM chat_messages WHERE expiresAt > 0 AND expiresAt <= :now")
+    suspend fun purgeExpiredMessages(now: Long): Int
+
     @Query("DELETE FROM chat_messages WHERE matchId = :matchId")
     suspend fun clearMessagesForMatch(matchId: String)
 
@@ -246,7 +252,7 @@ interface ChatMessageDao {
     @Query("DELETE FROM chat_messages")
     suspend fun clearAllMessages()
 
-    @Query("SELECT * FROM chat_messages ORDER BY timestamp ASC")
+    @Query("SELECT * FROM chat_messages WHERE expiresAt = 0 OR expiresAt > CAST(strftime('%s','now') AS INTEGER) * 1000 ORDER BY timestamp ASC")
     fun getAllMessagesFlow(): Flow<List<ChatMessageEntity>>
 
     @Query("DELETE FROM chat_messages WHERE matchId = 'null' OR LOWER(matchId) = 'null' OR senderId = 'null' OR LOWER(senderId) = 'null' OR text = 'null' OR LOWER(text) = 'null' OR TRIM(matchId) = '' OR TRIM(senderId) = ''")
