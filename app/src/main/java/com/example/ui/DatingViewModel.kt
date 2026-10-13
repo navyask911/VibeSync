@@ -1664,7 +1664,17 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
                 if (msgId.isNotBlank()) {
                     when {
-                        isRead -> database.chatMessageDao().markMessageAsRead(msgId)
+                        isRead -> {
+                            val localMessage = database.chatMessageDao().getMessageById(msgId)
+                            val localMatch = localMessage?.let {
+                                database.matchDao().getMatchByIdSync(it.matchId)
+                            }
+                            database.chatMessageDao().markMessageAsReadWithExpiry(
+                                messageId = msgId,
+                                readAt = System.currentTimeMillis(),
+                                timerSeconds = localMatch?.disappearingTimerSeconds ?: 0
+                            )
+                        }
                         isDelivered -> database.chatMessageDao().markMessageAsDelivered(msgId)
                         isSentToServer -> database.chatMessageDao().markOutboxSentToServerIfPending(
                             msgId,
@@ -1672,15 +1682,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         )
                     }
                 }
-                if (matchId.isNotBlank() && isRead) {
-                    database.chatMessageDao().markAllMessagesAsReadForMatch(matchId)
-                }
-                if (isRead) {
-                    val activeMatchId = _activeChat.value?.first?.matchId
-                    if (activeMatchId != null) {
-                        database.chatMessageDao().markAllMessagesAsReadForMatch(activeMatchId)
-                    }
-                }
+                // A status-only Realtime UPDATE applies only to its message ID. Do not bulk-mark
+                // the conversation READ here; each message gets its own correct expiry timestamp.
             } catch (e: Exception) {
                 android.util.Log.e("DatingViewModel", "Error handling realtime chat message update: ${e.message}", e)
             }
