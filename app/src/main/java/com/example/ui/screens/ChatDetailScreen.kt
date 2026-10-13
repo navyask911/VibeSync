@@ -4661,7 +4661,7 @@ private fun VibeSyncChatBubble(
                         Spacer(modifier = Modifier.width(3.dp))
                         val status = localMessageStatuses[message.messageId]
                         val isFailed = status == "FAILED"
-                        val isRead = status == "READ" || message.isRead
+                        val isRead = readReceiptsEnabled && (status == "READ" || message.isRead)
                         val isDelivered = status == "DELIVERED" || message.isDelivered
 
                         // Neutral grey for sent/delivered; electric blue only for read receipts.
