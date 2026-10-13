@@ -18,6 +18,15 @@ object ChatRecipientIdentityResolver {
         return digits.length in 10..15 && allowed
     }
 
+    /**
+     * Pick a phone identity ahead of a potentially stale cached profile ID.
+     * The returned value is an input to the authoritative phone-hash RPC, not a profile ID.
+     */
+    fun phoneIdentityCandidate(vararg values: String): String? =
+        values.asSequence()
+            .map { it.trim() }
+            .firstOrNull { isPhoneNumberCandidate(it) }
+
     fun recipientProfileIdFromMatchId(matchId: String, senderProfileId: String): String? {
         val normalized = matchId.trim().replace(Regex("(?i)^match_"), "")
         val parts = normalized.split('_')

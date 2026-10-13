@@ -349,54 +349,115 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     @Volatile private var activeRealtimeRemoteMatchId: String? = null
+    private var realtimeStartJob: kotlinx.coroutines.Job? = null
     private var realtimeStatusSyncJob: kotlinx.coroutines.Job? = null
 
     /** Called only by ChatDetailScreen while its 1-on-1 route is resumed. */
     fun startChatRealtime(match: MatchEntity, profile: ProfileEntity) {
-        val ownProfileId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
-        val remoteMatchId = com.example.util.SupabaseClientManager.canonicalChatMatchId(ownProfileId, profile.id)
-        if (ownProfileId.isBlank() || remoteMatchId.isBlank()) {
-            android.util.Log.w("VibeSyncRealtime", "Skipped chat channel because participant IDs are not canonical.")
-            return
-        }
-        if (activeRealtimeRemoteMatchId != null && activeRealtimeRemoteMatchId != remoteMatchId) {
-            stopChatRealtime()
-        }
-        activeRealtimeRemoteMatchId = remoteMatchId
+        realtimeStartJob?.cancel()
+        realtimeStartJob = viewModelScope.launch(Dispatchers.IO) {
+            val ownProfileId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+            val phoneIdentity = com.example.util.ChatRecipientIdentityResolver.phoneIdentityCandidate(
+                profile.phoneNumber,
+                profile.id
+            )
+            // Resolve the active contact before subscribing. A stale local ID must not produce a
+            // Realtime match_id filter that differs from the canonical pair written by the outbox.
+            val canonicalPeerId = if (phoneIdentity != null) {
+                com.example.util.SupabaseClientManager.resolveProfileIdByPhoneNumber(phoneIdentity)
+                    ?.trim()
+                    .orEmpty()
+            } else {
+                profile.id.trim()
+            }
 
-        fun belongsToActiveChat(record: org.json.JSONObject): Boolean {
-            val rowMatchId = record.optString("match_id", record.optString("matchId", "")).trim()
-            // Read-receipt/update payloads can carry only message_id; those updates are Room-ID-scoped.
-            return rowMatchId.isBlank() || rowMatchId.equals(remoteMatchId, ignoreCase = true)
-        }
+            if (
+                ownProfileId.isBlank() ||
+                canonicalPeerId.isBlank() ||
+                canonicalPeerId.startsWith("match_", ignoreCase = true) ||
+                canonicalPeerId.equals(ownProfileId, ignoreCase = true)
+            ) {
+                activeRealtimeRemoteMatchId = null
+                realtimeStatusSyncJob?.cancel()
+                realtimeStatusSyncJob = null
+                com.example.util.SupabaseBackendManager.disconnectRealtimeWebsocket()
+                android.util.Log.w(
+                    "VibeSyncRealtime",
+                    "Skipped chat channel because canonical participant identity could not be resolved."
+                )
+                return@launch
+            }
 
-        com.example.util.SupabaseBackendManager.connectRealtimeWebsocket(
-            onInsert = { record ->
-                if (activeRealtimeRemoteMatchId == remoteMatchId && belongsToActiveChat(record)) {
-                    handleRealtimeChatMessageInsert(record)
-                }
-            },
-            onUpdate = { record ->
-                if (activeRealtimeRemoteMatchId == remoteMatchId && belongsToActiveChat(record)) {
-                    handleRealtimeChatMessageUpdate(record)
-                }
-            },
-            matchId = remoteMatchId
-        )
+            val remoteMatchId = com.example.util.SupabaseClientManager.canonicalChatMatchId(
+                ownProfileId,
+                canonicalPeerId
+            )
+            if (remoteMatchId.isBlank()) {
+                activeRealtimeRemoteMatchId = null
+                realtimeStatusSyncJob?.cancel()
+                realtimeStatusSyncJob = null
+                com.example.util.SupabaseBackendManager.disconnectRealtimeWebsocket()
+                android.util.Log.w("VibeSyncRealtime", "Skipped chat channel because participants cannot form a canonical match_id.")
+                return@launch
+            }
 
-        realtimeStatusSyncJob?.cancel()
-        realtimeStatusSyncJob = viewModelScope.launch {
-            com.example.util.SupabaseBackendManager.realtimeSubscriptionStatus.collectLatest { state ->
-                // StateFlow emits SUBSCRIBED after every successful join, including reconnects.
-                if (state == "SUBSCRIBED" && activeRealtimeRemoteMatchId == remoteMatchId) {
-                    syncChatMessagesSinceWatermark(match, profile)
+            if (activeRealtimeRemoteMatchId != null && activeRealtimeRemoteMatchId != remoteMatchId) {
+                activeRealtimeRemoteMatchId = null
+                realtimeStatusSyncJob?.cancel()
+                realtimeStatusSyncJob = null
+                com.example.util.SupabaseBackendManager.disconnectRealtimeWebsocket()
+            }
+            activeRealtimeRemoteMatchId = remoteMatchId
+
+            val resolvedProfile = if (profile.id.equals(canonicalPeerId, ignoreCase = true)) {
+                profile
+            } else {
+                profile.copy(id = canonicalPeerId)
+            }
+            val resolvedMatch = if (match.profileId.equals(canonicalPeerId, ignoreCase = true)) {
+                match
+            } else {
+                match.copy(profileId = canonicalPeerId)
+            }
+
+            fun belongsToActiveChat(record: org.json.JSONObject): Boolean {
+                val rowMatchId = record.optString("match_id", record.optString("matchId", "")).trim()
+                // Read-receipt/update payloads can carry only message_id; those updates are Room-ID-scoped.
+                return rowMatchId.isBlank() || rowMatchId.equals(remoteMatchId, ignoreCase = true)
+            }
+
+            com.example.util.SupabaseBackendManager.connectRealtimeWebsocket(
+                onInsert = { record ->
+                    if (activeRealtimeRemoteMatchId == remoteMatchId && belongsToActiveChat(record)) {
+                        handleRealtimeChatMessageInsert(record)
+                    }
+                },
+                onUpdate = { record ->
+                    if (activeRealtimeRemoteMatchId == remoteMatchId && belongsToActiveChat(record)) {
+                        handleRealtimeChatMessageUpdate(record)
+                    }
+                },
+                matchId = remoteMatchId
+            )
+
+            realtimeStatusSyncJob?.cancel()
+            realtimeStatusSyncJob = viewModelScope.launch {
+                com.example.util.SupabaseBackendManager.realtimeSubscriptionStatus.collectLatest { state ->
+                    // SUBSCRIBED is emitted only after the chat_messages postgres_changes join is accepted.
+                    // Resync on each accepted join/reconnect to recover any receipts missed while offline.
+                    if (state == "SUBSCRIBED" && activeRealtimeRemoteMatchId == remoteMatchId) {
+                        syncChatMessagesSinceWatermark(resolvedMatch, resolvedProfile)
+                    }
                 }
             }
+            // Catch up immediately too; the subscribed-state collector covers reconnects.
+            syncChatMessagesSinceWatermark(resolvedMatch, resolvedProfile)
         }
-        viewModelScope.launch(Dispatchers.IO) { syncChatMessagesSinceWatermark(match, profile) }
     }
 
     fun stopChatRealtime() {
+        realtimeStartJob?.cancel()
+        realtimeStartJob = null
         activeRealtimeRemoteMatchId = null
         realtimeStatusSyncJob?.cancel()
         realtimeStatusSyncJob = null
@@ -1542,15 +1603,21 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     return@launch
                 }
 
-                val isRead = record.optBoolean("is_read", false)
-                val isDelivered = record.optBoolean("is_delivered", false)
+                val deliveryState = record.optString("delivery_state", "").trim().uppercase()
+                val isRead = record.optBoolean("is_read", false) || deliveryState == "READ"
+                val isDelivered = record.optBoolean("is_delivered", false) ||
+                    deliveryState == "DELIVERED" || deliveryState == "READ"
+                val isSentToServer = deliveryState == "SENT_TO_SERVER"
                 val matchId = record.optString("match_id", "")
 
                 if (msgId.isNotBlank()) {
-                    if (isRead) {
-                        database.chatMessageDao().markMessageAsRead(msgId)
-                    } else if (isDelivered) {
-                        database.chatMessageDao().markMessageAsDelivered(msgId)
+                    when {
+                        isRead -> database.chatMessageDao().markMessageAsRead(msgId)
+                        isDelivered -> database.chatMessageDao().markMessageAsDelivered(msgId)
+                        isSentToServer -> database.chatMessageDao().markOutboxSentToServerIfPending(
+                            msgId,
+                            System.currentTimeMillis()
+                        )
                     }
                 }
                 if (matchId.isNotBlank() && isRead) {

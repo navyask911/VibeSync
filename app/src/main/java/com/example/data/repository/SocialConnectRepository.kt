@@ -3204,7 +3204,13 @@ class SocialConnectRepository(
             )
             profileDao.insertProfile(newProf)
             profile = newProf
-        } else if (profile.phoneNumber.isBlank() && recipientPhoneNumber.isNotBlank()) {
+        } else if (
+            recipientPhoneNumber.isNotBlank() &&
+            !com.example.util.PhonebookHasher.arePhonesMatching(profile.phoneNumber, recipientPhoneNumber)
+        ) {
+            // The active chat's verified/contact phone is fresher than a stale local peer cache.
+            // Outbox resolution uses this phone to repair profile IDs through Supabase, not to
+            // address the message directly with the phone string.
             profile = profile.copy(phoneNumber = recipientPhoneNumber.trim())
             profileDao.insertProfile(profile)
         }

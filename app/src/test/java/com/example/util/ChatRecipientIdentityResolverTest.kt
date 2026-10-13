@@ -45,4 +45,26 @@ class ChatRecipientIdentityResolverTest {
         assertTrue(ChatRecipientIdentityResolver.isPhoneNumberCandidate("+91 97430 40335"))
         assertFalse(ChatRecipientIdentityResolver.isPhoneNumberCandidate("605918cdddc5a40c"))
     }
+    @Test
+    fun phoneIdentityTakesPriorityOverStaleProfileId() {
+        assertEquals(
+            "919972396133",
+            ChatRecipientIdentityResolver.phoneIdentityCandidate(
+                "7ebef8956864b083",
+                "919972396133"
+            )
+        )
+    }
+
+    @Test
+    fun storedPhoneIdentityTakesPriorityOverStaleMatchPair() {
+        assertEquals(
+            "+91 99723 96133",
+            ChatRecipientIdentityResolver.phoneIdentityCandidate(
+                "+91 99723 96133",
+                "7ebef8956864b083"
+            )
+        )
+    }
+
 }

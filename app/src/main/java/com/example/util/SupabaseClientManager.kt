@@ -360,10 +360,12 @@ object SupabaseClientManager {
                     return@withContext null
                 }
                 val profileId = TinkCryptoManager.decodePostgrestTextValue(responseBody).trim()
+                // The RPC result is the authoritative profiles.id from Supabase.
+                // Older/legacy deployments may use a phone-shaped profile ID, so do not
+                // reclassify a server-resolved ID as raw phone input here.
                 profileId.takeIf {
                     it.isNotBlank() &&
                         !it.equals("null", ignoreCase = true) &&
-                        !isPhoneNumberCandidate(it) &&
                         !it.startsWith("match_", ignoreCase = true)
                 }
             }
@@ -1241,11 +1243,24 @@ object SupabaseClientManager {
         onRpcResult: ((httpCode: Int?, success: Boolean, failure: String?) -> Unit)? = null
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            val requestedRecipient = recipientProfileId.ifBlank { receiverIdentity }.trim()
+            val recipientInputs = listOf(recipientProfileId, receiverIdentity)
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinct()
+            val requestedRecipient = recipientInputs.firstOrNull().orEmpty()
+            // A supplied phone number outranks a cached peer ID and any stale peer inferred
+            // from local_match_id. Only the phone-hash RPC can convert it to a profile ID.
+            val phoneIdentity = ChatRecipientIdentityResolver.phoneIdentityCandidate(
+                *recipientInputs.toTypedArray()
+            )
             val peerFromMatchId = recipientProfileIdFromMatchId(msg.matchId, senderIdentity)
+            val resolvedByPhone = phoneIdentity
+                ?.let { resolveProfileIdByPhoneNumber(it) }
+                ?.trim()
+                .orEmpty()
+            val recipientWasResolvedByPhone = phoneIdentity != null && resolvedByPhone.isNotBlank()
             val recipient = when {
-                isPhoneNumberCandidate(requestedRecipient) ->
-                    peerFromMatchId ?: resolveProfileIdByPhoneNumber(requestedRecipient).orEmpty()
+                phoneIdentity != null -> resolvedByPhone
                 requestedRecipient.isBlank() -> peerFromMatchId.orEmpty()
                 else -> requestedRecipient
             }.trim()
@@ -1255,7 +1270,7 @@ object SupabaseClientManager {
                 senderIdentity.isBlank() ||
                 recipient.isBlank() ||
                 recipient.startsWith("match_", ignoreCase = true) ||
-                isPhoneNumberCandidate(recipient) ||
+                (isPhoneNumberCandidate(recipient) && !recipientWasResolvedByPhone) ||
                 recipient.equals(senderIdentity.trim(), ignoreCase = true)
             ) {
                 Log.e(

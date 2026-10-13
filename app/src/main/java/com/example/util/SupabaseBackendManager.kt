@@ -326,9 +326,13 @@ object SupabaseBackendManager {
                             val isDeleted = rec.optBoolean("is_deleted", false) || rec.optBoolean("isDeleted", false) ||
                                             rec.optString("type", "").equals("DELETE", ignoreCase = true) ||
                                             rec.optString("event", "").equals("DELETE", ignoreCase = true)
-                            val isDelivered = rec.optBoolean("is_delivered", false)
-                            val isRead = rec.optBoolean("is_read", false)
-                            if (isDeleted || isDelivered || isRead) return id.isNotBlank()
+                            val deliveryState = rec.optString("delivery_state", "").trim().uppercase()
+                            val isDelivered = rec.optBoolean("is_delivered", false) ||
+                                deliveryState == "DELIVERED" || deliveryState == "READ"
+                            val isRead = rec.optBoolean("is_read", false) || deliveryState == "READ"
+                            if (isDeleted || isDelivered || isRead || deliveryState == "SENT_TO_SERVER") {
+                                return id.isNotBlank()
+                            }
                             if (content.equals("heartbeat", true) || content.equals("ping", true) || content.equals("pong", true) || content.startsWith("phx_") || content.startsWith("phx-")) return false
                             val hasValidMedia = media.isNotBlank() || mediaType in listOf("IMAGE", "PHOTO", "VOICE", "AUDIO", "LOCATION", "AI_IMAGE", "DOCUMENT", "VIDEO")
                             return id.isNotBlank() && (content.isNotBlank() || hasValidMedia)
@@ -348,6 +352,12 @@ object SupabaseBackendManager {
                                 val isDel = record.optBoolean("is_deleted", false) || record.optBoolean("isDeleted", false)
                                 if (isDel) {
                                     record.put("is_deleted", true)
+                                    onUpdateCallback?.invoke(record)
+                                } else if (
+                                    (record.optString("message_id").isNotBlank() || record.optString("id").isNotBlank()) &&
+                                    (record.has("is_delivered") || record.has("is_read") || record.has("delivery_state"))
+                                ) {
+                                    // Status-only UPDATEs still drive the sender's single/double ticks.
                                     onUpdateCallback?.invoke(record)
                                 } else if (isValidRecord(record)) {
                                     onUpdateCallback?.invoke(record)
@@ -540,7 +550,9 @@ object SupabaseBackendManager {
                             put("event", "UPDATE")
                             put("schema", "public")
                             put("table", "chat_messages")
-                            put("filter", scopedFilter ?: "sender_id=eq.$profileId")
+                            // Delivery/read ticks belong to rows sent by this profile. Filtering them
+                            // by sender_id avoids dropping receipts because a legacy match_id differs.
+                            put("filter", "sender_id=eq.$profileId")
                         })
                     }
                     put("postgres_changes", changes)
