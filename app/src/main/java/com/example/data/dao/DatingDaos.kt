@@ -207,6 +207,9 @@ interface ChatMessageDao {
     @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryAckPending = 0, deliveryState = 'READ' WHERE messageId = :messageId")
     suspend fun markMessageAsRead(messageId: String)
 
+    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryAckPending = 0, deliveryState = 'READ', expiresAt = CASE WHEN :timerSeconds > 0 AND expiresAt = 0 THEN :readAt + (:timerSeconds * 1000) ELSE expiresAt END WHERE messageId = :messageId")
+    suspend fun markMessageAsReadWithExpiry(messageId: String, readAt: Long, timerSeconds: Int)
+
     @Query("UPDATE chat_messages SET isDelivered = 1, deliveryAckPending = 0, deliveryState = CASE WHEN deliveryState = 'READ' THEN 'READ' ELSE 'DELIVERED' END WHERE messageId = :messageId")
     suspend fun markMessageAsDelivered(messageId: String)
 
@@ -215,6 +218,9 @@ interface ChatMessageDao {
 
     @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryAckPending = 0, deliveryState = 'READ' WHERE matchId = :matchId AND senderId != 'USER'")
     suspend fun markIncomingMessagesAsReadForMatch(matchId: String)
+
+    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryAckPending = 0, deliveryState = 'READ', expiresAt = CASE WHEN :timerSeconds > 0 AND expiresAt = 0 THEN :readAt + (:timerSeconds * 1000) ELSE expiresAt END WHERE matchId = :matchId AND senderId != 'USER'")
+    suspend fun markIncomingMessagesAsReadWithExpiry(matchId: String, readAt: Long, timerSeconds: Int)
 
     @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryAckPending = 0, deliveryState = 'READ' WHERE matchId = :matchId")
     suspend fun markAllMessagesAsReadForMatch(matchId: String)
