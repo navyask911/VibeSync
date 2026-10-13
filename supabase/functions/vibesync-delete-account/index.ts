@@ -50,7 +50,7 @@ Deno.serve(async (req) => {
     const profileId = String(session.profile_id);
 
     await adminClient.from("device_tokens").delete().eq("profile_id", profileId);
-    // The legacy phone_sync table was retired; remove the server-side E.164 match index
+    // The previous contact index was retired; remove the server-side E.164 match index
     // before deleting the profile row that owns it.
     const { error: phoneLookupError } = await adminClient
       .from("phone_lookup_index")
