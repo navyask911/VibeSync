@@ -66,7 +66,7 @@ internal object PendingMessageOutboxSender {
             try {
                 val db = DatingDatabase.getDatabase(context.applicationContext)
                 val dao = db.chatMessageDao()
-                val message = dao.getMessageById(safeMessageId)
+                var message = dao.getMessageById(safeMessageId)
                     ?: return@withContext PendingOutboxAttempt.NoOp("local Room row no longer exists")
 
                 Log.i(
@@ -218,6 +218,37 @@ internal object PendingMessageOutboxSender {
                     return@withContext PendingOutboxAttempt.Retryable("RecipientKeyNotFoundException: ${missing.message}")
                 }
 
+                var voicePayloadForEncryption: String? = null
+                if (message.mediaType.equals("VOICE", ignoreCase = true) ||
+                    message.mediaType.equals("AUDIO", ignoreCase = true)
+                ) {
+                    val localReference = if (message.mediaUrl.startsWith(com.example.util.VoiceNoteCryptoManager.LOCAL_REFERENCE_PREFIX)) {
+                        message.mediaUrl
+                    } else {
+                        com.example.util.VoiceNoteCryptoManager.prepareReferenceForOutbox(
+                            context = context.applicationContext,
+                            messageId = message.messageId,
+                            mediaUrl = message.mediaUrl
+                        ) ?: return@withContext PendingOutboxAttempt.Retryable(
+                            "Voice-note encryption/upload is not complete; the message remains queued."
+                        )
+                    }
+                    voicePayloadForEncryption =
+                        com.example.util.VoiceNoteCryptoManager.payloadFromLocalReference(localReference)
+                            ?: return@withContext PendingOutboxAttempt.Retryable(
+                                "Voice-note reference is invalid; retrying outbox preparation."
+                            )
+                    if (message.mediaUrl != localReference) {
+                        // Persist stable object/key metadata before the server write, so retries don't
+                        // upload again and the sender can also stream/decrypt from local cache.
+                        message = message.copy(mediaUrl = localReference)
+                        dao.upsertMessage(message)
+                        db.messageDao().insertMessage(
+                            message.toLocalMessage().copy(remoteMessageId = message.messageId)
+                        )
+                    }
+                }
+
                 val rawText = message.text.ifBlank {
                     when (message.mediaType.uppercase()) {
                         "VOICE", "AUDIO" -> "Voice message"
@@ -233,10 +264,11 @@ internal object PendingMessageOutboxSender {
                     )
                 }
 
-                val payloadForEncryption = com.example.util.ChatMessageEventCodec.encodeForEncryption(
-                    message = message,
-                    fallbackBody = rawText
-                )
+                val payloadForEncryption = voicePayloadForEncryption
+                    ?: com.example.util.ChatMessageEventCodec.encodeForEncryption(
+                        message = message,
+                        fallbackBody = rawText
+                    )
                 val ciphertext = if (message.text.startsWith(TinkCryptoManager.TINK_PREFIX)) {
                     message.text
                 } else {
@@ -274,6 +306,8 @@ internal object PendingMessageOutboxSender {
                 val remoteMessage = message.copy(
                     matchId = canonicalMatchId,
                     text = ciphertext,
+                    // Voice object paths/keysets live only inside the encrypted message payload.
+                    mediaUrl = if (voicePayloadForEncryption != null) "" else message.mediaUrl,
                     isEncrypted = true,
                     isDelivered = false,
                     isRead = false
