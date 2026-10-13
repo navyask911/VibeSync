@@ -42,44 +42,8 @@ from unique_owners
 on conflict (profile_id) do update
 set phone_e164 = excluded.phone_e164, updated_at = now();
 
--- Synchronize server-side lookup data whenever a profile is registered or its phone/access state changes.
-create or replace function public.sync_phone_lookup_index_from_profile()
-returns trigger
-language plpgsql
-security definer
-set search_path = pg_catalog, public
-as $$
-declare
-    normalized_phone text;
-begin
-    normalized_phone := case
-        when coalesce(new.phone_number_e164, '') ~ '^[+][1-9][0-9]{7,14}$' then new.phone_number_e164
-        when coalesce(new.phone_number, '') ~ '^[+][1-9][0-9]{7,14}$' then new.phone_number
-        when coalesce(new.clean_phone, '') ~ '^[+][1-9][0-9]{7,14}$' then new.clean_phone
-        else null
-    end;
-
-    if coalesce(new.is_deleted, false)
-       or coalesce(new.account_status, 'ACTIVE') <> 'ACTIVE'
-       or normalized_phone is null then
-        delete from public.phone_lookup_index where profile_id = new.id::text;
-    else
-        insert into public.phone_lookup_index(profile_id, phone_e164, updated_at)
-        values (new.id::text, normalized_phone, now())
-        on conflict (profile_id) do update
-        set phone_e164 = excluded.phone_e164,
-            updated_at = now();
-    end if;
-
-    return new;
-end;
-$$;
-
-drop trigger if exists profiles_sync_phone_lookup_index on public.profiles;
-create trigger profiles_sync_phone_lookup_index
-after insert or update of phone_number_e164, phone_number, clean_phone, is_deleted, account_status
-on public.profiles
-for each row execute function public.sync_phone_lookup_index_from_profile();
+-- The verify-truecaller Edge Function maintains this index using its service-role client
+-- only after Truecaller confirms the phone number. Client writes to public.profiles cannot set it.
 
 -- Authenticated clients submit E.164 numbers only in the HTTPS POST body.
 -- Results expose canonical profile IDs, not client-derived contact hashes.
