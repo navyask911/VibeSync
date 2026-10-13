@@ -176,7 +176,11 @@ object ProfileAvatarStorageManager {
     ): Bitmap? = withContext(Dispatchers.IO) {
         val ownerAndSlot = encryptedRefParts(reference) ?: return@withContext null
         val (ownerId, slot) = ownerAndSlot
-        val cacheKey = "$ownerId:$slot:$cacheVersion"
+        // The peer keyring version changes when a fresh in-band avatar key envelope is accepted.
+        // Combine it with server metadata to avoid reusing a bitmap from an older avatar rotation.
+        val peerVersion = ProfileKeyManager.peerProfileVersion(context, ownerId).toLong()
+        val effectiveVersion = maxOf(cacheVersion, peerVersion)
+        val cacheKey = "$ownerId:$slot:$effectiveVersion"
         val cached = synchronized(decryptedBitmapCache) { decryptedBitmapCache.get(cacheKey) }
         if (cached != null) return@withContext cached
 

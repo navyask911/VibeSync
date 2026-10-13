@@ -68,10 +68,9 @@ fun DatingAvatar(
         when {
             resolvedAvatarBitmap != null -> ImageRequest.Builder(context)
                 .data(resolvedAvatarBitmap)
-                .memoryCacheKey("profile-avatar:$avatarUrl:$avatarCacheVersion")
                 .crossfade(true)
                 .diskCachePolicy(CachePolicy.DISABLED)
-                .memoryCachePolicy(CachePolicy.ENABLED)
+                .memoryCachePolicy(CachePolicy.DISABLED)
                 .build()
             resolvedAvatarUrl.isNotBlank() -> ImageRequest.Builder(context)
                 .data(resolvedAvatarUrl)

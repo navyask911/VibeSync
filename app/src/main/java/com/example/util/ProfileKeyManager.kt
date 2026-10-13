@@ -38,6 +38,15 @@ object ProfileKeyManager {
         context.applicationContext.getSharedPreferences(PROFILE_VERSION_PREFS, Context.MODE_PRIVATE)
             .getInt("profile_version_" + stableKey(profileId), 1).coerceAtLeast(1)
 
+    /** Version most recently accepted in the authenticated peer key exchange. */
+    fun peerProfileVersion(context: Context, peerProfileId: String): Int =
+        runCatching {
+            runBlocking(Dispatchers.IO) {
+                DatingDatabase.getDatabase(context.applicationContext)
+                    .peerProfileKeyDao().getPeerProfileKey(peerProfileId)?.profileVersion ?: 1
+            }
+        }.getOrDefault(1).coerceAtLeast(1)
+
     /** Advance the avatar metadata version when a new sanitized avatar is prepared. */
     fun incrementProfileVersion(context: Context, profileId: String): Int {
         require(profileId.isNotBlank())
