@@ -1413,6 +1413,65 @@ object SupabaseClientManager {
         }
 
     /**
+     * Upload authenticated, already-encrypted voice-note bytes to the private chat-voice-notes
+     * bucket. The message body contains the encrypted object key/keyset; media_url remains blank.
+     */
+    suspend fun uploadEncryptedVoiceNote(objectPath: String, ciphertext: ByteArray): Boolean =
+        withContext(Dispatchers.IO) {
+            val cleanPath = objectPath.trim().trim('/')
+            if (cleanPath.isBlank() || cleanPath.contains("..") || ciphertext.isEmpty()) return@withContext false
+            try {
+                val encodedPath = cleanPath.split('/').joinToString("/") { Uri.encode(it) }
+                val request = Request.Builder()
+                    .url("$SUPABASE_URL/storage/v1/object/chat-voice-notes/$encodedPath")
+                    .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+                    .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_PUBLISHABLE_KEY)}")
+                    .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
+                    .header("Content-Type", "application/octet-stream")
+                    .header("x-upsert", "false")
+                    .put(ciphertext.toRequestBody("application/octet-stream".toMediaType()))
+                    .build()
+                httpClient.newCall(request).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        Log.w(TAG, "Encrypted voice upload failed HTTP ${response.code}: ${body.take(180)}")
+                    }
+                    response.isSuccessful
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Encrypted voice upload transport failure: ${t.javaClass.simpleName}")
+                false
+            }
+        }
+
+    /** Authenticated download of ciphertext only; callers decrypt locally using the inner Tink keyset. */
+    suspend fun downloadEncryptedVoiceNote(objectPath: String): ByteArray? = withContext(Dispatchers.IO) {
+        val cleanPath = objectPath.trim().trim('/')
+        if (cleanPath.isBlank() || cleanPath.contains("..")) return@withContext null
+        try {
+            val encodedPath = cleanPath.split('/').joinToString("/") { Uri.encode(it) }
+            val request = Request.Builder()
+                .url("$SUPABASE_URL/storage/v1/object/chat-voice-notes/$encodedPath")
+                .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+                .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_PUBLISHABLE_KEY)}")
+                .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
+                .get()
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val body = response.body?.string().orEmpty()
+                    Log.w(TAG, "Encrypted voice download failed HTTP ${response.code}: ${body.take(180)}")
+                    return@withContext null
+                }
+                response.body?.bytes()
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "Encrypted voice download transport failure: ${t.javaClass.simpleName}")
+            null
+        }
+    }
+
+    /**
      * Upload a profile image to the public-read, owner-write profile-avatars bucket.
      * Storage RLS restricts writes to the active session's profile folder.
      */
