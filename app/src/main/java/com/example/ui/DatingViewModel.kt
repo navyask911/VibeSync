@@ -787,29 +787,20 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         _rawDeviceContacts,
         database.matchedContactDao().getAllMatchedContactsFlow()
     ) { rawContacts, matchedList ->
-        val matchedPhonesMap = matchedList.associateBy { it.phoneHash }
-        val matchedPhoneNumbersMap = matchedList.associateBy { it.phoneNumber.filter { c -> c.isDigit() }.takeLast(10) }
-        
+        val matchedByPhone = matchedList.associateBy {
+            com.example.util.PhonebookHelper.normalizeToE164(it.phoneNumber.ifBlank { it.phoneHash })
+        }
         rawContacts.map { contact ->
-            val e164 = com.example.util.PhonebookHasher.normalizeToE164(contact.phoneNumber)
-            val hash = com.example.util.PhonebookHasher.sha256Hex(e164)
-            val c10 = e164.filter { it.isDigit() }.takeLast(10)
-            
-            val matched = matchedPhonesMap[hash] 
-                ?: matchedPhoneNumbersMap[c10]
-                ?: matchedList.find { m -> com.example.util.PhonebookHasher.arePhonesMatching(m.phoneNumber, contact.phoneNumber) }
-                
-            if (matched != null) {
-                contact.copy(
-                    isOnVibeSync = true,
-                    vibeSyncProfileId = matched.vibeSyncUserId,
-                    avatarEmoji = matched.avatarEmoji,
-                    photoUrl = matched.photoUrl,
-                    statusTagline = matched.statusTagline
-                )
-            } else {
-                contact
-            }
+            val phoneE164 = com.example.util.PhonebookHelper.normalizeToE164(contact.phoneNumber)
+            val matched = matchedByPhone[phoneE164]
+            if (matched != null) contact.copy(
+                isOnVibeSync = true,
+                vibeSyncProfileId = matched.vibeSyncUserId,
+                avatarEmoji = matched.avatarEmoji,
+                photoUrl = matched.photoUrl,
+                statusTagline = matched.statusTagline,
+                phoneHash = phoneE164
+            ) else contact.copy(phoneHash = phoneE164)
         }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
@@ -1346,16 +1337,16 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     com.example.util.SupabaseClientManager.canonicalChatMatchId(currentProfileId, activePartnerProfile.id)
                 } else ""
 
-                // Bulletproof phone matching using PhonebookHasher
+                // Bulletproof phone matching using PhonebookHelper
                 val isSenderMe = senderIdentity.equals(currentProfileId, ignoreCase = true) ||
-                    com.example.util.PhonebookHasher.arePhonesMatching(senderPhone, currentUserPhone) ||
+                    com.example.util.PhonebookHelper.arePhonesMatching(senderPhone, currentUserPhone) ||
                     senderIdentity == "USER"
                 val isReceiverMe = receiverIdentity.equals(currentProfileId, ignoreCase = true) ||
-                    com.example.util.PhonebookHasher.arePhonesMatching(receiverPhone, currentUserPhone)
+                    com.example.util.PhonebookHelper.arePhonesMatching(receiverPhone, currentUserPhone)
 
                 val isBelongingToActiveConversation = (activePair != null) && (
-                    ((com.example.util.PhonebookHasher.arePhonesMatching(senderPhone, activePartnerPhone) && com.example.util.PhonebookHasher.arePhonesMatching(receiverPhone, currentUserPhone)) ||
-                     (com.example.util.PhonebookHasher.arePhonesMatching(senderPhone, currentUserPhone) && com.example.util.PhonebookHasher.arePhonesMatching(receiverPhone, activePartnerPhone))) ||
+                    ((com.example.util.PhonebookHelper.arePhonesMatching(senderPhone, activePartnerPhone) && com.example.util.PhonebookHelper.arePhonesMatching(receiverPhone, currentUserPhone)) ||
+                     (com.example.util.PhonebookHelper.arePhonesMatching(senderPhone, currentUserPhone) && com.example.util.PhonebookHelper.arePhonesMatching(receiverPhone, activePartnerPhone))) ||
                     (recordMatchId.isNotBlank() && (recordMatchId == activeMatchId || recordMatchId == canonicalActiveMatchId))
                 )
 
@@ -1367,8 +1358,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 }
 
                 if (isReceiverMe || isBelongingToActiveConversation) {
-                    val normSender = com.example.util.PhonebookHasher.normalizeToE164(senderPhone)
-                    val normReceiver = com.example.util.PhonebookHasher.normalizeToE164(receiverPhone)
+                    val normSender = com.example.util.PhonebookHelper.normalizeToE164(senderPhone)
+                    val normReceiver = com.example.util.PhonebookHelper.normalizeToE164(receiverPhone)
 
                     val targetMatchId = when {
                         isBelongingToActiveConversation && activeMatchId != null -> activeMatchId
@@ -3240,70 +3231,58 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
     fun startChatWithContact(contact: PhoneContact) {
         viewModelScope.launch {
-            var profile = contact.vibeSyncUser ?: repository.getProfileSync(contact.vibeSyncProfileId ?: "")
+            val phoneE164 = com.example.util.PhonebookHelper.normalizeToE164(contact.phoneNumber)
+            if (phoneE164.isBlank()) {
+                _toastMessage.emit("This contact does not have a valid phone number.")
+                return@launch
+            }
+            val remoteProfile = runCatching {
+                com.example.util.SupabaseClientManager.fetchProfilesByE164Phones(listOf(phoneE164)).firstOrNull()
+            }.getOrNull()
+            val cachedProfile = contact.vibeSyncUser
+                ?: contact.vibeSyncProfileId?.takeIf { it.isNotBlank() }?.let { repository.getProfileSync(it) }
+                ?: repository.getProfileByPhone(phoneE164)
+            var profile = remoteProfile ?: cachedProfile?.takeIf {
+                it.id.isNotBlank() && !com.example.util.SupabaseClientManager.isPhoneNumberCandidate(it.id) &&
+                    !it.id.startsWith("match_", ignoreCase = true)
+            }
             if (profile == null) {
-                val hashes = com.example.util.PhonebookHasher.getAllMatchHashes(contact.phoneNumber).toList()
-                val sbProfiles = com.example.data.repository.SupabaseSyncRepository.fetchProfilesByHashes(hashes)
-                profile = sbProfiles.firstOrNull() ?: repository.getProfileByPhone(contact.phoneNumber)
+                _toastMessage.emit("Could not resolve this contact to a registered VibeSync profile. Refresh contacts and retry.")
+                return@launch
             }
-
-            if (profile == null) {
-                // Synthesize and persist a clean profile for this contact/number so users can chat immediately
-                val cleanDigits = contact.phoneNumber.filter { it.isDigit() }
-                val profId = if (cleanDigits.length >= 10) cleanDigits.takeLast(10) else if (cleanDigits.isNotBlank()) cleanDigits else contact.id
-                val newProf = ProfileEntity(
-                    id = profId,
-                    name = contact.name.ifBlank { "Contact ($profId)" },
-                    age = 25,
-                    occupation = "VibeSync Contact",
-                    city = "Direct Contact",
-                    distanceMiles = 1,
-                    bio = "Connected directly via Phone Contacts 📱",
-                    interests = "Chat, Friendship",
-                    relationshipGoal = "Friends",
-                    promptQuestion = "",
-                    promptAnswer = "",
-                    gradientColorStart = 0xFFFF5E62,
-                    gradientColorEnd = 0xFFFF9966,
-                    avatarEmoji = contact.avatarEmoji.ifBlank { "✨" },
-                    avatarUrl = contact.photoUrl,
-                    phoneNumber = contact.phoneNumber,
-                    email = contact.email,
-                    isVerified = true,
-                    likedMe = true,
-                    isSuperLikedMe = true,
-                    isOpenForDating = false
-                )
-                repository.insertProfileSync(newProf)
-                profile = newProf
+            val ownProfileId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+            if (ownProfileId.isBlank() || profile.id.equals(ownProfileId, ignoreCase = true)) {
+                _toastMessage.emit("Could not open a chat for this profile.")
+                return@launch
             }
-
-            if (profile != null) {
-                // Invalidate any remote encrypted string with local address book contact name
-                profile = com.example.util.ContactResolver.matchChatSessionParticipant(getApplication(), profile)
-                // ALWAYS insert/persist the profile to Room database so it exists locally for chat/UI
-                repository.insertProfileSync(profile)
-                
-                val matchId = repository.getSymmetricMatchId(profile.id)
-                var existingMatch = repository.getMatchByProfileId(profile.id)
-                if (existingMatch == null) {
-                    val outcome = repository.matchDirectly(profile.id)
-                    existingMatch = repository.getMatchByProfileId(profile.id) ?: MatchEntity(
-                        matchId = matchId,
-                        profileId = profile.id,
-                        matchedAt = System.currentTimeMillis(),
-                        lastMessage = "Connected from Phonebook Contacts 📱 Say hi!",
-                        lastMessageTime = System.currentTimeMillis(),
-                        hasUnread = false,
-                        isDatingMatch = false,
-                        relationshipStatus = "FRIENDS",
-                        isPhonebookContact = true
-                    )
-                }
-                _showPhonebookScreen.value = false
-                openChat(existingMatch, profile)
-                _toastMessage.emit("💬 Chat started with ${contact.name}")
+            if (com.example.util.PhonebookHelper.normalizeToE164(profile.phoneNumber).isBlank()) {
+                profile = profile.copy(phoneNumber = phoneE164)
             }
+            profile = com.example.util.ContactResolver.matchChatSessionParticipant(getApplication(), profile)
+            if (profile.id.isBlank() || com.example.util.SupabaseClientManager.isPhoneNumberCandidate(profile.id) ||
+                profile.id.startsWith("match_", ignoreCase = true)) {
+                _toastMessage.emit("Could not resolve a canonical VibeSync profile ID for this contact.")
+                return@launch
+            }
+            repository.insertProfileSync(profile)
+            val matchId = repository.getSymmetricMatchId(profile.id)
+            if (matchId.isBlank()) {
+                _toastMessage.emit("Could not establish a canonical conversation identity. Please refresh and retry.")
+                return@launch
+            }
+            var existingMatch = repository.getMatchByProfileId(profile.id)
+            if (existingMatch == null) {
+                repository.matchDirectly(profile.id)
+                existingMatch = repository.getMatchByProfileId(profile.id)
+            }
+            val resolvedMatch = existingMatch ?: MatchEntity(
+                matchId = matchId, profileId = profile.id, matchedAt = System.currentTimeMillis(),
+                lastMessage = "Connected from Phonebook Contacts 📱 Say hi!", lastMessageTime = System.currentTimeMillis(),
+                hasUnread = false, isDatingMatch = false, relationshipStatus = "FRIENDS", isPhonebookContact = true
+            )
+            _showPhonebookScreen.value = false
+            openChat(resolvedMatch, profile)
+            _toastMessage.emit("💬 Chat started with ${contact.name}")
         }
     }
 
@@ -3801,78 +3780,52 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
     fun startChatWithNumber(rawNumber: String) {
         viewModelScope.launch {
-            val cleanNumber = rawNumber.trim()
-            if (cleanNumber.isBlank()) {
-                _toastMessage.emit("Please enter a valid phone number.")
+            val phoneE164 = com.example.util.PhonebookHelper.normalizeToE164(rawNumber.trim())
+            if (phoneE164.isBlank()) {
+                _toastMessage.emit("Please enter a valid phone number in international format.")
                 return@launch
             }
-
-            // 1. Normalize the typed number to standard international E.164 format (+91...)
-            val normalized = com.example.util.PhonebookHasher.normalizeToE164(cleanNumber)
-            val cleanDigits = normalized.filter { it.isDigit() }
-
-            // 2. Instantly check local database first to open chat even if background contact sync hasn't completed
-            var profile = repository.getProfileByPhone(normalized)
-                ?: repository.getProfileByPhone(cleanDigits)
-                ?: (if (cleanDigits.length >= 10) repository.getProfileByPhone(cleanDigits.takeLast(10)) else null)
-                ?: repository.getProfileByPhone(cleanNumber)
-
-            if (profile == null) {
-                // Check local cache from previously synchronized registered users map
-                val registeredUsers = repository.getAllRegisteredUsersFromFirestore()
-                profile = registeredUsers[normalized]
-                    ?: registeredUsers[cleanNumber]
-                    ?: registeredUsers[cleanDigits]
-                    ?: (if (cleanDigits.length >= 10) registeredUsers[cleanDigits.takeLast(10)] else null)
+            val remoteProfile = runCatching {
+                com.example.util.SupabaseClientManager.fetchProfilesByE164Phones(listOf(phoneE164)).firstOrNull()
+            }.getOrNull()
+            val cachedProfile = repository.getProfileByPhone(phoneE164)?.takeIf {
+                it.id.isNotBlank() && !com.example.util.SupabaseClientManager.isPhoneNumberCandidate(it.id) &&
+                    !it.id.startsWith("match_", ignoreCase = true)
             }
-
+            val profile = remoteProfile ?: cachedProfile
             if (profile == null) {
-                // 3. Fallback to server/Supabase Zero-Knowledge RPC search lookup
-                try {
-                    val hash64 = com.example.util.PhonebookHasher.hashPhoneNumberToHex(normalized)
-                    val rpcResult = com.example.util.SupabaseClientManager.matchContactsRpc(listOf(hash64))
-                    if (rpcResult.isNotEmpty()) {
-                        val matched = rpcResult.first()
-                        profile = com.example.data.model.ProfileEntity(
-                            id = matched.id,
-                            name = matched.name,
-                            age = 24,
-                            phoneNumber = normalized,
-                            avatarUrl = matched.photoUrl ?: "",
-                            avatarEmoji = matched.avatarEmoji,
-                            isVerified = true
-                        )
-                    }
-                } catch (e: Exception) {
-                    android.util.Log.d("DatingViewModel", "RPC search lookup failed: ${e.message}")
-                }
-            }
-
-            if (profile != null) {
-                // Save profile locally
-                repository.insertProfileSync(profile)
-                val matchId = repository.getSymmetricMatchId(profile.id)
-                var existingMatch = repository.getMatchByProfileId(profile.id)
-                if (existingMatch == null) {
-                    repository.matchDirectly(profile.id)
-                    existingMatch = repository.getMatchByProfileId(profile.id) ?: MatchEntity(
-                        matchId = matchId,
-                        profileId = profile.id,
-                        matchedAt = System.currentTimeMillis(),
-                        lastMessage = "Direct chat started 📱 Say hi!",
-                        lastMessageTime = System.currentTimeMillis(),
-                        hasUnread = false,
-                        isDatingMatch = false,
-                        relationshipStatus = "FRIENDS",
-                        isPhonebookContact = true // Enable E2EE / chat direct features
-                    )
-                }
-                _showPhonebookScreen.value = false
-                openChat(existingMatch, profile)
-                _toastMessage.emit("💬 Chat started with ${profile.name}")
-            } else {
                 _toastMessage.emit("⚠️ Number not registered on VibeSync yet. Invite them to join!")
+                return@launch
             }
+            val ownProfileId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+            if (profile.id.isBlank() || profile.id.startsWith("match_", ignoreCase = true) ||
+                com.example.util.SupabaseClientManager.isPhoneNumberCandidate(profile.id) || ownProfileId.isBlank() ||
+                profile.id.equals(ownProfileId, ignoreCase = true)) {
+                _toastMessage.emit("Could not resolve this number to a canonical VibeSync profile.")
+                return@launch
+            }
+            val resolvedProfile = if (com.example.util.PhonebookHelper.normalizeToE164(profile.phoneNumber).isBlank()) {
+                profile.copy(phoneNumber = phoneE164)
+            } else profile
+            repository.insertProfileSync(resolvedProfile)
+            val matchId = repository.getSymmetricMatchId(resolvedProfile.id)
+            if (matchId.isBlank()) {
+                _toastMessage.emit("Could not establish a canonical conversation identity. Please retry.")
+                return@launch
+            }
+            var existingMatch = repository.getMatchByProfileId(resolvedProfile.id)
+            if (existingMatch == null) {
+                repository.matchDirectly(resolvedProfile.id)
+                existingMatch = repository.getMatchByProfileId(resolvedProfile.id)
+            }
+            val resolvedMatch = existingMatch ?: MatchEntity(
+                matchId = matchId, profileId = resolvedProfile.id, matchedAt = System.currentTimeMillis(),
+                lastMessage = "Direct chat started 📱 Say hi!", lastMessageTime = System.currentTimeMillis(),
+                hasUnread = false, isDatingMatch = false, relationshipStatus = "FRIENDS", isPhonebookContact = true
+            )
+            _showPhonebookScreen.value = false
+            openChat(resolvedMatch, resolvedProfile)
+            _toastMessage.emit("💬 Chat started with ${resolvedProfile.name}")
         }
     }
 
