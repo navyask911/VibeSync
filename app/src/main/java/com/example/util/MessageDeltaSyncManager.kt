@@ -103,10 +103,16 @@ object MessageDeltaSyncManager {
                             remote.isDelivered -> dao.markMessageAsDelivered(remote.messageId)
                             else -> dao.markOutboxSentToServerIfPending(remote.messageId, System.currentTimeMillis())
                         }
+                        val readAt = System.currentTimeMillis()
+                        val timerSeconds = matchDao.getMatchByIdSync(match.matchId)?.disappearingTimerSeconds ?: 0
+                        val expiresAt = if (remote.isRead && existing.expiresAt == 0L && timerSeconds > 0) {
+                            readAt + timerSeconds.toLong() * 1000L
+                        } else existing.expiresAt
                         dao.upsertMessage(existing.copy(
                             serverCreatedAt = maxOf(existing.serverCreatedAt, remote.serverCreatedAt),
                             isDelivered = existing.isDelivered || remote.isDelivered,
                             isRead = existing.isRead || remote.isRead,
+                            expiresAt = expiresAt,
                             deliveryState = when {
                                 existing.isRead || remote.isRead -> "READ"
                                 existing.isDelivered || remote.isDelivered -> "DELIVERED"
@@ -209,6 +215,7 @@ object MessageDeltaSyncManager {
                     matchId = match.matchId,
                     senderId = remote.senderId,
                     text = localText,
+                    mediaUrl = decodedPayload?.mediaUrl ?: remote.mediaUrl,
                     isDelivered = remote.isDelivered,
                     isRead = remote.isRead,
                     isEncrypted = true,
