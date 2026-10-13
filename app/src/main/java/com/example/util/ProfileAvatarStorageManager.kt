@@ -35,7 +35,9 @@ object ProfileAvatarStorageManager {
         val objectName: String,
         val byteCount: Int,
         val slot: Int = 1,
-        val encryptedFile: File? = null
+        val encryptedFile: File? = null,
+        val profileVersion: Int = 1,
+        val applicationContext: Context? = null
     )
 
     suspend fun cacheContactPhoto(context: Context, sourceUri: String, identityKey: String): String? =
@@ -81,10 +83,11 @@ object ProfileAvatarStorageManager {
             require(localFile.isFile && localFile.length() in 1 until MAX_BYTES.toLong()) {
                 "Compressed avatar must be strictly below 150,000 bytes."
             }
-            // Bump the opaque profile version on avatar rotation so peers invalidate stale caches.
-            ProfileKeyManager.incrementProfileVersion(context, profileId)
-            // Encrypt the JPEG on-device. Only this ciphertext is sent to Supabase Storage.
-            val ciphertext = ProfileKeyManager.encryptLocalAvatar(context, profileId, cleanSlot, bytes)
+            // Allocate a fresh AES-256-GCM keyset for this avatar version, but do not activate
+            // it until Supabase confirms the ciphertext upload.
+            val profileVersion = ProfileKeyManager.nextProfileVersion(context, profileId)
+            // Bitmap decode + JPEG re-encoding strips EXIF/GPS/device metadata before encryption.
+            val ciphertext = ProfileKeyManager.encryptLocalAvatar(context, profileId, cleanSlot, bytes, profileVersion)
             val encryptedName = if (cleanSlot == 1) profileId + ".enc" else profileId + "_" + cleanSlot + ".enc"
             val encryptedFile = File(dir, safeHash(profileId) + "_" + cleanSlot + ".enc")
             encryptedFile.outputStream().use { output -> output.write(ciphertext); output.flush() }
@@ -98,7 +101,9 @@ object ProfileAvatarStorageManager {
                 objectName = encryptedName,
                 byteCount = bytes.size,
                 slot = cleanSlot,
-                encryptedFile = encryptedFile
+                encryptedFile = encryptedFile,
+                profileVersion = profileVersion,
+                applicationContext = context.applicationContext
             )
         } finally { square.recycle() }
     }
@@ -121,6 +126,16 @@ object ProfileAvatarStorageManager {
             if (uploaded.isNullOrBlank()) {
                 null
             } else {
+                val appContext = prepared.applicationContext
+                if (appContext == null || !ProfileKeyManager.activateProfileVersion(
+                        appContext, prepared.profileId, prepared.profileVersion
+                    )
+                ) {
+                    prepared.file.delete()
+                    encrypted.delete()
+                    Log.w(TAG, "Avatar ciphertext uploaded but key version could not be activated.")
+                    return@withContext null
+                }
                 // Do not leave the sanitized plaintext staging image or temporary ciphertext on disk
                 // after Supabase confirms the ciphertext upload.
                 prepared.file.delete()
@@ -179,7 +194,7 @@ object ProfileAvatarStorageManager {
         // The peer keyring version changes when a fresh in-band avatar key envelope is accepted.
         // Combine it with server metadata to avoid reusing a bitmap from an older avatar rotation.
         val peerVersion = ProfileKeyManager.peerProfileVersion(context, ownerId).toLong()
-        val effectiveVersion = maxOf(cacheVersion, peerVersion)
+        val effectiveVersion = cacheVersion * 31L + peerVersion
         val cacheKey = "$ownerId:$slot:$effectiveVersion"
         val cached = synchronized(decryptedBitmapCache) { decryptedBitmapCache.get(cacheKey) }
         if (cached != null) return@withContext cached

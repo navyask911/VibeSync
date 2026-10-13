@@ -1104,10 +1104,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     fun normalizePhone(p: String): String = p.replace("[^0-9]".toRegex(), "").takeLast(10)
 
     /**
-     * Share a device-wrapped profile key only to an accepted/mutual connection or a verified
-     * VibeSync profile found in the local address book. The control payload uses the normal Tink
-     * encrypted durable outbox; DOB is included only after a mutual connection or reciprocal
-     * address-book evidence has been established.
+     * Share profile-avatar key material only to an accepted/mutual connection. A phone-book
+     * match alone is not authorization to decrypt another person's avatar.
      */
     private suspend fun queueProfileKeyExchangeIfAuthorized(match: MatchEntity, peer: ProfileEntity) {
         val context = getApplication<Application>()
@@ -1127,8 +1125,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         val savedInMyContacts = peerPhone.isNotBlank() &&
             com.example.util.ContactResolver.isNumberSavedOnDevice(context, peerPhone)
         val mutual = accepted || match.isDatingMatch
-        val verifiedContact = savedInMyContacts && (peer.isMobileVerified || peer.isVerified)
-        if (!mutual && !verifiedContact) return
+        if (!mutual) return
 
         var recipient = peer
         if (recipient.publicIdentityKey.isBlank()) {

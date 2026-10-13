@@ -13,6 +13,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,15 +49,25 @@ fun DatingAvatar(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val encryptedOwnerId = remember(avatarUrl) {
+        avatarUrl.takeIf { it.startsWith("vibesync-avatar-enc://") }
+            ?.removePrefix("vibesync-avatar-enc://")?.substringBefore('/').orEmpty()
+    }
+    val peerVersionFlow = remember(context, encryptedOwnerId) {
+        if (encryptedOwnerId.isBlank()) kotlinx.coroutines.flow.flowOf(1)
+        else com.example.util.ProfileKeyManager.peerProfileVersionFlow(context, encryptedOwnerId)
+    }
+    val peerProfileVersion by peerVersionFlow.collectAsState(initial = 1)
     var resolvedAvatarBitmap by remember(avatarUrl, avatarCacheVersion) {
         mutableStateOf<Bitmap?>(null)
     }
     var resolvedAvatarUrl by remember(avatarUrl, avatarCacheVersion) {
         mutableStateOf(if (avatarUrl.startsWith("vibesync-avatar-enc://")) "" else avatarUrl)
     }
-    LaunchedEffect(avatarUrl, avatarCacheVersion) {
+    LaunchedEffect(avatarUrl, avatarCacheVersion, peerProfileVersion) {
         if (avatarUrl.startsWith("vibesync-avatar-enc://")) {
             resolvedAvatarUrl = ""
+            resolvedAvatarBitmap = null
             resolvedAvatarBitmap = com.example.util.ProfileAvatarStorageManager
                 .resolveAvatarForDisplay(context, avatarUrl, avatarCacheVersion)
         } else {

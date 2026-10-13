@@ -14,6 +14,10 @@ import com.example.data.database.DatingDatabase
 import com.example.data.model.PeerProfileKeyEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.ConcurrentHashMap
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import org.json.JSONObject
@@ -32,28 +36,55 @@ object ProfileKeyManager {
     private const val PEER_KEYS_PREFS = "vibesync_shared_profile_keysets"
     private const val SHARE_STATE_PREFS = "vibesync_profile_key_share_state"
     private const val PROFILE_VERSION_PREFS = "vibesync_profile_avatar_versions"
+    private val peerProfileVersionFlows = ConcurrentHashMap<String, MutableStateFlow<Int>>()
 
     /** Monotonic profile-avatar version used by peers to invalidate cached rendered images. */
     fun currentProfileVersion(context: Context, profileId: String): Int =
         context.applicationContext.getSharedPreferences(PROFILE_VERSION_PREFS, Context.MODE_PRIVATE)
             .getInt("profile_version_" + stableKey(profileId), 1).coerceAtLeast(1)
 
-    /** Version most recently accepted in the authenticated peer key exchange. */
-    fun peerProfileVersion(context: Context, peerProfileId: String): Int =
-        runCatching {
+    /** Current version for this installation profile or a peer key accepted in-band. */
+    fun peerProfileVersion(context: Context, peerProfileId: String): Int {
+        val app = context.applicationContext
+        val ownId = VibeSyncSessionManager.getProfileId(app).orEmpty()
+        if (ownId.equals(peerProfileId, ignoreCase = true)) return currentProfileVersion(app, peerProfileId)
+        val roomVersion = runCatching {
             runBlocking(Dispatchers.IO) {
-                DatingDatabase.getDatabase(context.applicationContext)
-                    .peerProfileKeyDao().getPeerProfileKey(peerProfileId)?.profileVersion ?: 1
+                DatingDatabase.getDatabase(app).peerProfileKeyDao().getPeerProfileKey(peerProfileId)?.profileVersion
             }
-        }.getOrDefault(1).coerceAtLeast(1)
+        }.getOrNull()
+        val prefsVersion = app.getSharedPreferences(PEER_KEYS_PREFS, Context.MODE_PRIVATE)
+            .getInt("peer_profile_version_" + stableKey(peerProfileId), 1)
+        return maxOf(roomVersion ?: 1, prefsVersion, 1)
+    }
 
-    /** Advance the avatar metadata version when a new sanitized avatar is prepared. */
-    fun incrementProfileVersion(context: Context, profileId: String): Int {
+    /** Observable version stream so visible avatar components reload on authenticated key rotation. */
+    fun peerProfileVersionFlow(context: Context, peerProfileId: String): StateFlow<Int> =
+        peerProfileVersionFlows.getOrPut(stableKey(peerProfileId)) {
+            MutableStateFlow(peerProfileVersion(context, peerProfileId))
+        }.asStateFlow()
+
+    /** Allocate a new version without switching the active key before ciphertext upload succeeds. */
+    fun nextProfileVersion(context: Context, profileId: String): Int {
         require(profileId.isNotBlank())
-        val prefs = context.applicationContext.getSharedPreferences(PROFILE_VERSION_PREFS, Context.MODE_PRIVATE)
+        check(currentProfileVersion(context, profileId) < Int.MAX_VALUE)
+        return currentProfileVersion(context, profileId) + 1
+    }
+
+    /** Activate a fresh keyset only after the corresponding ciphertext uploaded successfully. */
+    fun activateProfileVersion(context: Context, profileId: String, version: Int): Boolean {
+        if (profileId.isBlank() || version < currentProfileVersion(context, profileId)) return false
         val key = "profile_version_" + stableKey(profileId)
-        val next = (prefs.getInt(key, 1) + 1).coerceAtMost(Int.MAX_VALUE)
-        check(prefs.edit().putInt(key, next).commit()) { "Could not persist avatar profile version." }
+        val saved = context.applicationContext.getSharedPreferences(PROFILE_VERSION_PREFS, Context.MODE_PRIVATE)
+            .edit().putInt(key, version).commit()
+        if (saved) peerProfileVersionFlows.getOrPut(stableKey(profileId)) { MutableStateFlow(version) }.value = version
+        return saved
+    }
+
+    /** Backwards-compatible helper for immediate version changes. */
+    fun incrementProfileVersion(context: Context, profileId: String): Int {
+        val next = nextProfileVersion(context, profileId)
+        check(activateProfileVersion(context, profileId, next))
         return next
     }
 
@@ -74,9 +105,16 @@ object ProfileKeyManager {
             .keysetHandle
     }
 
-    private fun localProfileKeyset(context: Context, profileId: String): KeysetHandle {
+    private fun localProfileKeyset(
+        context: Context,
+        profileId: String,
+        profileVersion: Int = currentProfileVersion(context, profileId)
+    ): KeysetHandle {
         require(profileId.isNotBlank()) { "Missing profile ID for profile key." }
-        return keysetHandle(context, "profile_avatar_key_" + stableKey(profileId), KEYSET_PREFS)
+        require(profileVersion >= 1) { "Invalid profile avatar key version." }
+        val legacyV1Name = "profile_avatar_key_" + stableKey(profileId)
+        val keysetName = if (profileVersion == 1) legacyV1Name else legacyV1Name + "_v" + profileVersion
+        return keysetHandle(context, keysetName, KEYSET_PREFS)
     }
 
     private fun wrappingAead(context: Context): Aead =
@@ -88,9 +126,12 @@ object ProfileKeyManager {
     private fun peerKeyAad(profileId: String): ByteArray =
         ("vibesync-peer-profile-key-v1:" + profileId).toByteArray(Charsets.UTF_8)
 
-    fun encryptLocalAvatar(context: Context, profileId: String, slot: Int, jpegBytes: ByteArray): ByteArray {
+    fun encryptLocalAvatar(
+        context: Context, profileId: String, slot: Int, jpegBytes: ByteArray,
+        profileVersion: Int = currentProfileVersion(context, profileId)
+    ): ByteArray {
         require(jpegBytes.isNotEmpty()) { "Avatar JPEG is empty." }
-        return localProfileKeyset(context.applicationContext, profileId)
+        return localProfileKeyset(context.applicationContext, profileId, profileVersion)
             .getPrimitive(Aead::class.java)
             .encrypt(jpegBytes, avatarAad(profileId, slot))
     }
@@ -101,7 +142,7 @@ object ProfileKeyManager {
             val app = context.applicationContext
             val ownId = VibeSyncSessionManager.getProfileId(app).orEmpty()
             val aead = if (ownId.equals(profileId, ignoreCase = true)) {
-                localProfileKeyset(app, profileId).getPrimitive(Aead::class.java)
+                localProfileKeyset(app, profileId, currentProfileVersion(app, profileId)).getPrimitive(Aead::class.java)
             } else {
                 getSharedProfileAead(app, profileId) ?: return null
             }
@@ -112,10 +153,10 @@ object ProfileKeyManager {
         }
     }
 
-    private fun exportLocalKeysetJson(context: Context, profileId: String): String {
+    private fun exportLocalKeysetJson(context: Context, profileId: String, profileVersion: Int = currentProfileVersion(context, profileId)): String {
         val stream = ByteArrayOutputStream()
         CleartextKeysetHandle.write(
-            localProfileKeyset(context, profileId),
+            localProfileKeyset(context, profileId, profileVersion),
             JsonKeysetWriter.withOutputStream(stream)
         )
         return stream.toString("UTF-8")
@@ -181,6 +222,7 @@ object ProfileKeyManager {
             val committed = prefs.edit()
                 .putString("wrapped_key_" + stableKey(owner), Base64.encodeToString(wrapped, Base64.NO_WRAP))
                 .putBoolean("peer_saved_my_number_" + stableKey(owner), json.optBoolean("sender_has_recipient_saved", false))
+                .putInt("peer_profile_version_" + stableKey(owner), profileVersion)
                 .commit()
             if (!committed) return null
 
@@ -200,6 +242,9 @@ object ProfileKeyManager {
             }.onFailure {
                 Log.w(TAG, "Room peer-keyring write failed; retaining the encrypted local key fallback.")
             }
+            // Publish only after the Room key/version pair is committed, so observers never fetch
+            // the new ciphertext with an old cached key version.
+            peerProfileVersionFlows.getOrPut(stableKey(owner)) { MutableStateFlow(profileVersion) }.value = profileVersion
 
             ReceivedExchange(
                 ownerProfileId = owner,

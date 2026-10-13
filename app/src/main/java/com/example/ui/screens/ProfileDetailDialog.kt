@@ -100,15 +100,25 @@ fun ProfileDetailDialog(
     } else {
         profile.getEffectiveAvatarUrl()
     }
+    val encryptedPhotoOwnerId = remember(activePhoto) {
+        activePhoto.takeIf { it.startsWith("vibesync-avatar-enc://") }
+            ?.removePrefix("vibesync-avatar-enc://")?.substringBefore('/').orEmpty()
+    }
+    val peerPhotoVersionFlow = remember(context, encryptedPhotoOwnerId) {
+        if (encryptedPhotoOwnerId.isBlank()) kotlinx.coroutines.flow.flowOf(1)
+        else com.example.util.ProfileKeyManager.peerProfileVersionFlow(context, encryptedPhotoOwnerId)
+    }
+    val peerPhotoVersion by peerPhotoVersionFlow.collectAsState(initial = 1)
     var resolvedActivePhoto by remember(activePhoto, profile.avatarCacheVersion) {
         mutableStateOf(if (activePhoto.startsWith("vibesync-avatar-enc://")) "" else activePhoto)
     }
     var resolvedActivePhotoBitmap by remember(activePhoto, profile.avatarCacheVersion) {
         mutableStateOf<Bitmap?>(null)
     }
-    LaunchedEffect(activePhoto, profile.avatarCacheVersion) {
+    LaunchedEffect(activePhoto, profile.avatarCacheVersion, peerPhotoVersion) {
         if (activePhoto.startsWith("vibesync-avatar-enc://")) {
             resolvedActivePhoto = ""
+            resolvedActivePhotoBitmap = null
             resolvedActivePhotoBitmap = com.example.util.ProfileAvatarStorageManager
                 .resolveAvatarForDisplay(context, activePhoto, profile.avatarCacheVersion)
         } else {
