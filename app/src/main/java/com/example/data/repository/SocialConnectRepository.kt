@@ -1048,16 +1048,17 @@ class SocialConnectRepository(
     fun normalizePhone(p: String): String = p.replace("[^0-9]".toRegex(), "").takeLast(10)
 
     suspend fun getSymmetricMatchId(otherUserId: String): String {
-        val prefs = preferencesDao.getPreferencesSync()
-        val myPhone = prefs?.verifiedMobileNumber ?: ""
-        val myPhoneHash = com.example.util.PhonebookHasher.generate16CharHash(myPhone.ifBlank { "current_user" })
-
-        val prof = profileDao.getProfileByIdSync(otherUserId) ?: profileDao.getProfileByPhone(otherUserId)
-        val otherPhone = prof?.phoneNumber ?: otherUserId
-        val otherPhoneHash = com.example.util.PhonebookHasher.generate16CharHash(otherPhone.ifBlank { otherUserId })
-
-        val sorted = listOf(myPhoneHash, otherPhoneHash).sorted()
-        return "match_${sorted[0]}_${sorted[1]}"
+        val ownProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty().trim()
+        val cachedPeer = profileDao.getProfileByIdSync(otherUserId.trim())
+            ?: profileDao.getProfileByPhone(otherUserId.trim())
+        val candidatePeerId = cachedPeer?.id?.trim().orEmpty().ifBlank { otherUserId.trim() }
+        val canonicalPeerId = if (com.example.util.SupabaseClientManager.isPhoneNumberCandidate(candidatePeerId)) {
+            com.example.util.SupabaseClientManager.resolveProfileIdByPhoneNumber(
+                cachedPeer?.phoneNumber?.ifBlank { candidatePeerId } ?: candidatePeerId
+            ).orEmpty()
+        } else candidatePeerId
+        if (ownProfileId.isBlank() || canonicalPeerId.isBlank() || ownProfileId.equals(canonicalPeerId, true)) return ""
+        return com.example.util.SupabaseClientManager.canonicalChatMatchId(ownProfileId, canonicalPeerId)
     }
 
     suspend fun removeOwnProfileAndSelfMatches() {
@@ -1269,31 +1270,20 @@ class SocialConnectRepository(
             }
         }
 
-        // 0. Query Supabase Database Profiles
+        // Cache registered Supabase profiles using their actual canonical profile IDs.
         try {
-            val supabaseProfiles = com.example.util.SupabaseClientManager.fetchAllProfiles()
-            val validSupabaseProfiles = supabaseProfiles.filter { sp ->
-                val phoneKey = sp.phoneNumber.ifBlank { sp.id }
-                val canonicalId = com.example.util.PhonebookHasher.generate16CharHash(phoneKey)
-                canonicalId.isNotBlank() && !canonicalId.equals("null", ignoreCase = true) &&
-                sp.name.isNotBlank() && !sp.name.equals("null", ignoreCase = true) &&
-                sp.phoneNumber.isNotBlank() && !sp.phoneNumber.equals("null", ignoreCase = true)
-            }.distinctBy { sp ->
-                val phoneKey = sp.phoneNumber.ifBlank { sp.id }
-                com.example.util.PhonebookHasher.generate16CharHash(phoneKey)
-            }
-            for (sp in validSupabaseProfiles) {
-                val phoneKey = sp.phoneNumber.ifBlank { sp.id }
-                val canonicalId = com.example.util.PhonebookHasher.generate16CharHash(phoneKey)
-                val canonicalProfile = sp.copy(id = canonicalId)
-                indexUser(canonicalProfile)
-                profileDao.insertProfile(canonicalProfile)
+            val validSupabaseProfiles = com.example.util.SupabaseClientManager.fetchAllProfiles()
+                .filter { it.id.isNotBlank() && it.name.isNotBlank() && !it.name.equals("null", true) }
+                .distinctBy { it.id }
+            for (profile in validSupabaseProfiles) {
+                indexUser(profile)
+                profileDao.insertProfile(profile)
             }
         } catch (e: Exception) {
             android.util.Log.w("SocialConnectRepository", "Supabase profile fetch note: ${e.message}")
         }
 
-        // 1. Query Firestore 'profiles' collection
+        // 1. Query Firestore 'profiles' collection        // 1. Query Firestore 'profiles' collection
         if (db != null) {
             try {
                 val snapshot = try {
@@ -2035,8 +2025,10 @@ class SocialConnectRepository(
                 kotlinx.coroutines.withTimeoutOrNull(3000L) {
                     // Try Supabase first
                     try {
-                        val phHash = com.example.util.SupabaseClientManager.getPhoneHash(cleanDigits)
-                        val sbProfiles = com.example.util.SupabaseClientManager.fetchProfilesByHashes(listOf(phHash, cleanDigits, phone))
+                        val phoneE164 = com.example.util.PhonebookHelper.normalizeToE164(phone)
+                        val sbProfiles = if (phoneE164.isNotBlank()) {
+                            com.example.util.SupabaseClientManager.fetchProfilesByE164Phones(listOf(phoneE164))
+                        } else emptyList()
                         val sbProfile = sbProfiles.firstOrNull()
                         if (sbProfile != null && sbProfile.name.isNotBlank() &&
                             sbProfile.name != "Registered Member" && sbProfile.name != "VibeSync User" && !sbProfile.name.startsWith("User ")) {
@@ -2324,9 +2316,7 @@ class SocialConnectRepository(
                     "trustScore" to updatedPrefs.trustRating,
                     "phoneNumber" to updatedPrefs.verifiedMobileNumber,
                     "cleanPhone" to cleanDigits,
-                    "phone_hash" to com.example.util.PhonebookHasher.generate16CharHash(updatedPrefs.verifiedMobileNumber),
-                    "phoneHash" to com.example.util.PhonebookHasher.generate16CharHash(updatedPrefs.verifiedMobileNumber),
-                    "phoneNumberE164" to com.example.util.PhonebookHasher.normalizeToE164(updatedPrefs.verifiedMobileNumber),
+                    "phoneNumberE164" to com.example.util.PhonebookHelper.normalizeToE164(updatedPrefs.verifiedMobileNumber),
                     "googleEmail" to updatedPrefs.googleEmail,
                     "email" to updatedPrefs.googleEmail,
                     "country" to updatedPrefs.userCountry,
@@ -3206,7 +3196,7 @@ class SocialConnectRepository(
             profile = newProf
         } else if (
             recipientPhoneNumber.isNotBlank() &&
-            !com.example.util.PhonebookHasher.arePhonesMatching(profile.phoneNumber, recipientPhoneNumber)
+            !com.example.util.PhonebookHelper.arePhonesMatching(profile.phoneNumber, recipientPhoneNumber)
         ) {
             // The active chat's verified/contact phone is fresher than a stale local peer cache.
             // Outbox resolution uses this phone to repair profile IDs through Supabase, not to
@@ -3216,8 +3206,8 @@ class SocialConnectRepository(
         }
 
         val prefs = preferencesDao.getPreferencesSync()
-        val myPhone = com.example.util.PhonebookHasher.normalizeToE164(prefs?.verifiedMobileNumber ?: "")
-        val targetPhone = com.example.util.PhonebookHasher.normalizeToE164(profile.phoneNumber.ifBlank { match.profileId })
+        val myPhone = com.example.util.PhonebookHelper.normalizeToE164(prefs?.verifiedMobileNumber ?: "")
+        val targetPhone = com.example.util.PhonebookHelper.normalizeToE164(profile.phoneNumber.ifBlank { match.profileId })
 
         val userMsg = ChatMessageEntity(
             messageId = clientMsgId,
@@ -5357,51 +5347,8 @@ class SocialConnectRepository(
                 val list = com.example.util.SupabaseClientManager.fetchProfilesByE164Phones(batch)
                 for (profile in list) {
                     result[profile.id] = profile
-                    val digits = profile.phoneNumber.filter { it.isDigit() }
-                    if (digits.isNotBlank()) {
-                        result[digits] = profile
-                        val e164 = com.example.util.PhonebookHelper.normalizeToE164(profile.phoneNumber)
-                        if (e164.isNotBlank()) result[e164] = profile
-                        val phHash = com.example.util.SupabaseClientManager.getPhoneHash(digits)
-                        result[phHash] = profile
-                        val h16 = com.example.util.PhonebookHasher.generate16CharHash(digits)
-                        result[h16] = profile
-                        val h64 = com.example.util.PhonebookHasher.hashPhoneNumberToHex(digits)
-                        result[h64] = profile
-                        for (h in com.example.util.PhonebookHasher.getAllMatchHashes(profile.phoneNumber)) {
-                            result[h] = profile
-                        }
-                    }
-                }
-            }
-        } catch (_: Exception) {}
-        return@withContext result
-    }
-
-    suspend fun fetchProfilesByHashesFromSupabase(hashes: List<String>): Map<String, ProfileEntity> = withContext(Dispatchers.IO) {
-        val result = mutableMapOf<String, ProfileEntity>()
-        val validHashes = hashes.filter { it.isNotBlank() && !it.equals("null", ignoreCase = true) }.distinct()
-        if (validHashes.isEmpty()) return@withContext result
-        try {
-            validHashes.chunked(30).forEach { batch ->
-                val list = com.example.util.SupabaseClientManager.fetchProfilesByHashes(batch)
-                for (profile in list) {
-                    result[profile.id] = profile
-                    val digits = profile.phoneNumber.filter { it.isDigit() }
-                    if (digits.isNotBlank()) {
-                        result[digits] = profile
-                        val e164 = com.example.util.PhonebookHelper.normalizeToE164(profile.phoneNumber)
-                        if (e164.isNotBlank()) result[e164] = profile
-                        val phHash = com.example.util.SupabaseClientManager.getPhoneHash(digits)
-                        result[phHash] = profile
-                        val h16 = com.example.util.PhonebookHasher.generate16CharHash(digits)
-                        result[h16] = profile
-                        val h64 = com.example.util.PhonebookHasher.hashPhoneNumberToHex(digits)
-                        result[h64] = profile
-                        for (h in com.example.util.PhonebookHasher.getAllMatchHashes(profile.phoneNumber)) {
-                            result[h] = profile
-                        }
-                    }
+                    val phoneE164 = com.example.util.PhonebookHelper.normalizeToE164(profile.phoneNumber)
+                    if (phoneE164.isNotBlank()) result[phoneE164] = profile
                 }
             }
         } catch (_: Exception) {}
@@ -5459,48 +5406,21 @@ class SocialConnectRepository(
             emptyList()
         }
 
-        val allProfiles = (localProfiles + supabaseProfiles + firestoreAccounts).distinctBy { it.id }
+        val allProfiles = (localProfiles + supabaseProfiles).distinctBy { it.id }
 
-        val hashToProfileMap = mutableMapOf<String, ProfileEntity>()
-        val phoneDigitsMap = mutableMapOf<String, ProfileEntity>()
-
+        val profilesByE164 = mutableMapOf<String, ProfileEntity>()
         for (profile in allProfiles) {
-            val phoneDigits = profile.phoneNumber.filter { it.isDigit() }
-            if (phoneDigits.isNotBlank()) {
-                val phHash = com.example.util.SupabaseClientManager.getPhoneHash(phoneDigits)
-                hashToProfileMap[phHash] = profile
-                if (phoneDigits.length >= 10) {
-                    phoneDigitsMap[phoneDigits.takeLast(10)] = profile
-                }
-            }
-            if (profile.id.length == 16) {
-                hashToProfileMap[profile.id] = profile
-            }
-            val idDigits = profile.id.filter { it.isDigit() }
-            if (idDigits.length >= 10) {
-                phoneDigitsMap[idDigits.takeLast(10)] = profile
-            }
+            val phoneE164 = com.example.util.PhonebookHelper.normalizeToE164(profile.phoneNumber)
+            if (profile.id.isNotBlank() && phoneE164.isNotBlank()) profilesByE164[phoneE164] = profile
         }
-
         val matchedResults = rawContacts.map { contact ->
-            val cleanDigits = contact.phoneNumber.filter { it.isDigit() }
-            val contactHash = if (contact.phoneHash.isNotBlank()) contact.phoneHash else com.example.util.SupabaseClientManager.getPhoneHash(cleanDigits)
-
-            val matchedProfile = hashToProfileMap[contactHash]
-                ?: (if (cleanDigits.length >= 10) phoneDigitsMap[cleanDigits.takeLast(10)] else null)
-
+            val phoneE164 = com.example.util.PhonebookHelper.normalizeToE164(contact.phoneNumber.ifBlank { contact.phoneHash })
+            val matchedProfile = profilesByE164[phoneE164]
             if (matchedProfile != null) {
-                contact.copy(
-                    phoneHash = contactHash,
-                    isOnVibeSync = true,
-                    vibeSyncUserId = matchedProfile.id,
-                    avatarEmoji = matchedProfile.avatarEmoji.ifBlank { "✨" },
-                    photoUrl = matchedProfile.avatarUrl,
-                    statusTagline = "${matchedProfile.relationshipGoal.ifBlank { "Available on VibeSync" }} • ${matchedProfile.city.ifBlank { "Active" }}"
-                )
-            } else {
-                contact.copy(phoneHash = contactHash)
-            }
+                contact.copy(phoneHash = phoneE164, isOnVibeSync = true, vibeSyncUserId = matchedProfile.id,
+                    avatarEmoji = matchedProfile.avatarEmoji.ifBlank { "✨" }, photoUrl = matchedProfile.avatarUrl,
+                    statusTagline = "${matchedProfile.relationshipGoal.ifBlank { "Available on VibeSync" }} • ${matchedProfile.city.ifBlank { "Active" }}")
+            } else contact.copy(phoneHash = phoneE164)
         }
 
         try {
