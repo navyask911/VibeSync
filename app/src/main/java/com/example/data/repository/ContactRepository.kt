@@ -8,6 +8,7 @@ import com.example.data.model.ProfileEntity
 import com.example.data.model.UserContactEntity
 import com.example.data.model.VibeContactEntity
 import com.example.util.ContactResolver
+import com.example.util.PhonebookHelper
 import com.example.util.SupabaseClientManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -105,7 +106,7 @@ class ContactRepository(
             try {
                 profileDao.getAllProfilesSync().forEach { profile ->
                     if (profile.id.isNotBlank()) matchedProfilesById[profile.id] = profile
-                    val phone = PhonebookHelper.normalizeToE164(profile.phoneNumber.ifBlank { profile.phoneHash })
+                    val phone = PhonebookHelper.normalizeToE164(profile.phoneNumber)
                     if (phone.isNotBlank()) matchedProfilesByPhone[phone] = profile
                 }
             } catch (e: Exception) {
@@ -123,7 +124,6 @@ class ContactRepository(
                                     name = match.name,
                                     age = 24,
                                     phoneNumber = phone,
-                                    phoneHash = phone,
                                     avatarUrl = match.photoUrl.orEmpty(),
                                     avatarEmoji = match.avatarEmoji,
                                     isVerified = true
