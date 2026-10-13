@@ -260,6 +260,7 @@ fun ChatDetailScreen(
     onSendMessageWithReply: (text: String, replyToId: String?, replyToText: String?, replyToSender: String?) -> Unit = { t, _, _, _ -> onSendMessage(t) },
     onEditMessage: (messageId: String, newText: String) -> Unit = { _, _ -> },
     onToggleStarMessage: (messageId: String) -> Unit = {},
+    onReactToMessage: (messageId: String, emoji: String) -> Unit = { _, _ -> },
     onDeleteForMe: (messageId: String) -> Unit = {},
     onDeleteForEveryone: (messageId: String) -> Unit = {},
     onForwardMessage: (targetMatchId: String, message: ChatMessageEntity) -> Unit = { _, _ -> },
@@ -284,6 +285,7 @@ fun ChatDetailScreen(
             onSendMessageWithReply = onSendMessageWithReply,
             onEditMessage = onEditMessage,
             onToggleStarMessage = onToggleStarMessage,
+            onReactToMessage = onReactToMessage,
             onDeleteForMe = onDeleteForMe,
             onDeleteForEveryone = onDeleteForEveryone,
             onForwardMessage = onForwardMessage,
@@ -312,6 +314,7 @@ private fun ChatDetailScreenContent(
     onSendMessageWithReply: (text: String, replyToId: String?, replyToText: String?, replyToSender: String?) -> Unit,
     onEditMessage: (messageId: String, newText: String) -> Unit,
     onToggleStarMessage: (messageId: String) -> Unit,
+    onReactToMessage: (messageId: String, emoji: String) -> Unit,
     onDeleteForMe: (messageId: String) -> Unit,
     onDeleteForEveryone: (messageId: String) -> Unit,
     onForwardMessage: (targetMatchId: String, message: ChatMessageEntity) -> Unit,
@@ -705,7 +708,11 @@ private fun ChatDetailScreenContent(
         val deduplicatedMessages = messages.distinctBy { it.messageId }
         val filtered = deduplicatedMessages.filter { msg ->
             if (msg.isDeletedForMe) return@filter false
-            
+            if (msg.mediaType.equals(com.example.util.ChatMessageEventCodec.MEDIA_TYPE_REACTION, true) ||
+                msg.mediaType.equals(com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DELETE, true)
+            ) return@filter false
+            if (msg.isDeleted || msg.isDeletedForEveryone) return@filter true
+
             // Decrypt first to inspect the actual user-facing content
             var decrypted = msg.text
             if (decrypted.startsWith("V2_SIG:") || decrypted.startsWith("V1_ENC:") || decrypted.startsWith("ENC:")) {
@@ -1101,6 +1108,7 @@ private fun ChatDetailScreenContent(
                         maxBubbleWidth = maxBubbleWidth,
                         localMessageStatuses = localMessageStatuses,
                         chatTextColor = chatTextColor,
+                        onReactToMessage = onReactToMessage,
                         onActionClick = {
                             selectedMessageForAction = msg
                         },
@@ -2339,7 +2347,7 @@ private fun ChatDetailScreenContent(
             currentUserId = currentUserId
         )
         val isWithin10Mins = (System.currentTimeMillis() - msg.timestamp) <= 10 * 60 * 1000L
-        val canEdit = isOutgoing && isWithin10Mins && !msg.isDeletedForEveryone
+        val canEdit = isOutgoing && isWithin10Mins && !msg.isDeleted && !msg.isDeletedForEveryone
 
         ModalBottomSheet(
             onDismissRequest = { selectedMessageForAction = null },
@@ -2357,7 +2365,7 @@ private fun ChatDetailScreenContent(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = if (msg.isDeletedForEveryone) "This message was deleted" else msg.text.ifBlank { if (msg.mediaType == "VOICE") "Voice note" else "Media attachment" },
+                        text = if (msg.isDeleted || msg.isDeletedForEveryone) "This message was deleted" else msg.text.ifBlank { if (msg.mediaType == "VOICE") "Voice note" else "Media attachment" },
                         fontSize = 12.sp,
                         maxLines = 2,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -2366,6 +2374,34 @@ private fun ChatDetailScreenContent(
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
+
+                Text("React", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    com.example.util.ChatMessageEventCodec.ALLOWED_REACTIONS.forEach { emoji ->
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable {
+                                    onReactToMessage(msg.messageId, emoji)
+                                    selectedMessageForAction = null
+                                }
+                                .testTag("reaction_${emoji.hashCode()}")
+                        ) {
+                            Text(
+                                text = emoji,
+                                fontSize = 20.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
+                        }
+                    }
+                }
 
                 // Reply
                 DropdownMenuItem(
@@ -2533,7 +2569,9 @@ private fun ChatDetailScreenContent(
             matchProfileId = match?.matchId,
             currentUserId = currentUserId
         )
-        val canDeleteForEveryone = isOutgoing && !msg.isDeletedForEveryone
+        val deleteAgeMs = System.currentTimeMillis() - msg.timestamp
+        val withinDeleteWindow = deleteAgeMs in 0L..(15 * 60 * 1000L)
+        val canDeleteForEveryone = isOutgoing && withinDeleteWindow && !msg.isDeleted && !msg.isDeletedForEveryone
 
         AlertDialog(
             onDismissRequest = { deletingMessage = null },
@@ -2541,7 +2579,9 @@ private fun ChatDetailScreenContent(
             text = {
                 Text(
                     text = if (canDeleteForEveryone) {
-                        "You can delete this message for yourself, or delete it for everyone in the conversation."
+                        "Delete for everyone is available for 15 minutes after sending. You can also delete it only for yourself."
+                    } else if (isOutgoing && !withinDeleteWindow) {
+                        "The 15-minute Delete for Everyone window has expired. You can still delete this message for yourself."
                     } else {
                         "This will remove the message from your chat view on this device."
                     },
@@ -3759,6 +3799,7 @@ private fun VibeSyncChatBubble(
     maxBubbleWidth: Dp,
     localMessageStatuses: Map<String, String>,
     chatTextColor: Color = Color(0xFF111827),
+    onReactToMessage: (messageId: String, emoji: String) -> Unit,
     onActionClick: () -> Unit,
     onMediaClick: (String, String) -> Unit
 ) {
@@ -3879,7 +3920,7 @@ private fun VibeSyncChatBubble(
                 }
 
                 // Message content
-                if (message.isDeletedForEveryone) {
+                if (message.isDeleted || message.isDeletedForEveryone) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(vertical = 4.dp)
@@ -4441,7 +4482,7 @@ private fun VibeSyncChatBubble(
                         .padding(top = 2.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (message.isEdited && !message.isDeletedForEveryone) {
+                    if (message.isEdited && !message.isDeleted && !message.isDeletedForEveryone) {
                         Text(
                             text = "Edited",
                             style = MaterialTheme.typography.labelSmall,
@@ -4467,7 +4508,7 @@ private fun VibeSyncChatBubble(
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium
                     )
-                    if (isOutgoing && !message.isDeletedForEveryone) {
+                    if (isOutgoing && !message.isDeleted && !message.isDeletedForEveryone) {
                         Spacer(modifier = Modifier.width(3.dp))
                         val status = localMessageStatuses[message.messageId]
                         val isFailed = status == "FAILED"
@@ -4491,6 +4532,38 @@ private fun VibeSyncChatBubble(
                             tint = tint,
                             modifier = Modifier.size(14.dp)
                         )
+                    }
+                }
+                val reactionBadges = if (message.isDeleted || message.isDeletedForEveryone) {
+                    emptyList()
+                } else {
+                    com.example.util.ChatMessageEventCodec.reactionCounts(message.reactionsJson)
+                }
+                if (reactionBadges.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .align(if (isOutgoing) Alignment.End else Alignment.Start)
+                            .padding(top = 5.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        reactionBadges.forEach { (emoji, count) ->
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+                                modifier = Modifier.clickable {
+                                    onReactToMessage(message.messageId, emoji)
+                                }
+                            ) {
+                                Text(
+                                    text = "$emoji $count",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }

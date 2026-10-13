@@ -210,13 +210,17 @@ internal object PendingMessageOutboxSender {
                     )
                 }
 
+                val payloadForEncryption = com.example.util.ChatMessageEventCodec.encodeForEncryption(
+                    message = message,
+                    fallbackBody = rawText
+                )
                 val ciphertext = if (message.text.startsWith(TinkCryptoManager.TINK_PREFIX)) {
                     message.text
                 } else {
                     try {
                         TinkCryptoManager.encryptForRecipientOrThrow(
                             recipientPublicKeysetJson = recipientPublicKey,
-                            rawText = rawText,
+                            rawText = payloadForEncryption,
                             senderPhone = senderProfileId,
                             receiverPhone = recipientProfileId
                         )

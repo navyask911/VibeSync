@@ -1267,7 +1267,14 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 val isProfileKeyExchange =
                     mediaType.equals("PROFILE_KEY_EXCHANGE", ignoreCase = true) ||
                         rawText.startsWith(com.example.util.ProfileKeyManager.EXCHANGE_PREFIX)
-                val isControlPacket = !isProfileKeyExchange && (
+                val isChatInteractionEvent = mediaType.equals(
+                    com.example.util.ChatMessageEventCodec.MEDIA_TYPE_REACTION,
+                    ignoreCase = true
+                ) || mediaType.equals(
+                    com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DELETE,
+                    ignoreCase = true
+                )
+                val isControlPacket = !isProfileKeyExchange && !isChatInteractionEvent && (
                     msgType != "CHAT_MESSAGE" ||
                         rawText.startsWith("KEY_EXCHANGE") ||
                         rawText.startsWith("DH_HANDSHAKE") ||
@@ -1469,6 +1476,28 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         return@launch
                     }
 
+                    val decodedPayload = com.example.util.ChatMessageEventCodec.decode(decryptedText, mediaType)
+                    if (decodedPayload.eventType != null) {
+                        val applied = com.example.util.ChatMessageEventCodec.applyControlEvent(
+                            database = database,
+                            decoded = decodedPayload,
+                            actorId = senderIdentity,
+                            localMatchId = targetMatchId,
+                            eventMessageId = msgId
+                        )
+                        if (!applied) {
+                            android.util.Log.w("VibeSyncChat", "Control event deferred because its target message is not present in this conversation.")
+                            return@launch
+                        }
+                        val controlAcked = com.example.util.SupabaseBackendManager.markMessageDelivered(
+                            msgId, senderIdentity, receiverIdentity
+                        )
+                        if (!controlAcked) {
+                            android.util.Log.w("VibeSyncChat", "Control event ACK will be retried by inbox delta sync.")
+                        }
+                        return@launch
+                    }
+
                     if (com.example.util.ProfileKeyManager.isExchangePayload(decryptedText)) {
                         val localProfileId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty()
                         val exchange = com.example.util.ProfileKeyManager.consumeExchangePayload(
@@ -1509,16 +1538,16 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         messageId = msgId,
                         matchId = targetMatchId,
                         senderId = senderProfileId.ifBlank { aadParticipants?.first ?: normSender.ifBlank { senderPhone } },
-                        text = decryptedText,
+                        text = decodedPayload.text,
                         timestamp = timestamp,
                         isDelivered = true,
                         isRead = if (shouldMarkRead) true else isRead,
                         mediaType = mediaType,
                         mediaUrl = mediaUrl,
                         voiceDurationSeconds = voiceSeconds,
-                        replyToMessageId = replyToId,
-                        replyToText = replyToText,
-                        replyToSender = replyToSender,
+                        replyToMessageId = decodedPayload.replyToMessageId ?: replyToId,
+                        replyToText = decodedPayload.replyToText ?: replyToText,
+                        replyToSender = decodedPayload.replyToSender ?: replyToSender,
                         isForwarded = isForwarded,
                         isEncrypted = true,
                         deliveryState = if (shouldMarkRead) "READ" else "DELIVERED",
@@ -1927,8 +1956,17 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
     fun deleteMessageForEveryone(messageId: String) {
         viewModelScope.launch {
-            repository.deleteMessageForEveryone(messageId)
-            _toastMessage.emit("Message deleted for everyone 🚫")
+            val deleted = repository.deleteMessageForEveryone(messageId)
+            _toastMessage.emit(
+                if (deleted) "Message deleted for everyone 🚫"
+                else "Delete for everyone is only available for your messages within 15 minutes."
+            )
+        }
+    }
+
+    fun reactToMessage(messageId: String, emoji: String) {
+        viewModelScope.launch {
+            repository.reactToMessage(messageId, emoji)
         }
     }
 

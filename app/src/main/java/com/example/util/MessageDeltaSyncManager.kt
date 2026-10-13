@@ -84,6 +84,9 @@ object MessageDeltaSyncManager {
                     record.decryptionSucceeded && MessageLocalRetentionPolicy.isRenderableText(it)
                 }
                 val canRenderPlaintext = decryptedPlaintext != null || existingPlaintext != null
+                val decodedPayload = decryptedPlaintext?.let {
+                    ChatMessageEventCodec.decode(it, remote.mediaType)
+                }
 
                 if (isFromMe) {
                     if (existing != null) {
@@ -132,6 +135,31 @@ object MessageDeltaSyncManager {
                     continue
                 }
 
+                // Apply encrypted reaction/delete events before attempting to render them as chat bubbles.
+                if (decodedPayload?.eventType != null) {
+                    val applied = ChatMessageEventCodec.applyControlEvent(
+                        database = database,
+                        decoded = decodedPayload,
+                        actorId = remote.senderId,
+                        localMatchId = match.matchId,
+                        eventMessageId = remote.messageId
+                    )
+                    if (!applied) {
+                        complete = false
+                        Log.w(TAG, "Message control event deferred because its target is not in this local conversation.")
+                        continue
+                    }
+                    val acked = remote.isDelivered || remote.isRead ||
+                        SupabaseBackendManager.markMessageDelivered(remote.messageId, remote.senderId, ownerId)
+                    if (!acked) {
+                        ackFailures++
+                        complete = false
+                        Log.w(TAG, "Control event ACK remains pending for ${remote.messageId}.")
+                    }
+                    synced++
+                    continue
+                }
+
                 // Profile-key envelopes are delivered via the durable delta path too; do not
                 // persist them as chat bubbles or advance the cursor before a valid import/ACK.
                 val incomingKeyEnvelope =
@@ -167,7 +195,7 @@ object MessageDeltaSyncManager {
                 }
 
                 if (!canRenderPlaintext) complete = false
-                val localText = decryptedPlaintext ?: existingPlaintext
+                val localText = decodedPayload?.text ?: existingPlaintext
                     ?: MessageLocalRetentionPolicy.DECRYPTION_TOMBSTONE_TEXT
                 val needsAck = canRenderPlaintext && !remote.isDelivered && !remote.isRead
                 val local = remote.copy(
@@ -185,6 +213,9 @@ object MessageDeltaSyncManager {
                         else -> "DELIVERED"
                     },
                     deliveryAckPending = needsAck,
+                    replyToMessageId = decodedPayload?.replyToMessageId ?: remote.replyToMessageId,
+                    replyToText = decodedPayload?.replyToText ?: remote.replyToText,
+                    replyToSender = decodedPayload?.replyToSender ?: remote.replyToSender,
                     senderDisplayName = existing?.senderDisplayName?.ifBlank { match.localContactName }
                         ?: match.localContactName,
                     senderPhotoUri = existing?.senderPhotoUri?.ifBlank { match.localPhotoUri }
@@ -198,7 +229,11 @@ object MessageDeltaSyncManager {
                         replyToText = fresh.replyToText ?: existing.replyToText,
                         replyToSender = fresh.replyToSender ?: existing.replyToSender,
                         isDeletedForMe = existing.isDeletedForMe,
-                        isDeletedForEveryone = existing.isDeletedForEveryone,
+                        isDeleted = existing.isDeleted || fresh.isDeleted,
+                        isDeletedForEveryone = existing.isDeletedForEveryone || fresh.isDeletedForEveryone,
+                        text = if (existing.isDeleted || existing.isDeletedForEveryone) "" else fresh.text,
+                        mediaUrl = if (existing.isDeleted || existing.isDeletedForEveryone) "" else fresh.mediaUrl,
+                        reactionsJson = existing.reactionsJson,
                         isForwarded = existing.isForwarded || fresh.isForwarded,
                         outboxOwnerProfileId = existing.outboxOwnerProfileId,
                         syncAttempts = existing.syncAttempts,

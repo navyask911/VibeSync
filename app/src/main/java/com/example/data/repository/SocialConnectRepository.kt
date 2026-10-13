@@ -3064,6 +3064,8 @@ class SocialConnectRepository(
         receiverPhone: String = ""
     ) {
         val existingMessage = chatMessageDao.getMessageById(message.messageId)
+        // A replay of the original INSERT must never resurrect plaintext after a shared delete event.
+        if (existingMessage?.isDeleted == true || existingMessage?.isDeletedForEveryone == true) return
         val safeText = com.example.util.MessageLocalRetentionPolicy.displayText(
             message.text, existingMessage?.text
         )
@@ -3230,8 +3232,13 @@ class SocialConnectRepository(
         )
         chatMessageDao.insertMessage(userMsg)
         messageDao.insertMessage(userMsg.toLocalMessage().copy(remoteMessageId = userMsg.messageId))
-        // Key-exchange envelopes are durable outbox control messages, not visible chat activity.
-        if (!mediaType.equals("PROFILE_KEY_EXCHANGE", ignoreCase = true)) {
+        // Encrypted protocol controls are durable outbox rows, not visible chat activity/previews.
+        val isProtocolControl = mediaType.uppercase() in setOf(
+            "PROFILE_KEY_EXCHANGE",
+            com.example.util.ChatMessageEventCodec.MEDIA_TYPE_REACTION,
+            com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DELETE
+        )
+        if (!isProtocolControl) {
             matchDao.updateLastMessage(
                 matchId = matchId,
                 text = text.ifBlank { if (mediaType == "VOICE") "Voice message" else "Photo" },
@@ -3328,22 +3335,70 @@ class SocialConnectRepository(
         chatMessageDao.updateMessage(msg.copy(isDeletedForMe = true))
     }
 
-    suspend fun deleteMessageForEveryone(messageId: String) {
-        val msg = chatMessageDao.getMessageById(messageId)
-        chatMessageDao.deleteMessageById(messageId)
-        if (msg != null) {
-            val remaining = chatMessageDao.getMessagesForMatchSync(msg.matchId)
-            val last = remaining.lastOrNull()
-            matchDao.updateLastMessage(
-                matchId = msg.matchId,
-                text = last?.text ?: "No messages yet",
-                timestamp = last?.timestamp ?: System.currentTimeMillis(),
-                hasUnread = false
+    suspend fun deleteMessageForEveryone(messageId: String): Boolean {
+        val msg = chatMessageDao.getMessageById(messageId) ?: return false
+        val age = System.currentTimeMillis() - msg.timestamp
+        if (msg.senderId != "USER" || age < 0L || age > 15 * 60 * 1000L ||
+            msg.isDeleted || msg.isDeletedForEveryone ||
+            msg.mediaType.uppercase() in setOf(
+                com.example.util.ChatMessageEventCodec.MEDIA_TYPE_REACTION,
+                com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DELETE
             )
-            appScope.launch(Dispatchers.IO) {
-                com.example.util.SupabaseBackendManager.deleteChatMessageForEveryone(messageId, msg.matchId)
-            }
+        ) return false
+
+        val match = matchDao.getMatchByIdSync(msg.matchId) ?: return false
+        // Keep a local tombstone so the bubble shows the deleted placeholder, not old plaintext.
+        chatMessageDao.updateMessage(msg.copy(
+            isDeleted = true,
+            isDeletedForEveryone = true,
+            text = "",
+            mediaUrl = "",
+            reactionsJson = "{}"
+        ))
+        if (match.lastMessageTime <= msg.timestamp || match.lastMessage == msg.text) {
+            matchDao.updateLastMessage(
+                msg.matchId,
+                "This message was deleted",
+                msg.timestamp,
+                false
+            )
         }
+        val recipient = profileDao.getProfileByIdSync(match.profileId)
+        sendMessage(
+            matchId = msg.matchId,
+            text = com.example.util.ChatMessageEventCodec.createDeleteEvent(messageId),
+            mediaType = com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DELETE,
+            clientMsgId = java.util.UUID.randomUUID().toString(),
+            recipientProfileId = match.profileId,
+            recipientPhoneNumber = recipient?.phoneNumber.orEmpty()
+        )
+        return true
+    }
+
+    suspend fun reactToMessage(messageId: String, emoji: String): Boolean {
+        if (emoji !in com.example.util.ChatMessageEventCodec.ALLOWED_REACTIONS) return false
+        val message = chatMessageDao.getMessageById(messageId) ?: return false
+        if (message.isDeleted || message.isDeletedForEveryone) return false
+        val match = matchDao.getMatchByIdSync(message.matchId) ?: return false
+        val recipient = profileDao.getProfileByIdSync(match.profileId)
+        val actorId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty().trim()
+        if (actorId.isBlank()) return false
+
+        val reactions = com.example.util.ChatMessageEventCodec.toggleReaction(
+            message.reactionsJson,
+            emoji,
+            actorId
+        )
+        chatMessageDao.updateMessage(message.copy(reactionsJson = reactions))
+        sendMessage(
+            matchId = message.matchId,
+            text = com.example.util.ChatMessageEventCodec.createReactionEvent(messageId, emoji),
+            mediaType = com.example.util.ChatMessageEventCodec.MEDIA_TYPE_REACTION,
+            clientMsgId = java.util.UUID.randomUUID().toString(),
+            recipientProfileId = match.profileId,
+            recipientPhoneNumber = recipient?.phoneNumber.orEmpty()
+        )
+        return true
     }
 
     suspend fun forwardMessage(targetMatchId: String, message: ChatMessageEntity) {

@@ -791,6 +791,9 @@ fun DatingAppRoot(
                 onToggleStarMessage = { messageId ->
                     viewModel.toggleStarMessage(messageId)
                 },
+                onReactToMessage = { messageId, emoji ->
+                    viewModel.reactToMessage(messageId, emoji)
+                },
                 otherMatches = matches.filter { it.matchId != match.matchId }.mapNotNull { m ->
                     viewModel.getProfile(m.profileId)?.let { p -> Pair(m, p) }
                 },

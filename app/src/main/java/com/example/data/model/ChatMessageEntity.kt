@@ -61,7 +61,11 @@ data class ChatMessageEntity(
     val deliveryAckPending: Boolean = false,
     /** Set to the verified owner profile ID for Note to Self rows; these rows are never synced. */
     @ColumnInfo(name = "recipient_id", defaultValue = "''")
-    val recipientId: String = ""
+    val recipientId: String = "",
+    @ColumnInfo(name = "reactions_json", defaultValue = "'{}'")
+    val reactionsJson: String = "{}",
+    @ColumnInfo(name = "is_deleted", defaultValue = "0")
+    val isDeleted: Boolean = false
 ) {
     @androidx.room.Ignore
     val senderUid: String = senderId
