@@ -1992,6 +1992,15 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         if (userPreferences.value?.typingIndicatorsEnabled == false) {
             typingStopJob?.cancel()
             typingStopJob = null
+            // Send a single stop event only if this device had already announced typing, so
+            // peers do not retain a stale indicator after the privacy preference is changed.
+            if (typingBroadcastActive) {
+                val senderId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+                val remoteMatchId = activeRealtimeRemoteMatchId.orEmpty()
+                if (senderId.isNotBlank() && remoteMatchId.isNotBlank()) {
+                    com.example.util.SupabaseBackendManager.broadcastTypingStatus(remoteMatchId, senderId, false)
+                }
+            }
             typingBroadcastActive = false
             _isPartnerTyping.value = false
             return
