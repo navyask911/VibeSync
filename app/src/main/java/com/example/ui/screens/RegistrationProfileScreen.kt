@@ -94,6 +94,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.ui.theme.CoralPink
 import com.example.ui.theme.RomanticViolet
+import com.example.ui.components.DatingAvatar
 import com.example.ui.theme.VibeSyncTeal
 import com.example.util.DeviceSimAndIpCountryHelper
 import kotlinx.coroutines.Dispatchers
@@ -346,7 +347,17 @@ fun RegistrationProfileScreen(
                     color = MaterialTheme.colorScheme.surfaceVariant,
                     border = BorderStroke(2.dp, Brush.linearGradient(listOf(CoralPink, VibeSyncTeal)))
                 ) {
-                    if (avatarUri.isNotBlank()) {
+                    if (avatarUri.startsWith("vibesync-avatar-enc://")) {
+                        DatingAvatar(
+                            name = "Profile",
+                            emoji = "👤",
+                            colorStart = 0xFF14B8A6,
+                            colorEnd = 0xFFEC4899,
+                            size = 104.dp,
+                            avatarUrl = avatarUri,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else if (avatarUri.isNotBlank()) {
                         AsyncImage(
                             model = avatarUri,
                             contentDescription = "Profile Photo",
