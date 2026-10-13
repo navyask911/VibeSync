@@ -56,8 +56,6 @@ jobs:
         env:
           SUPABASE_URL_SECRET: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY_SECRET: ${{ secrets.SUPABASE_ANON_KEY }}
-          GEMINI_API_KEY_SECRET: ${{ secrets.GEMINI_API_KEY }}
-          VIBESYNC_AGENT_API_KEY_SECRET: ${{ secrets.VIBESYNC_AGENT_API_KEY }}
           GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
         shell: bash
         run: |
@@ -75,8 +73,6 @@ jobs:
           values = {
               "SUPABASE_URL": os.environ.get("SUPABASE_URL_SECRET", "").strip(),
               "SUPABASE_ANON_KEY": os.environ.get("SUPABASE_ANON_KEY_SECRET", "").strip(),
-              "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY_SECRET", "").strip(),
-              "VIBESYNC_AGENT_API_KEY": os.environ.get("VIBESYNC_AGENT_API_KEY_SECRET", "").strip(),
           }
           for key in ("SUPABASE_URL", "SUPABASE_ANON_KEY"):
               value = values[key]

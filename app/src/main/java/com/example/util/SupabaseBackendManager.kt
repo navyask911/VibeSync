@@ -2,7 +2,6 @@ package com.example.util
 
 import android.content.Context
 import android.util.Log
-import com.example.BuildConfig
 import com.example.data.model.ChatMessageEntity
 import com.example.data.model.ProfileEntity
 import kotlinx.coroutines.CoroutineScope
@@ -882,12 +881,14 @@ object SupabaseBackendManager {
         senderId: String,
         receiverId: String,
         messageText: String,
-        apiKey: String = BuildConfig.VIBESYNC_AGENT_API_KEY.trim()
+        apiKey: String = ""
     ): Boolean = withContext(Dispatchers.IO) {
         try {
+            // A shared server API key must not be packaged in the public Android client.
+            // This legacy endpoint stays disabled unless a non-embedded key is supplied by its caller.
             val effectiveApiKey = apiKey.trim()
             if (effectiveApiKey.isBlank()) {
-                Log.w(TAG, "Multi-agent message not sent: VIBESYNC_AGENT_API_KEY is not configured.")
+                Log.w(TAG, "Multi-agent message not sent: configure server-side authentication for this endpoint.")
                 return@withContext false
             }
             val payload = JSONObject().apply {

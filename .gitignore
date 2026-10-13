@@ -17,6 +17,8 @@
 # Local environment/configuration files
 local.properties
 .env
+.env.*
+!.env.example
 secrets.properties
 supabase.properties
 signing.properties
@@ -32,3 +34,4 @@ debug.keystore
 # Real Firebase app config is supplied locally or injected by CI.
 # Keep app/google-services.json.example tracked as a placeholder.
 app/google-services.json
+**/google-services.json
