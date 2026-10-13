@@ -37,6 +37,8 @@ class VibeSyncApplication : Application(), ImageLoaderFactory {
         // Recover outbox state on startup. A session-change callback below re-runs the sweep
         // after Truecaller session restore/login finishes asynchronously.
         com.example.service.PendingMessageSyncScheduler.enqueueAllPending(applicationContext)
+        // Expiring messages are physically purged by a unique periodic WorkManager task.
+        com.example.service.EphemeralMessageCleanupWorker.schedule(applicationContext)
         com.example.util.VibeSyncSessionManager.addSessionChangeListener { session ->
             if (session != null) {
                 com.example.service.PendingMessageSyncScheduler.enqueueAllPending(applicationContext)
