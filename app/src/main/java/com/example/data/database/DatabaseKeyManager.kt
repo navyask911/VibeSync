@@ -31,8 +31,11 @@ internal object DatabaseKeyManager {
         override fun preKey(connection: SQLiteConnection) = Unit
 
         override fun postKey(connection: SQLiteConnection) {
-            connection.execute("PRAGMA cipher_memory_security = ON", null, null)
-            connection.execute("PRAGMA secure_delete = ON", null, null)
+            // SQLCipher's SQLiteConnection.execute() rejects PRAGMAs that return a row.
+            // executeForLong handles both PRAGMAs safely (and is valid when a PRAGMA
+            // does not return a row, in which case SQLCipher returns 0).
+            connection.executeForLong("PRAGMA cipher_memory_security = ON", null, null)
+            connection.executeForLong("PRAGMA secure_delete = ON", null, null)
         }
     }
 
