@@ -1980,6 +1980,12 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         val current = _activeChat.value ?: return
         viewModelScope.launch {
             val saved = repository.setDisappearingTimer(current.first.matchId, seconds)
+            if (saved && _activeChat.value?.first?.matchId == current.first.matchId) {
+                _activeChat.value = Pair(
+                    current.first.copy(disappearingTimerSeconds = seconds),
+                    current.second
+                )
+            }
             _toastMessage.emit(
                 if (saved) "Disappearing message timer updated." else "Couldn't update the disappearing timer."
             )
