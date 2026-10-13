@@ -104,7 +104,21 @@ fun EditProfileDialog(
                     unsyncedAvatarSlots = unsyncedAvatarSlots + targetSlot
                     val remoteUrl = com.example.util.ProfileAvatarStorageManager.uploadPreparedAvatar(prepared)
                     if (remoteUrl.isNullOrBlank()) {
-                        android.widget.Toast.makeText(context, "Compressed photo is cached locally, but upload failed. Retry this photo before saving.", android.widget.Toast.LENGTH_LONG).show()
+                        // Do not keep a staged plaintext file after upload failure; the user can
+                        // choose the image again, while the last successfully uploaded avatar stays.
+                        prepared.file.delete()
+                        prepared.encryptedFile?.delete()
+                        when (targetSlot) {
+                            1 -> photo1Preview = photo1
+                            2 -> photo2Preview = photo2
+                            3 -> photo3Preview = photo3
+                        }
+                        unsyncedAvatarSlots = unsyncedAvatarSlots - targetSlot
+                        android.widget.Toast.makeText(
+                            context,
+                            "Encrypted photo upload failed. Please choose the photo again.",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
                     } else {
                         // Keep only the encrypted storage reference after the plaintext staging file is removed.
                         when (targetSlot) {
