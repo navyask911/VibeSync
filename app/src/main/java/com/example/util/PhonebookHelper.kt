@@ -7,20 +7,17 @@ import android.provider.ContactsContract
 import android.util.Log
 import com.example.data.model.PhoneContact
 import com.example.data.model.ProfileEntity
-import java.security.MessageDigest
 import java.util.UUID
 
 /**
  * PhonebookHelper
  *
- * Provides robust phone number normalization enforcing E.164 formatting,
- * 16-character SHA-256 hash generation for the matching engine,
- * and zero-cost address book matching against registered Firestore profiles.
+ * Reads local device contacts and matches normalized E.164 phone identities.
+ * New remote contact discovery is routed through the authenticated Supabase HTTPS RPC.
  */
 object PhonebookHelper {
 
     private const val TAG = "PhonebookHelper"
-    const val HASH_LENGTH = 16
     const val DEFAULT_COUNTRY_CODE = "+91"
 
     const val DEFAULT_INVITE_MESSAGE =
@@ -31,30 +28,39 @@ object PhonebookHelper {
      * and enforces E.164 formatting (+country_code followed by digits).
      */
     fun normalizeToE164(rawPhone: String, defaultCountryCode: String = DEFAULT_COUNTRY_CODE): String {
-        return PhonebookHasher.normalizeToE164(rawPhone, defaultCountryCode)
+        if (rawPhone.isBlank()) return ""
+        val trimmed = rawPhone.trim()
+        val digits = trimmed.filter { it.isDigit() }
+        if (digits.isBlank()) return ""
+        val countryDigits = defaultCountryCode.filter { it.isDigit() }.ifBlank { "91" }
+        val internationalDigits = when {
+            digits.startsWith("00") && digits.length > 2 -> digits.drop(2)
+            digits.length == 11 && digits.startsWith("0") -> countryDigits + digits.drop(1)
+            digits.length == 10 -> countryDigits + digits
+            else -> digits
+        }
+        if (internationalDigits.length !in 8..15 || internationalDigits.startsWith("0")) return ""
+        return "+$internationalDigits"
     }
 
     /**
      * Resilient phone comparison that handles prefixes (+91, 0, none), spacing, dashes, and formats.
      */
     fun arePhonesMatching(phone1: String?, phone2: String?): Boolean {
-        return PhonebookHasher.arePhonesMatching(phone1, phone2)
+        if (phone1.isNullOrBlank() || phone2.isNullOrBlank()) return false
+        val first = normalizeToE164(phone1)
+        val second = normalizeToE164(phone2)
+        return first.isNotBlank() && first == second
     }
 
-    /**
-     * Generates a 16-character truncated SHA-256 hash of the E.164 normalized phone number.
-     * Consistently set to exactly 16 characters for the matching engine.
-     */
-    fun generatePhoneHash(rawPhone: String, defaultCountryCode: String = DEFAULT_COUNTRY_CODE): String {
-        return PhonebookHasher.generate16CharHash(rawPhone, defaultCountryCode)
-    }
+    /** Compatibility alias: returns normalized E.164 text, never a cryptographic hash. */
+    @Deprecated("Use normalizeToE164; contact matching no longer hashes phone numbers")
+    fun generatePhoneHash(rawPhone: String, defaultCountryCode: String = DEFAULT_COUNTRY_CODE): String =
+        normalizeToE164(rawPhone, defaultCountryCode)
 
-    /**
-     * Backward-compatible helper for hash generation.
-     */
-    fun getPhoneHash(rawPhone: String): String {
-        return generatePhoneHash(rawPhone)
-    }
+    /** Compatibility alias retained while legacy local Room rows are upgraded. */
+    @Deprecated("Use normalizeToE164; contact matching no longer hashes phone numbers")
+    fun getPhoneHash(rawPhone: String): String = normalizeToE164(rawPhone)
 
     /**
      * Reads contacts from Android device ContactsContract if permission is granted.
@@ -88,7 +94,7 @@ object PhonebookHelper {
 
                     if (normalizedE164.isNotBlank() && seenNumbers.add(normalizedE164)) {
                         val uniqueContactId = "c_${id}_${normalizedE164.filter { it.isDigit() }}"
-                        val hash16 = generatePhoneHash(normalizedE164)
+                        val hash16 = normalizeToE164(normalizedE164)
                         contacts.add(
                             PhoneContact(
                                 id = uniqueContactId,
@@ -119,7 +125,7 @@ object PhonebookHelper {
                 vibeSyncProfileId = "prof_maya_1",
                 avatarEmoji = "🎨",
                 statusTagline = "Working on ceramic sculptures • Online",
-                phoneHash = generatePhoneHash("+1 555-0142")
+                phoneHash = normalizeToE164("+1 555-0142")
             ),
             PhoneContact(
                 id = "phone_contact_2",
@@ -129,7 +135,7 @@ object PhonebookHelper {
                 vibeSyncProfileId = "prof_liam_2",
                 avatarEmoji = "☕",
                 statusTagline = "Specialty coffee roaster ☕ • Available on VibeSync",
-                phoneHash = generatePhoneHash("+1 555-0187")
+                phoneHash = normalizeToE164("+1 555-0187")
             ),
             PhoneContact(
                 id = "phone_contact_3",
@@ -139,7 +145,7 @@ object PhonebookHelper {
                 vibeSyncProfileId = "prof_chloe_3",
                 avatarEmoji = "🌿",
                 statusTagline = "Nature photography & trail running • Active",
-                phoneHash = generatePhoneHash("+1 555-0193")
+                phoneHash = normalizeToE164("+1 555-0193")
             ),
             PhoneContact(
                 id = "phone_contact_4",
@@ -149,7 +155,7 @@ object PhonebookHelper {
                 vibeSyncProfileId = "prof_ethan_4",
                 avatarEmoji = "🎸",
                 statusTagline = "Indie music producer & songwriter • Online",
-                phoneHash = generatePhoneHash("+1 555-0164")
+                phoneHash = normalizeToE164("+1 555-0164")
             ),
             PhoneContact(
                 id = "phone_contact_5",
@@ -159,7 +165,7 @@ object PhonebookHelper {
                 vibeSyncProfileId = "prof_aria_5",
                 avatarEmoji = "📚",
                 statusTagline = "Literature professor & bookstore explorer • Online",
-                phoneHash = generatePhoneHash("+1 555-0115")
+                phoneHash = normalizeToE164("+1 555-0115")
             ),
             PhoneContact(
                 id = "phone_contact_6",
@@ -167,7 +173,7 @@ object PhonebookHelper {
                 phoneNumber = "+1 555-0128",
                 isOnVibeSync = false,
                 statusTagline = "Not yet on VibeSync",
-                phoneHash = generatePhoneHash("+1 555-0128")
+                phoneHash = normalizeToE164("+1 555-0128")
             ),
             PhoneContact(
                 id = "phone_contact_7",
@@ -175,7 +181,7 @@ object PhonebookHelper {
                 phoneNumber = "+1 555-0176",
                 isOnVibeSync = false,
                 statusTagline = "Not yet on VibeSync",
-                phoneHash = generatePhoneHash("+1 555-0176")
+                phoneHash = normalizeToE164("+1 555-0176")
             ),
             PhoneContact(
                 id = "phone_contact_8",
@@ -183,7 +189,7 @@ object PhonebookHelper {
                 phoneNumber = "+1 555-0133",
                 isOnVibeSync = false,
                 statusTagline = "Not yet on VibeSync",
-                phoneHash = generatePhoneHash("+1 555-0133")
+                phoneHash = normalizeToE164("+1 555-0133")
             ),
             PhoneContact(
                 id = "phone_contact_9",
@@ -191,7 +197,7 @@ object PhonebookHelper {
                 phoneNumber = "+1 555-0158",
                 isOnVibeSync = false,
                 statusTagline = "Not yet on VibeSync",
-                phoneHash = generatePhoneHash("+1 555-0158")
+                phoneHash = normalizeToE164("+1 555-0158")
             ),
             PhoneContact(
                 id = "phone_contact_10",
@@ -199,221 +205,97 @@ object PhonebookHelper {
                 phoneNumber = "+1 555-0199",
                 isOnVibeSync = false,
                 statusTagline = "Not yet on VibeSync",
-                phoneHash = generatePhoneHash("+1 555-0199")
+                phoneHash = normalizeToE164("+1 555-0199")
             )
         )
     }
 
     /**
-     * Resolves the phonebook contacts list with zero-cost 16-character SHA-256 E.164 hash matching.
+     * Match phone contacts by normalized E.164 identity. Remote identity matches must already
+     * be returned by the authenticated Supabase RPC; this helper never computes lookup tokens.
      */
     fun matchPhoneContactsWithProfiles(
         rawContacts: List<PhoneContact>,
         availableProfiles: List<ProfileEntity>,
         registeredUsersMap: Map<String, ProfileEntity> = emptyMap(),
         myPhoneNumber: String = ""
-    ): List<PhoneContact> {
-        return filterAndMatchContactsWithVibeSync(rawContacts, availableProfiles, registeredUsersMap, myPhoneNumber)
-    }
+    ): List<PhoneContact> =
+        filterAndMatchContactsWithVibeSync(rawContacts, availableProfiles, registeredUsersMap, myPhoneNumber)
 
-    /**
-     * Resolves the phonebook contacts list with zero-cost 16-character SHA-256 E.164 hash matching.
-     */
     fun filterAndMatchContactsWithVibeSync(
         rawContacts: List<PhoneContact>,
         availableProfiles: List<ProfileEntity>,
         registeredUsersMap: Map<String, ProfileEntity> = emptyMap(),
         myPhoneNumber: String = ""
     ): List<PhoneContact> {
-        val myDigits = myPhoneNumber.filter { it.isDigit() }
-        val myPhone10 = if (myDigits.length >= 10) myDigits.takeLast(10) else myDigits
-
-        val filteredRawContacts = if (myPhone10.isNotBlank()) {
-            rawContacts.filterNot { contact ->
-                val cDigits = contact.phoneNumber.filter { it.isDigit() }
-                val c10 = if (cDigits.length >= 10) cDigits.takeLast(10) else cDigits
-                c10.isNotBlank() && c10 == myPhone10
-            }
-        } else {
-            rawContacts
+        val selfPhone = normalizeToE164(myPhoneNumber)
+        val contacts = rawContacts.filterNot { selfPhone.isNotBlank() && normalizeToE164(it.phoneNumber) == selfPhone }
+        val profiles = (availableProfiles + registeredUsersMap.values).distinctBy { it.id }
+        val byPhone = mutableMapOf<String, ProfileEntity>()
+        val byId = profiles.filter { it.id.isNotBlank() }.associateBy { it.id }.toMutableMap()
+        profiles.forEach { profile ->
+            val phone = normalizeToE164(profile.phoneNumber.ifBlank { profile.phoneHash })
+            if (phone.isNotBlank()) byPhone.putIfAbsent(phone, profile)
+        }
+        registeredUsersMap.forEach { (key, profile) ->
+            val phone = normalizeToE164(key)
+            if (phone.isNotBlank()) byPhone.putIfAbsent(phone, profile)
+            if (profile.id.isNotBlank()) byId.putIfAbsent(profile.id, profile)
         }
 
-        val exactPhoneMap = mutableMapOf<String, ProfileEntity>()
-        val phone10Map = mutableMapOf<String, ProfileEntity>()
-        val nameMap = mutableMapOf<String, ProfileEntity>()
-
-        fun indexProfile(profile: ProfileEntity) {
-            val n = profile.name.trim().lowercase()
-            if (n.isNotBlank() && n != "vibesync user" && n != "registered user") {
-                nameMap.putIfAbsent(n, profile)
-            }
-
-            // Zero-Knowledge 16-char E.164 Hash Indexing
-            if (profile.phoneNumber.isNotBlank()) {
-                val hashes = PhonebookHasher.getAllMatchHashes(profile.phoneNumber)
-                for (h in hashes) {
-                    exactPhoneMap.putIfAbsent(h, profile)
-                }
-            }
-
-            if (profile.id.length == 16) {
-                exactPhoneMap.putIfAbsent(profile.id, profile)
-            }
-
-            val idHashes = PhonebookHasher.getAllMatchHashes(profile.id)
-            for (h in idHashes) {
-                exactPhoneMap.putIfAbsent(h, profile)
-            }
-
-            val idDigits = profile.id.filter { it.isDigit() }
-            if (idDigits.isNotBlank()) {
-                exactPhoneMap.putIfAbsent(idDigits, profile)
-                if (idDigits.length >= 10) {
-                    phone10Map.putIfAbsent(idDigits.takeLast(10), profile)
-                }
-            }
-
-            val phoneDigits = profile.phoneNumber.filter { it.isDigit() }
-            if (phoneDigits.isNotBlank()) {
-                exactPhoneMap.putIfAbsent(phoneDigits, profile)
-                if (phoneDigits.length >= 10) {
-                    phone10Map.putIfAbsent(phoneDigits.takeLast(10), profile)
-                }
-            }
-
-            if (profile.phoneNumber.isNotBlank()) {
-                exactPhoneMap.putIfAbsent(profile.phoneNumber.trim(), profile)
-                val cleanWithoutPlus = profile.phoneNumber.replace("+", "").trim()
-                if (cleanWithoutPlus.isNotBlank()) {
-                    exactPhoneMap.putIfAbsent(cleanWithoutPlus, profile)
-                }
-            }
-            if (profile.email.isNotBlank()) {
-                exactPhoneMap.putIfAbsent(profile.email.trim().lowercase(), profile)
-            }
-        }
-
-        // 1. Index local Room profiles
-        for (profile in availableProfiles) {
-            indexProfile(profile)
-        }
-
-        // 2. Index registered Firestore users
-        for ((key, profile) in registeredUsersMap) {
-            indexProfile(profile)
-            val hashes = PhonebookHasher.getAllMatchHashes(key)
-            for (h in hashes) {
-                exactPhoneMap.putIfAbsent(h, profile)
-            }
-            val keyDigits = key.filter { it.isDigit() }
-            if (keyDigits.isNotBlank()) {
-                exactPhoneMap.putIfAbsent(keyDigits, profile)
-                if (keyDigits.length >= 10) {
-                    phone10Map.putIfAbsent(keyDigits.takeLast(10), profile)
-                }
-            }
-        }
-
-        val resultContacts = filteredRawContacts.map { contact ->
-            val cleanDigits = contact.phoneNumber.filter { it.isDigit() }
-            val matchHashes = PhonebookHasher.getAllMatchHashes(contact.phoneNumber)
-
-            // Match against indexed 16-character SHA-256 hashes
-            var matchedProfile: ProfileEntity? = null
-            for (h in matchHashes) {
-                matchedProfile = exactPhoneMap[h]
-                if (matchedProfile != null) break
-            }
-
-            // Fallback matching against digits, 10-digit national, email, or name
-            if (matchedProfile == null) {
-                matchedProfile = exactPhoneMap[cleanDigits]
-                    ?: (if (cleanDigits.length >= 10) phone10Map[cleanDigits.takeLast(10)] else null)
-                    ?: exactPhoneMap[contact.phoneNumber.trim()]
-                    ?: (if (contact.email.isNotBlank()) exactPhoneMap[contact.email.trim().lowercase()] else null)
-                    ?: nameMap[contact.name.trim().lowercase()]
-            }
-
-            val finalName = ContactResolver.getDisplayName(contact.phoneNumber.ifBlank { contact.id }, contact.name)
-            val finalHash = PhonebookHasher.generate16CharHash(contact.phoneNumber)
-
-            if (matchedProfile != null) {
-                contact.copy(
-                    name = finalName,
-                    isOnVibeSync = true,
-                    vibeSyncProfileId = matchedProfile.id,
-                    vibeSyncUser = matchedProfile,
-                    avatarEmoji = matchedProfile.avatarEmoji.ifBlank { "✨" },
-                    photoUrl = matchedProfile.avatarUrl,
-                    statusTagline = "${matchedProfile.relationshipGoal.ifBlank { "Available on VibeSync" }} • ${matchedProfile.city.ifBlank { "Active" }}",
-                    phoneHash = finalHash
-                )
+        val results = contacts.map { contact ->
+            val phone = normalizeToE164(contact.phoneNumber)
+            val match = byPhone[phone] ?: contact.vibeSyncProfileId?.let { byId[it] }
+            val displayName = ContactResolver.getDisplayName(contact.phoneNumber.ifBlank { contact.id }, contact.name)
+            if (match == null) {
+                contact.copy(name = displayName, isOnVibeSync = false, phoneHash = phone, vibeSyncUser = null)
             } else {
-                contact.copy(name = finalName, phoneHash = finalHash)
+                contact.copy(
+                    name = displayName,
+                    isOnVibeSync = true,
+                    vibeSyncProfileId = match.id,
+                    vibeSyncUser = match,
+                    avatarEmoji = match.avatarEmoji.ifBlank { "✨" },
+                    photoUrl = match.avatarUrl,
+                    statusTagline = match.bio.ifBlank { "Available on VibeSync" },
+                    phoneHash = phone
+                )
             }
         }.toMutableList()
 
-        // 3. Ensure any registered Firestore / app profile is discoverable in the contact list (EXCEPT self profile)
-        val seenIds = resultContacts.mapNotNull { it.vibeSyncProfileId }.toMutableSet()
-        val seenPhones = resultContacts.map { it.phoneNumber.filter { d -> d.isDigit() }.takeLast(10) }.filter { it.length == 10 }.toMutableSet()
-
-        val allCandidateProfiles = (availableProfiles + registeredUsersMap.values).distinctBy { it.id }
-        for (profile in allCandidateProfiles) {
-            val profPhone10 = profile.phoneNumber.filter { it.isDigit() }.takeLast(10)
-            val profId10 = profile.id.filter { it.isDigit() }.takeLast(10)
-            val isSelfNumber = (myPhone10.length >= 10) && (profPhone10 == myPhone10 || profId10 == myPhone10)
-
-            val isAlreadyPresent = (profPhone10.length == 10 && seenPhones.contains(profPhone10)) ||
-                    (profId10.length == 10 && seenPhones.contains(profId10)) ||
-                    seenIds.contains(profile.id)
-
-            if (!isSelfNumber && profile.id != "current_user" && !profile.id.startsWith("current_user") && !profile.id.startsWith("seed_") && !profile.id.startsWith("demo_") && !isAlreadyPresent) {
-                seenIds.add(profile.id)
-                if (profPhone10.length == 10) seenPhones.add(profPhone10)
-
-                // Match against saved address book to prefer user's saved contact name
-                val savedContact = filteredRawContacts.firstOrNull { raw ->
-                    val raw10 = raw.phoneNumber.filter { it.isDigit() }.takeLast(10)
-                    (profPhone10.length == 10 && raw10 == profPhone10) ||
-                    (profId10.length == 10 && raw10 == profId10) ||
-                    (raw.phoneNumber.isNotBlank() && profile.phoneNumber.isNotBlank() && raw.phoneNumber.trim() == profile.phoneNumber.trim())
-                }
-
-                val finalDisplayName = ContactResolver.getDisplayName(
-                    profile.phoneNumber.ifBlank { profile.id },
-                    savedContact?.name ?: profile.name
-                )
-                val profHash = PhonebookHasher.generate16CharHash(profile.phoneNumber.ifBlank { profile.id })
-
-                resultContacts.add(
+        val seenIds = results.mapNotNull { it.vibeSyncProfileId }.toMutableSet()
+        val seenPhones = results.map { normalizeToE164(it.phoneNumber) }.filter { it.isNotBlank() }.toMutableSet()
+        for (profile in profiles) {
+            val phone = normalizeToE164(profile.phoneNumber.ifBlank { profile.phoneHash })
+            val isSelf = selfPhone.isNotBlank() && selfPhone == phone
+            val present = seenIds.contains(profile.id) || (phone.isNotBlank() && seenPhones.contains(phone))
+            if (!isSelf && profile.id.isNotBlank() && profile.id != "current_user" &&
+                !profile.id.startsWith("seed_") && !profile.id.startsWith("demo_") && !present
+            ) {
+                val saved = contacts.firstOrNull { normalizeToE164(it.phoneNumber) == phone }
+                results.add(
                     0,
                     PhoneContact(
                         id = "reg_${profile.id}",
-                        name = finalDisplayName,
-                        phoneNumber = profile.phoneNumber.ifBlank { profile.id },
+                        name = ContactResolver.getDisplayName(phone.ifBlank { profile.id }, saved?.name ?: profile.name),
+                        phoneNumber = phone,
                         email = profile.email,
                         isOnVibeSync = true,
                         vibeSyncProfileId = profile.id,
                         vibeSyncUser = profile,
                         avatarEmoji = profile.avatarEmoji.ifBlank { "✨" },
                         photoUrl = profile.avatarUrl,
-                        statusTagline = "${profile.relationshipGoal.ifBlank { "Available on VibeSync" }} • ${profile.city.ifBlank { "Active" }}",
-                        phoneHash = profHash
+                        statusTagline = profile.bio.ifBlank { "Available on VibeSync" },
+                        phoneHash = phone
                     )
                 )
+                seenIds.add(profile.id)
+                if (phone.isNotBlank()) seenPhones.add(phone)
             }
         }
-
-        // Sort: VibeSync users first (alphabetical), then non-users (alphabetical)
-        return resultContacts.sortedWith(
-            compareByDescending<PhoneContact> { it.isOnVibeSync }
-                .thenBy { it.name.lowercase() }
-        )
+        return results.sortedWith(compareByDescending<PhoneContact> { it.isOnVibeSync }.thenBy { it.name.lowercase() })
     }
 
-    /**
-     * Launches direct messaging invitation with pre-filled VibeSync invitation text.
-     */
     fun sendInstantMessagingInvite(context: Context, phoneNumber: String, message: String = DEFAULT_INVITE_MESSAGE): Boolean {
         return try {
             val sendIntent = Intent(Intent.ACTION_SEND).apply {

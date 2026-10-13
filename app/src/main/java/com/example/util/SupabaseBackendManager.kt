@@ -829,62 +829,14 @@ object SupabaseBackendManager {
     }
 
     /**
-     * Fetches public identity keyset handle for contact from Supabase profiles table.
-     * Invoked when Tink decryption failure signals a possible keyset mismatch or rotation.
+     * Resolves a phone number through the authenticated HTTPS contact RPC, then fetches the
+     * recipient's Tink public key using the resulting canonical profile ID.
      */
-    suspend fun fetchPublicKeyForPhone(phoneNumber: String): String? =
-        withContext(Dispatchers.IO) {
-            try {
-                val hash = PhonebookHasher.hashPhoneNumberToHex(phoneNumber)
-                if (hash.length != 64) return@withContext null
-                val body = JSONObject().put("p_hash", hash)
-                    .toString().toRequestBody("application/json".toMediaType())
-                val request = Request.Builder()
-                    .url("$SUPABASE_URL/rest/v1/rpc/get_public_identity_key_by_phone_hash")
-                    .header("apikey", SUPABASE_ANON_KEY)
-                    .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_ANON_KEY)}")
-                    .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
-                    .header("Content-Type", "application/json")
-                    .post(body)
-                    .build()
-                httpClient.newCall(request).execute().use { response ->
-                    val rawBody = response.body?.string().orEmpty()
-                    if (!response.isSuccessful) {
-                        Log.e("TinkE2EE", "Phone-hash public-key RPC failed: HTTP ${response.code}; raw_response=${rawBody}")
-                        return@withContext null
-                    }
-                    val keyset = TinkCryptoManager.decodePostgrestTextValue(rawBody)
-                    if (keyset.isBlank()) {
-                        Log.w("TinkE2EE", "Phone-hash public-key RPC returned empty/null: raw_response=${rawBody}; decoded_value=${keyset}")
-                        return@withContext null
-                    }
-                    if (!TinkCryptoManager.validatePublicKeysetJson(keyset)) {
-                        Log.e("TinkE2EE", "Phone-hash RPC returned an invalid Tink keyset: raw_response=${rawBody}; decoded_value=${keyset}")
-                        return@withContext null
-                    }
-                    Log.i("TinkE2EE", "Phone-hash key lookup returned a valid Tink public keyset (chars=${keyset.length}).")
-                    keyset
-                }
-            } catch (e: Exception) {
-                Log.e("TinkE2EE", "Public key lookup exception: ${e.javaClass.simpleName}: ${e.message}", e)
-                null
-            }
-        }
-
-
-    private fun broadcastUpdateStatus(record: JSONObject) {
-        try {
-            val broadcastMsg = JSONObject().apply {
-                put("topic", CHAT_REALTIME_TOPIC)
-                put("event", "broadcast")
-                put("payload", JSONObject().apply {
-                    put("type", "UPDATE")
-                    put("record", record)
-                })
-                put("ref", "bc_up_${System.currentTimeMillis()}")
-            }
-            realtimeWebSocket?.send(broadcastMsg.toString())
-        } catch (_: Exception) {}
+    suspend fun fetchPublicKeyForPhone(phoneNumber: String): String? = withContext(Dispatchers.IO) {
+        val profileId = SupabaseClientManager.resolveProfileIdByPhoneNumber(phoneNumber)
+            ?.takeIf { it.isNotBlank() }
+            ?: return@withContext null
+        SupabaseClientManager.fetchPublicIdentityKey(profileId)
     }
 
     /**
