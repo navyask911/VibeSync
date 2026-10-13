@@ -29,6 +29,7 @@ internal object EncryptedDatabaseBootstrap {
             }
         }
         val databaseFile = context.getDatabasePath(DATABASE_NAME)
+        ensureDirectory(databaseFile.parentFile)
         val encryptedTemporaryFile = File(
             databaseFile.parentFile,
             DATABASE_NAME + ENCRYPTED_TEMP_SUFFIX
@@ -47,7 +48,31 @@ internal object EncryptedDatabaseBootstrap {
         }
 
         if (isReadablePlaintextDatabase(databaseFile)) {
-            migratePlaintextDatabase(databaseFile, encryptedTemporaryFile, passphrase)
+            // A first ATTACH can fail transiently if Android has just recreated app-private
+            // database storage. Retry once only while the original plaintext file is still
+            // readable and intact. Never fall back to opening it without SQLCipher.
+            var firstFailure: Throwable? = null
+            repeat(2) { attempt ->
+                try {
+                    migratePlaintextDatabase(databaseFile, encryptedTemporaryFile, passphrase)
+                    return
+                } catch (failure: Throwable) {
+                    val sourceStillIntact = databaseFile.isFile &&
+                        isReadablePlaintextDatabase(databaseFile)
+                    if (attempt == 0 && sourceStillIntact) {
+                        firstFailure = failure
+                    } else {
+                        firstFailure?.let { previous ->
+                            if (previous !== failure) failure.addSuppressed(previous)
+                        }
+                        throw IllegalStateException(
+                            "Could not securely encrypt the existing VibeSync database. " +
+                                "The original database was preserved; no plaintext fallback was opened.",
+                            failure
+                        )
+                    }
+                }
+            }
         } else {
             // An encrypted/corrupt file which cannot be authenticated must not be replaced with
             // a fresh Room database: that would silently discard locally received messages.
@@ -66,12 +91,22 @@ internal object EncryptedDatabaseBootstrap {
         encryptedFile: File,
         passphrase: ByteArray
     ) {
+        ensureDirectory(encryptedFile.parentFile)
         if (encryptedFile.exists()) {
             check(encryptedFile.delete()) {
                 "Could not reset an interrupted SQLCipher conversion file."
             }
         }
         removeSidecars(encryptedFile)
+        // ATTACH should not have to create a missing file under a missing/unwritable parent.
+        // createNewFile() keeps this temporary database in the app-private databases directory.
+        check(encryptedFile.createNewFile()) {
+            "Could not create the temporary SQLCipher database file."
+        }
+        check(encryptedFile.setReadable(true, true) && encryptedFile.setWritable(true, true) &&
+            encryptedFile.canWrite()) {
+            "Could not set app-private read/write permissions on the temporary SQLCipher database."
+        }
 
         var source: SqlCipherSQLiteDatabase? = null
         var attached = false
@@ -90,10 +125,17 @@ internal object EncryptedDatabaseBootstrap {
             originalVersion = source.version
             expectedRowCounts = tableRowCounts(source)
 
-            val passphraseText = String(passphrase, StandardCharsets.UTF_8)
+            val passphraseText = String(passphrase, StandardCharsets.US_ASCII)
+            check(passphraseText.length == 64 && passphraseText.all {
+                it in '0'..'9' || it in 'a'..'f'
+            }) {
+                "The SQLCipher passphrase has an unexpected encoding."
+            }
+            // ATTACH accepts SQL string literals; escape the filesystem path and keep the
+            // validated hex passphrase literal out of logs. The destination file already exists.
+            val escapedDestinationPath = encryptedFile.absolutePath.replace("'", "''")
             source.execSQL(
-                "ATTACH DATABASE ? AS encrypted KEY ?",
-                arrayOf<Any>(encryptedFile.absolutePath, passphraseText)
+                "ATTACH DATABASE '$escapedDestinationPath' AS encrypted KEY '$passphraseText'"
             )
             attached = true
             source.rawExecSQL("SELECT sqlcipher_export('encrypted');")
@@ -133,6 +175,25 @@ internal object EncryptedDatabaseBootstrap {
             }
             removeSidecars(encryptedFile)
         } catch (failure: Throwable) {
+            // If the source was deleted but the validated encrypted temp could not be renamed,
+            // immediately attempt recovery rather than forcing an avoidable second-launch crash.
+            if (!sourceFile.exists() && encryptedFile.isFile) {
+                try {
+                    validateEncryptedDatabase(
+                        encryptedFile,
+                        passphrase,
+                        expectedRowCounts,
+                        originalVersion
+                    )
+                    check(encryptedFile.renameTo(sourceFile)) {
+                        "Could not recover the verified encrypted database into its final path."
+                    }
+                    removeSidecars(encryptedFile)
+                    return
+                } catch (recoveryFailure: Throwable) {
+                    if (recoveryFailure !== failure) failure.addSuppressed(recoveryFailure)
+                }
+            }
             throw IllegalStateException(
                 "SQLCipher migration could not finish. The database was not intentionally discarded.",
                 failure
@@ -212,6 +273,20 @@ internal object EncryptedDatabaseBootstrap {
             counts[name] = count
         }
         return counts
+    }
+
+    private fun ensureDirectory(directory: File?) {
+        check(directory != null) {
+            "The SQLCipher database directory path is unavailable."
+        }
+        if (!directory.exists()) {
+            check(directory.mkdirs() || directory.isDirectory) {
+                "Could not create the app-private SQLCipher database directory."
+            }
+        }
+        check(directory.isDirectory && directory.canWrite()) {
+            "The app-private SQLCipher database directory is not writable."
+        }
     }
 
     private fun removeSidecars(databaseFile: File) {
