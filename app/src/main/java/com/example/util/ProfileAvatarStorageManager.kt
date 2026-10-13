@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.net.Uri
+import android.util.LruCache
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -19,6 +20,11 @@ object ProfileAvatarStorageManager {
     private const val MAX_BYTES = 150_000
     private const val INITIAL_QUALITY = 80
     private const val TAG = "ProfileAvatarStorage"
+    // Bounded process-memory cache for decrypted images. No plaintext avatar files are written.
+    private val decryptedBitmapCache = object : LruCache<String, Bitmap>(8 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap): Int =
+            (value.byteCount / 1024).coerceAtLeast(1)
+    }
 
     /** A bounded JPEG staged in internal cache and ready for immediate Coil rendering. */
     data class PreparedAvatar(
@@ -159,31 +165,45 @@ object ProfileAvatarStorageManager {
         return owner to (parts.getOrNull(1)?.toIntOrNull()?.coerceIn(1, 3) ?: 1)
     }
 
-    suspend fun resolveAvatarForDisplay(context: Context, reference: String, cacheVersion: Long = 0L): String? =
-        withContext(Dispatchers.IO) {
-            val ownerAndSlot = encryptedRefParts(reference)
-                ?: return@withContext reference.takeIf { it.isNotBlank() }
-            val (ownerId, slot) = ownerAndSlot
-            val dir = File(context.cacheDir, "decrypted_avatars").apply { mkdirs() }
-            val localFile = File(dir, safeHash(ownerId + ":" + slot + ":" + cacheVersion) + ".jpg")
-            if (localFile.isFile && localFile.length() > 0L) return@withContext Uri.fromFile(localFile).toString()
+    /**
+     * Decrypt an avatar directly into a Bitmap held in a bounded in-memory cache. Plaintext bytes
+     * are zeroed after decode; tag failures and stale keys return null without crashing Compose.
+     */
+    suspend fun resolveAvatarForDisplay(
+        context: Context,
+        reference: String,
+        cacheVersion: Long = 0L
+    ): Bitmap? = withContext(Dispatchers.IO) {
+        val ownerAndSlot = encryptedRefParts(reference) ?: return@withContext null
+        val (ownerId, slot) = ownerAndSlot
+        val cacheKey = "$ownerId:$slot:$cacheVersion"
+        val cached = synchronized(decryptedBitmapCache) { decryptedBitmapCache.get(cacheKey) }
+        if (cached != null) return@withContext cached
+
+        try {
+            val ciphertext = SupabaseClientManager.downloadEncryptedProfileAvatar(ownerId, slot)
+                ?: return@withContext null
+            val plaintext = ProfileKeyManager.decryptAvatar(context, ownerId, slot, ciphertext)
+                ?: return@withContext null
             try {
-                val ciphertext = SupabaseClientManager.downloadEncryptedProfileAvatar(ownerId, slot)
+                val bitmap = BitmapFactory.decodeByteArray(plaintext, 0, plaintext.size)
                     ?: return@withContext null
-                val plaintext = ProfileKeyManager.decryptAvatar(context, ownerId, slot, ciphertext)
-                    ?: return@withContext null
-                val temporary = File(dir, localFile.name + ".tmp")
-                temporary.outputStream().use { output -> output.write(plaintext); output.flush() }
-                if (!temporary.renameTo(localFile)) {
-                    temporary.copyTo(localFile, overwrite = true)
-                    temporary.delete()
+                synchronized(decryptedBitmapCache) {
+                    // Clear older versions of the same peer/slot after a successful refresh.
+                    decryptedBitmapCache.snapshot().keys
+                        .filter { it.startsWith("$ownerId:$slot:") && it != cacheKey }
+                        .forEach { decryptedBitmapCache.remove(it) }
+                    decryptedBitmapCache.put(cacheKey, bitmap)
                 }
-                Uri.fromFile(localFile).toString()
-            } catch (t: Throwable) {
-                Log.w(TAG, "Could not resolve encrypted profile avatar: " + t.javaClass.simpleName)
-                null
+                bitmap
+            } finally {
+                plaintext.fill(0)
             }
+        } catch (t: Throwable) {
+            Log.w(TAG, "Could not resolve encrypted profile avatar: " + t.javaClass.simpleName)
+            null
         }
+    }
 
     private fun decodeSampled(context: Context, uri: Uri): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
