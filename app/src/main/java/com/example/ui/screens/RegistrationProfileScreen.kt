@@ -303,7 +303,7 @@ fun RegistrationProfileScreen(
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
-                text = "Set up your public persona and zero-knowledge contact matching",
+                text = "Set up your public profile and encrypted HTTPS contact matching",
                 fontSize = 13.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -627,7 +627,7 @@ fun RegistrationProfileScreen(
 
             Spacer(modifier = Modifier.height(18.dp))
 
-            // 8. Discovery & Zero-Knowledge Contact Matching Toggle
+            // 8. Direct HTTPS Contact Matching Toggle
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(
@@ -683,7 +683,7 @@ fun RegistrationProfileScreen(
                 }
             }
 
-            // Zero-Knowledge Privacy Badge
+            // Encrypted HTTPS Contact Matching Disclosure
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -699,7 +699,7 @@ fun RegistrationProfileScreen(
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                    text = "Protected by Zero-Knowledge SHA-256 E2EE hashing",
+                    text = "Phone numbers sent securely over SSL/TLS (HTTPS)",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
