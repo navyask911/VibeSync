@@ -19,6 +19,12 @@ object ChatThreadPreferences {
     fun setWallpaperUri(context: Context, profileId: String, value: String) { preferences(context, profileId).edit().putString("wallpaper_uri", value.take(2048)).apply() }
     fun chatColorHex(context: Context, profileId: String): String = preferences(context, profileId).getString("chat_color_hex", "").orEmpty()
     fun setChatColorHex(context: Context, profileId: String, value: String) { preferences(context, profileId).edit().putString("chat_color_hex", value.take(16)).apply() }
+    fun pinnedMessageId(context: Context, profileId: String): String = preferences(context, profileId).getString("pinned_message_id", "").orEmpty()
+    fun setPinnedMessageId(context: Context, profileId: String, messageId: String?) {
+        preferences(context, profileId).edit().apply {
+            if (messageId.isNullOrBlank()) remove("pinned_message_id") else putString("pinned_message_id", messageId)
+        }.apply()
+    }
     fun soundUri(context: Context, profileId: String): String = preferences(context, profileId).getString("sound_uri", "").orEmpty()
     fun setSoundUri(context: Context, profileId: String, value: String) { preferences(context, profileId).edit().putString("sound_uri", value.take(2048)).apply() }
 }

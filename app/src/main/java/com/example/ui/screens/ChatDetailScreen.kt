@@ -256,6 +256,31 @@ fun isMessageOutgoing(
     return false
 }
 
+/** Resolve a user-visible message body for actions such as Copy without exposing ciphertext. */
+private fun resolvePlaintextForChatMessage(message: ChatMessageEntity): String {
+    val original = message.text
+    var text = original
+    val encryptedPrefix = text.startsWith("V2_SIG:") || text.startsWith("V1_ENC:") || text.startsWith("ENC:")
+    if (encryptedPrefix) {
+        text = com.example.util.MessageHandler.verifyAndDecryptPayload(message.senderId, text)
+        if (text == original || text.startsWith("V2_SIG:") || text.startsWith("V1_ENC:") || text.startsWith("ENC:")) return ""
+    }
+    if (text.startsWith("{") && text.endsWith("}")) {
+        try {
+            val json = org.json.JSONObject(text)
+            val extracted = sequenceOf("message_text", "text", "message", "content")
+                .map { json.optString(it, "") }
+                .firstOrNull { it.isNotBlank() }
+            if (extracted.isNullOrBlank()) return ""
+            text = extracted
+        } catch (_: Exception) {
+            return ""
+        }
+    }
+    if (text.startsWith("vibesync_event_", ignoreCase = true)) return ""
+    return text
+}
+
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun ChatDetailScreen(
@@ -727,7 +752,9 @@ private fun ChatDetailScreenContent(
     var forwardingMessage by remember { mutableStateOf<ChatMessageEntity?>(null) }
     var messageSelectionMode by remember { mutableStateOf(false) }
     val selectedMessageIds = remember { mutableStateListOf<String>() }
-    var pinnedMessageId by remember(profile.id, match?.matchId) { mutableStateOf<String?>(null) }
+    var pinnedMessageId by remember(profile.id, match?.matchId) {
+        mutableStateOf(com.example.util.ChatThreadPreferences.pinnedMessageId(context, profile.id).ifBlank { null })
+    }
     val clipboardManager = LocalClipboardManager.current
     // Intercept phone back button to dismiss child dialogs/sheets/selection first, or return to chat list
     BackHandler {
@@ -1014,9 +1041,14 @@ private fun ChatDetailScreenContent(
                                     val manager = context.getSystemService(android.content.pm.ShortcutManager::class.java)
                                     val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
                                     if (manager?.isRequestPinShortcutSupported == true && launchIntent != null) {
+                                        val chatShortcutIntent = Intent(context, com.example.MainActivity::class.java).apply {
+                                            action = Intent.ACTION_VIEW
+                                            data = Uri.parse("vibesync://chat?id=" + Uri.encode(profile.id))
+                                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                        }
                                         val shortcut = android.content.pm.ShortcutInfo.Builder(context, "vibesync-chat-" + profile.id.hashCode())
                                             .setShortLabel(resolvedPartnerName.take(24))
-                                            .setIntent(launchIntent)
+                                            .setIntent(chatShortcutIntent)
                                             .setIcon(android.graphics.drawable.Icon.createWithResource(context, context.applicationInfo.icon))
                                             .build()
                                         manager.requestPinShortcut(shortcut, null)
@@ -1266,7 +1298,10 @@ private fun ChatDetailScreenContent(
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                             }
-                            IconButton(onClick = { pinnedMessageId = null }, modifier = Modifier.size(34.dp)) {
+                            IconButton(onClick = {
+                                pinnedMessageId = null
+                                com.example.util.ChatThreadPreferences.setPinnedMessageId(context, profile.id, null)
+                            }, modifier = Modifier.size(34.dp)) {
                                 Icon(Icons.Default.Close, contentDescription = "Unpin message", modifier = Modifier.size(18.dp))
                             }
                         }
@@ -1336,7 +1371,12 @@ private fun ChatDetailScreenContent(
                                         selectedMessageForAction = null
                                     },
                                     onCopy = {
-                                        clipboardManager.setText(AnnotatedString(msg.text))
+                                        val plaintext = resolvePlaintextForChatMessage(msg)
+                                        if (plaintext.isNotBlank()) {
+                                            clipboardManager.setText(AnnotatedString(plaintext))
+                                        } else {
+                                            Toast.makeText(context, "This message could not be safely copied as plaintext.", Toast.LENGTH_SHORT).show()
+                                        }
                                         selectedMessageForAction = null
                                     },
                                     onSelect = {
@@ -1350,7 +1390,9 @@ private fun ChatDetailScreenContent(
                                         selectedMessageForAction = null
                                     },
                                     onPin = {
-                                        pinnedMessageId = if (pinnedMessageId == msg.messageId) null else msg.messageId
+                                        val nextPinnedId = if (pinnedMessageId == msg.messageId) null else msg.messageId
+                                        pinnedMessageId = nextPinnedId
+                                        com.example.util.ChatThreadPreferences.setPinnedMessageId(context, profile.id, nextPinnedId)
                                         selectedMessageForAction = null
                                     },
                                     onDelete = {
@@ -3994,9 +4036,11 @@ private fun ChatDetailScreenContent(
             onNickname = { showChatSettingsSheet = false; showNicknameDialog = true },
             onChatColor = { showChatSettingsSheet = false; showChatColorDialog = true },
             onWallpaper = {
+                showChatSettingsSheet = false
                 chatWallpaperPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
             },
             onNotificationSound = {
+                showChatSettingsSheet = false
                 val ringtoneIntent = Intent(android.media.RingtoneManager.ACTION_RINGTONE_PICKER).apply {
                     putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_TYPE, android.media.RingtoneManager.TYPE_NOTIFICATION)
                     putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_TITLE, "Choose this chat's notification sound")

@@ -209,6 +209,7 @@ fun DatingAppRoot(
     val allBusinesses by viewModel.allBusinesses.collectAsStateWithLifecycle()
     val allApiRequests by viewModel.allApiRequests.collectAsStateWithLifecycle()
     val pendingDeepLinkBizId by com.example.util.DeepLinkManager.pendingBusinessId.collectAsStateWithLifecycle()
+    val pendingDeepLinkChatProfileId by com.example.util.DeepLinkManager.pendingChatProfileId.collectAsStateWithLifecycle()
     var showInteractionsModal by remember { mutableStateOf(false) }
     var showNoteToSelf by remember { mutableStateOf(false) }
 
@@ -223,6 +224,12 @@ fun DatingAppRoot(
         pendingDeepLinkBizId?.let { bizId ->
             viewModel.openBusinessById(bizId)
             com.example.util.DeepLinkManager.setPendingBusinessId(null)
+        }
+    }
+    LaunchedEffect(pendingDeepLinkChatProfileId) {
+        pendingDeepLinkChatProfileId?.let { profileId ->
+            viewModel.startChatWithProfile(profileId)
+            com.example.util.DeepLinkManager.setPendingChatProfileId(null)
         }
     }
 
