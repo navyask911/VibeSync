@@ -221,14 +221,30 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     val inboundMetadata = org.json.JSONObject().apply { data.forEach { (key, value) -> put(key, value) } }
                     val aadParticipants = com.example.util.MessageHandler.resolveAadParticipantsFromPayload(inboundMetadata, currentProfileId)
                         ?: com.example.util.TinkCryptoManager.resolveAadParticipantIds(senderProfileId, receiverProfileId, pushMatchId, currentProfileId)
+                    val senderPhoneFallback = data["sender_phone"]?.trim().orEmpty().ifBlank { senderOrMatchId }
                     val senderIdentity = senderProfileId.ifBlank {
-                        aadParticipants?.let { if (currentProfileId.equals(it.first, true)) it.second else it.first } ?: data["sender_phone"] ?: senderOrMatchId
+                        aadParticipants
+                            ?.let { if (currentProfileId.equals(it.first, true)) it.second else it.first }
+                            ?.takeIf { it.isNotBlank() }
+                            ?: senderPhoneFallback
                     }
+                    val receiverPhoneFallback = data["receiver_phone"]?.trim().orEmpty()
                     val receiverIdentity = receiverProfileId.ifBlank {
-                        aadParticipants?.let { if (currentProfileId.equals(it.first, true) || currentProfileId.equals(it.second, true)) currentProfileId else it.second } ?: data["receiver_phone"].orEmpty()
+                        aadParticipants
+                            ?.let {
+                                if (currentProfileId.equals(it.first, true) || currentProfileId.equals(it.second, true)) currentProfileId
+                                else it.second
+                            }
+                            ?.takeIf { it.isNotBlank() }
+                            ?: receiverPhoneFallback
                     }
+                    // Room and encryption AAD must use participant profile IDs when available;
+                    // never turn a phone number into a synthetic recipient identity.
                     val senderRoomIdentity = senderProfileId.ifBlank {
-                        aadParticipants?.let { if (currentProfileId.equals(it.first, true)) it.second else it.first } ?: com.example.util.PhonebookHasher.normalizeToE164(senderIdentity).ifBlank { senderOrMatchId }
+                        aadParticipants
+                            ?.let { if (currentProfileId.equals(it.first, true)) it.second else it.first }
+                            ?.takeIf { it.isNotBlank() }
+                            ?: senderOrMatchId
                     }
                     val timestamp = data["timestamp"]?.toLongOrNull() ?: System.currentTimeMillis()
 
