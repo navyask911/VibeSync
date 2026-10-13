@@ -882,9 +882,14 @@ object SupabaseBackendManager {
         senderId: String,
         receiverId: String,
         messageText: String,
-        apiKey: String = "vbs_live_agent_9981"
+        apiKey: String = BuildConfig.VIBESYNC_AGENT_API_KEY.trim()
     ): Boolean = withContext(Dispatchers.IO) {
         try {
+            val effectiveApiKey = apiKey.trim()
+            if (effectiveApiKey.isBlank()) {
+                Log.w(TAG, "Multi-agent message not sent: VIBESYNC_AGENT_API_KEY is not configured.")
+                return@withContext false
+            }
             val payload = JSONObject().apply {
                 put("sender_id", senderId)
                 put("receiver_id", receiverId)
@@ -895,7 +900,7 @@ object SupabaseBackendManager {
             val body = payload.toString().toRequestBody("application/json".toMediaType())
             val request = Request.Builder()
                 .url("$SUPABASE_URL/functions/v1/send-message")
-                .header("x-api-key", apiKey)
+                .header("x-api-key", effectiveApiKey)
                 .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_ANON_KEY)}")
                 .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
                 .header("Content-Type", "application/json")

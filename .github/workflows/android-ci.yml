@@ -57,6 +57,7 @@ jobs:
           SUPABASE_URL_SECRET: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY_SECRET: ${{ secrets.SUPABASE_ANON_KEY }}
           GEMINI_API_KEY_SECRET: ${{ secrets.GEMINI_API_KEY }}
+          VIBESYNC_AGENT_API_KEY_SECRET: ${{ secrets.VIBESYNC_AGENT_API_KEY }}
           GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
         shell: bash
         run: |
@@ -69,22 +70,21 @@ jobs:
           import xml.etree.ElementTree as ET
           from pathlib import Path
 
-          defaults = {}
-          for raw in Path(".env.example").read_text(encoding="utf-8").splitlines():
-              line = raw.strip()
-              if not line or line.startswith("#") or "=" not in line:
-                  continue
-              key, value = line.split("=", 1)
-              defaults[key.strip()] = value.strip()
-
+          # Never fall back to project values from tracked files.
+          # Supabase config is mandatory; optional integrations stay disabled when blank.
           values = {
-              "SUPABASE_URL": os.environ.get("SUPABASE_URL_SECRET", "").strip() or defaults.get("SUPABASE_URL", ""),
-              "SUPABASE_ANON_KEY": os.environ.get("SUPABASE_ANON_KEY_SECRET", "").strip() or defaults.get("SUPABASE_ANON_KEY", ""),
-              "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY_SECRET", "").strip() or defaults.get("GEMINI_API_KEY", ""),
+              "SUPABASE_URL": os.environ.get("SUPABASE_URL_SECRET", "").strip(),
+              "SUPABASE_ANON_KEY": os.environ.get("SUPABASE_ANON_KEY_SECRET", "").strip(),
+              "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY_SECRET", "").strip(),
+              "VIBESYNC_AGENT_API_KEY": os.environ.get("VIBESYNC_AGENT_API_KEY_SECRET", "").strip(),
           }
-          for key, value in values.items():
+          for key in ("SUPABASE_URL", "SUPABASE_ANON_KEY"):
+              value = values[key]
               if not value or "\n" in value or "\r" in value:
-                  raise SystemExit(f"Invalid or missing build configuration: {key}")
+                  raise SystemExit(f"Missing or invalid required GitHub Secret: {key}")
+          for key, value in values.items():
+              if "\n" in value or "\r" in value:
+                  raise SystemExit(f"Invalid build configuration: {key}")
           if not values["SUPABASE_URL"].startswith("https://"):
               raise SystemExit("SUPABASE_URL must use HTTPS")
 
@@ -97,15 +97,14 @@ jobs:
 
           google_services = Path("app/google-services.json")
           supplied_json = "".join(os.environ.get("GOOGLE_SERVICES_JSON_BASE64", "").split())
-          if supplied_json:
-              try:
-                  decoded = base64.b64decode(supplied_json, validate=True)
-                  json.loads(decoded)
-              except Exception as exc:
-                  raise SystemExit("GOOGLE_SERVICES_JSON_BASE64 is not valid base64-encoded JSON") from exc
-              google_services.write_bytes(decoded)
-          if not google_services.is_file():
-              raise SystemExit("Missing app/google-services.json and GOOGLE_SERVICES_JSON_BASE64 secret")
+          if not supplied_json:
+              raise SystemExit("Missing required GitHub Secret: GOOGLE_SERVICES_JSON_BASE64")
+          try:
+              decoded = base64.b64decode(supplied_json, validate=True)
+              json.loads(decoded)
+          except Exception as exc:
+              raise SystemExit("GOOGLE_SERVICES_JSON_BASE64 is not valid base64-encoded JSON") from exc
+          google_services.write_bytes(decoded)
 
           package_match = re.search(r'applicationId\s*=\s*"([^"]+)"', Path("app/build.gradle.kts").read_text(encoding="utf-8"))
           if not package_match:
@@ -186,22 +185,25 @@ jobs:
       - name: Ensure Gradle wrapper is executable
         run: chmod +x ./gradlew
 
-      - name: Secret scan
+      - name: Secret scan and tracked credential-file guard
+        shell: bash
         run: |
-          set -o pipefail
-          if find . -type f \
-              \( -name "*.kt" -o -name "*.java" -o -name "*.kts" -o -name "*.gradle" -o -name "*.gradle.kts" -o -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.xml" -o -name "*.properties" \) \
-              ! -path "./.git/*" \
-              ! -path "./source-archive/*" \
-              ! -path "./.github/*" \
-              ! -path "./build/*" \
-              ! -path "./app/build/*" \
-              ! -path "./app/google-services.json" \
-              -print0 | xargs -0 -r grep -nH -E "\"private_key\"[[:space:]]*:[[:space:]]*\"-----BEGIN|AIzaSy[A-Za-z0-9_-]{30,}|sb_secret_[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{40,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}" 2>/dev/null; then
-            echo "Credential value pattern found in application source"
+          set -euo pipefail
+
+          forbidden_paths="$(git ls-files | grep -E '(^|/)(google-services\.json|[^/]*\.(jks|keystore|p12|pfx)|signing\.properties|keystore\.properties|local\.properties|secrets\.properties|supabase\.properties|\.env)$' || true)"
+          if [ -n "$forbidden_paths" ]; then
+            echo "Forbidden local credential/signing files are tracked:"
+            printf '%s\n' "$forbidden_paths"
             exit 1
           fi
 
+          pattern='"private_key"[[:space:]]*:[[:space:]]*"-----BEGIN|AIzaSy[A-Za-z0-9_-]{30,}|sb_secret_[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{40,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'
+          matches="$(git ls-files -z -- '*.kt' '*.java' '*.kts' '*.gradle' '*.js' '*.ts' '*.json' '*.xml' '*.properties' '*.yml' '*.yaml' '*.toml' '.env.example' | xargs -0 -r grep -IlE "$pattern" || true)"
+          if [ -n "$matches" ]; then
+            echo "Credential-like material detected in tracked files (paths only; values suppressed):"
+            printf '%s\n' "$matches"
+            exit 1
+          fi
       - name: Verify Truecaller wiring
         shell: bash
         run: |
@@ -210,16 +212,19 @@ jobs:
           grep -F 'applicationId = "com.aistudio.freedating.mkwvxq"' app/build.gradle.kts
           grep -F 'implementation("com.truecaller.android.sdk:truecaller-sdk:3.2.1")' app/build.gradle.kts
           grep -F 'android:name="com.truecaller.android.sdk.ClientId"' app/src/main/AndroidManifest.xml
-          grep -F 'android:value="qkpfffgkiebypf8hvifhkkknj2msgud5hfjqg_ti1wu"' app/src/main/AndroidManifest.xml
+          grep -F 'android:value="${truecallerClientId}"' app/src/main/AndroidManifest.xml
+          grep -F 'buildConfigField("String", "TRUECALLER_CLIENT_ID"' app/build.gradle.kts
+          grep -F 'manifestPlaceholders["truecallerClientId"] = truecallerClientId' app/build.gradle.kts
           grep -F '<string name="app_name">VIBESYNC</string>' app/src/main/res/values/strings.xml
           grep -F 'EXPECTED_PACKAGE = "com.aistudio.freedating.mkwvxq"' app/src/main/java/com/example/util/TruecallerVerificationClient.kt
-          grep -F 'EXPECTED_CLIENT_ID = "qkpfffgkiebypf8hvifhkkknj2msgud5hfjqg_ti1wu"' app/src/main/java/com/example/util/TruecallerVerificationClient.kt
+          grep -F 'EXPECTED_CLIENT_ID: String = BuildConfig.TRUECALLER_CLIENT_ID' app/src/main/java/com/example/util/TruecallerVerificationClient.kt
+          test -n "$VIBESYNC_TRUECALLER_CLIENT_ID"
           test ! -e app/src/main/java/com/example/ui/screens/OtpVerificationScreen.kt
           if grep -R -n -E 'SupabaseAuthManager|FirebaseAuthHelper|signInWithOtp|verifyOtp|/auth/v1/(otp|verify|token)|Supabase Auth owns|Supabase Auth is authoritative' app/src/main 2>/dev/null; then
             echo "Supabase Auth/SMS OTP login code must not remain in the Android app."
             exit 1
           fi
-          grep -F 'const val EXPECTED_CLIENT_ID = "qkpfffgkiebypf8hvifhkkknj2msgud5hfjqg_ti1wu"' app/src/main/java/com/example/util/TruecallerVerificationClient.kt
+          grep -F 'EXPECTED_CLIENT_ID: String = BuildConfig.TRUECALLER_CLIENT_ID' app/src/main/java/com/example/util/TruecallerVerificationClient.kt
           # The canonical backend is verify-truecaller; vibesync-truecaller-auth is retired.
           grep -F 'const TRUECALLER_CLIENT_ID = "qkpfffgkiebypf8hvifhkkknj2msgud5hfjqg_ti1wu"' supabase/functions/verify-truecaller/index.ts
           grep -F 'Deno.env.get("TRUECALLER_PARTNER_KEY")' supabase/functions/verify-truecaller/index.ts
@@ -246,15 +251,15 @@ jobs:
 
       - name: Prepare release signing
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 || secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
           set -euo pipefail
 
-          if [ -z "${KEYSTORE_BASE64:-}" ]; then
-            echo "KEYSTORE_BASE64 secret is required for the signed release gate."
+          if [ -z "${SIGNING_KEYSTORE_BASE64:-}" ]; then
+            echo "SIGNING_KEYSTORE_BASE64 secret is required (KEYSTORE_BASE64 is accepted temporarily for migration)."
             exit 1
           fi
 
@@ -271,7 +276,7 @@ jobs:
           EXPECTED_SHA256=$(normalize_fingerprint "$VIBESYNC_RELEASE_SHA256")
 
           KEYSTORE_FILE="${RUNNER_TEMP}/vibesync-release.jks"
-          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+          printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
           test -s "$KEYSTORE_FILE"
 
           SIGNING_ALIAS="${KEY_ALIAS:-upload}"
@@ -312,13 +317,37 @@ jobs:
           test "$CERT_SHA1" = "$EXPECTED_SHA1"
           test "$CERT_SHA256" = "$EXPECTED_SHA256"
 
+          # Only the temporary file path and verified alias persist between steps.
+          # Passwords are injected directly into Gradle's process environment below.
           echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
-          echo "STORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
-          echo "KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
           echo "KEY_ALIAS=$SIGNING_ALIAS" >> "$GITHUB_ENV"
 
       - name: Assemble signed release APK
-        run: ./gradlew assembleRelease
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The decoded keystore is deleted as soon as Gradle finishes signing.
+          trap 'rm -f "${RUNNER_TEMP}/vibesync-release.jks"' EXIT
+          if [ -z "${KEYSTORE_PASSWORD:-}" ] || [ -z "${KEY_PASSWORD:-}" ] || [ -z "${KEY_ALIAS:-}" ]; then
+            echo "KEYSTORE_PASSWORD, KEY_PASSWORD, and verified KEY_ALIAS are required."
+            exit 1
+          fi
+          ./gradlew assembleRelease
+
+      - name: Remove temporary secrets and generated configuration
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          KEYSTORE_FILE="${RUNNER_TEMP}/vibesync-release.jks"
+          if [ -f "$KEYSTORE_FILE" ]; then
+            shred -u "$KEYSTORE_FILE" 2>/dev/null || rm -f "$KEYSTORE_FILE"
+          fi
+          rm -f .env app/google-services.json
+          echo "Removed temporary keystore, .env and Google Services configuration."
 
       - name: Verify release APK
         shell: bash

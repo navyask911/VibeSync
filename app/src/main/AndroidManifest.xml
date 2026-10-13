@@ -102,7 +102,7 @@
 
         <meta-data
             android:name="com.truecaller.android.sdk.ClientId"
-            android:value="qkpfffgkiebypf8hvifhkkknj2msgud5hfjqg_ti1wu" />
+            android:value="${truecallerClientId}" />
 
         <!-- Firebase Cloud Messaging Service & Channel (Auto-init disabled to prevent emulator hard failure sync exceptions) -->
         <meta-data

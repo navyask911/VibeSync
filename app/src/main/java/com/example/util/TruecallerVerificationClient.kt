@@ -7,6 +7,7 @@ import android.os.Looper
 import android.util.Log
 import androidx.activity.result.ActivityResultLauncher
 import androidx.fragment.app.FragmentActivity
+import com.example.BuildConfig
 import com.truecaller.android.sdk.oAuth.CodeVerifierUtil
 import com.truecaller.android.sdk.oAuth.TcOAuthCallback
 import com.truecaller.android.sdk.oAuth.TcOAuthData
@@ -47,7 +48,7 @@ interface TruecallerVerificationClient {
 object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
     private const val TAG = "TruecallerVerification"
     private const val EXPECTED_PACKAGE = "com.aistudio.freedating.mkwvxq"
-    private const val EXPECTED_CLIENT_ID = "qkpfffgkiebypf8hvifhkkknj2msgud5hfjqg_ti1wu"
+    private val EXPECTED_CLIENT_ID: String = BuildConfig.TRUECALLER_CLIENT_ID
     private const val CLIENT_ID_METADATA = "com.truecaller.android.sdk.ClientId"
 
     private val secureRandom = SecureRandom()

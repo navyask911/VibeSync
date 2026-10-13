@@ -11,6 +11,16 @@ plugins {
   alias(libs.plugins.google.services)
 }
 
+// Truecaller Client ID is public OAuth client configuration (not the partner secret).
+// Supply it through VIBESYNC_TRUECALLER_CLIENT_ID or -PVIBESYNC_TRUECALLER_CLIENT_ID.
+val truecallerClientId = providers.environmentVariable("VIBESYNC_TRUECALLER_CLIENT_ID")
+  .orElse(providers.gradleProperty("VIBESYNC_TRUECALLER_CLIENT_ID"))
+  .orElse("UNCONFIGURED_TRUECALLER_CLIENT_ID")
+  .get()
+val escapedTruecallerClientId = truecallerClientId
+  .replace("\\", "\\\\")
+  .replace("\"", "\\\"")
+
 android {
   namespace = "com.example"
   compileSdk = 36
@@ -22,20 +32,27 @@ android {
     versionCode = 4
     versionName = "1.1.0"
 
+    buildConfigField("String", "TRUECALLER_CLIENT_ID", "\\"$escapedTruecallerClientId\\"")
+    manifestPlaceholders["truecallerClientId"] = truecallerClientId
+
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
   signingConfigs {
+    // Release credentials are supplied only through the CI/local process environment.
+    // Never read signing passwords from tracked Gradle properties or a committed properties file.
     val releaseKeystorePath = System.getenv("KEYSTORE_PATH")
-    val releaseStorePassword = System.getenv("STORE_PASSWORD")
+    val releaseStorePassword = System.getenv("KEYSTORE_PASSWORD")
     val releaseKeyPassword = System.getenv("KEY_PASSWORD")
+    val releaseKeyAlias = System.getenv("KEY_ALIAS")
     if (!releaseKeystorePath.isNullOrBlank() &&
         !releaseStorePassword.isNullOrBlank() &&
-        !releaseKeyPassword.isNullOrBlank()) {
+        !releaseKeyPassword.isNullOrBlank() &&
+        !releaseKeyAlias.isNullOrBlank()) {
       create("release") {
         storeFile = file(releaseKeystorePath)
         storePassword = releaseStorePassword
-        keyAlias = System.getenv("KEY_ALIAS") ?: "upload"
+        keyAlias = releaseKeyAlias
         keyPassword = releaseKeyPassword
       }
     }
