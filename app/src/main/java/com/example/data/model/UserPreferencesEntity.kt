@@ -96,6 +96,9 @@ data class UserPreferencesEntity(
     val hidePhoneNumber: Boolean = true,
     val hideOccupation: Boolean = false,
     val hideFriendsList: Boolean = false, // User security: show friends and hide friends option enable in user security
+    /** Privacy defaults preserve familiar read/typing feedback; both can be disabled independently. */
+    @androidx.room.ColumnInfo(defaultValue = "1") val readReceiptsEnabled: Boolean = true,
+    @androidx.room.ColumnInfo(defaultValue = "1") val typingIndicatorsEnabled: Boolean = true,
     // 5 Visual Themes & Backgrounds (Light, Dark, Sunlight, Afternoon, Evening Dusk)
     val selectedThemePreset: String = "PURE_LIGHT",
     // In-App Sound Alerts & Ringtone Customization
