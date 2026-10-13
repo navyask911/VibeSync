@@ -2235,7 +2235,7 @@ fun ChatDetailScreen(
                             Text("Your mobile number, GPS address, and personal handles remain 100% hidden until both parties explicitly upgrade connection level.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
                             Text("🔑 2. Google Tink E2EE Protection", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
-                            Text("All chats and voice memos are zero-knowledge end-to-end encrypted.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Private chat messages and media remain end-to-end encrypted with Google Tink.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
                             Text("🛡️ 3. Anti-Harassment & Anti-Spam Guard", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
                             Text("Instant AI safety scanner filters inappropriate media and spam.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
