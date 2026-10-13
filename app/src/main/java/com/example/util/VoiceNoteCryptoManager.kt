@@ -100,6 +100,8 @@ object VoiceNoteCryptoManager {
                 .put("content_type", "audio/mp4")
                 .put("encrypted_bytes", encryptedAudio.size)
                 .toString()
+            // Once ciphertext is durable in private storage, remove the temporary AAC source.
+            file.delete()
             localReferenceFromPayload(payload)
         } catch (t: Throwable) {
             Log.w("VoiceNoteCrypto", "Could not encrypt/prepare a voice note: ${t.javaClass.simpleName}")
@@ -138,6 +140,13 @@ object VoiceNoteCryptoManager {
             Log.w("VoiceNoteCrypto", "Voice-note playback decrypt failed: ${t.javaClass.simpleName}")
             null
         }
+    }
+
+    /** Remove the app-private decrypted playback cache for a message during expiry cleanup. */
+    fun purgeCachedVoiceNote(context: Context, messageId: String): Boolean {
+        if (messageId.isBlank()) return false
+        val cached = File(context.applicationContext.cacheDir, "voice_${safeToken(messageId)}.m4a")
+        return !cached.exists() || cached.delete()
     }
 
     private fun safeToken(value: String): String =
