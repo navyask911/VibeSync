@@ -1102,7 +1102,6 @@ private fun MatchesChatScreenContent(
 }
 
 @Composable
-@Composable
 private fun NoteToSelfPinnedConversation(
     displayName: String,
     onClick: () -> Unit
@@ -1148,6 +1147,7 @@ private fun NoteToSelfPinnedConversation(
     }
 }
 
+@Composable
 private fun PhonebookContactsInlineHeader(
     totalContacts: Int,
     onVibeSyncCount: Int,
