@@ -524,42 +524,11 @@ class ContactResolver(private val context: Context) {
             val cleanName = displayName.trim()
             val trimmedNumber = rawNumber.trim()
             targetMap[trimmedNumber] = cleanName
-
-            // Index 16-character phone hash of the raw number
-            val rawHash = com.example.util.PhonebookHasher.generate16CharHash(trimmedNumber)
-            if (rawHash.isNotBlank()) {
-                targetMap[rawHash] = cleanName
-            }
-
-            // Digits-only indexing
+            val normalizedE164 = PhonebookHelper.normalizeToE164(trimmedNumber)
+            if (normalizedE164.isNotBlank()) targetMap[normalizedE164] = cleanName
             val digitsOnly = trimmedNumber.filter { it.isDigit() }
-            if (digitsOnly.isNotBlank()) {
-                targetMap[digitsOnly] = cleanName
-                val digitsHash = com.example.util.PhonebookHasher.generate16CharHash(digitsOnly)
-                if (digitsHash.isNotBlank()) {
-                    targetMap[digitsHash] = cleanName
-                }
-                if (digitsOnly.length >= 10) {
-                    val last10 = digitsOnly.takeLast(10)
-                    targetMap[last10] = cleanName
-                    val last10Hash = com.example.util.PhonebookHasher.generate16CharHash(last10)
-                    if (last10Hash.isNotBlank()) {
-                        targetMap[last10Hash] = cleanName
-                    }
-                }
-            }
-
-            // Without country code '+' indexing
-            val withoutPlus = trimmedNumber.replace("+", "").trim()
-            if (withoutPlus.isNotBlank()) {
-                targetMap[withoutPlus] = cleanName
-                val withoutPlusHash = com.example.util.PhonebookHasher.generate16CharHash(withoutPlus)
-                if (withoutPlusHash.isNotBlank()) {
-                    targetMap[withoutPlusHash] = cleanName
-                }
-            }
-
-            // Standardized with +91 and 91
+            if (digitsOnly.isNotBlank()) targetMap[digitsOnly] = cleanName
+            if (digitsOnly.length >= 10) targetMap[digitsOnly.takeLast(10)] = cleanName
             if (digitsOnly.length == 10) {
                 targetMap["+91$digitsOnly"] = cleanName
                 targetMap["91$digitsOnly"] = cleanName
