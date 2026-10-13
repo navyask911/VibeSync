@@ -28,15 +28,27 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.util.BiometricAuthManager
+import com.example.data.model.UserPreferencesEntity
 
 @Composable
-fun PrivacySecurityControls(modifier: Modifier = Modifier) {
+fun PrivacySecurityControls(
+    preferences: UserPreferencesEntity?,
+    onUpdatePreferences: (UserPreferencesEntity) -> Unit,
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current.applicationContext
+    val prefs = preferences ?: UserPreferencesEntity()
     var screenSecurityEnabled by remember(context) {
         mutableStateOf(BiometricAuthManager.isScreenSecurityEnabled(context))
     }
     var appLockEnabled by remember(context) {
         mutableStateOf(BiometricAuthManager.isBiometricLockEnabled(context))
+    }
+    var readReceiptsEnabled by remember(prefs.readReceiptsEnabled) {
+        mutableStateOf(prefs.readReceiptsEnabled)
+    }
+    var typingIndicatorsEnabled by remember(prefs.typingIndicatorsEnabled) {
+        mutableStateOf(prefs.typingIndicatorsEnabled)
     }
 
     Column(
@@ -69,6 +81,26 @@ fun PrivacySecurityControls(modifier: Modifier = Modifier) {
                         Toast.LENGTH_LONG
                     ).show()
                 }
+            }
+        )
+        SecuritySettingCard(
+            title = "Read Receipts",
+            description = "When off, your chats won't send read acknowledgements; messages stay at delivered (gray ticks).",
+            checked = readReceiptsEnabled,
+            testTag = "switch_read_receipts",
+            onCheckedChange = { enabled ->
+                readReceiptsEnabled = enabled
+                onUpdatePreferences(prefs.copy(readReceiptsEnabled = enabled))
+            }
+        )
+        SecuritySettingCard(
+            title = "Typing Indicators",
+            description = "When off, hide typing status and don't broadcast when you're typing.",
+            checked = typingIndicatorsEnabled,
+            testTag = "switch_typing_indicators",
+            onCheckedChange = { enabled ->
+                typingIndicatorsEnabled = enabled
+                onUpdatePreferences(prefs.copy(typingIndicatorsEnabled = enabled))
             }
         )
     }
