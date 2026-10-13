@@ -7,6 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.dao.ChatMessageDao
+import com.example.data.dao.ExpiredChatMessageDao
 import com.example.data.dao.FriendshipRequestDao
 import com.example.data.dao.MatchDao
 import com.example.data.dao.ProfileDao
@@ -15,6 +16,7 @@ import com.example.data.dao.StatusStoryDao
 import com.example.data.dao.SwipeDao
 import com.example.data.dao.UserPreferencesDao
 import com.example.data.model.ChatMessageEntity
+import com.example.data.model.ExpiredChatMessageEntity
 import com.example.data.model.FriendshipRequestEntity
 import com.example.data.model.MatchEntity
 import com.example.data.model.ProfileEntity
@@ -56,6 +58,7 @@ import com.example.data.model.ApiCredentialRequestEntity
         SwipeEntity::class,
         MatchEntity::class,
         ChatMessageEntity::class,
+        ExpiredChatMessageEntity::class,
         LocalMessage::class,
         MessageSyncWatermarkEntity::class,
         UserPreferencesEntity::class,
@@ -75,7 +78,7 @@ import com.example.data.model.ApiCredentialRequestEntity
         LocalBusinessAnalyticsEventEntity::class,
         ApiCredentialRequestEntity::class
     ],
-    version = 53,
+    version = 54,
     exportSchema = false
 )
 abstract class DatingDatabase : RoomDatabase() {
@@ -83,6 +86,7 @@ abstract class DatingDatabase : RoomDatabase() {
     abstract fun swipeDao(): SwipeDao
     abstract fun matchDao(): MatchDao
     abstract fun chatMessageDao(): ChatMessageDao
+    abstract fun expiredChatMessageDao(): ExpiredChatMessageDao
     abstract fun messageDao(): MessageDao
     abstract fun messageSyncWatermarkDao(): MessageSyncWatermarkDao
     abstract fun userPreferencesDao(): UserPreferencesDao
@@ -383,6 +387,16 @@ abstract class DatingDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_53_54 = object : Migration(53, 54) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS expired_chat_messages (" +
+                        "messageId TEXT NOT NULL PRIMARY KEY, " +
+                        "expiredAt INTEGER NOT NULL)"
+                )
+            }
+        }
+
         fun getDatabase(context: Context): DatingDatabase {
             val appContext = context.applicationContext
             return INSTANCE ?: synchronized(this) {
@@ -430,7 +444,8 @@ abstract class DatingDatabase : RoomDatabase() {
                                 MIGRATION_49_50,
                                 MIGRATION_50_51,
                                 MIGRATION_51_52,
-                                MIGRATION_52_53
+                                MIGRATION_52_53,
+                                MIGRATION_53_54
                             )
                             // Fail closed instead of recreating a database that contains local history.
                             .build()
