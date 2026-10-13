@@ -167,6 +167,29 @@ internal object PendingMessageOutboxSender {
                     )
                 }
 
+                // If this device's Tink identity has rotated, confirm its public key is published
+                // before sending anything. This prevents Supabase from advertising the previous key.
+                val ownPublicKey = TinkCryptoManager.getMyPublicKeysetJson(context.applicationContext).trim()
+                if (ownPublicKey.isBlank()) {
+                    return@withContext PendingOutboxAttempt.Retryable("Local Tink public identity key is unavailable.")
+                }
+                if (!TinkCryptoManager.isMyPublicIdentityKeyPublished(
+                        context.applicationContext, senderProfileId, ownPublicKey
+                    )
+                ) {
+                    val published = SupabaseClientManager.publishMyPublicIdentityKey(
+                        context.applicationContext, expectedProfileId = senderProfileId
+                    )
+                    if (!published || !TinkCryptoManager.isMyPublicIdentityKeyPublished(
+                            context.applicationContext, senderProfileId, ownPublicKey
+                        )
+                    ) {
+                        return@withContext PendingOutboxAttempt.Retryable(
+                            "Current local Tink identity key has not been confirmed in Supabase yet."
+                        )
+                    }
+                }
+
                 // Persist repaired peer identity so future sync/read paths use the same canonical profile ID.
                 if (!localMatch.profileId.trim().equals(recipientProfileId, ignoreCase = true)) {
                     db.matchDao().insertMatch(localMatch.copy(profileId = recipientProfileId))
