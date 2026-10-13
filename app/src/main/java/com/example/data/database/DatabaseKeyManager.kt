@@ -31,11 +31,21 @@ internal object DatabaseKeyManager {
         override fun preKey(connection: SQLiteConnection) = Unit
 
         override fun postKey(connection: SQLiteConnection) {
-            // SQLCipher's SQLiteConnection.execute() rejects PRAGMAs that return a row.
-            // executeForLong handles both PRAGMAs safely (and is valid when a PRAGMA
-            // does not return a row, in which case SQLCipher returns 0).
-            connection.executeForLong("PRAGMA cipher_memory_security = ON", null, null)
-            connection.executeForLong("PRAGMA secure_delete = ON", null, null)
+            // These are setting PRAGMAs, not scalar queries. Depending on the SQLCipher
+            // version, executeForLong() can see SQLITE_DONE with no result row and throw
+            // SQLiteDoneException even though the setting statement has completed.
+            // Keep each setting independent so a no-row result never aborts connection open.
+            try {
+                connection.executeForLong("PRAGMA cipher_memory_security = ON", null, null)
+            } catch (_: SQLiteDoneException) {
+                // Expected for a PRAGMA assignment that completes without a result row.
+            }
+
+            try {
+                connection.executeForLong("PRAGMA secure_delete = ON", null, null)
+            } catch (_: SQLiteDoneException) {
+                // Expected for a PRAGMA assignment that completes without a result row.
+            }
         }
     }
 
