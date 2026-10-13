@@ -22,6 +22,11 @@ class EphemeralMessageCleanupWorker(
             val now = System.currentTimeMillis()
             val expiredIds = database.chatMessageDao().getExpiredMessageIds(now)
             if (expiredIds.isEmpty()) return Result.success()
+            // Clear plaintext AAC playback cache before dropping the only local metadata that
+            // identifies it. The Storage object remains ciphertext-only and is not locally cached.
+            expiredIds.forEach { id ->
+                com.example.util.VoiceNoteCryptoManager.purgeCachedVoiceNote(applicationContext, id)
+            }
             database.withTransaction {
                 expiredIds.forEach { id ->
                     database.messageDao().deleteRemoteMessage(id)
