@@ -226,6 +226,10 @@ jobs:
             exit 1
           fi
           grep -F 'rpc/match_contacts_by_phone_numbers' app/src/main/java/com/example/util/SupabaseClientManager.kt
+          if grep -R -n -E 'phone_sync|phone_hash|resolve_profile_id_by_phone_hash|get_public_identity_key_by_phone_hash' supabase/functions; then
+            echo "Retired phone-hash storage and lookup APIs must not be referenced by active Edge Functions."
+            exit 1
+          fi
 
           # The canonical backend is verify-truecaller; vibesync-truecaller-auth is retired.
           grep -F 'const TRUECALLER_CLIENT_ID = "qkpfffgkiebypf8hvifhkkknj2msgud5hfjqg_ti1wu"' supabase/functions/verify-truecaller/index.ts

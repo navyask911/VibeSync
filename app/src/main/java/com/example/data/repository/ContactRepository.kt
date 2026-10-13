@@ -71,12 +71,11 @@ class ContactRepository(
     }
 
     /**
-     * Executes the complete contact sync pipeline:
-     * - Bulletproof 10-digit number normalization
-     * - Dual variation candidate generation (10-digit suffix and E.164 +91 format)
-     * - Batch lookups in chunks of 100 on Dispatchers.IO
-     * - Suffix matching to map registeredVibeContacts
-     * - Persistence to local Room database (VibeContactEntity)
+     * Synchronizes local contacts using the direct E.164 discovery flow:
+     * - Normalize phone numbers locally and discard invalid E.164 candidates.
+     * - Submit batches of normalized numbers to the authenticated Supabase HTTPS RPC.
+     * - Bind the canonical profile IDs returned by Supabase to local contacts.
+     * - Persist matches and minimal profile metadata into Room.
      */
     suspend fun syncAndMatchPhonebookContacts(
         context: Context,
