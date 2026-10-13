@@ -15,7 +15,7 @@ class VoiceRecorderHelper(private val context: Context) {
 
     fun startRecording(): Boolean {
         return try {
-            val audioFile = File(context.cacheDir, "voice_memo_${System.currentTimeMillis()}.mp3")
+            val audioFile = File(context.cacheDir, "voice_memo_${System.currentTimeMillis()}.m4a")
             activeAudioFile = audioFile
 
             recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -91,6 +91,12 @@ class VoiceRecorderHelper(private val context: Context) {
             Log.e("VoiceRecorderHelper", "Error playing audio file", e)
         }
     }
+
+    fun isAudioPlaying(): Boolean = try { player?.isPlaying == true } catch (_: Throwable) { false }
+
+    fun currentPositionMs(): Int = try { player?.currentPosition ?: 0 } catch (_: Throwable) { 0 }
+
+    fun durationMs(): Int = try { player?.duration ?: 0 } catch (_: Throwable) { 0 }
 
     fun stopAudio() {
         try {
