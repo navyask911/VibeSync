@@ -58,7 +58,10 @@ data class ChatMessageEntity(
     val serverCreatedAt: Long = 0L,
     /** Durable delivery ACK outbox; cleared only after Supabase confirms the ACK RPC. */
     @ColumnInfo(defaultValue = "0")
-    val deliveryAckPending: Boolean = false
+    val deliveryAckPending: Boolean = false,
+    /** Set to the verified owner profile ID for Note to Self rows; these rows are never synced. */
+    @ColumnInfo(name = "recipient_id", defaultValue = "''")
+    val recipientId: String = ""
 ) {
     @androidx.room.Ignore
     val senderUid: String = senderId

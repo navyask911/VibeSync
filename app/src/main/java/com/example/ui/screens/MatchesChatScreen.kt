@@ -102,6 +102,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun MatchesChatScreen(
     matches: List<MatchEntity>,
@@ -117,7 +118,50 @@ fun MatchesChatScreen(
     onOpenInteractionsModal: () -> Unit = {},
     profiles: List<ProfileEntity> = emptyList(),
     onOpenProfileDetail: (ProfileEntity) -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    currentUserName: String = "You",
+    onOpenNoteToSelf: () -> Unit = {}
+) {
+    IncognitoKeyboard {
+        MatchesChatScreenContent(
+            matches = matches,
+            phonebookContacts = phonebookContacts,
+            onOpenChat = onOpenChat,
+            getProfileSync = getProfileSync,
+            onOpenPhonebook = onOpenPhonebook,
+            onSelectChatContact = onSelectChatContact,
+            onInviteContact = onInviteContact,
+            onRefreshContacts = onRefreshContacts,
+            onOpenProfile = onOpenProfile,
+            onOpenAdmin = onOpenAdmin,
+            onOpenInteractionsModal = onOpenInteractionsModal,
+            profiles = profiles,
+            onOpenProfileDetail = onOpenProfileDetail,
+            modifier = modifier,
+            currentUserName = currentUserName,
+            onOpenNoteToSelf = onOpenNoteToSelf
+        )
+    }
+}
+
+@Composable
+private fun MatchesChatScreenContent(
+    matches: List<MatchEntity>,
+    phonebookContacts: List<PhoneContact>,
+    onOpenChat: (MatchEntity, ProfileEntity) -> Unit,
+    getProfileSync: suspend (String) -> ProfileEntity?,
+    onOpenPhonebook: () -> Unit,
+    onSelectChatContact: (PhoneContact) -> Unit,
+    onInviteContact: (PhoneContact) -> Unit,
+    onRefreshContacts: () -> Unit,
+    onOpenProfile: () -> Unit,
+    onOpenAdmin: () -> Unit,
+    onOpenInteractionsModal: () -> Unit,
+    profiles: List<ProfileEntity>,
+    onOpenProfileDetail: (ProfileEntity) -> Unit,
+    modifier: Modifier,
+    currentUserName: String,
+    onOpenNoteToSelf: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     // Room-backed state keeps chat avatars and labels synchronized with other profile surfaces.
@@ -405,6 +449,14 @@ fun MatchesChatScreen(
                         }
                     }
                 }
+            }
+
+            // Pinned local-only self conversation; deliberately above peer messages and filters.
+            item(key = "note_to_self_pinned") {
+                NoteToSelfPinnedConversation(
+                    displayName = currentUserName,
+                    onClick = onOpenNoteToSelf
+                )
             }
 
             // 2. Search Box
@@ -1050,6 +1102,52 @@ fun MatchesChatScreen(
 }
 
 @Composable
+@Composable
+private fun NoteToSelfPinnedConversation(
+    displayName: String,
+    onClick: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)),
+        border = BorderStroke(1.dp, VibeSyncTeal.copy(alpha = 0.55f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 10.dp)
+            .clickable(onClick = onClick)
+            .testTag("conversation_note_to_self")
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = VibeSyncTeal.copy(alpha = 0.16f),
+                modifier = Modifier.size(48.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) { Text("📝", fontSize = 23.sp) }
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Note to Self",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Pinned · Encrypted notes only you can read",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Text("📌", fontSize = 18.sp)
+        }
+    }
+}
+
 private fun PhonebookContactsInlineHeader(
     totalContacts: Int,
     onVibeSyncCount: Int,

@@ -217,6 +217,8 @@ fun ProfileScreen(
                 testTag = "drawer_privacy"
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    PrivacySecurityControls()
+
                     // Open for Connect Toggle
                     Card(
                         shape = RoundedCornerShape(14.dp),

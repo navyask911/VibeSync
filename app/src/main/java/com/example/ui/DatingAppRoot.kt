@@ -89,6 +89,7 @@ import com.example.ui.screens.FaceVerificationScreen
 import com.example.ui.screens.LikedYouScreen
 import com.example.ui.screens.MandatoryMobileVerificationScreen
 import com.example.ui.screens.MatchesChatScreen
+import com.example.ui.screens.NoteToSelfScreen
 import com.example.ui.screens.MpinScreen
 import com.example.ui.screens.PhonebookContactsScreen
 import com.example.ui.screens.ProfileDetailDialog
@@ -177,6 +178,11 @@ fun DatingAppRoot(
     val incomingPhoneNumberRequests by viewModel.incomingPhoneNumberRequests.collectAsStateWithLifecycle()
     val selectedContactToInvite by viewModel.selectedContactToInvite.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val noteToSelfProfileId = com.example.util.VibeSyncSessionManager.getProfileId(context).orEmpty().trim()
+        .ifBlank { preferences?.verifiedMobileNumber?.trim().orEmpty() }
+        .ifBlank { preferences?.googleEmail?.trim()?.lowercase().orEmpty() }
+        .ifBlank { "local-profile-" + (preferences?.id ?: 1) }
+    val noteToSelfDisplayName = preferences?.userName?.trim().orEmpty().ifBlank { "You" }
     val appearance = rememberAppAppearance()
 
     // Zero Profile Duplication & Recovery States
@@ -203,6 +209,7 @@ fun DatingAppRoot(
     val allApiRequests by viewModel.allApiRequests.collectAsStateWithLifecycle()
     val pendingDeepLinkBizId by com.example.util.DeepLinkManager.pendingBusinessId.collectAsStateWithLifecycle()
     var showInteractionsModal by remember { mutableStateOf(false) }
+    var showNoteToSelf by remember { mutableStateOf(false) }
 
     LaunchedEffect(showPhonebookScreen) {
         if (showPhonebookScreen) viewModel.refreshIncomingPhoneNumberRequests()
@@ -661,7 +668,9 @@ fun DatingAppRoot(
                     onOpenProfile = { coroutineScope.launch { pagerState.scrollToPage(4) } },
                     onOpenAdmin = { viewModel.openAdminPortal() },
                     onOpenInteractionsModal = { showInteractionsModal = true },
-                    onOpenProfileDetail = { viewModel.openProfileDetail(it) }
+                    onOpenProfileDetail = { viewModel.openProfileDetail(it) },
+                    currentUserName = noteToSelfDisplayName,
+                    onOpenNoteToSelf = { showNoteToSelf = true }
                 )
                 1 -> StatusStoriesScreen(
                     viewModel = viewModel
@@ -718,6 +727,21 @@ fun DatingAppRoot(
             }
         }
         }
+    }
+
+    // Local-only Note to Self is intentionally separate from peer messaging, outbox and Realtime.
+    AnimatedVisibility(
+        visible = showNoteToSelf,
+        enter = fadeIn(),
+        exit = fadeOut(),
+        modifier = Modifier.fillMaxSize()
+    ) {
+        NoteToSelfScreen(
+            currentUserId = noteToSelfProfileId,
+            currentUserName = noteToSelfDisplayName,
+            onBack = { showNoteToSelf = false },
+            modifier = Modifier.fillMaxSize()
+        )
     }
 
     // Full Screen Active Chat Overlay

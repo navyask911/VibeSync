@@ -1,5 +1,6 @@
 package com.example.util
 
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
@@ -21,8 +22,9 @@ import androidx.fragment.app.FragmentActivity
  */
 object BiometricAuthManager {
     private const val TAG = "BiometricAuthManager"
-    private const val PREFS_NAME = "vibesync_biometric_session_prefs"
-    private const val KEY_BIOMETRIC_ENABLED = "key_biometric_login_enabled"
+    const val PREFS_NAME = "vibesync_biometric_session_prefs"
+    const val KEY_BIOMETRIC_ENABLED = "key_biometric_login_enabled"
+    const val KEY_SCREEN_SECURITY_ENABLED = "key_screen_security_enabled"
     private const val KEY_LAST_AUTH_TIMESTAMP = "key_last_biometric_auth_timestamp"
     private const val KEY_SESSION_VALIDITY_MINUTES = "key_session_validity_minutes"
 
@@ -52,14 +54,39 @@ object BiometricAuthManager {
      * Checks if biometric authentication (Fingerprint, Face, Iris) is supported and enrolled
      */
     fun checkBiometricStatus(context: Context): BiometricStatus {
-        return BiometricStatus.UNSUPPORTED
+        return try {
+            // Before API 30, androidx requires setDeviceCredentialAllowed() instead of an
+            // authenticator bitmask combining biometrics with device credentials.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R && isDeviceSecure(context)) {
+                return BiometricStatus.AVAILABLE
+            }
+            when (BiometricManager.from(context).canAuthenticate(getAuthenticators())) {
+                BiometricManager.BIOMETRIC_SUCCESS -> BiometricStatus.AVAILABLE
+                BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE -> BiometricStatus.NO_HARDWARE
+                BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE -> BiometricStatus.HARDWARE_UNAVAILABLE
+                BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> BiometricStatus.NONE_ENROLLED
+                else -> BiometricStatus.UNSUPPORTED
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "Biometric/device credential status check failed: " + t.javaClass.simpleName)
+            BiometricStatus.UNSUPPORTED
+        }
     }
 
     /**
-     * Convenience boolean check for biometric readiness
+     * Convenience boolean check for biometric or device-credential readiness.
      */
-    fun isBiometricAvailable(context: Context): Boolean {
-        return false
+    fun isBiometricAvailable(context: Context): Boolean =
+        checkBiometricStatus(context) == BiometricStatus.AVAILABLE
+
+    private fun isDeviceSecure(context: Context): Boolean =
+        context.getSystemService(KeyguardManager::class.java)?.isDeviceSecure == true
+
+    fun isScreenSecurityEnabled(context: Context): Boolean =
+        getPrefs(context).getBoolean(KEY_SCREEN_SECURITY_ENABLED, true)
+
+    fun setScreenSecurityEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_SCREEN_SECURITY_ENABLED, enabled).apply()
     }
 
     /**
@@ -73,7 +100,79 @@ object BiometricAuthManager {
         allowDeviceCredential: Boolean = false,
         onResult: (BiometricResult) -> Unit
     ) {
-        onResult(BiometricResult.Success)
+        val authenticators = if (allowDeviceCredential && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        } else {
+            BiometricManager.Authenticators.BIOMETRIC_STRONG
+        }
+        val availability = try {
+            val biometricAvailability = BiometricManager.from(activity).canAuthenticate(authenticators)
+            if (allowDeviceCredential && Build.VERSION.SDK_INT < Build.VERSION_CODES.R &&
+                (biometricAvailability == BiometricManager.BIOMETRIC_SUCCESS || isDeviceSecure(activity))) {
+                BiometricManager.BIOMETRIC_SUCCESS
+            } else {
+                biometricAvailability
+            }
+        } catch (t: Throwable) {
+            onResult(BiometricResult.Error(-1, "Authentication is unavailable on this device."))
+            return
+        }
+        if (availability != BiometricManager.BIOMETRIC_SUCCESS) {
+            val message = when (availability) {
+                BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE ->
+                    "This device has no supported biometric sensor. Set up a device screen lock to use App Lock."
+                BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE ->
+                    "Biometric hardware is temporarily unavailable. Try again or use the device screen lock."
+                BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED ->
+                    "Set up a fingerprint/face or device screen lock in Android Settings before enabling App Lock."
+                else -> "Biometric or device screen-lock authentication is not available."
+            }
+            onResult(BiometricResult.Error(availability, message))
+            return
+        }
+
+        try {
+            val prompt = BiometricPrompt(
+                activity,
+                ContextCompat.getMainExecutor(activity),
+                object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                        onResult(BiometricResult.Success)
+                    }
+
+                    override fun onAuthenticationFailed() {
+                        // Non-terminal: the system prompt allows another biometric attempt.
+                    }
+
+                    override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                        val terminalMessage = errString.toString().ifBlank {
+                            "Authentication was not completed. Try again."
+                        }
+                        val wasCancelled = errorCode == BiometricPrompt.ERROR_USER_CANCELED ||
+                            errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON ||
+                            errorCode == BiometricPrompt.ERROR_CANCELED
+                        onResult(
+                            if (wasCancelled) BiometricResult.Cancelled
+                            else BiometricResult.Error(errorCode, terminalMessage)
+                        )
+                    }
+                }
+            )
+            val builder = BiometricPrompt.PromptInfo.Builder()
+                .setTitle(title)
+                .setSubtitle(subtitle)
+            if (allowDeviceCredential && Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                builder.setDeviceCredentialAllowed(true)
+            } else {
+                builder.setAllowedAuthenticators(authenticators)
+                if (!allowDeviceCredential) builder.setNegativeButtonText(negativeButtonText)
+            }
+            prompt.authenticate(builder.build())
+        } catch (t: Throwable) {
+            Log.e(TAG, "Could not start BiometricPrompt: " + t.javaClass.simpleName, t)
+            onResult(BiometricResult.Error(-1, "Could not start secure authentication. Please try again."))
+        }
     }
 
     // --- Secure Session Management ---
@@ -88,6 +187,7 @@ object BiometricAuthManager {
     fun setBiometricLockEnabled(context: Context, enabled: Boolean) {
         getPrefs(context).edit()
             .putBoolean(KEY_BIOMETRIC_ENABLED, enabled)
+            .putInt(KEY_SESSION_VALIDITY_MINUTES, 1)
             .apply()
     }
 
@@ -122,10 +222,11 @@ object BiometricAuthManager {
     fun isSessionValid(context: Context): Boolean {
         if (!isBiometricLockEnabled(context)) return true
         val lastAuth = getPrefs(context).getLong(KEY_LAST_AUTH_TIMESTAMP, 0L)
-        val validityMinutes = getPrefs(context).getInt(KEY_SESSION_VALIDITY_MINUTES, 30)
+        if (lastAuth <= 0L) return false
+        val validityMinutes = getPrefs(context).getInt(KEY_SESSION_VALIDITY_MINUTES, 1).coerceAtLeast(1)
         val maxDurationMs = validityMinutes * 60 * 1000L
         val now = System.currentTimeMillis()
-        return (now - lastAuth) < maxDurationMs
+        return now >= lastAuth && (now - lastAuth) < maxDurationMs
     }
 
     /**
@@ -137,7 +238,11 @@ object BiometricAuthManager {
             .apply()
     }
 
-    private fun getAuthenticators(): Int {
-        return BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.BIOMETRIC_WEAK
-    }
+    private fun getAuthenticators(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        } else {
+            BiometricManager.Authenticators.BIOMETRIC_STRONG
+        }
 }

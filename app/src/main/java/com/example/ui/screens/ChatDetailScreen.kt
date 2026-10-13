@@ -244,7 +244,7 @@ fun isMessageOutgoing(
     return false
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun ChatDetailScreen(
     profile: ProfileEntity,
@@ -268,6 +268,58 @@ fun ChatDetailScreen(
     onStartRealtime: () -> Unit = {},
     onStopRealtime: () -> Unit = {},
     modifier: Modifier = Modifier
+) {
+    IncognitoKeyboard {
+        ChatDetailScreenContent(
+            profile = profile,
+            match = match,
+            messages = messages,
+            onSendMessage = onSendMessage,
+            onSendMedia = onSendMedia,
+            onStartCall = onStartCall,
+            onBack = onBack,
+            onViewProfile = onViewProfile,
+            onBlockAndReport = onBlockAndReport,
+            onOpenReport = onOpenReport,
+            onSendMessageWithReply = onSendMessageWithReply,
+            onEditMessage = onEditMessage,
+            onToggleStarMessage = onToggleStarMessage,
+            onDeleteForMe = onDeleteForMe,
+            onDeleteForEveryone = onDeleteForEveryone,
+            onForwardMessage = onForwardMessage,
+            otherMatches = otherMatches,
+            currentUserId = currentUserId,
+            onStartRealtime = onStartRealtime,
+            onStopRealtime = onStopRealtime,
+            modifier = modifier
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable
+private fun ChatDetailScreenContent(
+    profile: ProfileEntity,
+    match: MatchEntity?,
+    messages: List<ChatMessageEntity>,
+    onSendMessage: (String) -> Unit,
+    onSendMedia: (mediaType: String, text: String, mediaUrl: String, voiceSeconds: Int) -> Unit,
+    onStartCall: (isVideo: Boolean) -> Unit,
+    onBack: () -> Unit,
+    onViewProfile: () -> Unit,
+    onBlockAndReport: (reason: String, details: String) -> Unit,
+    onOpenReport: ((ProfileEntity) -> Unit)?,
+    onSendMessageWithReply: (text: String, replyToId: String?, replyToText: String?, replyToSender: String?) -> Unit,
+    onEditMessage: (messageId: String, newText: String) -> Unit,
+    onToggleStarMessage: (messageId: String) -> Unit,
+    onDeleteForMe: (messageId: String) -> Unit,
+    onDeleteForEveryone: (messageId: String) -> Unit,
+    onForwardMessage: (targetMatchId: String, message: ChatMessageEntity) -> Unit,
+    otherMatches: List<Pair<MatchEntity, ProfileEntity>>,
+    currentUserId: String?,
+    onStartRealtime: () -> Unit,
+    onStopRealtime: () -> Unit,
+    modifier: Modifier
 ) {
     DisposableEffect(profile.id, match?.matchId) {
         com.example.util.AppNotificationManager.setActiveChatSession(profile.id, match?.matchId)

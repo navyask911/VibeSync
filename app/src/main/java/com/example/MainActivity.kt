@@ -1,8 +1,11 @@
 package com.example
 
 import android.content.Intent
+import android.content.SharedPreferences
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
+import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
@@ -36,17 +39,55 @@ import androidx.fragment.app.FragmentActivity
 import com.example.ui.DatingAppRoot
 import com.example.ui.theme.MyApplicationTheme
 import com.example.util.AppNotificationManager
+import com.example.util.BiometricAuthManager
 import com.example.util.PlatformTruecallerVerificationClient
 import com.example.util.VibeSyncSessionManager
 
 class MainActivity : FragmentActivity() {
   private lateinit var truecallerActivityResultLauncher: ActivityResultLauncher<Intent>
+  private var privacyPreferences: SharedPreferences? = null
+  private val isAppLocked = mutableStateOf(false)
+  private val appLockMessage = mutableStateOf<String?>(null)
+  private var hasUnlockedCurrentLaunch = false
+  private var backgroundedAtElapsedMs = 0L
+  private var unlockPromptVisible = false
+  private var needsExplicitUnlockTap = false
+
+  private val privacyPreferencesListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+    when (key) {
+      BiometricAuthManager.KEY_SCREEN_SECURITY_ENABLED -> applyScreenSecurityFlag()
+      BiometricAuthManager.KEY_BIOMETRIC_ENABLED -> {
+        if (BiometricAuthManager.isBiometricLockEnabled(this)) {
+          isAppLocked.value = true
+          hasUnlockedCurrentLaunch = false
+          needsExplicitUnlockTap = false
+          window.decorView.post { requestAppUnlock() }
+        } else {
+          isAppLocked.value = false
+          hasUnlockedCurrentLaunch = true
+          needsExplicitUnlockTap = false
+          appLockMessage.value = null
+        }
+      }
+    }
+  }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
 
+    privacyPreferences = getSharedPreferences(BiometricAuthManager.PREFS_NAME, MODE_PRIVATE)
+    privacyPreferences?.registerOnSharedPreferenceChangeListener(privacyPreferencesListener)
+    applyScreenSecurityFlag()
+    if (BiometricAuthManager.isBiometricLockEnabled(this)) {
+      isAppLocked.value = true
+      hasUnlockedCurrentLaunch = false
+    } else {
+      hasUnlockedCurrentLaunch = true
+    }
+
     safeInit("window setup") {
       window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+      applyScreenSecurityFlag()
       enableEdgeToEdge()
     }
 
@@ -110,6 +151,10 @@ class MainActivity : FragmentActivity() {
 
           when {
             isPreparingDatabase -> DatabasePreparationScreen()
+            databaseReady && isAppLocked.value -> AppLockScreen(
+              message = appLockMessage.value,
+              onUnlock = { requestAppUnlock(fromUser = true) }
+            )
             databaseReady -> DatingAppRoot()
             else -> DatabaseRecoveryScreen(
               message = databaseFailure ?: "Secure local storage needs recovery.",
@@ -131,12 +176,26 @@ class MainActivity : FragmentActivity() {
 
   override fun onResume() {
     super.onResume()
+    safeInit("foreground privacy lock") {
+      if (BiometricAuthManager.isBiometricLockEnabled(this)) {
+        val now = SystemClock.elapsedRealtime()
+        val awayFor = if (backgroundedAtElapsedMs > 0L) now - backgroundedAtElapsedMs else 0L
+        val shouldLock = !hasUnlockedCurrentLaunch ||
+          (backgroundedAtElapsedMs > 0L && awayFor >= APP_LOCK_BACKGROUND_TIMEOUT_MS)
+        if (shouldLock) {
+          isAppLocked.value = true
+          if (!needsExplicitUnlockTap) window.decorView.post { requestAppUnlock() }
+        }
+      }
+      backgroundedAtElapsedMs = 0L
+    }
     safeInit("foreground notification state") {
       AppNotificationManager.setAppForegroundState(true)
     }
   }
 
   override fun onPause() {
+    backgroundedAtElapsedMs = SystemClock.elapsedRealtime()
     super.onPause()
     safeInit("background notification state") {
       AppNotificationManager.setAppForegroundState(false)
@@ -151,10 +210,53 @@ class MainActivity : FragmentActivity() {
   }
 
   override fun onDestroy() {
+    privacyPreferences?.unregisterOnSharedPreferenceChangeListener(privacyPreferencesListener)
     safeInit("Truecaller cleanup") {
       PlatformTruecallerVerificationClient.clear()
     }
     super.onDestroy()
+  }
+
+  private fun applyScreenSecurityFlag() {
+    if (BiometricAuthManager.isScreenSecurityEnabled(this)) {
+      window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+    } else {
+      window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+    }
+  }
+
+  private fun requestAppUnlock(fromUser: Boolean = false) {
+    if (fromUser) needsExplicitUnlockTap = false
+    if (!isAppLocked.value || !BiometricAuthManager.isBiometricLockEnabled(this) || unlockPromptVisible || isFinishing) return
+    unlockPromptVisible = true
+    appLockMessage.value = null
+    BiometricAuthManager.authenticate(
+      activity = this,
+      title = "Unlock VibeSync",
+      subtitle = "Verify with biometrics or your device screen lock to access private conversations",
+      allowDeviceCredential = true
+    ) { result ->
+      unlockPromptVisible = false
+      when (result) {
+        BiometricAuthManager.BiometricResult.Success -> {
+          BiometricAuthManager.recordSuccessfulAuth(this)
+          hasUnlockedCurrentLaunch = true
+          needsExplicitUnlockTap = false
+          backgroundedAtElapsedMs = 0L
+          appLockMessage.value = null
+          isAppLocked.value = false
+        }
+        is BiometricAuthManager.BiometricResult.Error -> {
+          appLockMessage.value = result.errorMessage
+          needsExplicitUnlockTap = true
+        }
+        BiometricAuthManager.BiometricResult.Cancelled,
+        BiometricAuthManager.BiometricResult.Failed -> {
+          appLockMessage.value = "Authentication was not completed. Tap Unlock to try again."
+          needsExplicitUnlockTap = true
+        }
+      }
+    }
   }
 
   private inline fun safeInit(step: String, block: () -> Unit) {
@@ -166,6 +268,30 @@ class MainActivity : FragmentActivity() {
   }
 }
 
+
+private const val APP_LOCK_BACKGROUND_TIMEOUT_MS = 60_000L
+
+@Composable
+private fun AppLockScreen(message: String?, onUnlock: () -> Unit) {
+  Surface(modifier = Modifier.fillMaxSize()) {
+    Column(
+      modifier = Modifier.fillMaxSize().padding(24.dp),
+      verticalArrangement = Arrangement.Center,
+      horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+      Text(text = "🔒", style = MaterialTheme.typography.headlineLarge)
+      Spacer(modifier = Modifier.height(12.dp))
+      Text(text = "VibeSync is locked", style = MaterialTheme.typography.headlineSmall)
+      Spacer(modifier = Modifier.height(8.dp))
+      Text(
+        text = message ?: "Authenticate to view your private conversations and notes.",
+        style = MaterialTheme.typography.bodyMedium
+      )
+      Spacer(modifier = Modifier.height(20.dp))
+      Button(onClick = onUnlock) { Text("Unlock VibeSync") }
+    }
+  }
+}
 
 @Composable
 private fun DatabasePreparationScreen() {
