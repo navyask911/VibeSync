@@ -308,6 +308,8 @@ fun ChatDetailScreen(
     isPartnerTyping: Boolean = false,
     readReceiptsEnabled: Boolean = true,
     typingIndicatorsEnabled: Boolean = true,
+    userPreferences: com.example.data.model.UserPreferencesEntity? = null,
+    onUpdateUserPreferences: (com.example.data.model.UserPreferencesEntity) -> Unit = {},
     onTypingStatus: (Boolean) -> Unit = {},
     onSetDisappearingTimer: (Int) -> Unit = {},
     modifier: Modifier = Modifier
@@ -338,6 +340,8 @@ fun ChatDetailScreen(
             isPartnerTyping = isPartnerTyping,
             readReceiptsEnabled = readReceiptsEnabled,
             typingIndicatorsEnabled = typingIndicatorsEnabled,
+            userPreferences = userPreferences,
+            onUpdateUserPreferences = onUpdateUserPreferences,
             onTypingStatus = onTypingStatus,
             onSetDisappearingTimer = onSetDisappearingTimer,
             modifier = modifier
@@ -372,6 +376,8 @@ private fun ChatDetailScreenContent(
     isPartnerTyping: Boolean,
     readReceiptsEnabled: Boolean,
     typingIndicatorsEnabled: Boolean,
+    userPreferences: com.example.data.model.UserPreferencesEntity?,
+    onUpdateUserPreferences: (com.example.data.model.UserPreferencesEntity) -> Unit,
     onTypingStatus: (Boolean) -> Unit,
     onSetDisappearingTimer: (Int) -> Unit,
     modifier: Modifier
@@ -922,7 +928,7 @@ private fun ChatDetailScreenContent(
             title = {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.clickable(onClick = onViewProfile)
+                    modifier = Modifier.clickable { showChatSettingsSheet = true }
                 ) {
                     DatingAvatar(
                         name = resolvedPartnerName,
@@ -1068,16 +1074,6 @@ private fun ChatDetailScreenContent(
                                         manager.requestPinShortcut(shortcut, null)
                                     } else Toast.makeText(context, "Your launcher does not support pinned shortcuts.", Toast.LENGTH_SHORT).show()
                                 } else Toast.makeText(context, "Pinned shortcuts require Android 8.0 or newer.", Toast.LENGTH_SHORT).show()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text(if (chatMuted) "Unmute notifications" else "Mute notifications") },
-                            onClick = {
-                                showMenu = false
-                                val nextMuted = !chatMuted
-                                chatMuted = nextMuted
-                                com.example.util.ChatThreadPreferences.setMuted(context, profile.id, nextMuted)
-                                Toast.makeText(context, if (nextMuted) "Chat muted" else "Chat unmuted", Toast.LENGTH_SHORT).show()
                             }
                         )
                         DropdownMenuItem(
@@ -4033,10 +4029,13 @@ private fun ChatDetailScreenContent(
     }
     if (showChatSettingsSheet) {
         ChatThreadSettingsSheet(
+            profile = profile,
+            preferences = userPreferences,
             displayName = resolvedPartnerName,
             phoneNumber = profile.phoneNumber,
             isMuted = chatMuted,
             nickname = localNickname,
+            onUpdatePreferences = onUpdateUserPreferences,
             onVideoCall = { showChatSettingsSheet = false; onStartCall(true) },
             onAudioCall = { showChatSettingsSheet = false; onStartCall(false) },
             onToggleMute = {

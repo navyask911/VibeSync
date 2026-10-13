@@ -778,6 +778,8 @@ fun DatingAppRoot(
                 isPartnerTyping = isPartnerTyping,
                 readReceiptsEnabled = preferences?.readReceiptsEnabled ?: true,
                 typingIndicatorsEnabled = preferences?.typingIndicatorsEnabled ?: true,
+                userPreferences = preferences,
+                onUpdateUserPreferences = { updated -> viewModel.updatePreferences(updated) },
                 onTypingStatus = { isTyping -> viewModel.onChatTyping(isTyping) },
                 onSetDisappearingTimer = { seconds -> viewModel.setDisappearingTimer(seconds) },
                 onBlockAndReport = { reason, details ->

@@ -37,6 +37,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.data.model.ChatMessageEntity
+import com.example.data.model.ProfileEntity
+import com.example.data.model.UserPreferencesEntity
+import com.example.ui.components.DatingAvatar
+import com.example.util.ProfilePrivacyManager
 import java.util.Locale
 
 @Composable
@@ -351,32 +355,302 @@ fun ChatSearchDialog(messages: List<ChatMessageEntity>, onDismiss: () -> Unit, o
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatThreadSettingsSheet(
-    displayName: String, phoneNumber: String, isMuted: Boolean, nickname: String,
-    onVideoCall: () -> Unit, onAudioCall: () -> Unit, onToggleMute: () -> Unit, onSearch: () -> Unit,
-    onDisappearingMessages: () -> Unit, onNickname: () -> Unit, onChatColor: () -> Unit,
-    onWallpaper: () -> Unit, onNotificationSound: () -> Unit, onContactInfo: () -> Unit,
-    onSafetyNumber: () -> Unit, onBlockReport: () -> Unit, onDismiss: () -> Unit
+    profile: ProfileEntity,
+    preferences: UserPreferencesEntity?,
+    displayName: String,
+    phoneNumber: String,
+    isMuted: Boolean,
+    nickname: String,
+    onUpdatePreferences: (UserPreferencesEntity) -> Unit,
+    onVideoCall: () -> Unit,
+    onAudioCall: () -> Unit,
+    onToggleMute: () -> Unit,
+    onSearch: () -> Unit,
+    onDisappearingMessages: () -> Unit,
+    onNickname: () -> Unit,
+    onChatColor: () -> Unit,
+    onWallpaper: () -> Unit,
+    onNotificationSound: () -> Unit,
+    onContactInfo: () -> Unit,
+    onSafetyNumber: () -> Unit,
+    onBlockReport: () -> Unit,
+    onDismiss: () -> Unit
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Text(displayName, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Text(phoneNumber.ifBlank { "Phone number unavailable" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                ThreadActionButton("Video", "▣", onVideoCall)
-                ThreadActionButton("Audio", "☎", onAudioCall)
-                ThreadActionButton(if (isMuted) "Unmute" else "Mute", if (isMuted) "🔔" else "🔕", onToggleMute)
-                ThreadActionButton("Search", "⌕", onSearch)
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val canRevealPhone = remember(profile.id, profile.phoneNumber) {
+        ProfilePrivacyManager.canRevealPhoneNumber(context, profile)
+    }
+    val safePhoneLabel = when {
+        phoneNumber.isBlank() -> "Phone number unavailable"
+        canRevealPhone -> phoneNumber
+        else -> ProfilePrivacyManager.maskedPhone(phoneNumber)
+    }
+    val prefs = preferences
+
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                TopAppBar(
+                    title = { Text("Profile details") },
+                    navigationIcon = {
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Default.Close, contentDescription = "Close profile details")
+                        }
+                    }
+                )
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 18.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(13.dp)
+                ) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            DatingAvatar(
+                                name = displayName.ifBlank { profile.name },
+                                emoji = profile.avatarEmoji,
+                                colorStart = profile.gradientColorStart,
+                                colorEnd = profile.gradientColorEnd,
+                                size = 76.dp,
+                                isVerified = profile.isVerified,
+                                isOnline = profile.activityStatus.contains("online", ignoreCase = true),
+                                avatarUrl = profile.avatarUrl,
+                                avatarCacheVersion = profile.avatarCacheVersion
+                            )
+                            Spacer(Modifier.width(14.dp))
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = displayName.ifBlank { profile.name },
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    if (profile.isVerified) {
+                                        Spacer(Modifier.width(5.dp))
+                                        Icon(
+                                            Icons.Default.Verified,
+                                            contentDescription = "Verified",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = profile.activityStatus.ifBlank { "VibeSync contact" },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = safePhoneLabel,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        ThreadActionButton("Video", "▣", onVideoCall)
+                        ThreadActionButton("Audio", "☎", onAudioCall)
+                        ThreadActionButton(if (isMuted) "Unmute" else "Mute", if (isMuted) "🔔" else "🔕", onToggleMute)
+                        ThreadActionButton("Search", "⌕", onSearch)
+                    }
+
+                    Text("About", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                            Text(
+                                profile.bio.ifBlank { "No bio added yet." },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            val occupationAndCity = listOf(profile.occupation, profile.city)
+                                .map { it.trim() }.filter { it.isNotBlank() }.joinToString(" · ")
+                            if (occupationAndCity.isNotBlank()) {
+                                Text(
+                                    occupationAndCity,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            val interests = profile.getInterestList().take(12)
+                            if (interests.isNotEmpty()) {
+                                Text(
+                                    interests.joinToString("  •  "),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+
+                    Text("Privacy & security", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    if (prefs != null) {
+                        PrivacySecurityControls(
+                            preferences = prefs,
+                            onUpdatePreferences = onUpdatePreferences,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        ProfilePrivacyToggle(
+                            title = "Hide phone number",
+                            description = "Keep your number hidden on your public profile.",
+                            checked = prefs.hidePhoneNumber,
+                            enabled = true,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(hidePhoneNumber = it)) }
+                        )
+                        ProfilePrivacyToggle(
+                            title = "Hide occupation",
+                            description = "Do not show your occupation on your public profile.",
+                            checked = prefs.hideOccupation,
+                            enabled = true,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(hideOccupation = it)) }
+                        )
+                        ProfilePrivacyToggle(
+                            title = "Hide friends list",
+                            description = "Keep your connections list private.",
+                            checked = prefs.hideFriendsList,
+                            enabled = true,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(hideFriendsList = it)) }
+                        )
+                        ProfilePrivacyToggle(
+                            title = "Hide exact location",
+                            description = "Only share approximate location rather than exact coordinates.",
+                            checked = prefs.hideExactLocation,
+                            enabled = true,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(hideExactLocation = it)) }
+                        )
+                        ProfilePrivacyToggle(
+                            title = "Profile lock",
+                            description = "Restrict profile visibility to approved connections.",
+                            checked = prefs.isProfileLocked,
+                            enabled = true,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(isProfileLocked = it)) }
+                        )
+                        ProfilePrivacyChoiceRow(
+                            title = "Location visibility",
+                            description = "Choose who can see your location.",
+                            value = when (prefs.locationVisibility.uppercase()) {
+                                "EVERYONE" -> "Everyone"
+                                "PHONE_CONTACTS" -> "Phone contacts"
+                                "FRIENDS_ONLY" -> "Friends only"
+                                "SELECTED_PERSONS" -> "Selected people"
+                                else -> "No one"
+                            },
+                            onClick = {
+                                val next = when (prefs.locationVisibility.uppercase()) {
+                                    "NO_ONE", "" -> "FRIENDS_ONLY"
+                                    "FRIENDS_ONLY" -> "PHONE_CONTACTS"
+                                    "PHONE_CONTACTS" -> "EVERYONE"
+                                    else -> "NO_ONE"
+                                }
+                                onUpdatePreferences(prefs.copy(locationVisibility = next))
+                            }
+                        )
+                    } else {
+                        Text(
+                            "Privacy settings are loading. Reopen this screen in a moment to edit them.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+
+                    Text("Conversation settings", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    ThreadSettingRow("Disappearing Messages", "Off, 24 hours or 7 days", "◷", onDisappearingMessages)
+                    ThreadSettingRow("Nickname", nickname.ifBlank { "Set a local display name" }, "✎", onNickname)
+                    ThreadSettingRow("Chat Color", "Choose a local conversation color", "🎨", onChatColor)
+                    ThreadSettingRow("Chat Wallpaper", "Set a picture behind this conversation", "▧", onWallpaper)
+                    ThreadSettingRow("Sounds & Notifications", if (isMuted) "Muted for this conversation" else "Choose this chat's alert tone", "♫", onNotificationSound)
+                    ThreadSettingRow("Phone Contact Info", safePhoneLabel, "☎", onContactInfo)
+                    ThreadSettingRow("View Safety Number", "Verify the public-key fingerprint / QR code", "▦", onSafetyNumber)
+                    ThreadSettingRow("Block / Report Spam", "Block this contact or report abuse", "⚠", onBlockReport, danger = true)
+                    Spacer(Modifier.height(24.dp))
+                }
             }
-            Text("Privacy & personalization", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 4.dp))
-            ThreadSettingRow("Disappearing Messages", "Off, 24 hours or 7 days", "◷", onDisappearingMessages)
-            ThreadSettingRow("Nickname", nickname.ifBlank { "Set a local display name" }, "✎", onNickname)
-            ThreadSettingRow("Chat Color", "Choose a local conversation color", "🎨", onChatColor)
-            ThreadSettingRow("Chat Wallpaper", "Set a picture behind this conversation", "▧", onWallpaper)
-            ThreadSettingRow("Sounds & Notifications", if (isMuted) "Muted for this conversation" else "Choose this chat's alert tone", "♫", onNotificationSound)
-            ThreadSettingRow("Phone Contact Info", phoneNumber.ifBlank { "Contact details unavailable" }, "☎", onContactInfo)
-            ThreadSettingRow("View Safety Number", "Verify the public-key fingerprint / QR code", "▦", onSafetyNumber)
-            ThreadSettingRow("Block / Report Spam", "Block this contact or report abuse", "⚠", onBlockReport, danger = true)
-            Spacer(Modifier.height(18.dp))
+        }
+    }
+}
+
+@Composable
+private fun ProfilePrivacyToggle(
+    title: String,
+    description: String,
+    checked: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
+        }
+    }
+}
+
+@Composable
+private fun ProfilePrivacyChoiceRow(
+    title: String,
+    description: String,
+    value: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text(value, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+            Spacer(Modifier.width(4.dp))
+            Icon(Icons.Default.ChevronRight, contentDescription = "Change $title")
         }
     }
 }
