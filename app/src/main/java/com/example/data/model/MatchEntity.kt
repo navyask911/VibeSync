@@ -20,6 +20,8 @@ data class MatchEntity(
     val relationshipStatus: String = "FRIENDS", // "FRIENDS", "PROPOSAL_SENT", "PROPOSAL_RECEIVED", "IN_RELATIONSHIP", "BREAKUP_PENDING_USER", "BREAKUP_PENDING_PARTNER", "MUTUAL_BROKEN_UP"
     val hasStartedChat: Boolean = true,
     val isPhonebookContact: Boolean = false,
+    /** True only for conversations opened from anonymous social discovery; local Room metadata. */
+    @androidx.room.ColumnInfo(defaultValue = "0") val isAnonymousPeer: Boolean = false,
     /** Resolved local contact identity; local-only and never synced to Supabase. */
     @androidx.room.ColumnInfo(defaultValue = "''") val localContactName: String = "",
     @androidx.room.ColumnInfo(defaultValue = "''") val localPhotoUri: String = ""
