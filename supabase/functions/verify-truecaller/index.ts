@@ -230,13 +230,15 @@ Deno.serve(async (req: Request) => {
       throw new HttpError("profile_provision_failed: " + profileUpsert.error.message.slice(0, 200), 500);
     }
 
-    const phoneSyncUpsert = await admin.from("phone_sync").upsert({
-      user_id: profileId,
-      phone_hash: "\\x" + fullPhoneHash,
-    }, { onConflict: "user_id,phone_hash" });
-    if (phoneSyncUpsert.error) {
-      throw new HttpError("phone_sync_provision_failed: " + phoneSyncUpsert.error.message.slice(0, 200), 500);
+    const phoneLookupUpsert = await admin.from("phone_lookup_index").upsert({
+      profile_id: profileId,
+      phone_e164: identity.phone,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "profile_id" });
+    if (phoneLookupUpsert.error) {
+      throw new HttpError("phone_lookup_index_provision_failed: " + phoneLookupUpsert.error.message.slice(0, 200), 500);
     }
+
 
     // Invalidate prior device sessions for this identity, matching the current VibeSync session model.
     const deleteSessions = await admin.from("vibesync_sessions").delete().eq("profile_id", profileId);

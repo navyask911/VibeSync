@@ -225,8 +225,8 @@ fun AuthLoginScreen(
 
                 LoginValueCard(
                     icon = "📇",
-                    title = "Zero-Knowledge Contact Discovery",
-                    description = "Discover friends locally via cryptographic hashing without uploading your address book.",
+                    title = "Encrypted Contact Discovery (HTTPS)",
+                    description = "Normalized phone numbers are sent securely over SSL/TLS (HTTPS) only to match registered friends. Private chat messages remain End-to-End Encrypted (E2EE).",
                     testTag = "login_contact_discovery_card"
                 )
 
@@ -330,7 +330,7 @@ fun AuthLoginScreen(
                     textAlign = TextAlign.Center
                 )
                 Text(
-                    text = "Zero-knowledge architecture: Keys are stored exclusively on your device, ensuring private communications.",
+                    text = "Phone numbers are transferred securely via SSL/TLS (HTTPS) strictly for friend matching. Private chat messages remain End-to-End Encrypted (E2EE).",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -495,7 +495,7 @@ private fun VibeSyncLegalDialog(onDismiss: () -> Unit) {
                     LegalSection("1. User Eligibility & Account Registration",
                         "You must be at least 18 years old to use VibeSync. Account sign-in uses Truecaller OAuth. You are responsible for maintaining control of the phone number linked to your account. One verified account may be used for personal messaging and merchant Business Suite tools.")
                     LegalSection("2. Encryption & Privacy",
-                        "Private messages and sensitive files are designed to use client-side encryption with Google Tink. The service is not intended to hold the private decryption keys for end-to-end encrypted chats. Security depends on the implemented protocol, device security, and account/session protection. Contact discovery derives phone representations locally to match mutual contacts without intentionally storing a raw address book in plain text. Business catalog and order data may be stored locally and backed up to the encrypted Google Drive location you choose.")
+                        "Private messages and sensitive files use client-side encryption with Google Tink; chat payloads remain End-to-End Encrypted (E2EE). For friend matching, normalized E.164 phone numbers are sent securely over SSL/TLS (HTTPS) to an authenticated Supabase RPC and matched against an indexed, server-restricted phone directory. This means phone numbers used for matching are transferred to Supabase; the directory is not directly readable by other client accounts. Contact discovery metadata is not covered by chat E2EE. Security also depends on the implemented protocol, device security, and account/session protection. Business catalog and order data may be stored locally and backed up to the encrypted Google Drive location you choose.")
                     LegalSection("3. Permitted Use & Code of Conduct",
                         "You must not transmit unlawful, defamatory, abusive, obscene or harassing content; impersonate a person or entity; distribute unsolicited commercial spam, malware or phishing; or use Business Suite for fraudulent commercial activity. VibeSync may restrict, suspend or terminate accounts for serious or repeated violations, subject to applicable law.")
                     LegalSection("4. Intellectual Property",
