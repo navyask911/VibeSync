@@ -193,7 +193,7 @@ jobs:
             exit 1
           fi
 
-          pattern='"private_key"[[:space:]]*:[[:space:]]*"-----BEGIN|AIzaSy[A-Za-z0-9_-]{30,}|sb_secret_[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{40,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'
+          pattern='"private_key"[[:space:]]*:[[:space:]]*"-----BEGIN|AIzaSy[A-Za-z0-9_-]{30,}|sb_secret_[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{40,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}|^[[:space:]]*-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'
           matches="$(git ls-files -z -- '*.kt' '*.java' '*.kts' '*.gradle' '*.js' '*.ts' '*.json' '*.xml' '*.properties' '*.yml' '*.yaml' '*.toml' '.env.example' | xargs -0 -r grep -IlE "$pattern" || true)"
           if [ -n "$matches" ]; then
             echo "Credential-like material detected in tracked files (paths only; values suppressed):"
