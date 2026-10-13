@@ -133,6 +133,7 @@ fun DatingAppRoot(
 
     val activeMatchDialog by viewModel.activeMatchDialog.collectAsStateWithLifecycle()
     val activeChat by viewModel.activeChat.collectAsStateWithLifecycle()
+    val isPartnerTyping by viewModel.isPartnerTyping.collectAsStateWithLifecycle()
     val selectedDetail by viewModel.selectedProfileDetail.collectAsStateWithLifecycle()
     val activeReportProfile by viewModel.activeReportProfile.collectAsStateWithLifecycle()
     val networkState by viewModel.networkState.collectAsStateWithLifecycle()
@@ -767,6 +768,11 @@ fun DatingAppRoot(
                 onViewProfile = { viewModel.openProfileDetail(profile) },
                 onStartRealtime = { viewModel.startChatRealtime(match, profile) },
                 onStopRealtime = { viewModel.stopChatRealtime() },
+                isPartnerTyping = isPartnerTyping,
+                readReceiptsEnabled = preferences?.readReceiptsEnabled ?: true,
+                typingIndicatorsEnabled = preferences?.typingIndicatorsEnabled ?: true,
+                onTypingStatus = { isTyping -> viewModel.onChatTyping(isTyping) },
+                onSetDisappearingTimer = { seconds -> viewModel.setDisappearingTimer(seconds) },
                 onBlockAndReport = { reason, details ->
                     viewModel.emergencyBlockAndReportUser(profile.id, match.matchId, reason, details)
                 },
