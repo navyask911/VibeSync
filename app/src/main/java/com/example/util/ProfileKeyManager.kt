@@ -61,7 +61,7 @@ object ProfileKeyManager {
     /** Observable version stream so visible avatar components reload on authenticated key rotation. */
     fun peerProfileVersionFlow(context: Context, peerProfileId: String): StateFlow<Int> =
         peerProfileVersionFlows.getOrPut(stableKey(peerProfileId)) {
-            MutableStateFlow(peerProfileVersion(context, peerProfileId))
+            MutableStateFlow(1)
         }.asStateFlow()
 
     /** Allocate a new version without switching the active key before ciphertext upload succeeds. */

@@ -1,5 +1,6 @@
 package com.example
 
+import android.app.Application
 import com.example.util.TinkCryptoManager
 import com.google.crypto.tink.KeysetHandle
 import com.google.crypto.tink.KeyTemplates
@@ -12,8 +13,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
+@Config(application = Application::class)
 class E2eeDeliveryLoopTest {
     private data class RemoteRow(
         val messageId: String,
