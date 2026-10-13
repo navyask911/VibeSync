@@ -4,7 +4,7 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 
 /**
- * Room Database entity for storing matched and hashed phonebook contacts locally.
+ * Room cache of direct HTTPS contact matches. The legacy phoneHash column stores E.164 text only.
  */
 @Entity(tableName = "matched_contacts")
 data class MatchedContactEntity(
