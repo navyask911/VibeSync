@@ -55,6 +55,10 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.CurrencyRupee
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Check
@@ -165,6 +169,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -678,9 +683,14 @@ private fun ChatDetailScreenContent(
 
     var replyingToMessage by remember { mutableStateOf<ChatMessageEntity?>(null) }
     var selectedMessageForAction by remember { mutableStateOf<ChatMessageEntity?>(null) }
+    var expandedReactionMessage by remember { mutableStateOf<ChatMessageEntity?>(null) }
+    var messageInfo by remember { mutableStateOf<ChatMessageEntity?>(null) }
     var editingMessage by remember { mutableStateOf<ChatMessageEntity?>(null) }
     var deletingMessage by remember { mutableStateOf<ChatMessageEntity?>(null) }
     var forwardingMessage by remember { mutableStateOf<ChatMessageEntity?>(null) }
+    var messageSelectionMode by remember { mutableStateOf(false) }
+    val selectedMessageIds = remember { mutableStateListOf<String>() }
+    var pinnedMessageId by remember(profile.id, match?.matchId) { mutableStateOf<String?>(null) }
     val clipboardManager = LocalClipboardManager.current
 
     // Intercept phone back button to dismiss child dialogs/sheets/selection first, or return to chat list
@@ -691,6 +701,13 @@ private fun ChatDetailScreenContent(
             showAttachmentSheet = false
         } else if (selectedMessageForAction != null) {
             selectedMessageForAction = null
+        } else if (expandedReactionMessage != null) {
+            expandedReactionMessage = null
+        } else if (messageInfo != null) {
+            messageInfo = null
+        } else if (messageSelectionMode) {
+            messageSelectionMode = false
+            selectedMessageIds.clear()
         } else if (forwardingMessage != null) {
             forwardingMessage = null
         } else if (deletingMessage != null) {
@@ -799,7 +816,8 @@ private fun ChatDetailScreenContent(
 
     LaunchedEffect(visibleMessages.size) {
         if (visibleMessages.isNotEmpty()) {
-            listState.animateScrollToItem(visibleMessages.size - 1)
+            // Index 0 is the recipient intro card, so the last message is at index size.
+            listState.animateScrollToItem(visibleMessages.size)
         }
     }
 
@@ -937,6 +955,30 @@ private fun ChatDetailScreenContent(
             )
         )
 
+        AnimatedVisibility(visible = messageSelectionMode) {
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "${selectedMessageIds.size} selected",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                    TextButton(onClick = {
+                        messageSelectionMode = false
+                        selectedMessageIds.clear()
+                    }) { Text("Done") }
+                }
+            }
+        }
+
         // Animated Offline Status Banner with Outbox details
         AnimatedVisibility(visible = !isNetworkOnline) {
             Surface(
@@ -1071,45 +1113,178 @@ private fun ChatDetailScreenContent(
         }
 
         // VibeSync Chat Messages Stream
+        // Chat timeline with a recipient intro card, pinned-message anchor, and inline long-press actions.
         BoxWithConstraints(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
         ) {
             val maxBubbleWidth = maxWidth * 0.78f
+            val pinnedMessage = pinnedMessageId?.let { id -> visibleMessages.firstOrNull { it.messageId == id } }
 
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 12.dp),
-                contentPadding = PaddingValues(vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                items(visibleMessages, key = { it.messageId }) { msg ->
-                    val isOutgoing = isMessageOutgoing(
-                        message = msg,
-                        partnerProfileId = profile.id,
-                        partnerPhone = profile.phoneNumber,
-                        matchProfileId = match?.matchId,
-                        currentUserId = currentUserId
-                    )
-                    VibeSyncChatBubble(
-                        message = msg,
-                        isOutgoing = isOutgoing,
-                        maxBubbleWidth = maxBubbleWidth,
-                        localMessageStatuses = localMessageStatuses,
-                        readReceiptsEnabled = readReceiptsEnabled,
-                        chatTextColor = chatTextColor,
-                        onReactToMessage = onReactToMessage,
-                        onActionClick = {
-                            selectedMessageForAction = msg
-                        },
-                        onMediaClick = { url, type ->
-                            fullScreenMediaUrl = url
-                            fullScreenMediaType = type
+            Column(modifier = Modifier.fillMaxSize()) {
+                pinnedMessage?.let { pinned ->
+                    Surface(
+                        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.72f),
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.25f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    coroutineScope.launch {
+                                        val index = visibleMessages.indexOfFirst { it.messageId == pinned.messageId }
+                                        if (index >= 0) listState.animateScrollToItem(index + 1)
+                                    }
+                                }
+                                .padding(start = 12.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PushPin,
+                                contentDescription = "Pinned message",
+                                tint = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(9.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "Pinned message",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.tertiary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    pinned.text.ifBlank { if (pinned.mediaType == "VOICE") "Voice note" else "Media attachment" },
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                            IconButton(onClick = { pinnedMessageId = null }, modifier = Modifier.size(34.dp)) {
+                                Icon(Icons.Default.Close, contentDescription = "Unpin message", modifier = Modifier.size(18.dp))
+                            }
                         }
-                    )
+                    }
+                }
+
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(horizontal = 12.dp),
+                    contentPadding = PaddingValues(vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    item(key = "recipient_header_card") {
+                        RecipientHeaderCard(
+                            profile = profile,
+                            displayName = resolvedPartnerName,
+                            onClick = onViewProfile
+                        )
+                    }
+
+                    items(visibleMessages, key = { it.messageId }) { msg ->
+                        val isOutgoing = isMessageOutgoing(
+                            message = msg,
+                            partnerProfileId = profile.id,
+                            partnerPhone = profile.phoneNumber,
+                            matchProfileId = match?.matchId,
+                            currentUserId = currentUserId
+                        )
+                        val isContextTarget = selectedMessageForAction?.messageId == msg.messageId
+                        val canEditMessage = isOutgoing &&
+                            msg.mediaType == "TEXT" &&
+                            (System.currentTimeMillis() - msg.timestamp) in 0L..(15 * 60 * 1000L) &&
+                            !msg.isDeleted && !msg.isDeletedForEveryone
+
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = if (isOutgoing) Alignment.End else Alignment.Start
+                        ) {
+                            AnimatedVisibility(visible = isContextTarget, enter = fadeIn(), exit = fadeOut()) {
+                                MessageContextActionPanel(
+                                    isOutgoing = isOutgoing,
+                                    canEdit = canEditMessage,
+                                    isPinned = pinnedMessageId == msg.messageId,
+                                    canCopy = msg.text.isNotBlank() && !msg.isDeletedForEveryone,
+                                    onReact = { emoji ->
+                                        onReactToMessage(msg.messageId, emoji)
+                                        selectedMessageForAction = null
+                                    },
+                                    onMoreReactions = { expandedReactionMessage = msg },
+                                    onReply = {
+                                        replyingToMessage = msg
+                                        selectedMessageForAction = null
+                                    },
+                                    onEdit = {
+                                        if (canEditMessage) editingMessage = msg
+                                        selectedMessageForAction = null
+                                    },
+                                    onForward = {
+                                        forwardingMessage = msg
+                                        selectedMessageForAction = null
+                                    },
+                                    onCopy = {
+                                        clipboardManager.setText(AnnotatedString(msg.text))
+                                        selectedMessageForAction = null
+                                    },
+                                    onSelect = {
+                                        messageSelectionMode = true
+                                        if (selectedMessageIds.contains(msg.messageId)) selectedMessageIds.remove(msg.messageId)
+                                        else selectedMessageIds.add(msg.messageId)
+                                        selectedMessageForAction = null
+                                    },
+                                    onInfo = {
+                                        messageInfo = msg
+                                        selectedMessageForAction = null
+                                    },
+                                    onPin = {
+                                        pinnedMessageId = if (pinnedMessageId == msg.messageId) null else msg.messageId
+                                        selectedMessageForAction = null
+                                    },
+                                    onDelete = {
+                                        deletingMessage = msg
+                                        selectedMessageForAction = null
+                                    }
+                                )
+                            }
+
+                            VibeSyncChatBubble(
+                                message = msg,
+                                isOutgoing = isOutgoing,
+                                maxBubbleWidth = maxBubbleWidth,
+                                localMessageStatuses = localMessageStatuses,
+                                readReceiptsEnabled = readReceiptsEnabled,
+                                chatTextColor = chatTextColor,
+                                showSelectionCheckbox = messageSelectionMode,
+                                isSelected = selectedMessageIds.contains(msg.messageId),
+                                onToggleSelected = {
+                                    if (selectedMessageIds.contains(msg.messageId)) selectedMessageIds.remove(msg.messageId)
+                                    else selectedMessageIds.add(msg.messageId)
+                                },
+                                onReactToMessage = onReactToMessage,
+                                onActionClick = {
+                                    if (messageSelectionMode) {
+                                        if (selectedMessageIds.contains(msg.messageId)) selectedMessageIds.remove(msg.messageId)
+                                        else selectedMessageIds.add(msg.messageId)
+                                    } else {
+                                        selectedMessageForAction = msg
+                                    }
+                                },
+                                onMediaClick = { url, type ->
+                                    fullScreenMediaUrl = url
+                                    fullScreenMediaType = type
+                                }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -2384,185 +2559,106 @@ private fun ChatDetailScreenContent(
         )
     }
 
-    // Modern Message Action Modal Bottom Sheet
-    selectedMessageForAction?.let { msg ->
-        val isOutgoing = isMessageOutgoing(
-            message = msg,
-            partnerProfileId = profile.id,
-            partnerPhone = profile.phoneNumber,
-            matchProfileId = match?.matchId,
-            currentUserId = currentUserId
+    // Expanded reaction picker, opened from the floating reaction bar's ellipsis button.
+    expandedReactionMessage?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { expandedReactionMessage = null },
+            title = { Text("More reactions", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    com.example.util.ChatMessageEventCodec.ALLOWED_REACTIONS.chunked(3).forEach { rowEmojis ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            rowEmojis.forEach { emoji ->
+                                Surface(
+                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                    shape = CircleShape,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable {
+                                            onReactToMessage(msg.messageId, emoji)
+                                            expandedReactionMessage = null
+                                            selectedMessageForAction = null
+                                        }
+                                        .testTag("expanded_reaction_${emoji.hashCode()}")
+                                ) {
+                                    Text(
+                                        text = emoji,
+                                        textAlign = TextAlign.Center,
+                                        fontSize = 25.sp,
+                                        modifier = Modifier.padding(vertical = 10.dp)
+                                    )
+                                }
+                            }
+                            repeat((3 - rowEmojis.size).coerceAtLeast(0)) {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { expandedReactionMessage = null }) { Text("Close") }
+            }
         )
-        val ageSinceSend = System.currentTimeMillis() - msg.timestamp
-        val isWithin15Mins = ageSinceSend in 0L..(15 * 60 * 1000L)
-        val canEdit = isOutgoing && msg.mediaType == "TEXT" && isWithin15Mins &&
-            !msg.isDeleted && !msg.isDeletedForEveryone
+    }
 
-        ModalBottomSheet(
-            onDismissRequest = { selectedMessageForAction = null },
-            containerColor = MaterialTheme.colorScheme.surface
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 18.dp, vertical = 10.dp)
-            ) {
-                // Snippet preview
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth()
+    // Delivery and read timestamps are not separately persisted on ChatMessageEntity; show only
+    // authoritative local status and the actual message sent timestamp rather than inventing times.
+    messageInfo?.let { msg ->
+        val dateFormat = remember { SimpleDateFormat("MMM d, yyyy 'at' h:mm a", Locale.getDefault()) }
+        AlertDialog(
+            onDismissRequest = { messageInfo = null },
+            title = { Text("Message info", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 340.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
-                        text = if (msg.isDeleted || msg.isDeletedForEveryone) "This message was deleted" else msg.text.ifBlank { if (msg.mediaType == "VOICE") "Voice note" else "Media attachment" },
-                        fontSize = 12.sp,
-                        maxLines = 2,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(10.dp)
+                        text = msg.text.ifBlank { if (msg.mediaType == "VOICE") "Voice note" else "Media attachment" },
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis
                     )
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Text("React", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    com.example.util.ChatMessageEventCodec.ALLOWED_REACTIONS.forEach { emoji ->
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            modifier = Modifier
-                                .weight(1f)
-                                .clickable {
-                                    onReactToMessage(msg.messageId, emoji)
-                                    selectedMessageForAction = null
-                                }
-                                .testTag("reaction_${emoji.hashCode()}")
-                        ) {
-                            Text(
-                                text = emoji,
-                                fontSize = 20.sp,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(vertical = 8.dp)
-                            )
-                        }
-                    }
-                }
-
-                // Reply
-                DropdownMenuItem(
-                    text = { Text("Reply", fontWeight = FontWeight.Medium) },
-                    leadingIcon = {
-                        Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = null, tint = VibeSyncTeal)
-                    },
-                    onClick = {
-                        replyingToMessage = msg
-                        selectedMessageForAction = null
-                    }
-                )
-
-                // Copy Text
-                if (msg.text.isNotBlank() && !msg.isDeletedForEveryone) {
-                    DropdownMenuItem(
-                        text = { Text("Copy Text", fontWeight = FontWeight.Medium) },
-                        leadingIcon = {
-                            Icon(Icons.Default.ContentCopy, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface)
-                        },
-                        onClick = {
-                            clipboardManager.setText(AnnotatedString(msg.text))
-                            selectedMessageForAction = null
+                    HorizontalDivider()
+                    MessageInfoLine("Sent", dateFormat.format(Date(msg.timestamp)))
+                    MessageInfoLine(
+                        "Delivery",
+                        when {
+                            msg.isRead || msg.deliveryState.equals("READ", true) -> "Read"
+                            msg.isDelivered || msg.deliveryState.equals("DELIVERED", true) -> "Delivered"
+                            else -> msg.deliveryState.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }
                         }
                     )
-                }
-
-                // Star / Unstar
-                DropdownMenuItem(
-                    text = { Text(if (msg.isStarred) "Unstar Message" else "Star Message", fontWeight = FontWeight.Medium) },
-                    leadingIcon = {
-                        Icon(
-                            if (msg.isStarred) Icons.Default.Star else Icons.Default.StarBorder,
-                            contentDescription = null,
-                            tint = if (msg.isStarred) Color(0xFFFFD700) else MaterialTheme.colorScheme.onSurface
-                        )
-                    },
-                    onClick = {
-                        onToggleStarMessage(msg.messageId)
-                        selectedMessageForAction = null
-                    }
-                )
-
-                // Forward
-                DropdownMenuItem(
-                    text = { Text("Forward", fontWeight = FontWeight.Medium) },
-                    leadingIcon = {
-                        Icon(Icons.AutoMirrored.Filled.Forward, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface)
-                    },
-                    onClick = {
-                        forwardingMessage = msg
-                        selectedMessageForAction = null
-                    }
-                )
-
-                // Edit sender-authored text within a strict 15-minute constraint
-                if (isOutgoing && !msg.isDeletedForEveryone) {
-                    DropdownMenuItem(
-                        text = {
-                            Column {
-                                Text("Edit Message", fontWeight = FontWeight.Medium)
-                                Text(
-                                    text = if (isWithin15Mins) "Allowed within 15 mins" else "Expired (>15 mins limit)",
-                                    fontSize = 10.sp,
-                                    color = if (isWithin15Mins) VibeSyncTeal else Color.Gray
-                                )
-                            }
-                        },
-                        leadingIcon = {
-                            Icon(
-                                Icons.Default.Edit,
-                                contentDescription = null,
-                                tint = if (isWithin15Mins) VibeSyncTeal else Color.Gray
-                            )
-                        },
-                        enabled = canEdit,
-                        onClick = {
-                            editingMessage = msg
-                            selectedMessageForAction = null
+                    MessageInfoLine(
+                        "Read receipt",
+                        when {
+                            !readReceiptsEnabled -> "Hidden — Read Receipts are off"
+                            msg.isRead || msg.deliveryState.equals("READ", true) -> "Read (exact time is not stored)"
+                            else -> "Not marked as read"
                         }
                     )
-                }
-
-                // Delete Message
-                DropdownMenuItem(
-                    text = { Text("Delete Message", color = Color(0xFFE53935), fontWeight = FontWeight.Bold) },
-                    leadingIcon = {
-                        Icon(Icons.Default.Delete, contentDescription = null, tint = Color(0xFFE53935))
-                    },
-                    onClick = {
-                        deletingMessage = msg
-                        selectedMessageForAction = null
-                    }
-                )
-
-                // Emergency Report & Block Sender
-                if (!isOutgoing) {
-                    DropdownMenuItem(
-                        text = { Text("🚨 Report Sender & Instant Block", color = Color(0xFFE53935), fontWeight = FontWeight.Bold) },
-                        leadingIcon = {
-                            Icon(Icons.Default.Shield, contentDescription = null, tint = Color(0xFFE53935))
-                        },
-                        onClick = {
-                            selectedMessageForAction = null
-                            showEmergencyBlockReportDialog = true
-                        }
+                    MessageInfoLine(
+                        "Encryption",
+                        if (msg.isEncrypted) "End-to-end encrypted · ${msg.encryptionProtocol}" else "Not marked encrypted"
+                    )
+                    Text(
+                        text = "Separate delivery and read timestamps are not stored on this local message record.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-
-                Spacer(modifier = Modifier.height(16.dp))
+            },
+            confirmButton = {
+                TextButton(onClick = { messageInfo = null }) { Text("Done") }
             }
-        }
+        )
     }
 
     // Edit Message Dialog (Within 15 minutes)
@@ -3880,6 +3976,260 @@ private fun ChatDetailScreenContent(
     }
 }
 
+@Composable
+private fun RecipientHeaderCard(
+    profile: ProfileEntity,
+    displayName: String,
+    onClick: () -> Unit
+) {
+    val initials = remember(displayName) {
+        displayName.trim()
+            .split(Regex("\\s+"))
+            .filter { it.isNotBlank() }
+            .take(2)
+            .mapNotNull { it.firstOrNull()?.uppercaseChar() }
+            .joinToString("")
+            .ifBlank { "VS" }
+    }
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f),
+        shape = RoundedCornerShape(24.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 3.dp, vertical = 4.dp)
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 15.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(54.dp)
+                    .clip(CircleShape)
+                    .background(Brush.linearGradient(listOf(Color(0xFFD9F4EE), Color(0xFFEDE3FF)))),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = initials,
+                    color = Color(0xFF285C57),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.ExtraBold
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    text = displayName.ifBlank { "VibeSync contact" },
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = profile.phoneNumber.ifBlank { "Phone number unavailable" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "No groups in common",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.Forward,
+                contentDescription = "View profile details",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessageContextActionPanel(
+    isOutgoing: Boolean,
+    canEdit: Boolean,
+    isPinned: Boolean,
+    canCopy: Boolean,
+    onReact: (String) -> Unit,
+    onMoreReactions: () -> Unit,
+    onReply: () -> Unit,
+    onEdit: () -> Unit,
+    onForward: () -> Unit,
+    onCopy: () -> Unit,
+    onSelect: () -> Unit,
+    onInfo: () -> Unit,
+    onPin: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(24.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)),
+        shadowElevation = 10.dp,
+        tonalElevation = 2.dp,
+        modifier = Modifier
+            .widthIn(min = 250.dp, max = 328.dp)
+            .padding(vertical = 3.dp)
+            .testTag("message_context_panel")
+    ) {
+        Column(modifier = Modifier.padding(9.dp)) {
+            // Signal-style quick reactions in a compact floating pastel pill.
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.8f),
+                shape = RoundedCornerShape(22.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 3.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    listOf("❤️", "👍", "😂", "😮", "😢").forEach { emoji ->
+                        Surface(
+                            shape = CircleShape,
+                            color = Color.Transparent,
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { onReact(emoji) }
+                                .testTag("quick_reaction_${emoji.hashCode()}")
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(vertical = 7.dp)) {
+                                Text(text = emoji, fontSize = 21.sp)
+                            }
+                        }
+                    }
+                    IconButton(
+                        onClick = onMoreReactions,
+                        modifier = Modifier.size(37.dp).testTag("quick_reactions_more")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MoreHoriz,
+                            contentDescription = "More reactions",
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(7.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 300.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(top = 5.dp)
+            ) {
+                MessageContextActionRow(
+                    icon = Icons.AutoMirrored.Filled.Reply,
+                    label = "Reply",
+                    onClick = onReply
+                )
+                if (isOutgoing) {
+                    MessageContextActionRow(
+                        icon = Icons.Default.Edit,
+                        label = if (canEdit) "Edit" else "Edit (15-minute limit)",
+                        enabled = canEdit,
+                        onClick = onEdit
+                    )
+                }
+                MessageContextActionRow(
+                    icon = Icons.AutoMirrored.Filled.Forward,
+                    label = "Forward",
+                    onClick = onForward
+                )
+                MessageContextActionRow(
+                    icon = Icons.Default.ContentCopy,
+                    label = "Copy",
+                    enabled = canCopy,
+                    onClick = onCopy
+                )
+                MessageContextActionRow(
+                    icon = Icons.Default.CheckBox,
+                    label = "Select",
+                    onClick = onSelect
+                )
+                MessageContextActionRow(
+                    icon = Icons.Default.Info,
+                    label = "Info",
+                    onClick = onInfo
+                )
+                MessageContextActionRow(
+                    icon = Icons.Default.PushPin,
+                    label = if (isPinned) "Unpin" else "Pin",
+                    onClick = onPin
+                )
+                MessageContextActionRow(
+                    icon = Icons.Default.Delete,
+                    label = "Delete",
+                    danger = true,
+                    onClick = onDelete
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageContextActionRow(
+    icon: ImageVector,
+    label: String,
+    enabled: Boolean = true,
+    danger: Boolean = false,
+    onClick: () -> Unit
+) {
+    val tint = when {
+        danger -> MaterialTheme.colorScheme.error
+        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+        else -> MaterialTheme.colorScheme.onSurface
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(13.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(imageVector = icon, contentDescription = null, tint = tint, modifier = Modifier.size(19.dp))
+        Spacer(modifier = Modifier.width(12.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = tint,
+            fontWeight = if (danger) FontWeight.SemiBold else FontWeight.Medium
+        )
+    }
+}
+
+@Composable
+private fun MessageInfoLine(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(94.dp)
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun VibeSyncChatBubble(
@@ -3889,6 +4239,9 @@ private fun VibeSyncChatBubble(
     localMessageStatuses: Map<String, String>,
     readReceiptsEnabled: Boolean = true,
     chatTextColor: Color = Color(0xFF111827),
+    showSelectionCheckbox: Boolean = false,
+    isSelected: Boolean = false,
+    onToggleSelected: () -> Unit = {},
     onReactToMessage: (messageId: String, emoji: String) -> Unit,
     onActionClick: () -> Unit,
     onMediaClick: (String, String) -> Unit
@@ -3924,8 +4277,17 @@ private fun VibeSyncChatBubble(
 
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (isOutgoing) Arrangement.End else Arrangement.Start
+        horizontalArrangement = if (isOutgoing) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.CenterVertically
     ) {
+        if (showSelectionCheckbox) {
+            androidx.compose.material3.Checkbox(
+                checked = isSelected,
+                onCheckedChange = { onToggleSelected() },
+                modifier = Modifier.size(40.dp)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+        }
         Surface(
             shape = if (isOutgoing) {
                 RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp)
