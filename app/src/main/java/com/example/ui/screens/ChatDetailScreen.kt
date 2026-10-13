@@ -193,8 +193,6 @@ import com.example.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.time.Instant
-import java.time.ZoneId
 
 data class QueuedMessage(
     val id: String = java.util.UUID.randomUUID().toString(),
@@ -861,7 +859,7 @@ private fun ChatDetailScreenContent(
     }
 
     val groupedMessages = remember(visibleMessages) {
-        visibleMessages.groupBy { Instant.ofEpochMilli(it.timestamp).atZone(ZoneId.systemDefault()).toLocalDate() }
+        visibleMessages.groupBy { messageDayKey(it.timestamp) }
     }
 
     fun lazyIndexForMessage(messageId: String): Int {

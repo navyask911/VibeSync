@@ -37,8 +37,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.data.model.ChatMessageEntity
-import java.time.LocalDate
-import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 @Composable
@@ -50,12 +48,22 @@ fun DateSeparatorPill(label: String) {
     }
 }
 
-fun dateSeparatorLabel(date: LocalDate): String {
-    val today = LocalDate.now()
-    return when (date) {
-        today -> "Today"
-        today.minusDays(1) -> "Yesterday"
-        else -> date.format(DateTimeFormatter.ofPattern("MMMM d, yyyy", Locale.getDefault()))
+fun messageDayKey(timestamp: Long): String =
+    java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).format(java.util.Date(timestamp))
+
+fun dateSeparatorLabel(dateKey: String): String {
+    val todayKey = messageDayKey(System.currentTimeMillis())
+    val yesterdayKey = messageDayKey(java.util.Calendar.getInstance().apply {
+        add(java.util.Calendar.DAY_OF_YEAR, -1)
+    }.timeInMillis)
+    return when (dateKey) {
+        todayKey -> "Today"
+        yesterdayKey -> "Yesterday"
+        else -> runCatching {
+            val parsed = java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(dateKey)
+            if (parsed == null) dateKey
+            else java.text.SimpleDateFormat("MMMM d, yyyy", Locale.getDefault()).format(parsed)
+        }.getOrDefault(dateKey)
     }
 }
 
