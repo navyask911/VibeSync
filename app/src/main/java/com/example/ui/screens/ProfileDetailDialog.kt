@@ -526,9 +526,15 @@ fun ProfileDetailDialog(
                                             Button(
                                                 onClick = {
                                                     requestScope.launch {
+                                                        val requesterName = withContext(Dispatchers.IO) {
+                                                            runCatching {
+                                                                com.example.data.database.DatingDatabase.getDatabase(context)
+                                                                    .userPreferencesDao().getPreferencesSync()?.userName
+                                                            }.getOrNull().orEmpty()
+                                                        }.ifBlank { "VibeSync member" }
                                                         val result = com.example.util.SupabaseClientManager.createPhoneNumberAccessRequest(
                                                             targetProfileId = profile.id,
-                                                            requesterName = "VibeSync member"
+                                                            requesterName = requesterName
                                                         )
                                                         isPhoneAccessRequested = result.isSuccess
                                                         android.widget.Toast.makeText(
