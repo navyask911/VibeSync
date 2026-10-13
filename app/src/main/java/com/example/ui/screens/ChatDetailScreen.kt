@@ -948,7 +948,7 @@ private fun ChatDetailScreenContent(
 
         // Shield is opt-in metadata set only for matches created by anonymous social discovery.
         // Contact/direct chats never infer anonymity from missing phonebook data.
-        if (match?.isAnonymousPeer == true && match.isPhonebookContact.not()) {
+        if (match?.isAnonymousPeer == true && match?.isPhonebookContact != true) {
             Surface(
                 color = VibeSyncTeal.copy(alpha = 0.12f),
                 border = BorderStroke(1.dp, VibeSyncTeal.copy(alpha = 0.3f)),
