@@ -1520,6 +1520,15 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                             android.util.Log.w("VibeSyncChat", "Control event deferred because its target message is not present in this conversation.")
                             return@launch
                         }
+                        if (decodedPayload.eventType == com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DISAPPEARING_TIMER) {
+                            val currentActive = _activeChat.value
+                            if (currentActive?.first?.matchId == targetMatchId) {
+                                val refreshedMatch = database.matchDao().getMatchByIdSync(targetMatchId)
+                                if (refreshedMatch != null) {
+                                    _activeChat.value = Pair(refreshedMatch, currentActive.second)
+                                }
+                            }
+                        }
                         val controlAcked = com.example.util.SupabaseBackendManager.markMessageDelivered(
                             msgId, senderIdentity, receiverIdentity
                         )
