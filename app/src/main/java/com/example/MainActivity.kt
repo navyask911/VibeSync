@@ -5,6 +5,31 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import com.example.data.database.DatabaseKeyManager
+import com.example.data.database.EncryptedDatabaseBootstrap
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.FragmentActivity
@@ -48,12 +73,49 @@ class MainActivity : FragmentActivity() {
       com.example.util.DeepLinkManager.handleIncomingUri(intent?.data)
     }
 
-    // No Room prewarm, synchronous database operation, WorkManager startup or realtime channel
-    // initialization is performed inside the Activity's cold-start callback.
+    // Prepare the encrypted database off the main thread before composing screens that access
+    // Room. If local storage cannot be recovered, show a retry screen instead of crashing the app.
     safeInit("Compose app shell") {
       setContent {
         MyApplicationTheme {
-          DatingAppRoot()
+          var databaseReady by remember { mutableStateOf(false) }
+          var isPreparingDatabase by remember { mutableStateOf(true) }
+          var databaseFailure by remember { mutableStateOf<String?>(null) }
+          var retryCount by remember { mutableStateOf(0) }
+
+          LaunchedEffect(retryCount) {
+            isPreparingDatabase = true
+            databaseFailure = null
+            val failureMessage = withContext(Dispatchers.IO) {
+              try {
+                val passphrase = DatabaseKeyManager.getOrCreatePassphrase(applicationContext)
+                try {
+                  EncryptedDatabaseBootstrap.prepare(applicationContext, passphrase)
+                  null
+                } finally {
+                  passphrase.fill(0)
+                }
+              } catch (failure: Throwable) {
+                if (failure is CancellationException) throw failure
+                Log.e("VibeSyncDatabase", "Encrypted database preflight failed; staying in recovery UI.", failure)
+                "VibeSync could not safely prepare its encrypted local database. " +
+                  "No unencrypted fallback will be opened. Check available storage and retry. " +
+                  "Do not clear app data or uninstall while recovery is pending."
+              }
+            }
+            databaseFailure = failureMessage
+            databaseReady = failureMessage == null
+            isPreparingDatabase = false
+          }
+
+          when {
+            isPreparingDatabase -> DatabasePreparationScreen()
+            databaseReady -> DatingAppRoot()
+            else -> DatabaseRecoveryScreen(
+              message = databaseFailure ?: "Secure local storage needs recovery.",
+              onRetry = { retryCount += 1 }
+            )
+          }
         }
       }
     }
@@ -100,6 +162,50 @@ class MainActivity : FragmentActivity() {
       block()
     } catch (t: Throwable) {
       Log.e("VibeSyncInit", "Safe init fallback: $step", t)
+    }
+  }
+}
+
+
+@Composable
+private fun DatabasePreparationScreen() {
+  Surface(modifier = Modifier.fillMaxSize()) {
+    Column(
+      modifier = Modifier.fillMaxSize().padding(24.dp),
+      verticalArrangement = Arrangement.Center,
+      horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+      CircularProgressIndicator()
+      Spacer(modifier = Modifier.height(16.dp))
+      Text(
+        text = "Preparing secure local storage…",
+        style = MaterialTheme.typography.titleMedium
+      )
+    }
+  }
+}
+
+@Composable
+private fun DatabaseRecoveryScreen(
+  message: String,
+  onRetry: () -> Unit
+) {
+  Surface(modifier = Modifier.fillMaxSize()) {
+    Column(
+      modifier = Modifier.fillMaxSize().padding(24.dp),
+      verticalArrangement = Arrangement.Center,
+      horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+      Text(
+        text = "Secure storage needs recovery",
+        style = MaterialTheme.typography.headlineSmall
+      )
+      Spacer(modifier = Modifier.height(12.dp))
+      Text(text = message, style = MaterialTheme.typography.bodyMedium)
+      Spacer(modifier = Modifier.height(20.dp))
+      Button(onClick = onRetry) {
+        Text("Retry secure database setup")
+      }
     }
   }
 }

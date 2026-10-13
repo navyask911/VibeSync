@@ -16,7 +16,21 @@ internal object EncryptedDatabaseBootstrap {
     private const val DATABASE_NAME = "dating_app.db"
     private const val ENCRYPTED_TEMP_SUFFIX = ".sqlcipher.tmp"
 
+    private var preparedDatabasePath: String? = null
+
+    /**
+     * Serialize bootstrap across the foreground preflight and persisted WorkManager retries.
+     * Cache only a successful preparation; failures remain retryable in the recovery screen.
+     */
+    @Synchronized
     fun prepare(context: Context, passphrase: ByteArray) {
+        val path = context.getDatabasePath(DATABASE_NAME).absolutePath
+        if (preparedDatabasePath == path) return
+        prepareInternal(context, passphrase)
+        preparedDatabasePath = path
+    }
+
+    private fun prepareInternal(context: Context, passphrase: ByteArray) {
         System.loadLibrary("sqlcipher")
         // Drop the old cursor store: its file contains message IDs/timestamps outside SQLCipher.
         val legacyWatermarks = File(
