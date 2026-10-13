@@ -28,6 +28,25 @@ class MessageLocalRetentionPolicyTest {
     }
 
     @Test
+    fun allKnownCiphertextEnvelopePrefixesAreNotRenderable() {
+        listOf(
+            "TINK_ENC:opaque",
+            "V2_SIG:opaque",
+            "V1_ENC:opaque",
+            "ENC:opaque"
+        ).forEach { ciphertext ->
+            assertFalse(
+                "Ciphertext should not render: $ciphertext",
+                MessageLocalRetentionPolicy.isRenderableText(ciphertext)
+            )
+            assertEquals(
+                MessageLocalRetentionPolicy.DECRYPTION_TOMBSTONE_TEXT,
+                MessageLocalRetentionPolicy.displayText(ciphertext, null)
+            )
+        }
+    }
+
+    @Test
     fun repeatedDecryptionFailureRemainsVisibleAsTombstone() {
         assertEquals(
             MessageLocalRetentionPolicy.DECRYPTION_TOMBSTONE_TEXT,

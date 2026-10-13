@@ -7,12 +7,21 @@ package com.example.util
 internal object MessageLocalRetentionPolicy {
     const val DECRYPTION_TOMBSTONE_TEXT = "Message could not be decrypted - keys updated"
 
-    fun isRenderableText(text: String): Boolean =
-        text.isNotBlank() &&
-            !text.equals("null", ignoreCase = true) &&
-            text != DECRYPTION_TOMBSTONE_TEXT &&
-            !text.startsWith(TinkCryptoManager.TINK_PREFIX) &&
-            !text.startsWith(MessageHandler.PROTOCOL_PREFIX_V2)
+    fun isRenderableText(text: String): Boolean {
+        val candidate = text.trim()
+        if (
+            candidate.isBlank() ||
+            candidate.equals("null", ignoreCase = true) ||
+            candidate == DECRYPTION_TOMBSTONE_TEXT
+        ) return false
+
+        // Reject every supported/legacy envelope. A failed decrypt must never make ciphertext
+        // look like user-readable content in either the realtime or durable-delta retry path.
+        return !candidate.startsWith(TinkCryptoManager.TINK_PREFIX) &&
+            !candidate.startsWith(MessageHandler.PROTOCOL_PREFIX_V2) &&
+            !candidate.startsWith("V1_ENC:", ignoreCase = true) &&
+            !candidate.startsWith("ENC:", ignoreCase = true)
+    }
 
     fun displayText(incomingText: String, existingText: String?): String {
         if (isRenderableText(incomingText)) return incomingText
