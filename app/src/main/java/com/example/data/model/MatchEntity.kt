@@ -22,6 +22,8 @@ data class MatchEntity(
     val isPhonebookContact: Boolean = false,
     /** True only for conversations opened from anonymous social discovery; local Room metadata. */
     @androidx.room.ColumnInfo(defaultValue = "0") val isAnonymousPeer: Boolean = false,
+    /** Disappearing message timer in seconds: 0=off, 86400=24h, 604800=7d. */
+    @androidx.room.ColumnInfo(defaultValue = "0") val disappearingTimerSeconds: Int = 0,
     /** Resolved local contact identity; local-only and never synced to Supabase. */
     @androidx.room.ColumnInfo(defaultValue = "''") val localContactName: String = "",
     @androidx.room.ColumnInfo(defaultValue = "''") val localPhotoUri: String = ""
