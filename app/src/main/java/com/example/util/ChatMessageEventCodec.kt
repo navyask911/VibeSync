@@ -10,9 +10,13 @@ import org.json.JSONObject
 object ChatMessageEventCodec {
     const val MEDIA_TYPE_REACTION = "REACTION"
     const val MEDIA_TYPE_DELETE = "MESSAGE_DELETE"
+    const val MEDIA_TYPE_EDIT = "MESSAGE_EDIT"
+    const val MEDIA_TYPE_DISAPPEARING_TIMER = "DISAPPEARING_TIMER"
     private const val PAYLOAD_VERSION = "vibesync_payload_v1"
     private const val REACTION_EVENT = "vibesync_reaction_v1"
     private const val DELETE_EVENT = "vibesync_delete_v1"
+    private const val EDIT_EVENT = "vibesync_edit_v1"
+    private const val TIMER_EVENT = "vibesync_disappearing_timer_v1"
     val ALLOWED_REACTIONS = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
 
     data class Decoded(
@@ -22,14 +26,26 @@ object ChatMessageEventCodec {
         val replyToSender: String? = null,
         val eventType: String? = null,
         val targetMessageId: String? = null,
-        val emoji: String? = null
+        val emoji: String? = null,
+        val eventText: String? = null,
+        val eventTimestamp: Long = 0L,
+        val disappearingTimerSeconds: Int? = null,
+        /** Local-only voice reference; the server only stores it inside the encrypted payload. */
+        val mediaUrl: String? = null
     )
 
     fun encodeForEncryption(message: ChatMessageEntity, fallbackBody: String): String {
         if (message.mediaType.equals(MEDIA_TYPE_REACTION, true) ||
             message.mediaType.equals(MEDIA_TYPE_DELETE, true) ||
-            message.replyToMessageId.isNullOrBlank()
+            message.mediaType.equals(MEDIA_TYPE_EDIT, true) ||
+            message.mediaType.equals(MEDIA_TYPE_DISAPPEARING_TIMER, true)
         ) return fallbackBody
+        if (message.mediaType.equals("VOICE", true) &&
+            message.mediaUrl.startsWith(VoiceNoteCryptoManager.LOCAL_REFERENCE_PREFIX)
+        ) {
+            return VoiceNoteCryptoManager.payloadFromLocalReference(message.mediaUrl) ?: fallbackBody
+        }
+        if (message.replyToMessageId.isNullOrBlank()) return fallbackBody
 
         return JSONObject().apply {
             put("vibesync_payload", PAYLOAD_VERSION)
@@ -53,6 +69,20 @@ object ChatMessageEventCodec {
             put("target_message_id", targetId)
         }.toString()
 
+    fun createEditEvent(targetId: String, newText: String, editedTimestamp: Long): String =
+        JSONObject().apply {
+            put("vibesync_event", EDIT_EVENT)
+            put("target_message_id", targetId)
+            put("edited_text", newText)
+            put("edited_timestamp", editedTimestamp)
+        }.toString()
+
+    fun createDisappearingTimerEvent(seconds: Int): String =
+        JSONObject().apply {
+            put("vibesync_event", TIMER_EVENT)
+            put("timer_seconds", seconds)
+        }.toString()
+
     fun decode(plaintext: String, mediaType: String): Decoded {
         val json = try { JSONObject(plaintext) } catch (_: Throwable) { null }
         if (json != null) {
@@ -69,6 +99,39 @@ object ChatMessageEventCodec {
                     json.optString("vibesync_event") == DELETE_EVENT -> {
                     val target = json.optString("target_message_id")
                     if (target.isNotBlank()) return Decoded("", eventType = MEDIA_TYPE_DELETE, targetMessageId = target)
+                }
+                mediaType.equals(MEDIA_TYPE_EDIT, true) &&
+                    json.optString("vibesync_event") == EDIT_EVENT -> {
+                    val target = json.optString("target_message_id")
+                    val editedText = json.optString("edited_text", "")
+                    val editedTimestamp = json.optLong("edited_timestamp", 0L)
+                    if (target.isNotBlank() && editedText.isNotBlank() && editedTimestamp > 0L) {
+                        return Decoded(
+                            "",
+                            eventType = MEDIA_TYPE_EDIT,
+                            targetMessageId = target,
+                            eventText = editedText,
+                            eventTimestamp = editedTimestamp
+                        )
+                    }
+                }
+                mediaType.equals(MEDIA_TYPE_DISAPPEARING_TIMER, true) &&
+                    json.optString("vibesync_event") == TIMER_EVENT -> {
+                    val seconds = json.optInt("timer_seconds", -1)
+                    if (seconds in setOf(0, 86_400, 604_800)) {
+                        return Decoded(
+                            "",
+                            eventType = MEDIA_TYPE_DISAPPEARING_TIMER,
+                            disappearingTimerSeconds = seconds
+                        )
+                    }
+                }
+                mediaType.equals("VOICE", true) &&
+                    VoiceNoteCryptoManager.isVoiceReferencePayload(plaintext) -> {
+                    return Decoded(
+                        text = "Voice note",
+                        mediaUrl = VoiceNoteCryptoManager.localReferenceFromPayload(plaintext)
+                    )
                 }
                 json.optString("vibesync_payload") == PAYLOAD_VERSION -> {
                     return Decoded(
@@ -90,19 +153,28 @@ object ChatMessageEventCodec {
         localMatchId: String,
         eventMessageId: String
     ): Boolean {
-        val targetId = decoded.targetMessageId ?: return false
         if (actorId.isBlank() || localMatchId.isBlank() || eventMessageId.isBlank()) return false
+        val isTimerEvent = decoded.eventType == MEDIA_TYPE_DISAPPEARING_TIMER
+        val targetId = decoded.targetMessageId
+        if (!isTimerEvent && targetId.isNullOrBlank()) return false
         val dao = database.chatMessageDao()
 
         // Realtime and pull-delta can observe the same event. Persist an application marker in
-        // the same Room transaction as its effect so reaction toggles are idempotent across paths.
+        // the same Room transaction as its effect so reactions/edits are idempotent across paths.
         return database.withTransaction {
             val priorEvent = dao.getMessageById(eventMessageId)
             if (priorEvent != null) return@withTransaction priorEvent.deliveryState == "LOCAL_CONTROL_APPLIED"
-            val target = dao.getMessageById(targetId) ?: return@withTransaction false
-            if (!target.matchId.equals(localMatchId, ignoreCase = true)) return@withTransaction false
 
-            when (decoded.eventType) {
+            if (isTimerEvent) {
+                val seconds = decoded.disappearingTimerSeconds ?: return@withTransaction false
+                if (seconds !in setOf(0, 86_400, 604_800)) return@withTransaction false
+                val conversation = database.matchDao().getMatchByIdSync(localMatchId)
+                    ?: return@withTransaction false
+                database.matchDao().insertMatch(conversation.copy(disappearingTimerSeconds = seconds))
+            } else {
+                val target = dao.getMessageById(targetId!!) ?: return@withTransaction false
+                if (!target.matchId.equals(localMatchId, ignoreCase = true)) return@withTransaction false
+                when (decoded.eventType) {
                 MEDIA_TYPE_REACTION -> {
                     val emoji = decoded.emoji ?: return@withTransaction false
                     if (emoji !in ALLOWED_REACTIONS) return@withTransaction false
@@ -132,7 +204,26 @@ object ChatMessageEventCodec {
                         )
                     }
                 }
+                MEDIA_TYPE_EDIT -> {
+                    val editedText = decoded.eventText ?: return@withTransaction false
+                    // Only the original sender may update a message, even if a control row is forged.
+                    if (!target.senderId.equals(actorId, ignoreCase = true) ||
+                        target.isDeleted || target.isDeletedForEveryone
+                    ) return@withTransaction false
+                    val conversation = database.matchDao().getMatchByIdSync(localMatchId)
+                    dao.updateMessage(target.copy(
+                        text = editedText,
+                        isEdited = true,
+                        editedTimestamp = decoded.eventTimestamp
+                    ))
+                    if (conversation != null && conversation.lastMessageTime <= target.timestamp) {
+                        database.matchDao().updateLastMessage(
+                            localMatchId, editedText, decoded.eventTimestamp, false
+                        )
+                    }
+                }
                 else -> return@withTransaction false
+            }
             }
             dao.upsertMessage(ChatMessageEntity(
                 messageId = eventMessageId,
