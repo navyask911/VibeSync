@@ -4454,8 +4454,25 @@ private fun VibeSyncChatBubble(
                         }
                         "VOICE" -> {
                             val context = LocalContext.current
-                            var isPlaying by remember { mutableStateOf(false) }
-                            val helper = remember { VoiceRecorderHelper(context) }
+                            val playerScope = rememberCoroutineScope()
+                            var isPlaying by remember(message.messageId) { mutableStateOf(false) }
+                            var isPreparingPlayback by remember(message.messageId) { mutableStateOf(false) }
+                            var playbackProgress by remember(message.messageId) { mutableStateOf(0f) }
+                            val helper = remember(message.messageId) { VoiceRecorderHelper(context) }
+
+                            LaunchedEffect(isPlaying, message.messageId) {
+                                while (isPlaying) {
+                                    val durationMs = helper.durationMs()
+                                    if (durationMs > 0) {
+                                        playbackProgress = (helper.currentPositionMs().toFloat() / durationMs)
+                                            .coerceIn(0f, 1f)
+                                    }
+                                    kotlinx.coroutines.delay(180L)
+                                }
+                            }
+                            DisposableEffect(message.messageId) {
+                                onDispose { helper.stopAudio() }
+                            }
 
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -4467,40 +4484,84 @@ private fun VibeSyncChatBubble(
                                         .clip(CircleShape)
                                         .background(VibeSyncTeal)
                                         .clickable {
-                                            if (isPlaying) {
+                                            if (isPlaying || isPreparingPlayback) {
                                                 helper.stopAudio()
                                                 isPlaying = false
+                                                isPreparingPlayback = false
+                                                playbackProgress = 0f
                                             } else {
-                                                isPlaying = true
-                                                if (message.mediaUrl.isNotBlank()) {
-                                                    helper.playAudio(message.mediaUrl) {
+                                                isPreparingPlayback = true
+                                                playerScope.launch {
+                                                    try {
+                                                        val playbackFile = if (
+                                                            message.mediaUrl.startsWith(
+                                                                com.example.util.VoiceNoteCryptoManager.LOCAL_REFERENCE_PREFIX
+                                                            )
+                                                        ) {
+                                                            com.example.util.VoiceNoteCryptoManager.materializeForPlayback(
+                                                                context = context,
+                                                                localReference = message.mediaUrl,
+                                                                messageId = message.messageId
+                                                            )
+                                                        } else null
+                                                        val playbackPath = playbackFile?.absolutePath
+                                                            ?: message.mediaUrl.takeIf { it.isNotBlank() }
+                                                        if (playbackPath.isNullOrBlank()) {
+                                                            isPlaying = false
+                                                            return@launch
+                                                        }
+                                                        helper.playAudio(playbackPath) {
+                                                            isPlaying = false
+                                                            playbackProgress = 0f
+                                                        }
+                                                        isPlaying = true
+                                                    } catch (_: Throwable) {
                                                         isPlaying = false
+                                                        Toast.makeText(
+                                                            context,
+                                                            "This voice note could not be decrypted or played.",
+                                                            Toast.LENGTH_SHORT
+                                                        ).show()
+                                                    } finally {
+                                                        isPreparingPlayback = false
                                                     }
                                                 }
                                             }
                                         },
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Icon(
-                                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                        contentDescription = if (isPlaying) "Pause" else "Play",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(20.dp)
-                                    )
+                                    if (isPreparingPlayback) {
+                                        CircularProgressIndicator(
+                                            color = Color.White,
+                                            strokeWidth = 2.dp,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                            contentDescription = if (isPlaying) "Pause" else "Play",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
                                 }
                                 Spacer(modifier = Modifier.width(10.dp))
-                                Column {
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = if (isPlaying) "Playing voice note..." else "Voice note (${message.voiceDurationSeconds}s)",
+                                        text = if (isPlaying) {
+                                            "Voice note · ${(helper.currentPositionMs() / 1000).coerceAtLeast(0)}s"
+                                        } else {
+                                            "Voice note (${message.voiceDurationSeconds}s)"
+                                        },
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Medium,
                                         color = bubbleTextColor
                                     )
-                                    Text(
-                                        text = if (isPlaying) "▶ ▕▌▏▐▌▕▌▏▐▌▕▌▏▐▌" else "||| | |||| | ||| ||||",
-                                        fontSize = 11.sp,
-                                        letterSpacing = 1.sp,
-                                        color = VibeSyncTeal
+                                    LinearProgressIndicator(
+                                        progress = playbackProgress,
+                                        modifier = Modifier.fillMaxWidth().height(3.dp),
+                                        color = VibeSyncTeal,
+                                        trackColor = MaterialTheme.colorScheme.surfaceVariant
                                     )
                                 }
                             }
