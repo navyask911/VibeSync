@@ -1397,10 +1397,18 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                             fallbackPhoneNumber = fallbackPeerPhone,
                             onPeerPublicKeyRefreshed = { refreshedProfileId, newKey ->
                                 val partnerProf = database.profileDao().getProfileByIdSync(refreshedProfileId)
+                                    ?: com.example.util.SupabaseClientManager.fetchProfileById(refreshedProfileId)
                                     ?: database.profileDao().getProfileByPhone(fallbackPeerPhone)
-                                if (partnerProf != null && newKey.isNotBlank()) {
+                                if (newKey.isNotBlank()) {
+                                    // Keep the latest server key even when the peer profile has not
+                                    // populated Room yet; this cache row can be hydrated on next profile sync.
+                                    val cacheEntry = partnerProf ?: com.example.data.model.ProfileEntity(
+                                        id = refreshedProfileId,
+                                        name = "VibeSync member",
+                                        age = 0
+                                    )
                                     database.profileDao().insertProfile(
-                                        partnerProf.copy(publicIdentityKey = newKey)
+                                        cacheEntry.copy(publicIdentityKey = newKey)
                                     )
                                 }
                             }
