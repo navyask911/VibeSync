@@ -586,7 +586,7 @@ fun DiscoverScreen(
                                 if (current != null) onUpdatePreferences(current.copy(
                                     minAge = ageRange.start.toInt().coerceIn(18, 99),
                                     maxAge = ageRange.endInclusive.toInt().coerceIn(18, 99),
-                                    maxDistanceMiles = (maxDistanceKm / 1.60934f).toInt().coerceIn(0, 93),
+                                    maxDistanceMiles = kotlin.math.ceil(maxDistanceKm / 1.60934f).toInt().coerceIn(0, 94),
                                     onlyVerified = verifiedOnly,
                                     goalFilter = intentFilter
                                 ))
