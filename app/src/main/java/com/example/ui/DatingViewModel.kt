@@ -1230,6 +1230,9 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             try {
                 val msgId = com.example.util.MessageHandler.extractMessageId(record)
                 val isDeleted = com.example.util.MessageHandler.isMessageDeletion(record)
+                if (msgId.isNotBlank() && database.expiredChatMessageDao().isExpiredMessage(msgId)) {
+                    return@launch
+                }
 
                 // If record signals a deletion, immediately remove from local Room DB
                 if (isDeleted && msgId.isNotBlank()) {
@@ -1643,6 +1646,9 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             try {
                 val msgId = com.example.util.MessageHandler.extractMessageId(record)
                 val isDeleted = com.example.util.MessageHandler.isMessageDeletion(record)
+                if (msgId.isNotBlank() && database.expiredChatMessageDao().isExpiredMessage(msgId)) {
+                    return@launch
+                }
 
                 // If record signals a deletion, immediately remove from local Room DB
                 if (isDeleted && msgId.isNotBlank()) {
