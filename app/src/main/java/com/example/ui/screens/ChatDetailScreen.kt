@@ -38,7 +38,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.stickyHeader
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -50,6 +52,7 @@ import androidx.compose.material.icons.automirrored.filled.Forward
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CameraAlt
@@ -167,6 +170,7 @@ import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -190,6 +194,8 @@ import com.example.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.time.Instant
+import java.time.ZoneId
 
 data class QueuedMessage(
     val id: String = java.util.UUID.randomUUID().toString(),
@@ -401,7 +407,16 @@ private fun ChatDetailScreenContent(
     }
 
     val profile = matchedParticipant
-    val resolvedPartnerName = profile.name
+    var localNickname by remember(profile.id) {
+        mutableStateOf(com.example.util.ChatThreadPreferences.nickname(context, profile.id))
+    }
+    var chatMuted by remember(profile.id) {
+        mutableStateOf(com.example.util.ChatThreadPreferences.isMuted(context, profile.id))
+    }
+    var chatWallpaperUri by remember(profile.id) {
+        mutableStateOf(com.example.util.ChatThreadPreferences.wallpaperUri(context, profile.id))
+    }
+    val resolvedPartnerName = localNickname.ifBlank { profile.name }
 
     var inputText by remember { mutableStateOf("") }
     val coroutineScope = rememberCoroutineScope()
@@ -478,8 +493,8 @@ private fun ChatDetailScreenContent(
     var showChatColorDialog by remember { mutableStateOf(false) }
     var showDisappearingTimerDialog by remember { mutableStateOf(false) }
     var voiceRecordGestureActive by remember { mutableStateOf(false) }
-    var selectedChatColorHex by remember {
-        mutableStateOf(com.example.util.ChatColorPreferences.getSelectedColorHex(context))
+    var selectedChatColorHex by remember(profile.id) {
+        mutableStateOf(com.example.util.ChatThreadPreferences.chatColorHex(context, profile.id).ifBlank { com.example.util.ChatColorPreferences.getSelectedColorHex(context) })
     }
     val defaultChatTextColor = MaterialTheme.colorScheme.onSurface
     val chatTextColor = remember(selectedChatColorHex, defaultChatTextColor) {
@@ -499,6 +514,11 @@ private fun ChatDetailScreenContent(
     var safetyFingerprintText by remember(profile.id, match?.matchId) { mutableStateOf("") }
     var safetyFingerprintError by remember(profile.id, match?.matchId) { mutableStateOf("") }
     var showAttachmentSheet by remember { mutableStateOf(false) }
+    var showEmojiPicker by remember { mutableStateOf(false) }
+    var showAllMedia by remember { mutableStateOf(false) }
+    var showChatSettingsSheet by remember { mutableStateOf(false) }
+    var showChatSearch by remember { mutableStateOf(false) }
+    var showNicknameDialog by remember { mutableStateOf(false) }
 
     suspend fun loadSafetyFingerprint() {
         fingerprintVerificationStatus = "VERIFYING"
@@ -649,6 +669,25 @@ private fun ChatDetailScreenContent(
             Toast.makeText(context, "Document selected: $fileName 📄", Toast.LENGTH_SHORT).show()
         }
     }
+    val chatWallpaperPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            chatWallpaperUri = uri.toString()
+            com.example.util.ChatThreadPreferences.setWallpaperUri(context, profile.id, uri.toString())
+            Toast.makeText(context, "Conversation wallpaper saved on this device.", Toast.LENGTH_SHORT).show()
+        }
+    }
+    val chatSoundPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val soundUri = result.data?.getParcelableExtra<Uri>(android.media.RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            com.example.util.ChatThreadPreferences.setSoundUri(context, profile.id, soundUri?.toString().orEmpty())
+            Toast.makeText(context, "Conversation sound preference saved.", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     // AI Image Generating State
     var isGeneratingAiImage by remember { mutableStateOf(false) }
@@ -692,11 +731,20 @@ private fun ChatDetailScreenContent(
     val selectedMessageIds = remember { mutableStateListOf<String>() }
     var pinnedMessageId by remember(profile.id, match?.matchId) { mutableStateOf<String?>(null) }
     val clipboardManager = LocalClipboardManager.current
-
     // Intercept phone back button to dismiss child dialogs/sheets/selection first, or return to chat list
     BackHandler {
         if (showLiveCameraOverlay) {
             showLiveCameraOverlay = false
+        } else if (showEmojiPicker) {
+            showEmojiPicker = false
+        } else if (showAllMedia) {
+            showAllMedia = false
+        } else if (showChatSearch) {
+            showChatSearch = false
+        } else if (showChatSettingsSheet) {
+            showChatSettingsSheet = false
+        } else if (showNicknameDialog) {
+            showNicknameDialog = false
         } else if (showAttachmentSheet) {
             showAttachmentSheet = false
         } else if (selectedMessageForAction != null) {
@@ -812,12 +860,27 @@ private fun ChatDetailScreenContent(
         combined.distinctBy { it.messageId }.sortedBy { it.timestamp }
     }
 
+    val groupedMessages = remember(visibleMessages) {
+        visibleMessages.groupBy { Instant.ofEpochMilli(it.timestamp).atZone(ZoneId.systemDefault()).toLocalDate() }
+    }
+
+    fun lazyIndexForMessage(messageId: String): Int {
+        var index = 1 // the intro header card
+        groupedMessages.forEach { (_, dayMessages) ->
+            index += 1 // sticky date separator
+            val localIndex = dayMessages.indexOfFirst { it.messageId == messageId }
+            if (localIndex >= 0) return index + localIndex
+            index += dayMessages.size
+        }
+        return 0
+    }
+
     val listState = rememberLazyListState()
 
     LaunchedEffect(visibleMessages.size) {
         if (visibleMessages.isNotEmpty()) {
             // Index 0 is the recipient intro card, so the last message is at index size.
-            listState.animateScrollToItem(visibleMessages.size)
+            listState.animateScrollToItem((visibleMessages.size + groupedMessages.size).coerceAtLeast(0))
         }
     }
 
@@ -934,18 +997,48 @@ private fun ChatDetailScreenContent(
                         onDismissRequest = { showMenu = false }
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Disappearing messages") },
+                            text = { Text("All Media") },
+                            onClick = { showMenu = false; showAllMedia = true }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Chat settings") },
+                            onClick = { showMenu = false; showChatSettingsSheet = true }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Search") },
+                            onClick = { showMenu = false; showChatSearch = true }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Add to home screen") },
                             onClick = {
                                 showMenu = false
-                                showDisappearingTimerDialog = true
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                    val manager = context.getSystemService(android.content.pm.ShortcutManager::class.java)
+                                    val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                                    if (manager?.isRequestPinShortcutSupported == true && launchIntent != null) {
+                                        val shortcut = android.content.pm.ShortcutInfo.Builder(context, "vibesync-chat-" + profile.id.hashCode())
+                                            .setShortLabel(resolvedPartnerName.take(24))
+                                            .setIntent(launchIntent)
+                                            .setIcon(android.graphics.drawable.Icon.createWithResource(context, context.applicationInfo.icon))
+                                            .build()
+                                        manager.requestPinShortcut(shortcut, null)
+                                    } else Toast.makeText(context, "Your launcher does not support pinned shortcuts.", Toast.LENGTH_SHORT).show()
+                                } else Toast.makeText(context, "Pinned shortcuts require Android 8.0 or newer.", Toast.LENGTH_SHORT).show()
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Settings ⚙") },
+                            text = { Text(if (chatMuted) "Unmute notifications" else "Mute notifications") },
                             onClick = {
                                 showMenu = false
-                                showChatColorDialog = true
+                                val nextMuted = !chatMuted
+                                chatMuted = nextMuted
+                                com.example.util.ChatThreadPreferences.setMuted(context, profile.id, nextMuted)
+                                Toast.makeText(context, if (nextMuted) "Chat muted" else "Chat unmuted", Toast.LENGTH_SHORT).show()
                             }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Disappearing messages") },
+                            onClick = { showMenu = false; showDisappearingTimerDialog = true }
                         )
                     }
                 }
@@ -1122,7 +1215,16 @@ private fun ChatDetailScreenContent(
             val maxBubbleWidth = maxWidth * 0.78f
             val pinnedMessage = pinnedMessageId?.let { id -> visibleMessages.firstOrNull { it.messageId == id } }
 
-            Column(modifier = Modifier.fillMaxSize()) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                if (chatWallpaperUri.isNotBlank()) {
+                    AsyncImage(
+                        model = chatWallpaperUri,
+                        contentDescription = "Conversation wallpaper",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize().alpha(0.24f)
+                    )
+                }
+                Column(modifier = Modifier.fillMaxSize()) {
                 pinnedMessage?.let { pinned ->
                     Surface(
                         color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.72f),
@@ -1190,7 +1292,11 @@ private fun ChatDetailScreenContent(
                         )
                     }
 
-                    items(visibleMessages, key = { it.messageId }) { msg ->
+                    groupedMessages.forEach { (messageDate, dayMessages) ->
+                    stickyHeader(key = "date-" + messageDate.toString()) {
+                        DateSeparatorPill(dateSeparatorLabel(messageDate))
+                    }
+                    items(dayMessages, key = { it.messageId }) { msg ->
                         val isOutgoing = isMessageOutgoing(
                             message = msg,
                             partnerProfileId = profile.id,
@@ -1286,6 +1392,8 @@ private fun ChatDetailScreenContent(
                         }
                     }
                 }
+                }
+            }
             }
         }
 
@@ -1306,92 +1414,75 @@ private fun ChatDetailScreenContent(
                             .align(Alignment.CenterHorizontally)
                     )
                     Spacer(modifier = Modifier.height(12.dp))
+                    val recentChatMedia = visibleMessages
+                        .filter { it.mediaType.uppercase(Locale.ROOT) in setOf("IMAGE", "VIDEO", "PHOTO") && it.mediaUrl.isNotBlank() }
+                        .takeLast(10).asReversed()
+                    Text("Recent media in this chat", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (recentChatMedia.isEmpty()) {
+                        Text("No recent photo or video shared here yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 3.dp)) {
+                            items(recentChatMedia, key = { "quick-media-" + it.messageId }) { media ->
+                                Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.size(76.dp).clickable {
+                                    fullScreenMediaUrl = media.mediaUrl
+                                    fullScreenMediaType = media.mediaType
+                                    showAttachmentSheet = false
+                                }) {
+                                    AsyncImage(model = media.mediaUrl, contentDescription = "Recent shared media", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                                }
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
 
-                    // Row 1: Gallery, Location, Contact, Document
+                    // Row 1: required quick actions - Gallery, File, Poll, Contact
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceEvenly
                     ) {
                         AttachmentOptionItem(
-                            icon = Icons.Default.ImageIcon,
-                            label = "Gallery",
-                            bgColor = Color(0xFF7F66FF),
+                            icon = Icons.Default.ImageIcon, label = "Gallery", bgColor = Color(0xFF7F66FF),
                             onClick = {
                                 showAttachmentSheet = false
                                 galleryPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
                             }
                         )
                         AttachmentOptionItem(
-                            icon = Icons.Default.LocationOn,
-                            label = "Location",
-                            bgColor = Color(0xFF0F9D58),
-                            onClick = {
-                                showAttachmentSheet = false
-                                showLocationDialog = true
-                            }
+                            icon = Icons.Default.Description, label = "File", bgColor = Color(0xFF5E35B1),
+                            onClick = { showAttachmentSheet = false; showDocumentDialog = true }
                         )
                         AttachmentOptionItem(
-                            icon = Icons.Default.Person,
-                            label = "Contact",
-                            bgColor = Color(0xFF1B72E8),
-                            onClick = {
-                                showAttachmentSheet = false
-                                showContactDialog = true
-                            }
+                            icon = Icons.Default.Poll, label = "Poll", bgColor = Color(0xFFFFA000),
+                            onClick = { showAttachmentSheet = false; showPollDialog = true }
                         )
                         AttachmentOptionItem(
-                            icon = Icons.Default.Description,
-                            label = "Document",
-                            bgColor = Color(0xFF5E35B1),
-                            onClick = {
-                                showAttachmentSheet = false
-                                showDocumentDialog = true
-                            }
+                            icon = Icons.Default.Person, label = "Contact", bgColor = Color(0xFF1B72E8),
+                            onClick = { showAttachmentSheet = false; showContactDialog = true }
                         )
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // Row 2: Poll, Payment, Event, AI images
+                    // Additional VibeSync shortcuts
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceEvenly
                     ) {
                         AttachmentOptionItem(
-                            icon = Icons.Default.Poll,
-                            label = "Poll",
-                            bgColor = Color(0xFFFFA000),
-                            onClick = {
-                                showAttachmentSheet = false
-                                showPollDialog = true
-                            }
+                            icon = Icons.Default.LocationOn, label = "Location", bgColor = Color(0xFF0F9D58),
+                            onClick = { showAttachmentSheet = false; showLocationDialog = true }
                         )
                         AttachmentOptionItem(
-                            icon = Icons.Default.CurrencyRupee,
-                            label = "Payment",
-                            bgColor = Color(0xFF00897B),
-                            onClick = {
-                                showAttachmentSheet = false
-                                showPaymentDialog = true
-                            }
+                            icon = Icons.Default.CurrencyRupee, label = "Payment", bgColor = Color(0xFF00897B),
+                            onClick = { showAttachmentSheet = false; showPaymentDialog = true }
                         )
                         AttachmentOptionItem(
-                            icon = Icons.Default.Event,
-                            label = "Event",
-                            bgColor = Color(0xFFE91E63),
-                            onClick = {
-                                showAttachmentSheet = false
-                                showEventDialog = true
-                            }
+                            icon = Icons.Default.Event, label = "Event", bgColor = Color(0xFFE91E63),
+                            onClick = { showAttachmentSheet = false; showEventDialog = true }
                         )
                         AttachmentOptionItem(
-                            icon = Icons.Default.AutoAwesome,
-                            label = "AI images",
-                            bgColor = Color(0xFF00ACC1),
-                            onClick = {
-                                showAttachmentSheet = false
-                                showAiImageDialog = true
-                            }
+                            icon = Icons.Default.AutoAwesome, label = "AI images", bgColor = Color(0xFF00ACC1),
+                            onClick = { showAttachmentSheet = false; showAiImageDialog = true }
                         )
                     }
                 }
@@ -2125,12 +2216,17 @@ private fun ChatDetailScreenContent(
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.SentimentSatisfiedAlt,
-                            contentDescription = "Emojis",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(22.dp)
-                        )
+                        IconButton(
+                            onClick = { showEmojiPicker = true },
+                            modifier = Modifier.size(34.dp).testTag("btn_open_emoji_picker")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SentimentSatisfiedAlt,
+                                contentDescription = "Emoji and sticker picker",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
 
                         OutlinedTextField(
                             value = inputText,
@@ -2142,7 +2238,7 @@ private fun ChatDetailScreenContent(
                                 Text(
                                     if (isRecordingVoice && voiceRecordGestureActive) {
                                         "Recording… release to send · slide left to cancel"
-                                    } else "Message",
+                                    } else "VibeSync message",
                                     fontSize = 15.sp
                                 )
                             },
@@ -2163,8 +2259,8 @@ private fun ChatDetailScreenContent(
                             modifier = Modifier.size(32.dp).testTag("btn_send_photo")
                         ) {
                             Icon(
-                                imageVector = Icons.Default.AttachFile,
-                                contentDescription = "Attach",
+                                imageVector = Icons.Default.Add,
+                                contentDescription = "Open attachment drawer",
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(20.dp)
                             )
@@ -3023,6 +3119,7 @@ private fun ChatDetailScreenContent(
             onColorSelected = { newHex ->
                 selectedChatColorHex = newHex
                 com.example.util.ChatColorPreferences.setSelectedColorHex(context, newHex)
+                com.example.util.ChatThreadPreferences.setChatColorHex(context, profile.id, newHex)
                 showChatColorDialog = false
                 Toast.makeText(context, "Chat text color updated locally 🎨", Toast.LENGTH_SHORT).show()
             },
@@ -3855,6 +3952,95 @@ private fun ChatDetailScreenContent(
         )
     }
 
+    if (showEmojiPicker) {
+        EmojiStickerPickerSheet(
+            onDismiss = { showEmojiPicker = false },
+            onEmojiSelected = { emoji -> inputText += emoji; showEmojiPicker = false },
+            onStickerSelected = { sticker -> onSendMedia("STICKER", sticker, "", 0); showEmojiPicker = false }
+        )
+    }
+    if (showAllMedia) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showAllMedia = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(Modifier.fillMaxSize(), shape = RoundedCornerShape(0.dp), color = MaterialTheme.colorScheme.background) {
+                AllMediaScreen(
+                    messages = visibleMessages,
+                    onBack = { showAllMedia = false },
+                    onOpenMedia = { url, type ->
+                        showAllMedia = false
+                        fullScreenMediaUrl = url
+                        fullScreenMediaType = type
+                    }
+                )
+            }
+        }
+    }
+    if (showChatSearch) {
+        ChatSearchDialog(
+            messages = visibleMessages,
+            onDismiss = { showChatSearch = false },
+            onOpenMessage = { msg ->
+                showChatSearch = false
+                coroutineScope.launch {
+                    val index = lazyIndexForMessage(msg.messageId)
+                    if (index > 0) listState.animateScrollToItem(index)
+                }
+            }
+        )
+    }
+    if (showChatSettingsSheet) {
+        ChatThreadSettingsSheet(
+            displayName = resolvedPartnerName,
+            phoneNumber = profile.phoneNumber,
+            isMuted = chatMuted,
+            nickname = localNickname,
+            onVideoCall = { showChatSettingsSheet = false; onStartCall(true) },
+            onAudioCall = { showChatSettingsSheet = false; onStartCall(false) },
+            onToggleMute = {
+                val nextMuted = !chatMuted
+                chatMuted = nextMuted
+                com.example.util.ChatThreadPreferences.setMuted(context, profile.id, nextMuted)
+                Toast.makeText(context, if (nextMuted) "Chat muted" else "Chat unmuted", Toast.LENGTH_SHORT).show()
+            },
+            onSearch = { showChatSettingsSheet = false; showChatSearch = true },
+            onDisappearingMessages = { showChatSettingsSheet = false; showDisappearingTimerDialog = true },
+            onNickname = { showChatSettingsSheet = false; showNicknameDialog = true },
+            onChatColor = { showChatSettingsSheet = false; showChatColorDialog = true },
+            onWallpaper = {
+                chatWallpaperPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            },
+            onNotificationSound = {
+                val ringtoneIntent = Intent(android.media.RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+                    putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_TYPE, android.media.RingtoneManager.TYPE_NOTIFICATION)
+                    putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_TITLE, "Choose this chat's notification sound")
+                    putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, true)
+                }
+                chatSoundPickerLauncher.launch(ringtoneIntent)
+            },
+            onContactInfo = { showChatSettingsSheet = false; onViewProfile() },
+            onSafetyNumber = {
+                showChatSettingsSheet = false
+                showE2eeDetailsDialog = true
+                if (safetyFingerprintText.isBlank()) coroutineScope.launch { loadSafetyFingerprint() }
+            },
+            onBlockReport = { showChatSettingsSheet = false; showEmergencyBlockReportDialog = true },
+            onDismiss = { showChatSettingsSheet = false }
+        )
+    }
+    if (showNicknameDialog) {
+        LocalNicknameDialog(
+            currentValue = localNickname,
+            onSave = { value ->
+                localNickname = value
+                com.example.util.ChatThreadPreferences.setNickname(context, profile.id, value)
+                showNicknameDialog = false
+            },
+            onDismiss = { showNicknameDialog = false }
+        )
+    }
+
     // Full Screen Media Mode Dialog (Images & Videos)
     if (fullScreenMediaUrl != null) {
         val currentMedia = fullScreenMediaUrl ?: ""
@@ -4300,7 +4486,7 @@ private fun VibeSyncChatBubble(
             modifier = Modifier
                 .widthIn(min = 72.dp, max = maxBubbleWidth)
                 .combinedClickable(
-                    onClick = onActionClick,
+                    onClick = { if (showSelectionCheckbox) onActionClick() },
                     onLongClick = onActionClick
                 )
         ) {

@@ -470,6 +470,10 @@ object AppNotificationManager {
         channelId: String = CHANNEL_ID_MESSAGES
     ) {
         if (!hasNotificationPermission(context)) return
+        if (ChatThreadPreferences.isMuted(context, senderId)) {
+            Log.d(TAG, "Notification suppressed: conversation is muted locally for " + senderName + " (" + senderId + ").")
+            return
+        }
 
         // Critical Check: If the user is currently online and actively in live chat with the same person,
         // do NOT trigger any notification (system popup or in-app banner dropdown) since they see it live on screen.
