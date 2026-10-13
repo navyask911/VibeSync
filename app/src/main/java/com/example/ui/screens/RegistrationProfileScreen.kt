@@ -665,7 +665,7 @@ fun RegistrationProfileScreen(
                             fontSize = 14.sp
                         )
                         Text(
-                            text = "Allow your saved contacts on VibeSync to find and chat with you securely",
+                            text = "Let people who have your number find you. Matching uses HTTPS; their phone numbers are sent to Supabase securely. Private chats remain end-to-end encrypted.",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
