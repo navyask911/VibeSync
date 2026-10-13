@@ -683,8 +683,9 @@ private fun ChatDetailScreenContent(
     ) { result ->
         val soundUri = result.data?.getParcelableExtra<Uri>(android.media.RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
         if (result.resultCode == android.app.Activity.RESULT_OK) {
-            com.example.util.ChatThreadPreferences.setSoundUri(context, profile.id, soundUri?.toString().orEmpty())
-            Toast.makeText(context, "Conversation sound preference saved.", Toast.LENGTH_SHORT).show()
+            val selectedSound = soundUri?.toString() ?: com.example.util.ChatThreadPreferences.SILENT_SOUND_URI
+            com.example.util.ChatThreadPreferences.setSoundUri(context, profile.id, selectedSound)
+            Toast.makeText(context, if (selectedSound == com.example.util.ChatThreadPreferences.SILENT_SOUND_URI) "This conversation's alert sound is silent." else "Conversation sound preference saved.", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -3105,7 +3106,6 @@ private fun ChatDetailScreenContent(
             currentColorHex = selectedChatColorHex,
             onColorSelected = { newHex ->
                 selectedChatColorHex = newHex
-                com.example.util.ChatColorPreferences.setSelectedColorHex(context, newHex)
                 com.example.util.ChatThreadPreferences.setChatColorHex(context, profile.id, newHex)
                 showChatColorDialog = false
                 Toast.makeText(context, "Chat text color updated locally 🎨", Toast.LENGTH_SHORT).show()
@@ -4419,8 +4419,7 @@ private fun VibeSyncChatBubble(
     onActionClick: () -> Unit,
     onMediaClick: (String, String) -> Unit
 ) {
-    val timeFormat = remember { SimpleDateFormat("h:mm a", Locale.getDefault()) }
-    val formattedTime = remember(message.timestamp) { timeFormat.format(Date(message.timestamp)) }
+    val formattedTime = remember(message.timestamp) { formatRelativeMessageTime(message.timestamp) }
     val bubbleTextColor = if (isOutgoing) MaterialTheme.colorScheme.onPrimary else chatTextColor
 
     if (message.senderId.equals("SYSTEM", ignoreCase = true)) {

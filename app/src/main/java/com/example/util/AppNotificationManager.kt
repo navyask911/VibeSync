@@ -453,6 +453,41 @@ object AppNotificationManager {
     fun isFcmActive(): Boolean = true
 
     /**
+     * Returns a stable notification channel for a thread-specific sound. Android 8+ caches
+     * sound on the channel itself, so a distinct ID is required when a contact's sound changes.
+     */
+    private fun messageChannelForThread(
+        context: Context,
+        senderId: String,
+        senderName: String,
+        soundUri: String,
+        fallbackChannelId: String
+    ): String {
+        if (soundUri.isBlank() || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return fallbackChannelId
+        val id = "vibesync_thread_" +
+            senderId.hashCode().toString().replace("-", "n") + "_" +
+            soundUri.hashCode().toString().replace("-", "n")
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            ?: return fallbackChannelId
+        if (manager.getNotificationChannel(id) == null) {
+            val channel = NotificationChannel(
+                id,
+                (senderName.ifBlank { "VibeSync conversation" }.take(35) + " messages"),
+                NotificationManager.IMPORTANCE_HIGH
+            )
+            val attributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_INSTANT)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+            val uri = if (soundUri == ChatThreadPreferences.SILENT_SOUND_URI) null else Uri.parse(soundUri)
+            channel.setSound(uri, attributes)
+            channel.enableVibration(soundUri != ChatThreadPreferences.SILENT_SOUND_URI)
+            manager.createNotificationChannel(channel)
+        }
+        return id
+    }
+
+    /**
      * Shows a VibeSync-style Real-Time Chat Message Notification with:
      * - MessagingStyle multi-message conversation thread
      * - RemoteInput Direct Inline Reply
@@ -602,9 +637,21 @@ object AppNotificationManager {
                 markAsReadPendingIntent
             ).build()
 
-            val defaultSoundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            val configuredThreadSound = ChatThreadPreferences.soundUri(context, senderId)
+            val effectiveChannelId = messageChannelForThread(
+                context = context,
+                senderId = senderId,
+                senderName = senderName,
+                soundUri = configuredThreadSound,
+                fallbackChannelId = channelId
+            )
+            val notificationSoundUri = when {
+                configuredThreadSound == ChatThreadPreferences.SILENT_SOUND_URI -> null
+                configuredThreadSound.isNotBlank() -> Uri.parse(configuredThreadSound)
+                else -> RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            }
 
-            val notification = NotificationCompat.Builder(context, channelId)
+            val notification = NotificationCompat.Builder(context, effectiveChannelId)
                 .setSmallIcon(android.R.drawable.sym_def_app_icon)
                 .setStyle(messagingStyle)
                 .setContentTitle(senderName)
@@ -612,7 +659,7 @@ object AppNotificationManager {
                 .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setCategory(NotificationCompat.CATEGORY_MESSAGE)
                 .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-                .setSound(defaultSoundUri)
+                .setSound(notificationSoundUri)
                 .setVibrate(longArrayOf(0, 200, 100, 250))
                 .setLights(VIBESYNC_TEAL_COLOR, 500, 1000)
                 .setColor(VIBESYNC_TEAL_COLOR)

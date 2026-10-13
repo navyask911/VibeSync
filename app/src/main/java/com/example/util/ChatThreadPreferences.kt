@@ -4,6 +4,8 @@ import android.content.Context
 
 /** Per-conversation presentation preferences remain local and never enter E2EE message payloads. */
 object ChatThreadPreferences {
+    const val SILENT_SOUND_URI = "vibesync://silent"
+
     private fun preferences(context: Context, profileId: String) =
         context.applicationContext.getSharedPreferences(
             "vibesync_chat_thread_" + profileId.filter { it.isLetterOrDigit() || it == '_' || it == '-' }.take(80),

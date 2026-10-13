@@ -59,6 +59,16 @@ fun dateSeparatorLabel(date: LocalDate): String {
     }
 }
 
+fun formatRelativeMessageTime(timestamp: Long): String {
+    val age = (System.currentTimeMillis() - timestamp).coerceAtLeast(0L)
+    return when {
+        age < 60_000L -> "Now"
+        age < 60L * 60_000L -> "${age / 60_000L}m"
+        age < 24L * 60L * 60_000L -> "${age / (60L * 60_000L)}h"
+        else -> java.text.SimpleDateFormat("MMM d", Locale.getDefault()).format(java.util.Date(timestamp))
+    }
+}
+
 @Composable
 fun RecentDeviceMediaStrip(onPick: (Uri) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
