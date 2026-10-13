@@ -183,8 +183,24 @@ fun BusinessHubContent(
     var selectedTab by remember(initialTab) { mutableIntStateOf(initialTab) }
     var catalogScrolled by remember { mutableStateOf(false) }
     val allBusinesses by viewModel.allBusinesses.collectAsState()
-    val myCreatedBusinesses by viewModel.myCreatedBusinesses.collectAsState()
-    // Owner controls must never fall back to a public catalogue venue.
+    val createdBusinesses by viewModel.myCreatedBusinesses.collectAsState()
+    val preferences by viewModel.userPreferences.collectAsState()
+    val sessionProfileId = remember { com.example.util.VibeSyncSessionManager.getProfileId(context).orEmpty() }
+    val currentOwnerKeys = remember(preferences, sessionProfileId) {
+        listOf(
+            sessionProfileId,
+            preferences?.verifiedMobileNumber.orEmpty(),
+            preferences?.googleEmail.orEmpty()
+        ).map { it.trim().lowercase(java.util.Locale.ROOT) }
+            .filter { it.isNotBlank() }
+            .toSet()
+    }
+    // A user-created flag is not an ownership proof: cached public listings may be created by
+    // another account. Wallet, analytics and QR owner tools require this account's owner identity.
+    val myCreatedBusinesses = createdBusinesses.filter { business ->
+        business.isUserCreated &&
+            business.ownerUserId.trim().lowercase(java.util.Locale.ROOT) in currentOwnerKeys
+    }
     val primaryVenue = myCreatedBusinesses.firstOrNull()
     LaunchedEffect(myCreatedBusinesses.isEmpty(), selectedTab) {
         if (myCreatedBusinesses.isEmpty() && selectedTab == 3) selectedTab = 0
