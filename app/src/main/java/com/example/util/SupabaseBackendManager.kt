@@ -673,6 +673,23 @@ object SupabaseBackendManager {
         }
     }
 
+    private fun broadcastUpdateStatus(record: JSONObject) {
+        try {
+            val broadcastMsg = JSONObject().apply {
+                put("topic", CHAT_REALTIME_TOPIC)
+                put("event", "broadcast")
+                put("payload", JSONObject().apply {
+                    put("type", "UPDATE")
+                    put("record", record)
+                })
+                put("ref", "bc_up_${System.currentTimeMillis()}")
+            }
+            realtimeWebSocket?.send(broadcastMsg.toString())
+        } catch (_: Exception) {
+            // PostgREST remains the durable source of truth; broadcast is best-effort.
+        }
+    }
+
     /**
      * Broadcasts and soft-deletes a message for everyone via PostgREST and Realtime WebSocket
      */
