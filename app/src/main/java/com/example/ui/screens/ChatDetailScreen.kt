@@ -212,9 +212,9 @@ fun isMessageOutgoing(
     }
 
     // Check if sender matches conversation partner
-    val isPartner = (partnerProfileId.isNotBlank() && (sender.equals(partnerProfileId, ignoreCase = true) || com.example.util.PhonebookHasher.arePhonesMatching(sender, partnerProfileId))) ||
-            (!matchProfileId.isNullOrBlank() && (sender.equals(matchProfileId, ignoreCase = true) || com.example.util.PhonebookHasher.arePhonesMatching(sender, matchProfileId))) ||
-            (partnerPhone.isNotBlank() && (sender.equals(partnerPhone, ignoreCase = true) || com.example.util.PhonebookHasher.arePhonesMatching(sender, partnerPhone)))
+    val isPartner = (partnerProfileId.isNotBlank() && (sender.equals(partnerProfileId, ignoreCase = true) || com.example.util.PhonebookHelper.arePhonesMatching(sender, partnerProfileId))) ||
+            (!matchProfileId.isNullOrBlank() && (sender.equals(matchProfileId, ignoreCase = true) || com.example.util.PhonebookHelper.arePhonesMatching(sender, matchProfileId))) ||
+            (partnerPhone.isNotBlank() && (sender.equals(partnerPhone, ignoreCase = true) || com.example.util.PhonebookHelper.arePhonesMatching(sender, partnerPhone)))
 
     if (isPartner) {
         return false
@@ -229,7 +229,7 @@ fun isMessageOutgoing(
     if (!currentUserId.isNullOrBlank()) {
         if (sender == currentUserId ||
             sender.equals(currentUserId, ignoreCase = true) ||
-            com.example.util.PhonebookHasher.arePhonesMatching(sender, currentUserId)
+            com.example.util.PhonebookHelper.arePhonesMatching(sender, currentUserId)
         ) {
             return true
         }
