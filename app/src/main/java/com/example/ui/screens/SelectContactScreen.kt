@@ -66,6 +66,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.PhoneContact
+import com.example.ui.components.DatingAvatar
 import com.example.ui.theme.VibeSyncTeal
 import com.example.util.PhonebookSyncManager
 import kotlinx.coroutines.Dispatchers
@@ -390,13 +391,14 @@ private fun VibeContactRow(
         ) {
             val contactPhoto = contact.photoUrl.ifBlank { contact.vibeSyncUser?.avatarUrl ?: "" }
             if (contactPhoto.isNotBlank()) {
-                coil.compose.AsyncImage(
-                    model = contactPhoto,
-                    contentDescription = contact.name,
-                    modifier = Modifier
-                        .size(46.dp)
-                        .clip(CircleShape),
-                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                DatingAvatar(
+                    name = contact.name,
+                    emoji = contact.avatarEmoji.ifBlank { "👤" },
+                    colorStart = 0xFF14B8A6,
+                    colorEnd = 0xFFEC4899,
+                    size = 46.dp,
+                    avatarUrl = contactPhoto,
+                    avatarCacheVersion = contact.vibeSyncUser?.avatarCacheVersion ?: 0L
                 )
             } else {
                 Surface(

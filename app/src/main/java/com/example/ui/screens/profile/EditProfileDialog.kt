@@ -35,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.ui.components.DatingAvatar
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import com.example.data.model.UserPreferencesEntity
@@ -105,11 +106,11 @@ fun EditProfileDialog(
                     if (remoteUrl.isNullOrBlank()) {
                         android.widget.Toast.makeText(context, "Compressed photo is cached locally, but upload failed. Retry this photo before saving.", android.widget.Toast.LENGTH_LONG).show()
                     } else {
-                        // Store local JPEGs in preferences; only their encrypted versions are uploaded.
+                        // Keep only the encrypted storage reference after the plaintext staging file is removed.
                         when (targetSlot) {
-                            1 -> photo1 = prepared.uri
-                            2 -> photo2 = prepared.uri
-                            3 -> photo3 = prepared.uri
+                            1 -> { photo1 = remoteUrl; photo1Preview = remoteUrl }
+                            2 -> { photo2 = remoteUrl; photo2Preview = remoteUrl }
+                            3 -> { photo3 = remoteUrl; photo3Preview = remoteUrl }
                         }
                         unsyncedAvatarSlots = unsyncedAvatarSlots - targetSlot
                         android.widget.Toast.makeText(context, "Avatar compressed to ${prepared.byteCount / 1024} KiB and synced.", android.widget.Toast.LENGTH_SHORT).show()
@@ -521,19 +522,31 @@ private fun EditPhotoSlot(
     ) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             if (photoUrl.isNotBlank()) {
-                AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
-                        .data(photoUrl)
-                        .memoryCacheKey("user-avatar:$photoUrl:$avatarCacheVersion")
-                        .diskCacheKey("user-avatar:$photoUrl:$avatarCacheVersion")
-                        .crossfade(true)
-                        .diskCachePolicy(CachePolicy.ENABLED)
-                        .memoryCachePolicy(CachePolicy.ENABLED)
-                        .build(),
-                    contentDescription = label,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp))
-                )
+                if (photoUrl.startsWith("vibesync-avatar-enc://")) {
+                    DatingAvatar(
+                        name = label,
+                        emoji = "👤",
+                        colorStart = 0xFF14B8A6,
+                        colorEnd = 0xFFEC4899,
+                        size = 94.dp,
+                        avatarUrl = photoUrl,
+                        avatarCacheVersion = avatarCacheVersion
+                    )
+                } else {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(photoUrl)
+                            .memoryCacheKey("user-avatar:$photoUrl:$avatarCacheVersion")
+                            .diskCacheKey("user-avatar:$photoUrl:$avatarCacheVersion")
+                            .crossfade(true)
+                            .diskCachePolicy(CachePolicy.ENABLED)
+                            .memoryCachePolicy(CachePolicy.ENABLED)
+                            .build(),
+                        contentDescription = label,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp))
+                    )
+                }
 
                 IconButton(
                     onClick = onRemove,

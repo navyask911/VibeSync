@@ -1,5 +1,6 @@
 package com.example.ui.screens.profile
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
@@ -39,6 +40,37 @@ fun FullScreenPhotoViewerDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val encryptedPhoto = remember(photoUrl) { photoUrl.startsWith("vibesync-avatar-enc://") }
+    var decryptedPhoto by remember(photoUrl) { mutableStateOf<Bitmap?>(null) }
+    var photoResolved by remember(photoUrl) { mutableStateOf(!encryptedPhoto) }
+    LaunchedEffect(photoUrl) {
+        if (encryptedPhoto) {
+            photoResolved = false
+            decryptedPhoto = com.example.util.ProfileAvatarStorageManager
+                .resolveAvatarForDisplay(context, photoUrl, 0L)
+            photoResolved = true
+        } else {
+            decryptedPhoto = null
+            photoResolved = true
+        }
+    }
+    val photoRequest = remember(photoUrl, decryptedPhoto) {
+        when {
+            decryptedPhoto != null -> ImageRequest.Builder(context)
+                .data(decryptedPhoto)
+                .diskCachePolicy(CachePolicy.DISABLED)
+                .memoryCachePolicy(CachePolicy.DISABLED)
+                .crossfade(true)
+                .build()
+            !encryptedPhoto && photoUrl.isNotBlank() -> ImageRequest.Builder(context)
+                .data(photoUrl)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .diskCachePolicy(CachePolicy.ENABLED)
+                .crossfade(true)
+                .build()
+            else -> null
+        }
+    }
     var scale by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
@@ -75,11 +107,9 @@ fun FullScreenPhotoViewerDialog(
                     },
                 contentAlignment = Alignment.Center
             ) {
-                if (photoUrl.isNotBlank()) {
+                if (photoRequest != null) {
                     SubcomposeAsyncImage(
-                        model = ImageRequest.Builder(context).data(photoUrl)
-                            .memoryCachePolicy(CachePolicy.ENABLED)
-                            .diskCachePolicy(CachePolicy.ENABLED).crossfade(true).build(),
+                        model = photoRequest,
                         contentDescription = title,
                         contentScale = ContentScale.Fit,
                         modifier = Modifier.fillMaxWidth().fillMaxHeight(0.82f).graphicsLayer(
@@ -99,6 +129,8 @@ fun FullScreenPhotoViewerDialog(
                             }
                         }
                     )
+                } else if (!photoResolved) {
+                    CircularProgressIndicator(color = VibeSyncTeal)
                 } else {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,

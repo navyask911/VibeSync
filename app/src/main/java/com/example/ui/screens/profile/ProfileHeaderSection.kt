@@ -38,9 +38,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
-import coil.request.CachePolicy
-import coil.request.ImageRequest
+import com.example.ui.components.DatingAvatar
 import com.example.data.model.UserPreferencesEntity
 import com.example.ui.theme.CoralPink
 import com.example.ui.theme.PassRed
@@ -75,33 +73,24 @@ fun ProfileHeaderSection(
                     slot = slot
                 )
 
-                val stagedPhotos = existingPhotos.toMutableList()
-                while (stagedPhotos.size < slot) stagedPhotos.add("")
-                stagedPhotos[slot - 1] = prepared.uri
-                val stagedList = stagedPhotos.filter { it.isNotBlank() }
                 val isCanonicalAvatar = slot == 1 || preferences.avatarUrl.isBlank()
-                onUpdatePreferences(
-                    preferences.copy(
-                        avatarUrl = if (isCanonicalAvatar) prepared.uri else preferences.avatarUrl,
-                        profilePhotos = stagedList.joinToString("|||"),
-                        avatarCacheVersion = System.currentTimeMillis()
-                    )
-                )
-
                 val remoteUrl = com.example.util.ProfileAvatarStorageManager.uploadPreparedAvatar(prepared)
                 if (remoteUrl.isNullOrBlank()) {
+                    prepared.file.delete()
+                    prepared.encryptedFile?.delete()
                     android.widget.Toast.makeText(
                         context,
-                        "Compressed photo is cached on this device, but upload failed. Retry it in Edit Profile.",
+                        "Encrypted photo upload failed. Please choose the photo again.",
                         android.widget.Toast.LENGTH_LONG
                     ).show()
                 } else {
-                    // Keep the local JPEG for Coil; profile sync maps this path to an opaque .enc reference.
-                    val uploadedPhotos = stagedPhotos.toMutableList()
-                    uploadedPhotos[slot - 1] = prepared.uri
+                    // Only the opaque encrypted-storage reference enters profile metadata.
+                    val uploadedPhotos = existingPhotos.toMutableList()
+                    while (uploadedPhotos.size < slot) uploadedPhotos.add("")
+                    uploadedPhotos[slot - 1] = remoteUrl
                     onUpdatePreferences(
                         preferences.copy(
-                            avatarUrl = if (isCanonicalAvatar) prepared.uri else preferences.avatarUrl,
+                            avatarUrl = if (isCanonicalAvatar) remoteUrl else preferences.avatarUrl,
                             profilePhotos = uploadedPhotos.filter { it.isNotBlank() }.joinToString("|||"),
                             avatarCacheVersion = System.currentTimeMillis()
                         )
@@ -187,20 +176,15 @@ fun ProfileHeaderSection(
                 contentAlignment = Alignment.Center
             ) {
                 if (preferences.avatarUrl.isNotBlank()) {
-                    AsyncImage(
-                        model = ImageRequest.Builder(context)
-                            .data(preferences.avatarUrl)
-                            .memoryCacheKey("user-avatar:${preferences.avatarUrl}:${preferences.avatarCacheVersion}")
-                            .diskCacheKey("user-avatar:${preferences.avatarUrl}:${preferences.avatarCacheVersion}")
-                            .crossfade(true)
-                            .diskCachePolicy(CachePolicy.ENABLED)
-                            .memoryCachePolicy(CachePolicy.ENABLED)
-                            .build(),
-                        contentDescription = "Profile Photo - Touch to View Full",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clip(CircleShape)
+                    DatingAvatar(
+                        name = preferences.userName,
+                        emoji = "👤",
+                        colorStart = 0xFF14B8A6,
+                        colorEnd = 0xFFEC4899,
+                        size = 112.dp,
+                        avatarUrl = preferences.avatarUrl,
+                        avatarCacheVersion = preferences.avatarCacheVersion,
+                        modifier = Modifier.fillMaxSize().clip(CircleShape)
                     )
                 } else {
                     Box(
