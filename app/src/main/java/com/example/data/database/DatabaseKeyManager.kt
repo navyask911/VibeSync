@@ -2,6 +2,7 @@ package com.example.data.database
 
 import android.content.Context
 import android.os.Build
+import android.database.sqlite.SQLiteDoneException
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
