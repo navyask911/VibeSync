@@ -74,6 +74,11 @@ object MessageDeltaSyncManager {
             val matchDao = database.matchDao()
             for (record in batch.records) {
                 val remote = record.message
+                // Targeted catch-up and overlapping delta pages must never resurrect an expired ID.
+                if (database.expiredChatMessageDao().isExpiredMessage(remote.messageId)) {
+                    synced++
+                    continue
+                }
                 if (record.deleted) {
                     database.withTransaction {
                         dao.deleteMessageById(remote.messageId)
