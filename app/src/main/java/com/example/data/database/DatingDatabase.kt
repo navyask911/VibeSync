@@ -75,7 +75,7 @@ import com.example.data.model.ApiCredentialRequestEntity
         LocalBusinessAnalyticsEventEntity::class,
         ApiCredentialRequestEntity::class
     ],
-    version = 52,
+    version = 53,
     exportSchema = false
 )
 abstract class DatingDatabase : RoomDatabase() {
@@ -374,6 +374,15 @@ abstract class DatingDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_52_53 = object : Migration(52, 53) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                addColumnIfMissing(db, "chat_messages", "expiresAt", "INTEGER NOT NULL DEFAULT 0")
+                addColumnIfMissing(db, "matches", "disappearingTimerSeconds", "INTEGER NOT NULL DEFAULT 0")
+                addColumnIfMissing(db, "user_preferences", "readReceiptsEnabled", "INTEGER NOT NULL DEFAULT 1")
+                addColumnIfMissing(db, "user_preferences", "typingIndicatorsEnabled", "INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
         fun getDatabase(context: Context): DatingDatabase {
             val appContext = context.applicationContext
             return INSTANCE ?: synchronized(this) {
@@ -420,7 +429,8 @@ abstract class DatingDatabase : RoomDatabase() {
                                 MIGRATION_48_49,
                                 MIGRATION_49_50,
                                 MIGRATION_50_51,
-                                MIGRATION_51_52
+                                MIGRATION_51_52,
+                                MIGRATION_52_53
                             )
                             // Fail closed instead of recreating a database that contains local history.
                             .build()
