@@ -45,6 +45,24 @@ object SupabaseBackendManager {
         .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
+        .addInterceptor { chain ->
+            val original = chain.request()
+            val supabaseHost = runCatching { java.net.URI(SUPABASE_URL).host }.getOrNull()
+            val request = if (supabaseHost != null &&
+                original.url.host.equals(supabaseHost, ignoreCase = true)
+            ) {
+                val builder = original.newBuilder()
+                    .header("apikey", SUPABASE_ANON_KEY)
+                VibeSyncSessionManager.getAccessToken()?.takeIf { it.isNotBlank() }?.let {
+                    builder.header("Authorization", "Bearer " + it)
+                }
+                VibeSyncSessionManager.getToken()?.takeIf { it.isNotBlank() }?.let {
+                    builder.header("x-vibesync-session", it)
+                }
+                builder.build()
+            } else original
+            chain.proceed(request)
+        }
         .build()
 
     // Dedicated WebSocket client with disabled readTimeout (0) and 20s pingInterval to prevent idle timeouts & socket closed errors
@@ -170,9 +188,15 @@ object SupabaseBackendManager {
             return
         }
 
-        // The WebSocket upgrade must authenticate with the project's public API key, not the
-        // app's custom access JWT. Realtime validates custom JWTs after the socket opens via
-        // Phoenix access_token (setAuth), then applies them to the channel join.
+        // Never open a chat Realtime socket as anon: attach the verified, signed custom JWT to the
+        // WebSocket upgrade and still set it again on Phoenix join for refreshed-token compatibility.
+        val activeSessionForConnection = VibeSyncSessionManager.getSession()
+        if (activeSessionForConnection == null) {
+            _realtimeConnected.value = false
+            _realtimeSubscriptionStatus.value = "DISCONNECTED"
+            Log.i(TAG, "Realtime socket deferred until a valid verified VibeSync session is available.")
+            return
+        }
         val anonKey = BuildConfig.SUPABASE_ANON_KEY.trim()
             .ifBlank { SUPABASE_ANON_KEY.trim() }
             .ifBlank { SupabaseClientManager.SUPABASE_ANON_KEY.trim() }
@@ -182,8 +206,6 @@ object SupabaseBackendManager {
             return
         }
 
-        // Always start with the anon/publishable key. A rejected app JWT must never block the
-        // transport upgrade; the verified JWT is applied immediately after open using setAuth.
         _realtimeSubscriptionStatus.value = "CONNECTING"
 
         try {
@@ -204,10 +226,8 @@ object SupabaseBackendManager {
 
             val request = Request.Builder()
                 .url(wsUrl)
-                // Supabase Realtime's WebSocket gateway reads the public key from apikey.
-                // Do not put opaque sb_publishable keys or the custom user JWT in Authorization
-                // on the upgrade request; custom user JWT auth is done by setAuth after open.
                 .header("apikey", anonKey)
+                .header("Authorization", "Bearer " + activeSessionForConnection.accessToken)
                 .build()
             realtimeConnecting = true
             realtimeWebSocket = wsHttpClient.newWebSocket(request, object : WebSocketListener() {
