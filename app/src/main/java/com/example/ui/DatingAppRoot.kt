@@ -23,6 +23,8 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Favorite
@@ -64,7 +66,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.model.MatchEntity
 import com.example.ui.components.AccountRecoveryDialog
-import com.example.ui.components.ActiveCallOverlay
 import com.example.ui.components.DuplicateProfileDetectedDialog
 import com.example.ui.components.FriendsListDialog
 import com.example.ui.components.FriendshipRequestDialog
@@ -84,6 +85,10 @@ import com.example.ui.screens.AccountReportScreen
 import com.example.ui.screens.AdminBackendScreen
 import com.example.ui.screens.AuthLoginScreen
 import com.example.ui.screens.ChatDetailScreen
+import com.example.ui.screens.CallScreen
+import com.example.util.SignalingEvent
+import com.example.util.WebRtcCallInboxManager
+import com.example.util.WebRtcSignalingManager
 import com.example.ui.screens.DiscoverScreen
 import com.example.ui.screens.FaceVerificationScreen
 import com.example.ui.screens.LikedYouScreen
@@ -278,6 +283,62 @@ fun DatingAppRoot(
 
     // Authentication & Guard State Variables
     val isLoggedIn = preferences?.isLoggedIn ?: false
+
+    // One private broadcast inbox per authenticated profile enables incoming call discovery
+    // without polling or writing invitations/SDP/ICE to any database table.
+    val localCallProfileId = com.example.util.VibeSyncSessionManager.getProfileId(context).orEmpty().trim()
+    LaunchedEffect(isLoggedIn, localCallProfileId) {
+        if (!isLoggedIn || localCallProfileId.isBlank()) return@LaunchedEffect
+        val inbox = WebRtcCallInboxManager(localCallProfileId)
+        try {
+            inbox.connect()
+            inbox.invites.collect { invite ->
+                launch {
+                    val pairCallId = runCatching {
+                        WebRtcSignalingManager.callIdFor(localCallProfileId, invite.callerProfileId)
+                    }.getOrNull() ?: return@launch
+                    if (invite.callId != pairCallId || invite.recipientProfileId != localCallProfileId) return@launch
+                    val pairChannel = WebRtcSignalingManager.getOrCreate(
+                        pairCallId, localCallProfileId, invite.callerProfileId
+                    )
+                    try {
+                        pairChannel.connect()
+                        val existing = viewModel.activeCall.value
+                        if (existing != null && existing.callId != pairCallId) {
+                            pairChannel.rejectCall()
+                            return@launch
+                        }
+                        val peer = viewModel.getProfile(invite.callerProfileId)
+                        if (peer == null) {
+                            pairChannel.rejectCall()
+                            return@launch
+                        }
+                        // The caller retries its identical ephemeral offer while the recipient joins.
+                        val offer = withTimeoutOrNull(4_000) {
+                            pairChannel.events.first { event ->
+                                event is SignalingEvent.Offer &&
+                                    event.payload.senderProfileId == invite.callerProfileId &&
+                                    event.payload.recipientProfileId == localCallProfileId
+                            }
+                        } as? SignalingEvent.Offer
+                        viewModel.acceptIncomingCall(
+                            profile = peer,
+                            callId = pairCallId,
+                            isVideo = invite.isVideo,
+                            offerSdp = offer?.payload?.sdp.orEmpty()
+                        )
+                    } catch (_: Throwable) {
+                        // A private channel/RLS/network failure simply drops this invitation; no
+                        // signaling payload is persisted or retried through the database.
+                    }
+                }
+            }
+        } catch (_: Throwable) {
+            // The app remains usable if realtime signaling is offline.
+        } finally {
+            inbox.disconnect()
+        }
+    }
     val isMpinSet = preferences?.isMpinSet ?: false
     val savedMpin = preferences?.userMpin ?: ""
     val isProfileCompleted = preferences?.isProfileCompleted ?: false
@@ -816,13 +877,17 @@ fun DatingAppRoot(
         }
     }
 
-    // Full Screen Active Call Overlay (VibeSync E2EE Protocol E2EE)
+    // Full-screen native WebRTC surface with live remote media and draggable local preview.
     activeCall?.let { call ->
-        ActiveCallOverlay(
-            callState = call,
-            onEndCall = { viewModel.endCall() },
-            onToggleMute = { viewModel.toggleMuteCall() },
-            onToggleVideo = { viewModel.toggleVideoCall() }
+        CallScreen(
+            callId = call.callId,
+            localProfileId = call.localProfileId,
+            remoteProfileId = call.profile.id,
+            remoteName = call.profile.name,
+            isVideo = call.isVideo,
+            isCaller = !call.isIncoming,
+            initialOfferSdp = call.remoteOfferSdp,
+            onEndCall = { viewModel.endCall() }
         )
     }
 

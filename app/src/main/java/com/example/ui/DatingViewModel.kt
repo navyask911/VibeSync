@@ -42,6 +42,8 @@ import com.example.util.UserPresenceInfo
 import com.example.util.UserSessionManager
 import com.example.util.UserPresenceManager
 import com.example.util.WebRTCManager
+import com.example.util.WebRtcCallClient
+import com.example.util.WebRtcSignalingManager
 import com.example.util.SupabaseClientManager
 import com.example.util.backup.DriveBackupMetadata
 import com.google.firebase.messaging.FirebaseMessaging
@@ -82,7 +84,11 @@ data class ActiveCallState(
     val durationSeconds: Int = 0,
     val isMuted: Boolean = false,
     val isCameraOff: Boolean = false,
-    val isE2eeEncrypted: Boolean = true
+    val isE2eeEncrypted: Boolean = true,
+    val callId: String = "",
+    val localProfileId: String = "",
+    val isIncoming: Boolean = false,
+    val remoteOfferSdp: String? = null
 )
 
 data class CountryStat(
@@ -2162,58 +2168,81 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // Voice & Video Calling (WebRTC P2P Direct Stream with Zero Relay Bandwidth Costs)
+    // Voice & Video Calling: verified profile IDs form the deterministic private Realtime topic.
     fun startCall(profile: ProfileEntity, isVideo: Boolean) {
         val app = getApplication<Application>()
         com.example.util.AlertSoundAndVibrationManager.stopAllSounds(app)
-        val currentUserId = userPreferences.value?.userName?.ifBlank { "user_self" } ?: "user_self"
-
-        WebRTCManager.startCall(
-            context = app,
-            localUserId = currentUserId,
-            remoteUserId = profile.id,
-            remoteUserName = profile.name,
-            callType = if (isVideo) WebRTCManager.CallType.VIDEO_CALL else WebRTCManager.CallType.AUDIO_ONLY
-        )
-
+        val localId = com.example.util.VibeSyncSessionManager.getProfileId(app).orEmpty().trim()
+        if (localId.isBlank() || profile.id.isBlank() || localId == profile.id) {
+            viewModelScope.launch {
+                _toastMessage.emit("A verified account and valid peer profile are required to call.")
+            }
+            return
+        }
+        val callId = try {
+            WebRtcSignalingManager.callIdFor(localId, profile.id)
+        } catch (_: IllegalArgumentException) {
+            viewModelScope.launch { _toastMessage.emit("This profile cannot be used for secure call signaling.") }
+            return
+        }
         _activeCall.value = ActiveCallState(
             profile = profile,
             isVideo = isVideo,
             durationSeconds = 0,
             isMuted = false,
-            isCameraOff = false,
-            isE2eeEncrypted = true
+            isCameraOff = !isVideo,
+            isE2eeEncrypted = true,
+            callId = callId,
+            localProfileId = localId,
+            isIncoming = false,
+            remoteOfferSdp = null
         )
         viewModelScope.launch {
             _toastMessage.emit(
-                if (isVideo) "Connecting 1-on-1 P2P WebRTC Video Call with ${profile.name} (₹0 Server Cost) 📹⚡" 
-                else "Connecting 1-on-1 P2P WebRTC Audio Call with ${profile.name} (₹0 Server Cost) 📞⚡"
+                if (isVideo) "Calling " + profile.name + " with peer-to-peer video."
+                else "Calling " + profile.name + " with peer-to-peer audio."
             )
         }
+    }
+
+    fun acceptIncomingCall(profile: ProfileEntity, callId: String, isVideo: Boolean, offerSdp: String) {
+        if (_activeCall.value != null) {
+            viewModelScope.launch { _toastMessage.emit("You are already in a call.") }
+            return
+        }
+        val localId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+        if (localId.isBlank() || profile.id.isBlank() || offerSdp.isBlank()) return
+        _activeCall.value = ActiveCallState(
+            profile = profile,
+            isVideo = isVideo,
+            isMuted = false,
+            isCameraOff = !isVideo,
+            isE2eeEncrypted = true,
+            callId = callId,
+            localProfileId = localId,
+            isIncoming = true,
+            remoteOfferSdp = offerSdp
+        )
     }
 
     fun endCall() {
         com.example.util.AlertSoundAndVibrationManager.stopAllSounds(getApplication())
         val call = _activeCall.value
-        WebRTCManager.endCall()
+        if (call != null) WebRtcCallClient.endActiveCall(call.callId)
         _activeCall.value = null
         if (call != null) {
-            viewModelScope.launch {
-                _toastMessage.emit("Call ended • WebRTC P2P Session Closed (100% Bandwidth Saved)")
-            }
+            viewModelScope.launch { _toastMessage.emit("Call ended.") }
         }
     }
 
     fun toggleMuteCall() {
         val current = _activeCall.value ?: return
-        val newMute = WebRTCManager.toggleMicrophone()
-        _activeCall.value = current.copy(isMuted = newMute)
+        _activeCall.value = current.copy(isMuted = !current.isMuted)
     }
 
     fun toggleVideoCall() {
         val current = _activeCall.value ?: return
-        val newCamState = WebRTCManager.toggleCamera()
-        _activeCall.value = current.copy(isCameraOff = newCamState)
+        _activeCall.value = current.copy(isCameraOff = !current.isCameraOff)
     }
 
     // Google Cloud & Google Drive Private Encrypted Backup Handlers

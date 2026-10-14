@@ -2,3 +2,11 @@ project_id = "imhcbgpvjwersbnlgwzq"
 
 [functions.verify-truecaller]
 verify_jwt = false
+
+# These endpoints perform VibeSync session validation inside the handler. They accept
+# the app's custom verified-session JWT and x-vibesync-session, not a Supabase Auth login.
+[functions.get-ice-config]
+verify_jwt = false
+
+[functions.report-bandwidth]
+verify_jwt = false
