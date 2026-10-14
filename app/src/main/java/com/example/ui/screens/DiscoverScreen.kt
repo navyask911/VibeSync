@@ -563,7 +563,7 @@ fun DiscoverScreen(
                                 emoji = profile.avatarEmoji,
                                 colorStart = profile.gradientColorStart,
                                 colorEnd = profile.gradientColorEnd,
-                                size = 60.dp,
+                                size = 48.dp,
                                 isVerified = profile.isVerified,
                                 avatarUrl = profile.avatarUrl,
                                 avatarCacheVersion = profile.avatarCacheVersion
