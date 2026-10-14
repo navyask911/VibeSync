@@ -49,33 +49,38 @@ fun DatingAvatar(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val encryptedOwnerId = remember(avatarUrl) {
-        avatarUrl.takeIf { it.startsWith("vibesync-avatar-enc://") }
+    // Profile metadata can contain a delimiter-separated photo gallery. Resolve the active first
+    // encrypted pointer rather than passing the combined metadata string into the decryptor.
+    val activeAvatarReference = remember(avatarUrl) {
+        avatarUrl.split("|||").firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+    }
+    val encryptedOwnerId = remember(activeAvatarReference) {
+        activeAvatarReference.takeIf { it.startsWith("vibesync-avatar-enc://") }
             ?.removePrefix("vibesync-avatar-enc://")?.substringBefore('/').orEmpty()
     }
     val peerVersionFlow = remember(context, encryptedOwnerId) {
-        if (encryptedOwnerId.isBlank()) kotlinx.coroutines.flow.flowOf(1)
+        if (encryptedOwnerId.isBlank()) kotlinx.coroutines.flow.flowOf(0)
         else com.example.util.ProfileKeyManager.peerProfileKeyRevisionFlow(context, encryptedOwnerId)
     }
     val peerKeyRevision by peerVersionFlow.collectAsState(initial = 0)
-    var resolvedAvatarBitmap by remember(avatarUrl, avatarCacheVersion) {
+    var resolvedAvatarBitmap by remember(activeAvatarReference, avatarCacheVersion) {
         mutableStateOf<Bitmap?>(null)
     }
-    var resolvedAvatarUrl by remember(avatarUrl, avatarCacheVersion) {
-        mutableStateOf(if (avatarUrl.startsWith("vibesync-avatar-enc://")) "" else avatarUrl)
+    var resolvedAvatarUrl by remember(activeAvatarReference, avatarCacheVersion) {
+        mutableStateOf(if (activeAvatarReference.startsWith("vibesync-avatar-enc://")) "" else activeAvatarReference)
     }
-    LaunchedEffect(avatarUrl, avatarCacheVersion, peerKeyRevision) {
-        if (avatarUrl.startsWith("vibesync-avatar-enc://")) {
+    LaunchedEffect(activeAvatarReference, avatarCacheVersion, peerKeyRevision) {
+        if (activeAvatarReference.startsWith("vibesync-avatar-enc://")) {
             resolvedAvatarUrl = ""
             resolvedAvatarBitmap = null
             resolvedAvatarBitmap = com.example.util.ProfileAvatarStorageManager
-                .resolveAvatarForDisplay(context, avatarUrl, avatarCacheVersion)
+                .resolveAvatarForDisplay(context, activeAvatarReference, avatarCacheVersion)
         } else {
             resolvedAvatarBitmap = null
-            resolvedAvatarUrl = avatarUrl
+            resolvedAvatarUrl = activeAvatarReference
         }
     }
-    val avatarImageModel = remember(resolvedAvatarUrl, resolvedAvatarBitmap, avatarUrl, avatarCacheVersion) {
+    val avatarImageModel = remember(resolvedAvatarUrl, resolvedAvatarBitmap, activeAvatarReference, avatarCacheVersion) {
         when {
             resolvedAvatarBitmap != null -> ImageRequest.Builder(context)
                 .data(resolvedAvatarBitmap)
