@@ -122,6 +122,10 @@ async function sendFcm(sa: ServiceAccount, token: string, data: Record<string, s
           token,
           data,
           android: { priority: "HIGH", ttl: "86400s" },
+          apns: {
+            headers: { "apns-priority": "5" },
+            payload: { aps: { "content-available": 1 } },
+          },
         },
       }),
     },

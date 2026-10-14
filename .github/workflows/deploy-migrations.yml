@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - main
+      - fix/release-startup-icons-ci
+    paths:
+      - 'supabase/migrations/**'
+      - '.github/workflows/deploy-migrations.yml'
   workflow_dispatch:
 
 permissions:

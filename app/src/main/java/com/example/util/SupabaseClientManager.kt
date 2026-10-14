@@ -1582,10 +1582,101 @@ object SupabaseClientManager {
                     return@withContext null
                 }
                 val parsed = runCatching { JSONObject(text) }.getOrNull() ?: return@withContext null
-                parsed.takeIf { it.optBoolean("ok", true) && !it.has("error") }
+                if (!parsed.optBoolean("ok", true) || parsed.has("error")) return@withContext parsed
+                val broadcastId = parsed.optString("broadcast_id").trim()
+                if (broadcastId.isNotBlank()) {
+                    val dispatchRequest = buildRequest(
+                        endpoint = "$SUPABASE_URL/functions/v1/vibesync-business-broadcast",
+                        method = "POST",
+                        bodyJson = JSONObject().put("broadcast_id", broadcastId).toString()
+                    )
+                    httpClient.newCall(dispatchRequest).execute().use { dispatchResponse ->
+                        val dispatchBody = dispatchResponse.body?.string().orEmpty()
+                        parsed.put("dispatch_triggered", dispatchResponse.isSuccessful)
+                        if (dispatchResponse.isSuccessful) {
+                            runCatching { JSONObject(dispatchBody) }.getOrNull()?.let { parsed.put("dispatch", it) }
+                        } else {
+                            parsed.put("dispatch_pending", true)
+                            Log.w(TAG, "Broadcast staged but dispatch trigger failed HTTP ${dispatchResponse.code}; pending record retained.")
+                        }
+                    }
+                }
+                parsed
             }
         } catch (failure: Throwable) {
             Log.w(TAG, "Broadcast staging deferred: ${failure.javaClass.simpleName}")
+            null
+        }
+    }
+
+    private suspend fun callBusinessPaymentFunction(payload: JSONObject): JSONObject? = withContext(Dispatchers.IO) {
+        if (VibeSyncSessionManager.getSession() == null) return@withContext null
+        try {
+            val request = buildRequest(
+                endpoint = "$SUPABASE_URL/functions/v1/vibesync-wallet-payment",
+                method = "POST",
+                bodyJson = payload.toString()
+            )
+            httpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                val parsed = runCatching { JSONObject(body) }.getOrNull()
+                if (!response.isSuccessful || parsed == null || !parsed.optBoolean("ok", false)) {
+                    Log.w(TAG, "Business payment request rejected HTTP ${response.code}: ${body.take(180)}")
+                    null
+                } else parsed
+            }
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Business payment request deferred: ${failure.javaClass.simpleName}")
+            null
+        }
+    }
+
+    suspend fun createBusinessPaymentOrder(
+        businessId: String,
+        purchaseType: String,
+        points: Int = 0,
+        verificationTier: String = ""
+    ): JSONObject? {
+        val type = purchaseType.trim().uppercase()
+        if (businessId.isBlank() || type !in setOf("WALLET_RECHARGE", "VERIFICATION_BADGE")) return null
+        return callBusinessPaymentFunction(JSONObject()
+            .put("action", "create_order")
+            .put("business_id", businessId)
+            .put("purchase_type", type)
+            .put("points", points)
+            .put("verification_tier", verificationTier.trim().uppercase()))
+    }
+
+    suspend fun verifyBusinessPaymentOrder(
+        orderRecordId: String,
+        paymentId: String,
+        signature: String
+    ): JSONObject? {
+        if (orderRecordId.isBlank() || paymentId.isBlank() || signature.isBlank()) return null
+        return callBusinessPaymentFunction(JSONObject()
+            .put("action", "verify_payment")
+            .put("order_record_id", orderRecordId)
+            .put("razorpay_payment_id", paymentId)
+            .put("razorpay_signature", signature))
+    }
+
+    suspend fun fetchBusinessWalletSnapshot(businessId: String): JSONObject? = withContext(Dispatchers.IO) {
+        if (businessId.isBlank() || VibeSyncSessionManager.getProfileId().isNullOrBlank()) return@withContext null
+        try {
+            val request = buildRequest(
+                endpoint = "rpc/get_my_business_wallet_snapshot",
+                method = "POST",
+                bodyJson = JSONObject().put("p_business_id", businessId).toString()
+            )
+            httpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Business wallet snapshot failed HTTP ${response.code}")
+                    null
+                } else runCatching { JSONObject(body) }.getOrNull()
+            }
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Business wallet snapshot deferred: ${failure.javaClass.simpleName}")
             null
         }
     }

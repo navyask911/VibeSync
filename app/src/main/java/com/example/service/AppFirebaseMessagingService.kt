@@ -128,6 +128,23 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(applicationContext)
                     Log.i(TAG, "Fallback inbox sync queued for a legacy FCM wake-up.")
                 }
+                "BUSINESS_BROADCAST" -> {
+                    val headline = data["title"].orEmpty().ifBlank { "Update from a business you follow" }
+                    val body = data["message"].orEmpty().ifBlank { "Open VibeSync to view this update." }
+                    val businessName = data["business_name"].orEmpty().ifBlank { "Business update" }
+                    AppNotificationManager.showMessageNotification(
+                        context = applicationContext,
+                        senderId = "business_broadcast:" + data["broadcast_id"].orEmpty(),
+                        senderName = businessName,
+                        messageText = (headline + "
+" + body).take(800),
+                        senderPhotoUrl = data["banner_url"].orEmpty(),
+                        mediaType = "BUSINESS_BROADCAST",
+                        channelId = AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES
+                    )
+                    Log.i(TAG, "Local notification posted for business broadcast " + data["broadcast_id"].orEmpty())
+                    return
+                }
                 "NEW_USER", "USER_JOINED", "JOINING" -> {
                     // One time alert inside Chat only - NO duplicate notifications for joining user
                     val database = com.example.data.database.DatingDatabase.getDatabase(applicationContext)
