@@ -41,6 +41,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Directions
@@ -129,7 +130,8 @@ fun BusinessDashboardScreen(
     onOpenBroadcast: () -> Unit = {},
     onOpenWallet: () -> Unit = {},
     onManageListing: () -> Unit = {},
-    onUpgradeBadge: () -> Unit = {}
+    onUpgradeBadge: () -> Unit = {},
+    onAdvertiseWithUs: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var selectedSuiteTab by remember { mutableIntStateOf(0) }
@@ -139,8 +141,19 @@ fun BusinessDashboardScreen(
     var verifiedOnly by remember { mutableStateOf(false) }
     var showExportDialog by remember { mutableStateOf(false) }
     var selectedAction by remember { mutableStateOf<String?>(null) }
-    var localAnalytics by remember {
+    var localAnalytics by remember(venue.id) {
         mutableStateOf(com.example.data.model.LocalBusinessAnalyticsEntity(business_id = venue.id))
+    }
+    var liveDashboardAnalytics by remember(venue.id) { mutableStateOf<org.json.JSONObject?>(null) }
+
+    LaunchedEffect(venue.id, selectedTimeframe) {
+        val range = when (selectedTimeframe) {
+            "Today" -> "TODAY"
+            "This Week" -> "LAST 7 DAYS"
+            "This Month" -> "LAST 30 DAYS"
+            else -> "ALL TIME"
+        }
+        liveDashboardAnalytics = com.example.util.SupabaseClientManager.fetchBusinessAnalyticsSnapshot(venue.id, range)
     }
 
     LaunchedEffect(venue.id, selectedTimeframe) {
@@ -253,10 +266,14 @@ fun BusinessDashboardScreen(
                 candidate.category.contains(venueSearchQuery.trim(), ignoreCase = true))
     }
     val connectCount = localAnalytics.visits_count + localAnalytics.navigations_count
+    val dashboardViews = liveDashboardAnalytics?.optInt("profile_views", localAnalytics.views_count) ?: localAnalytics.views_count
+    val dashboardProfileClicks = liveDashboardAnalytics?.optInt("profile_clicks", localAnalytics.navigations_count) ?: localAnalytics.navigations_count
+    val dashboardFollowerGrowth = liveDashboardAnalytics?.optInt("follower_growth", 0) ?: 0
+    val dashboardFollowerCount = liveDashboardAnalytics?.optInt("follower_count", venue.followerCount) ?: venue.followerCount
     val microValues = listOf(
-        localAnalytics.views_count.coerceAtLeast(0),
-        connectCount.coerceAtLeast(0),
-        localAnalytics.inquiries_count.coerceAtLeast(0)
+        dashboardViews.coerceAtLeast(0),
+        dashboardProfileClicks.coerceAtLeast(0),
+        dashboardFollowerGrowth.coerceAtLeast(0)
     )
 
     Scaffold(
@@ -436,30 +453,20 @@ fun BusinessDashboardScreen(
             }
 
             item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(9.dp)
-                ) {
-                    ExecutiveMetricCard(
-                        title = "Profile Views",
-                        value = formatExecutiveMetric(localAnalytics.views_count),
-                        icon = Icons.Default.Visibility,
-                        values = microValues,
-                        modifier = Modifier.weight(1f)
-                    )
-                    ExecutiveMetricCard(
-                        title = "Connects",
-                        value = formatExecutiveMetric(connectCount),
-                        icon = Icons.Default.People,
-                        values = microValues,
-                        modifier = Modifier.weight(1f)
-                    )
-                    ExecutiveMetricCard(
-                        title = "Inquiries",
-                        value = formatExecutiveMetric(localAnalytics.inquiries_count),
-                        icon = Icons.Default.Call,
-                        values = microValues,
-                        modifier = Modifier.weight(1f)
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(9.dp)
+                    ) {
+                        ExecutiveMetricCard("Views", formatExecutiveMetric(dashboardViews), Icons.Default.Visibility, microValues, Modifier.weight(1f))
+                        ExecutiveMetricCard("Profile Clicks", formatExecutiveMetric(dashboardProfileClicks), Icons.Default.People, microValues, Modifier.weight(1f))
+                        ExecutiveMetricCard("Follower Growth", formatExecutiveMetric(dashboardFollowerGrowth), Icons.Default.TrendingUp, microValues, Modifier.weight(1f))
+                    }
+                    Text(
+                        "Current followers: ${formatExecutiveMetric(dashboardFollowerCount)} · ${if (liveDashboardAnalytics == null) "Local analytics fallback" else "Live owner analytics"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 2.dp)
                     )
                 }
             }
@@ -472,6 +479,16 @@ fun BusinessDashboardScreen(
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onBackground
                     )
+                    Button(
+                        onClick = onAdvertiseWithUs,
+                        modifier = Modifier.fillMaxWidth().height(52.dp).testTag("btn_advertise_with_us"),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Icon(Icons.Default.Campaign, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Advertise With Us", fontWeight = FontWeight.Bold)
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                         BusinessSuiteActionCard(
                             title = "Manage Store / Catalog",
@@ -661,8 +678,10 @@ private fun BusinessSuiteSecondaryTab(
     var radius by remember(venue.id) { mutableIntStateOf(5) }
     var interestTags by remember(venue.id) { mutableStateOf("food, shopping, local") }
     val audience = venue.followerCount.coerceAtLeast(0) // conservative upper bound; Supabase computes the exact target count
-    val pointsPerUser = if (venue.verificationTier.equals("GOLD", true)) 0.5f else 1f
+    // All tiers use the advertised rate: one point for each eligible recipient.
+    val pointsPerUser = 1f
     val requiredPoints = kotlin.math.ceil(audience * pointsPerUser).toInt()
+    val estimatedBroadcastInr = requiredPoints * 0.05
     var selectedRange by remember(venue.id) { mutableStateOf("Last 7 Days") }
     val trendMetricOptions = listOf(
         "Views" to "views",
@@ -751,15 +770,16 @@ private fun BusinessSuiteSecondaryTab(
                         }
                         HorizontalDivider()
                         Text("Estimated maximum audience: $audience")
-                        Text("Points per user: ${if (pointsPerUser == 0.5f) "0.5 (Gold discount)" else "1"}")
-                        Text("Up to $audience × $pointsPerUser point/user = up to $requiredPoints points", fontWeight = FontWeight.Bold)
-                        Text("Final nearby/tag eligibility is evaluated by Supabase before any point debit.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Rate: 1 Point = ₹0.05 (5 paise) per follower recipient.")
+                        Text("Up to $audience recipients × 1 point = up to $requiredPoints points", fontWeight = FontWeight.Bold)
+                        Text("Estimated cost: ₹${String.format(java.util.Locale.ROOT, "%.2f", estimatedBroadcastInr)} for this audience.", fontWeight = FontWeight.SemiBold)
+                        Text("This is an estimate; Supabase rechecks eligible recipients and wallet balance before any debit.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text("Wallet balance: ${venue.walletPoints} points")
                         if (venue.walletPoints < requiredPoints) {
                             Text("Low Balance — Recharge Points to Broadcast", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
                             Button(onClick = onOpenWallet, modifier = Modifier.fillMaxWidth()) { Text("Recharge Points") }
                         } else {
-                            Button(onClick = onOpenBroadcast, modifier = Modifier.fillMaxWidth()) { Text("Create & Send Broadcast") }
+                            Button(onClick = onOpenBroadcast, modifier = Modifier.fillMaxWidth()) { Text("Draft Follower Broadcast") }
                         }
                     }
                 }

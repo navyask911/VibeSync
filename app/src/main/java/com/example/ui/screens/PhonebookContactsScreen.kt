@@ -423,7 +423,16 @@ fun PhonebookContactsScreen(
                 HorizontalDivider(thickness = 0.5.dp, modifier = Modifier.padding(horizontal = 16.dp))
             }
 
-            // SECTION 1: CONTACTS ON VIBESYNC
+            item {
+                Text(
+                    "${java.text.NumberFormat.getIntegerInstance(java.util.Locale.US).format(contacts.size)} Total Contacts",
+                    modifier = Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 4.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            // SECTION 1: PHONEBOOK CONTACTS
             item {
                 Row(
                     modifier = Modifier
@@ -433,7 +442,7 @@ fun PhonebookContactsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "CONTACTS ON VIBESYNC (${onVibeSyncContacts.size})",
+                        text = "Phonebook Contacts (${onVibeSyncContacts.size})",
                         style = MaterialTheme.typography.labelMedium.copy(
                             fontWeight = FontWeight.Bold,
                             color = VibeSyncTeal,
@@ -485,7 +494,7 @@ fun PhonebookContactsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "INVITE TO VIBESYNC (${inviteContacts.size})",
+                        text = "Invitations (${inviteContacts.size})",
                         style = MaterialTheme.typography.labelMedium.copy(
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,

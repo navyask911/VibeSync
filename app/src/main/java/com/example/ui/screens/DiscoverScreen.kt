@@ -215,72 +215,6 @@ fun DiscoverScreen(
             exit = shrinkVertically() + fadeOut()
         ) {
             Column {
-        // App Top Bar
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Shared colorful VibeSync app mark
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Image(
-                    painter = painterResource(id = com.example.R.drawable.ic_launcher_foreground),
-                    contentDescription = "VibeSync logo",
-                    modifier = Modifier.size(28.dp)
-                )
-                Spacer(Modifier.width(5.dp))
-                Text(
-                    text = "VibeSync",
-                    style = MaterialTheme.typography.titleLarge.copy(
-                        fontWeight = FontWeight.Black,
-                        brush = Brush.linearGradient(listOf(CoralPink, RomanticViolet, Color(0xFF00F2FE))),
-                        letterSpacing = (-0.5).sp
-                    )
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = LikeGreen.copy(alpha = 0.15f)
-                ) {
-                    Text(
-                        text = "CONNECT & BUSINESS",
-                        color = LikeGreen,
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 9.sp
-                        ),
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
-                }
-            }
-
-            // Right Actions: Super Likes, Admin & Filters
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-
-                IconButton(
-                    onClick = onOpenInteractionsModal,
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(VibeSyncTeal.copy(alpha = 0.15f))
-                        .testTag("btn_interactions_modal_discover")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.People,
-                        contentDescription = "Requests & Interactions",
-                        tint = VibeSyncTeal,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-
-            }
-        }
-
         val remainingRequests = userPreferences?.remainingFriendRequestsToday ?: 25
         Row(
             modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
@@ -682,7 +616,12 @@ fun DiscoverScreen(
                 }
                 items(nearbyBusinessMatches, key = { "business_${it.id}" }) { business ->
                     Card(
-                        modifier = Modifier.fillMaxWidth().wrapContentHeight().clickable { selectedBusinessForDetail = business },
+                        modifier = Modifier.fillMaxWidth().wrapContentHeight().clickable {
+                            viewModel?.recordBusinessView(business.id)
+                            viewModel?.recordBusinessNavigation(business.id)
+                            viewModel?.recordBusinessProfileClick(business.id)
+                            selectedBusinessForDetail = business
+                        },
                         shape = RoundedCornerShape(18.dp),
                         colors = CardDefaults.cardColors(containerColor = businessCardBackground),
                         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -717,19 +656,28 @@ fun DiscoverScreen(
                                     Text(business.category, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 Text(business.tagline.ifBlank { business.description }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                     OutlinedButton(
                                         onClick = { viewModel?.toggleFollowBusiness(business.id) },
-                                        modifier = Modifier.height(34.dp),
-                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                                    ) {
-                                        Text(if (business.isFollowed) "Following" else "Follow", fontSize = 11.sp)
-                                    }
+                                        modifier = Modifier.weight(1f).height(40.dp).testTag("connect_follow_${business.id}"),
+                                        shape = RoundedCornerShape(12.dp),
+                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                    ) { Text(if (business.isFollowed) "Following" else "Follow", fontSize = 11.sp, maxLines = 1) }
                                     OutlinedButton(
-                                        onClick = { selectedBusinessForDetail = business },
-                                        modifier = Modifier.height(34.dp),
-                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                                    ) { Text("Details", fontSize = 11.sp) }
+                                        onClick = {
+                                            viewModel?.recordBusinessView(business.id)
+                                            viewModel?.recordBusinessNavigation(business.id)
+                                            viewModel?.recordBusinessProfileClick(business.id)
+                                            selectedBusinessForDetail = business
+                                        },
+                                        modifier = Modifier.weight(1f).height(40.dp).testTag("connect_business_details_${business.id}"),
+                                        shape = RoundedCornerShape(12.dp),
+                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                    ) { Text("Details", fontSize = 11.sp, maxLines = 1) }
                                 }
                             }
                         }

@@ -3870,6 +3870,14 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     fun recordBusinessView(businessId: String) {
         viewModelScope.launch {
             repository.recordBusinessAnalyticsEvent(businessId, "VIEW")
+            com.example.util.SupabaseClientManager.recordBusinessAnalyticsEvent(businessId, "VIEW")
+        }
+    }
+
+    /** Record a click-through to a public business profile in owner analytics. */
+    fun recordBusinessProfileClick(businessId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            com.example.util.SupabaseClientManager.recordBusinessAnalyticsEvent(businessId, "PROFILE_CLICK")
         }
     }
 

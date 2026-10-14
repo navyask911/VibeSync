@@ -1713,7 +1713,7 @@ object SupabaseClientManager {
     ): Boolean = withContext(Dispatchers.IO) {
         val normalized = eventType.trim().uppercase()
         if (businessId.isBlank() || normalized !in setOf(
-                "VIEW", "IMPRESSION", "CHAT_INQUIRY", "BROADCAST_OPEN", "BROADCAST_CLICK", "LOCATION_CLICK", "CALL_CLICK"
+                "VIEW", "PROFILE_CLICK", "IMPRESSION", "CHAT_INQUIRY", "BROADCAST_OPEN", "BROADCAST_CLICK", "LOCATION_CLICK", "CALL_CLICK"
             ) || VibeSyncSessionManager.getProfileId().isNullOrBlank()
         ) return@withContext false
         try {

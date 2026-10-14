@@ -209,6 +209,7 @@ fun BusinessHubContent(
     var selectedBusinessForProfile by remember { mutableStateOf<BusinessEntity?>(null) }
     var selectedVenueForDashboard by remember { mutableStateOf<BusinessEntity?>(null) }
     var showAdCampaignWizard by remember { mutableStateOf(false) }
+    var adCampaignBusiness by remember { mutableStateOf<BusinessEntity?>(null) }
     var activeWalletBiz by remember { mutableStateOf<BusinessEntity?>(null) }
     var activeBroadcastBiz by remember { mutableStateOf<BusinessEntity?>(null) }
     var activeDirectApiBiz by remember { mutableStateOf<BusinessEntity?>(null) }
@@ -583,7 +584,11 @@ fun BusinessHubContent(
                                     onOpenBroadcast = { activeBroadcastBiz = activeVenue },
                                     onOpenWallet = { activeWalletBiz = activeVenue },
                                     onManageListing = { editingBusiness = activeVenue },
-                                    onUpgradeBadge = { activeUpgradeBiz = activeVenue }
+                                    onUpgradeBadge = { activeUpgradeBiz = activeVenue },
+                                    onAdvertiseWithUs = {
+                                        adCampaignBusiness = activeVenue
+                                        showAdCampaignWizard = true
+                                    }
                                 )
                             } else {
                                 Box(
@@ -662,10 +667,13 @@ fun BusinessHubContent(
         }
 
     if (showAdCampaignWizard) {
-        AdCampaignWizardDialog(
+        AdvertiseWithUsScreen(
             viewModel = viewModel,
-            business = myCreatedBusinesses.firstOrNull(),
-            onDismissRequest = { showAdCampaignWizard = false }
+            business = adCampaignBusiness ?: myCreatedBusinesses.firstOrNull(),
+            onDismissRequest = {
+                showAdCampaignWizard = false
+                adCampaignBusiness = null
+            }
         )
     }
 
