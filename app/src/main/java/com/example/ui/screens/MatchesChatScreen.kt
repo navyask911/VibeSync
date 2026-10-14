@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.MarkUnreadChatAlt
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Sms
@@ -164,6 +165,18 @@ private fun MatchesChatScreenContent(
     onOpenNoteToSelf: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val noteToSelfPreferences = remember(context) {
+        context.getSharedPreferences("vibesync_note_to_self_preferences", android.content.Context.MODE_PRIVATE)
+    }
+    var noteToSelfPinned by remember(noteToSelfPreferences) {
+        mutableStateOf(noteToSelfPreferences.getBoolean("pinned", true))
+    }
+    fun toggleNoteToSelfPin() {
+        val nextPinned = !noteToSelfPinned
+        noteToSelfPinned = nextPinned
+        noteToSelfPreferences.edit().putBoolean("pinned", nextPinned).apply()
+    }
+
     // Room-backed state keeps chat avatars and labels synchronized with other profile surfaces.
     val profileMap = remember { mutableStateMapOf<String, ProfileEntity>() }
 
@@ -451,12 +464,16 @@ private fun MatchesChatScreenContent(
                 }
             }
 
-            // Pinned local-only self conversation; deliberately above peer messages and filters.
-            item(key = "note_to_self_pinned") {
-                NoteToSelfPinnedConversation(
-                    displayName = currentUserName,
-                    onClick = onOpenNoteToSelf
-                )
+            // Pinned notes stay above search. Unpinned notes move into the normal conversation list.
+            if (noteToSelfPinned) {
+                item(key = "note_to_self_pinned") {
+                    NoteToSelfPinnedConversation(
+                        displayName = currentUserName,
+                        isPinned = true,
+                        onClick = onOpenNoteToSelf,
+                        onTogglePin = { toggleNoteToSelfPin() }
+                    )
+                }
             }
 
             // 2. Search Box
@@ -582,6 +599,17 @@ private fun MatchesChatScreenContent(
                             }
                         }
                     }
+                }
+            }
+
+            if (!noteToSelfPinned) {
+                item(key = "note_to_self_unpinned") {
+                    NoteToSelfPinnedConversation(
+                        displayName = currentUserName,
+                        isPinned = false,
+                        onClick = onOpenNoteToSelf,
+                        onTogglePin = { toggleNoteToSelfPin() }
+                    )
                 }
             }
 
@@ -1104,45 +1132,46 @@ private fun MatchesChatScreenContent(
 @Composable
 private fun NoteToSelfPinnedConversation(
     displayName: String,
-    onClick: () -> Unit
+    isPinned: Boolean,
+    onClick: () -> Unit,
+    onTogglePin: () -> Unit
 ) {
     Card(
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)),
         border = BorderStroke(1.dp, VibeSyncTeal.copy(alpha = 0.55f)),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(bottom = 10.dp)
+            .padding(bottom = 6.dp)
             .clickable(onClick = onClick)
             .testTag("conversation_note_to_self")
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 3.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Surface(
-                shape = CircleShape,
-                color = VibeSyncTeal.copy(alpha = 0.16f),
-                modifier = Modifier.size(48.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) { Text("📝", fontSize = 23.sp) }
+            Surface(shape = CircleShape, color = VibeSyncTeal.copy(alpha = 0.16f), modifier = Modifier.size(22.dp)) {
+                Box(contentAlignment = Alignment.Center) { Text("📝", fontSize = 12.sp) }
             }
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(8.dp))
             Column(modifier = Modifier.weight(1f)) {
+                Text("Note to Self", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
                 Text(
-                    text = "Note to Self",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = "Pinned · Encrypted notes only you can read",
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    if (isPinned) "Pinned · Encrypted notes only you can read" else "Unpinned · Encrypted notes only you can read",
+                    fontSize = 9.sp,
+                    lineHeight = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
                 )
             }
-            Text("📌", fontSize = 18.sp)
+            IconButton(onClick = onTogglePin, modifier = Modifier.size(26.dp).testTag("btn_toggle_note_to_self_pin")) {
+                Icon(
+                    imageVector = Icons.Default.PushPin,
+                    contentDescription = if (isPinned) "Unpin Note to Self" else "Pin Note to Self",
+                    tint = if (isPinned) VibeSyncTeal else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(15.dp)
+                )
+            }
         }
     }
 }
