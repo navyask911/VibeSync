@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
 import android.Manifest
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.content.ContentUris
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -9,6 +11,7 @@ import android.provider.MediaStore
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -30,6 +33,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -41,6 +47,8 @@ import com.example.data.model.ProfileEntity
 import com.example.data.model.UserPreferencesEntity
 import com.example.ui.components.DatingAvatar
 import com.example.util.ProfilePrivacyManager
+import com.example.util.ProfileAvatarStorageManager
+import com.example.util.ImageCompressorHelper
 import java.util.Locale
 
 @Composable
@@ -238,6 +246,94 @@ fun EmojiStickerPickerSheet(onDismiss: () -> Unit, onEmojiSelected: (String) -> 
     }
 }
 
+/**
+ * Resolve media references stored in the active conversation's Room rows. Photo bodies may be
+ * inline IMG_B64, local file/content URIs, network URLs, or opaque Google Tink avatar references.
+ */
+private fun resolveMediaReferenceForAuxiliaryUi(message: ChatMessageEntity): String {
+    val direct = message.mediaUrl.trim()
+    val raw = direct.ifBlank { message.text.trim() }
+    val decoded = if (
+        raw.startsWith("V2_SIG:") || raw.startsWith("V1_ENC:") || raw.startsWith("ENC:")
+    ) {
+        com.example.util.MessageHandler.verifyAndDecryptPayload(message.senderId, raw).trim()
+    } else raw
+    if (decoded.isBlank() || decoded.startsWith("V2_SIG:") || decoded.startsWith("V1_ENC:") || decoded.startsWith("ENC:")) return ""
+    if (decoded.startsWith("IMG_B64:") || decoded.startsWith("IMG_URL:") ||
+        decoded.startsWith("vibesync-avatar-enc://") || decoded.startsWith("http://") ||
+        decoded.startsWith("https://") || decoded.startsWith("file://") ||
+        decoded.startsWith("content://") || decoded.startsWith("data:image/")
+    ) return decoded
+    if (decoded.startsWith("{") && decoded.endsWith("}")) {
+        return runCatching {
+            val json = org.json.JSONObject(decoded)
+            sequenceOf("media_url", "mediaUrl", "image_url", "imageUrl", "attachment_url", "url")
+                .map { json.optString(it, "").trim() }
+                .firstOrNull { value ->
+                    value.startsWith("IMG_B64:") || value.startsWith("IMG_URL:") ||
+                        value.startsWith("vibesync-avatar-enc://") || value.startsWith("http://") ||
+                        value.startsWith("https://") || value.startsWith("file://") ||
+                        value.startsWith("content://") || value.startsWith("data:image/")
+                }.orEmpty()
+        }.getOrDefault("")
+    }
+    return ""
+}
+
+@Composable
+private fun AllMediaThumbnail(
+    reference: String,
+    cacheVersion: Long,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current.applicationContext
+    var bitmap by remember(reference, cacheVersion) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(reference, cacheVersion) {
+        bitmap = withContext(Dispatchers.IO) {
+            runCatching {
+                when {
+                    reference.startsWith("IMG_B64:") ->
+                        ImageCompressorHelper.decodeBase64ToBitmap(reference)
+                    reference.startsWith("data:image/") && reference.contains("base64,") ->
+                        ImageCompressorHelper.decodeBase64ToBitmap("IMG_B64:" + reference.substringAfter("base64,"))
+                    reference.startsWith("vibesync-avatar-enc://") ->
+                        ProfileAvatarStorageManager.resolveAvatarForDisplay(context, reference, cacheVersion)
+                    reference.startsWith("file://") || reference.startsWith("content://") ->
+                        context.contentResolver.openInputStream(Uri.parse(reference))?.use { stream ->
+                            BitmapFactory.decodeStream(stream)
+                        }
+                    else -> null
+                }
+            }.getOrNull()
+        }
+    }
+    val networkReference = reference.removePrefix("IMG_URL:")
+    when {
+        bitmap != null -> Image(
+            bitmap = bitmap!!.asImageBitmap(),
+            contentDescription = "Shared photo",
+            modifier = modifier,
+            contentScale = ContentScale.Crop
+        )
+        networkReference.startsWith("http://") || networkReference.startsWith("https://") ->
+            AsyncImage(
+                model = networkReference,
+                contentDescription = "Shared photo",
+                modifier = modifier,
+                contentScale = ContentScale.Crop
+            )
+        else -> Box(
+            modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Icon(Icons.Default.Image, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Photo", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
 @Composable
 fun AllMediaScreen(messages: List<ChatMessageEntity>, onBack: () -> Unit, onOpenMedia: (String, String) -> Unit) {
     var category by remember { mutableStateOf("All") }
@@ -246,16 +342,26 @@ fun AllMediaScreen(messages: List<ChatMessageEntity>, onBack: () -> Unit, onOpen
     var newestFirst by remember { mutableStateOf(true) }
     val linkRegex = remember { Regex("https?://[^\\s]+", RegexOption.IGNORE_CASE) }
     val resolvedBodies = remember(messages) { messages.associate { it.messageId to resolveMessageBodyForAuxiliaryUi(it) } }
-    val attachments = messages.filter { !it.isDeleted && !it.isDeletedForEveryone && (it.mediaType !in setOf("TEXT", "MESSAGE_DELETE", "MESSAGE_EDIT", "REACTION") || linkRegex.containsMatchIn(resolvedBodies[it.messageId].orEmpty())) }
+    val mediaReferences = remember(messages) { messages.associate { it.messageId to resolveMediaReferenceForAuxiliaryUi(it) } }
+    val attachments = messages.filter { message ->
+        !message.isDeleted && !message.isDeletedForEveryone && (
+            message.mediaType !in setOf("TEXT", "MESSAGE_DELETE", "MESSAGE_EDIT", "REACTION") ||
+                linkRegex.containsMatchIn(resolvedBodies[message.messageId].orEmpty()) ||
+                mediaReferences[message.messageId].orEmpty().isNotBlank()
+        )
+    }
     val filtered = attachments.filter { msg ->
+        val type = msg.mediaType.uppercase(Locale.ROOT)
         when (category) {
-            "Media" -> msg.mediaType.uppercase(Locale.ROOT) in setOf("IMAGE", "VIDEO", "PHOTO")
-            "Files" -> msg.mediaType.uppercase(Locale.ROOT) in setOf("DOCUMENT", "FILE", "PDF")
-            "Audio" -> msg.mediaType.uppercase(Locale.ROOT) in setOf("VOICE", "AUDIO")
-            "Links" -> linkRegex.containsMatchIn(resolvedBodies[msg.messageId].orEmpty()) || linkRegex.containsMatchIn(msg.mediaUrl)
+            "Media" -> type in setOf("IMAGE", "VIDEO", "PHOTO")
+            "Files" -> type in setOf("DOCUMENT", "FILE", "PDF")
+            "Audio" -> type in setOf("VOICE", "AUDIO")
+            "Links" -> linkRegex.containsMatchIn(resolvedBodies[msg.messageId].orEmpty()) ||
+                linkRegex.containsMatchIn(mediaReferences[msg.messageId].orEmpty())
             else -> true
         }
     }.let { if (newestFirst) it.sortedByDescending { msg -> msg.timestamp } else it.sortedBy { msg -> msg.timestamp } }
+
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
@@ -275,23 +381,43 @@ fun AllMediaScreen(messages: List<ChatMessageEntity>, onBack: () -> Unit, onOpen
         }
         Spacer(Modifier.height(8.dp))
         LazyRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-            items(listOf("Media", "Files", "Audio", "Links", "All")) { value -> FilterChip(selected = category == value, onClick = { category = value }, label = { Text(value) }) }
+            items(listOf("Media", "Files", "Audio", "Links", "All")) { value ->
+                FilterChip(selected = category == value, onClick = { category = value }, label = { Text(value) })
+            }
         }
         Spacer(Modifier.height(12.dp))
         if (filtered.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = CircleShape, modifier = Modifier.size(86.dp)) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.VideoLibrary, contentDescription = null, modifier = Modifier.size(42.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) } }
+                    Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = CircleShape, modifier = Modifier.size(86.dp)) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.VideoLibrary, contentDescription = null, modifier = Modifier.size(42.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
                     Text("No media", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text("Photos, videos, files, audio and links shared in this chat will appear here.", color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
                 }
             }
         } else if (gridMode) {
-            LazyVerticalGrid(columns = GridCells.Adaptive(108.dp), contentPadding = PaddingValues(bottom = 24.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(108.dp),
+                contentPadding = PaddingValues(bottom = 24.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 gridItems(filtered, key = { it.messageId }) { msg ->
-                    Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.aspectRatio(0.92f).clickable { onOpenMedia(msg.mediaUrl.ifBlank { msg.text }, msg.mediaType) }) {
+                    val mediaReference = mediaReferences[msg.messageId].orEmpty()
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.aspectRatio(0.92f).clickable {
+                            onOpenMedia(mediaReference.ifBlank { resolvedBodies[msg.messageId].orEmpty() }, msg.mediaType)
+                        }
+                    ) {
                         Box {
-                            if (msg.mediaType.uppercase(Locale.ROOT) in setOf("IMAGE", "VIDEO", "PHOTO") && msg.mediaUrl.isNotBlank()) AsyncImage(model = msg.mediaUrl, contentDescription = "Shared media", modifier = Modifier.fillMaxSize())
+                            if (msg.mediaType.uppercase(Locale.ROOT) in setOf("IMAGE", "VIDEO", "PHOTO")) {
+                                AllMediaThumbnail(reference = mediaReference, cacheVersion = msg.timestamp, modifier = Modifier.fillMaxSize())
+                            }
                             Column(Modifier.align(Alignment.BottomStart).fillMaxWidth().background(Color.Black.copy(alpha = 0.56f)).padding(7.dp)) {
                                 Text(msg.mediaType, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                                 Text(resolvedBodies[msg.messageId].orEmpty().ifBlank { msg.mediaType }, color = Color.White, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -303,9 +429,21 @@ fun AllMediaScreen(messages: List<ChatMessageEntity>, onBack: () -> Unit, onOpen
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
                 items(filtered, key = { it.messageId }) { msg ->
-                    Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f), modifier = Modifier.fillMaxWidth().clickable { onOpenMedia(msg.mediaUrl.ifBlank { msg.text }, msg.mediaType) }) {
+                    val mediaReference = mediaReferences[msg.messageId].orEmpty()
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f),
+                        modifier = Modifier.fillMaxWidth().clickable {
+                            onOpenMedia(mediaReference.ifBlank { resolvedBodies[msg.messageId].orEmpty() }, msg.mediaType)
+                        }
+                    ) {
                         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(when (msg.mediaType.uppercase(Locale.ROOT)) { "VOICE", "AUDIO" -> Icons.Default.AudioFile; "LINK" -> Icons.Default.InsertLink; "IMAGE", "VIDEO", "PHOTO" -> Icons.Default.Image; else -> Icons.Default.Description }, contentDescription = null, modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.primary)
+                            Icon(when (msg.mediaType.uppercase(Locale.ROOT)) {
+                                "VOICE", "AUDIO" -> Icons.Default.AudioFile
+                                "LINK" -> Icons.Default.InsertLink
+                                "IMAGE", "VIDEO", "PHOTO" -> Icons.Default.Image
+                                else -> Icons.Default.Description
+                            }, contentDescription = null, modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.primary)
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(resolvedBodies[msg.messageId].orEmpty().ifBlank { msg.mediaType }, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
