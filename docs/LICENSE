@@ -1,0 +1,46 @@
+VIBESYNC PROPRIETARY SOURCE-AVAILABLE LICENSE
+Copyright © 2026 VibeSync and its licensors. All rights reserved.
+
+NOTICE
+This custom license permits limited inspection and evaluation of the source code. It is not an OSI-approved open-source license. Public repository access does not grant rights beyond those expressly stated here.
+
+1. DEFINITIONS
+“Software” means the VibeSync source code, object code, schemas, documentation, designs, assets, marks and related materials distributed with this repository. “Licensor” means the owner identified in the repository's applicable copyright notice. “Licensee” means the individual or entity accessing the Software.
+
+2. LIMITED PERMISSION
+Subject to these terms, Licensor grants Licensee a limited, revocable, non-exclusive, non-transferable, non-sublicensable permission to read, inspect and run the Software privately for evaluation, interoperability assessment and internal security review. This permission does not grant a right to operate a production service, distribute a modified app, offer the Software as a service, or use it commercially.
+
+3. RESTRICTIONS
+Unless separately authorized in a written license signed by Licensor, Licensee must not:
+(a) sell, rent, sublicense, publish, redistribute or provide copies of the Software to another party;
+(b) use the Software or a derivative to operate a public, commercial or hosted service;
+(c) remove or alter copyright, trademark, attribution or proprietary notices;
+(d) use VibeSync names, logos or trade dress to imply endorsement or affiliation;
+(e) bypass access controls, copy non-public keys or secrets, or use the Software to violate law or another person's rights;
+(f) claim that the Software is open-source under a license not granted by Licensor.
+
+4. MODIFICATIONS AND CONTRIBUTIONS
+No right to create or distribute derivative works is granted by default. Contributions accepted by the project may be subject to a separate contributor agreement or written terms. Do not submit material that you cannot lawfully license to the project.
+
+5. OWNERSHIP
+The Software is licensed, not sold. Licensor and its licensors retain all rights not expressly granted, including intellectual-property rights. Third-party components remain subject to their own licenses, which must be reviewed in their notices and dependency metadata.
+
+6. PRIVACY, SECURITY AND COMPLIANCE
+Licensee must configure secrets securely, comply with applicable privacy, consumer, payment, export, sanctions and security laws, and not rely on repository access as permission to process real user data. This license does not authorize access to production infrastructure or credentials.
+
+7. DISCLAIMER
+THE SOFTWARE IS PROVIDED “AS IS” AND “AS AVAILABLE”, WITHOUT WARRANTIES OF ANY KIND TO THE MAXIMUM EXTENT PERMITTED BY LAW, INCLUDING IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. THE LICENSOR DOES NOT WARRANT THAT THE SOFTWARE IS SECURE, ERROR-FREE OR FIT FOR PRODUCTION.
+
+8. LIMITATION OF LIABILITY
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR SHALL NOT BE LIABLE FOR INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY OR CONSEQUENTIAL DAMAGES, OR LOSS OF DATA, PROFITS, GOODWILL OR BUSINESS ARISING FROM USE OR INABILITY TO USE THE SOFTWARE. This clause does not limit liability that applicable law does not permit to be limited.
+
+9. TERMINATION
+The permission terminates automatically if Licensee materially violates these terms. Upon termination, Licensee must stop use and destroy copies in its possession, except records required by law. Licensor may separately terminate access to repository-hosted materials.
+
+10. COMMERCIAL LICENSE
+Commercial deployment, redistribution, white-label use, enterprise integration and production use require a separate written commercial license from Licensor. Contact: [insert licensing contact].
+
+11. GOVERNING LAW
+Governing law and venue: [insert counsel-approved jurisdiction]. If any provision is unenforceable, the remainder remains effective to the extent permitted by law.
+
+If you do not agree to these terms, do not use or copy the Software beyond rights supplied by mandatory law.
