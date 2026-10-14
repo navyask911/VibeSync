@@ -1,13 +1,20 @@
 package com.example.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
@@ -15,6 +22,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -34,6 +43,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -54,6 +65,7 @@ private data class NoteToSelfEntry(
     val timestamp: Long
 )
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NoteToSelfScreen(
     currentUserId: String,
@@ -62,14 +74,21 @@ fun NoteToSelfScreen(
     modifier: Modifier = Modifier
 ) {
     BackHandler(onBack = onBack)
-    val context = LocalContext.current.applicationContext
+    val uiContext = LocalContext.current
+    val context = uiContext.applicationContext
     var draft by remember { mutableStateOf("") }
     var saving by remember { mutableStateOf(false) }
     var decryptedNotes by remember { mutableStateOf<List<NoteToSelfEntry>>(emptyList()) }
+    var selectedNoteForActions by remember { mutableStateOf<NoteToSelfEntry?>(null) }
     val scope = rememberCoroutineScope()
 
     if (currentUserId.isBlank()) {
-        Surface(modifier = modifier.fillMaxSize()) {
+        Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.95f).clip(RoundedCornerShape(24.dp)),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.background
+            ) {
             Column(
                 modifier = Modifier.fillMaxSize().padding(24.dp),
                 verticalArrangement = Arrangement.Center,
@@ -79,6 +98,7 @@ fun NoteToSelfScreen(
                 Spacer(modifier = Modifier.height(8.dp))
                 Text("Your local profile ID is not ready yet. Sign in and reopen this screen.")
                 TextButton(onClick = onBack) { Text("Back") }
+            }
             }
         }
         return
@@ -147,8 +167,15 @@ fun NoteToSelfScreen(
     }
 
     IncognitoKeyboard {
-        Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            Column(modifier = Modifier.fillMaxSize().imePadding()) {
+        Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.95f).clip(RoundedCornerShape(24.dp)),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.background
+            ) {
+            Column(
+                modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()
+            ) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -188,7 +215,11 @@ fun NoteToSelfScreen(
                     ) {
                         items(decryptedNotes, key = { it.messageId }) { note ->
                             Card(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp)
+                                    .combinedClickable(
+                                        onClick = { selectedNoteForActions = note },
+                                        onLongClick = { selectedNoteForActions = note }
+                                    ),
                                 shape = RoundedCornerShape(14.dp),
                                 colors = CardDefaults.cardColors(
                                     containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
@@ -232,5 +263,71 @@ fun NoteToSelfScreen(
                 }
             }
         }
+        }
+    }
+    selectedNoteForActions?.let { note ->
+        AlertDialog(
+            onDismissRequest = { selectedNoteForActions = null },
+            title = { Text("Message actions") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Choose an action for this encrypted note.")
+                    TextButton(
+                        onClick = {
+                            val clipboard = uiContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                            clipboard?.setPrimaryClip(ClipData.newPlainText("VibeSync note", note.text))
+                            selectedNoteForActions = null
+                            Toast.makeText(uiContext, "Note copied", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Copy") }
+                    TextButton(
+                        onClick = {
+                            val clipboard = uiContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                            val clip = clipboard?.primaryClip
+                            val pasted = if (clip != null && clip.itemCount > 0) {
+                                clip.getItemAt(0).coerceToText(uiContext)?.toString().orEmpty()
+                            } else ""
+                            if (pasted.isBlank()) {
+                                Toast.makeText(uiContext, "Clipboard has no text to paste", Toast.LENGTH_SHORT).show()
+                            } else {
+                                draft = if (draft.isBlank()) pasted else draft + pasted
+                            }
+                            selectedNoteForActions = null
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Paste") }
+                    TextButton(
+                        onClick = {
+                            selectedNoteForActions = null
+                            runCatching {
+                                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_TEXT, note.text)
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                uiContext.startActivity(Intent.createChooser(sendIntent, "Forward note").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                            }.onFailure {
+                                Toast.makeText(uiContext, "Could not open the share sheet", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Forward") }
+                    TextButton(
+                        onClick = {
+                            selectedNoteForActions = null
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    database.chatMessageDao().deleteMessageById(note.messageId)
+                                }
+                                Toast.makeText(uiContext, "Note deleted", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            confirmButton = { TextButton(onClick = { selectedNoteForActions = null }) { Text("Close") } }
+        )
     }
 }
