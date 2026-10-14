@@ -76,6 +76,7 @@ class WebRtcCallClient(
     @Volatile private var statsWereReported = false
     private val pendingCandidates = CopyOnWriteArrayList<IceCandidate>()
     private val hasEnded = AtomicBoolean(false)
+    private val signalingTeardown = PeerConnectionSignalingTeardown { signaling.disconnect() }
     private var localRenderer: SurfaceViewRenderer? = null
     private var remoteRenderer: SurfaceViewRenderer? = null
 
@@ -282,8 +283,11 @@ class WebRtcCallClient(
         override fun onSignalingChange(state: PeerConnection.SignalingState?) = Unit
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
             when (state) {
-                PeerConnection.IceConnectionState.CONNECTED, PeerConnection.IceConnectionState.COMPLETED ->
+                PeerConnection.IceConnectionState.CONNECTED, PeerConnection.IceConnectionState.COMPLETED -> {
+                    // ICE is connected; SDP/ICE exchange is complete. Leave Realtime immediately.
+                    signalingTeardown.onPeerConnected()
                     onCallState?.invoke(CallState.CONNECTED)
+                }
                 PeerConnection.IceConnectionState.CHECKING, PeerConnection.IceConnectionState.NEW ->
                     onCallState?.invoke(CallState.CONNECTING)
                 PeerConnection.IceConnectionState.DISCONNECTED ->
@@ -297,7 +301,10 @@ class WebRtcCallClient(
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) = Unit
         override fun onIceCandidate(candidate: IceCandidate?) {
             candidate ?: return
+            // Do not reopen the ephemeral signaling socket for late candidates once connected.
+            if (signalingTeardown.isReleased) return
             kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+                if (signalingTeardown.isReleased) return@launch
                 runCatching { signaling.sendCandidate(candidate) }
                     .onFailure { Log.w(TAG, "ICE candidate signaling failed.") }
             }
@@ -328,7 +335,11 @@ class WebRtcCallClient(
         }
         override fun onConnectionChange(newState: PeerConnection.PeerConnectionState?) {
             when (newState) {
-                PeerConnection.PeerConnectionState.CONNECTED -> onCallState?.invoke(CallState.CONNECTED)
+                PeerConnection.PeerConnectionState.CONNECTED -> {
+                    // Some WebRTC builds deliver this callback before the ICE callback.
+                    signalingTeardown.onPeerConnected()
+                    onCallState?.invoke(CallState.CONNECTED)
+                }
                 PeerConnection.PeerConnectionState.CONNECTING -> onCallState?.invoke(CallState.CONNECTING)
                 PeerConnection.PeerConnectionState.DISCONNECTED -> onCallState?.invoke(CallState.RECONNECTING)
                 PeerConnection.PeerConnectionState.FAILED -> onCallState?.invoke(CallState.FAILED)
@@ -555,6 +566,27 @@ class WebRtcCallClient(
                     .setVideoDecoderFactory(DefaultVideoDecoderFactory(egl))
                     .createPeerConnectionFactory()
             }
+        }
+    }
+}
+
+
+
+/**
+ * One-shot lifecycle gate for ephemeral Realtime signaling. Called synchronously from WebRTC's
+ * connected callbacks so channel leave/socket close is not delayed behind another coroutine.
+ */
+internal class PeerConnectionSignalingTeardown(
+    private val unsubscribeAndDisconnect: () -> Unit
+) {
+    private val released = AtomicBoolean(false)
+
+    val isReleased: Boolean
+        get() = released.get()
+
+    fun onPeerConnected() {
+        if (released.compareAndSet(false, true)) {
+            unsubscribeAndDisconnect()
         }
     }
 }

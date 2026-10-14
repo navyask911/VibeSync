@@ -370,11 +370,23 @@ class WebRtcSignalingManager private constructor(
     }
 
     fun disconnect() {
+        val socket = webSocket
+        val shouldLeave = isJoined
         isJoined = false
         heartbeatJob?.cancel()
         heartbeatJob = null
         joinResult?.cancel()
-        webSocket?.close(1000, "Call signaling closed")
+
+        if (socket != null) {
+            // Explicitly leave the Phoenix Realtime topic before closing the WebSocket.
+            if (shouldLeave) {
+                val ref = refCounter.incrementAndGet().toString()
+                runCatching {
+                    socket.send(frame(joinRef, ref, wireTopic, "phx_leave", JSONObject()).toString())
+                }
+            }
+            socket.close(1000, "Call signaling closed")
+        }
         webSocket = null
     }
 
