@@ -216,7 +216,7 @@ language plpgsql
 stable
 security definer
 set search_path = pg_catalog, public
-as $
+as $function$
 declare
   uid text := public.vibesync_jwt_profile_id();
   authorized boolean := false;
@@ -242,7 +242,7 @@ begin
 
   return coalesce(authorized, false);
 end;
-$;
+$function$;
 revoke all on function public.is_vibesync_super_admin() from public, anon;
 grant execute on function public.is_vibesync_super_admin() to authenticated;
 
