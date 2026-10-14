@@ -22,6 +22,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -37,6 +38,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -59,7 +62,9 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
@@ -67,11 +72,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.fragment.app.FragmentActivity
+import com.example.data.model.CountryCode
+import com.example.data.model.CountryCodeList
+import com.example.ui.components.CountryCodePickerDialog
 import com.example.util.PlatformTruecallerVerificationClient
 import com.example.util.TruecallerProfileResult
 import com.example.util.TruecallerVerificationClient
 
-private val VibeSyncTruecallerBlue = Color(0xFF0088FF)
+private val VibeSyncTruecallerBlue = Color(0xFF0066D9)
+private val LoginBackground = Color(0xFFF8F9FA)
+private val LoginCardBackground = Color(0xFFF3F4F6)
+private val LoginBorder = Color(0xFFE5E7EB)
+private val LoginPrimaryText = Color(0xFF111827)
+private val LoginSecondaryText = Color(0xFF4B5563)
+private val LoginMutedText = Color(0xFF6B7280)
 
 @Composable
 fun AuthLoginScreen(
@@ -89,7 +103,15 @@ fun AuthLoginScreen(
     var lastLogoTapTime by remember { mutableLongStateOf(0L) }
     var localError by remember { mutableStateOf<String?>(null) }
     var showLegalDialog by remember { mutableStateOf(false) }
-    var showAlternatePhoneHelp by remember { mutableStateOf(false) }
+    var showAlternatePhoneEntry by remember { mutableStateOf(false) }
+    var showCountryPicker by remember { mutableStateOf(false) }
+    var selectedCountry by remember {
+        mutableStateOf(CountryCodeList.allCountries.firstOrNull { it.dialCode == "+91" }
+            ?: CountryCodeList.allCountries.first())
+    }
+    var alternatePhoneDigits by remember { mutableStateOf("") }
+    var alternatePhoneError by remember { mutableStateOf<String?>(null) }
+    var expectedPhoneForNextVerification by remember { mutableStateOf("") }
     val latestSuccess by rememberUpdatedState(onTruecallerProfileVerified)
     val visibleError = truecallerError ?: localError
     val hasError = !visibleError.isNullOrBlank()
@@ -99,7 +121,8 @@ fun AuthLoginScreen(
             override fun onSuccess(profile: TruecallerProfileResult) {
                 isLaunching = false
                 localError = null
-                latestSuccess(profile)
+                latestSuccess(profile.copy(expectedPhoneNumber = expectedPhoneForNextVerification))
+                expectedPhoneForNextVerification = ""
             }
 
             override fun onFailure(reason: String) {
@@ -110,13 +133,15 @@ fun AuthLoginScreen(
             override fun onVerificationRequired(reason: String?) {
                 isLaunching = false
                 localError = reason?.ifBlank { null }
-                    ?: "Complete the secure phone verification flow to continue."
+                    ?: "Continue with Truecaller’s secure missed-call/SMS verification to finish signing in."
+                showAlternatePhoneEntry = true
             }
         })
         onDispose { truecallerClient.setCallback(null) }
     }
 
-    fun launchVerification() {
+    fun launchVerification(expectedPhoneNumber: String = "") {
+        expectedPhoneForNextVerification = expectedPhoneNumber
         localError = null
         onTruecallerRetry()
         val activity = context as? FragmentActivity
@@ -131,13 +156,13 @@ fun AuthLoginScreen(
         }
     }
 
-    Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+    Surface(modifier = modifier.fillMaxSize(), color = LoginBackground) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 22.dp, vertical = 10.dp),
+                .padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // The content above the footer scrolls on short devices/font scales; the legal
@@ -174,33 +199,35 @@ fun AuthLoginScreen(
                 ) {
                     Surface(
                         modifier = Modifier
-                            .size(112.dp)
-                            .shadow(10.dp, RoundedCornerShape(28.dp))
-                            .clip(RoundedCornerShape(28.dp)),
-                        shape = RoundedCornerShape(28.dp),
+                            .size(80.dp)
+                            .shadow(8.dp, RoundedCornerShape(16.dp))
+                            .clip(RoundedCornerShape(16.dp)),
+                        shape = RoundedCornerShape(16.dp),
                         color = MaterialTheme.colorScheme.surface,
                         tonalElevation = 2.dp
                     ) {
                         Image(
                             painter = painterResource(id = com.example.R.drawable.ic_launcher_foreground),
                             contentDescription = "VibeSync app logo",
-                            modifier = Modifier.fillMaxSize().padding(12.dp)
+                            modifier = Modifier.fillMaxSize()
                         )
                     }
                     Text(
                         text = "VibeSync",
                         style = MaterialTheme.typography.headlineLarge.copy(
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 32.sp,
-                            letterSpacing = (-0.8).sp,
-                            lineHeight = 38.sp
+                            fontFamily = FontFamily.Serif,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 28.sp,
+                            letterSpacing = (-0.25).sp,
+                            lineHeight = 34.sp,
+                            color = LoginPrimaryText
                         ),
                         textAlign = TextAlign.Center
                     )
                     Text(
                         text = "Connect locally. Grow your business.",
                         style = MaterialTheme.typography.bodyMedium.copy(
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = LoginSecondaryText,
                             fontSize = 14.sp,
                             letterSpacing = 0.1.sp
                         ),
@@ -304,15 +331,16 @@ fun AuthLoginScreen(
                 }
 
                 TextButton(
-                    onClick = { showAlternatePhoneHelp = true },
+                    onClick = { alternatePhoneError = null; showAlternatePhoneEntry = true },
                     modifier = Modifier.testTag("btn_use_another_phone"),
                     colors = ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                        contentColor = LoginPrimaryText
                     )
                 ) {
                     Text(
                         text = "Use another phone number",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = LoginPrimaryText
                     )
                 }
             }
@@ -376,21 +404,153 @@ fun AuthLoginScreen(
                 VibeSyncLegalDialog(onDismiss = { showLegalDialog = false })
             }
 
-            if (showAlternatePhoneHelp) {
-                AlertDialog(
-                    onDismissRequest = { showAlternatePhoneHelp = false },
-                    title = { Text("Use another phone number") },
-                    text = {
-                        Text(
-                            "VibeSync sign-in currently verifies numbers through Truecaller. To use a different number, switch the active number/account in the Truecaller app, then return here and retry. We do not use a demo OTP or bypass phone verification."
-                        )
+            if (showAlternatePhoneEntry) {
+                AlternatePhoneEntryDialog(
+                    selectedCountry = selectedCountry,
+                    phoneDigits = alternatePhoneDigits,
+                    errorMessage = alternatePhoneError,
+                    onPhoneDigitsChange = { input ->
+                        alternatePhoneDigits = input.filter(Char::isDigit).take(15)
+                        alternatePhoneError = null
                     },
-                    confirmButton = {
-                        TextButton(onClick = { showAlternatePhoneHelp = false }) {
-                            Text("Got it")
+                    onChooseCountry = { showCountryPicker = true },
+                    onDismiss = { showAlternatePhoneEntry = false },
+                    onContinue = {
+                        val digits = alternatePhoneDigits.filter(Char::isDigit)
+                        if (digits.length !in 8..15) {
+                            alternatePhoneError = "Enter a valid phone number with 8–15 digits."
+                        } else {
+                            val nationalNumber = if (
+                                selectedCountry.dialCode == "+91" &&
+                                digits.length == 11 && digits.startsWith("0")
+                            ) digits.drop(1) else digits
+                            val expectedNumber = selectedCountry.dialCode + nationalNumber
+                            alternatePhoneError = null
+                            showAlternatePhoneEntry = false
+                            launchVerification(expectedPhoneNumber = expectedNumber)
                         }
                     }
                 )
+            }
+
+            if (showCountryPicker) {
+                CountryCodePickerDialog(
+                    selectedCountry = selectedCountry,
+                    onSelectCountry = { selectedCountry = it; showCountryPicker = false },
+                    onDismissRequest = { showCountryPicker = false }
+                )
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun AlternatePhoneEntryDialog(
+    selectedCountry: CountryCode,
+    phoneDigits: String,
+    errorMessage: String?,
+    onPhoneDigitsChange: (String) -> Unit,
+    onChooseCountry: () -> Unit,
+    onDismiss: () -> Unit,
+    onContinue: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(22.dp),
+            color = Color.White,
+            border = BorderStroke(1.dp, LoginBorder),
+            tonalElevation = 8.dp
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Use another phone number",
+                    color = LoginPrimaryText,
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                )
+                Text(
+                    text = "Enter the number you want to verify. VibeSync accepts it only if it matches the number confirmed by the secure Truecaller verification service.",
+                    color = LoginSecondaryText,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Surface(
+                        onClick = onChooseCountry,
+                        shape = RoundedCornerShape(12.dp),
+                        color = LoginCardBackground,
+                        border = BorderStroke(1.dp, LoginBorder),
+                        modifier = Modifier.height(56.dp).testTag("btn_login_country_code")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Text(selectedCountry.flagEmoji, fontSize = 20.sp)
+                            Text(
+                                selectedCountry.dialCode,
+                                color = LoginPrimaryText,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 14.sp
+                            )
+                        }
+                    }
+                    OutlinedTextField(
+                        value = phoneDigits,
+                        onValueChange = onPhoneDigitsChange,
+                        modifier = Modifier.weight(1f).testTag("input_login_alternate_phone"),
+                        placeholder = { Text("Phone number") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = VibeSyncTruecallerBlue,
+                            unfocusedBorderColor = LoginBorder,
+                            focusedTextColor = LoginPrimaryText,
+                            unfocusedTextColor = LoginPrimaryText
+                        )
+                    )
+                }
+                Text(
+                    text = "Truecaller is configured for all-user verification, including its supported missed-call/SMS fallback. The number is not trusted until the server confirms the same verified identity.",
+                    color = LoginMutedText,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                if (!errorMessage.isNullOrBlank()) {
+                    Text(
+                        text = errorMessage,
+                        color = Color(0xFFB91C1C),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.testTag("login_alternate_phone_error")
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    TextButton(onClick = onDismiss, modifier = Modifier.weight(1f)) {
+                        Text("Cancel", color = LoginSecondaryText)
+                    }
+                    Button(
+                        onClick = onContinue,
+                        modifier = Modifier.weight(1.35f).height(48.dp).testTag("btn_continue_alternate_phone"),
+                        shape = CircleShape,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = VibeSyncTruecallerBlue,
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Text("Continue securely", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+                }
             }
         }
     }
@@ -408,15 +568,15 @@ private fun LoginValueCard(
         modifier = Modifier
             .fillMaxWidth()
             .testTag(testTag),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        shape = if (compact) CircleShape else RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = LoginCardBackground),
+        border = BorderStroke(1.dp, LoginBorder),
         elevation = CardDefaults.cardElevation(defaultElevation = if (compact) 0.dp else 1.dp)
     ) {
         Row(
             modifier = Modifier.padding(
-                horizontal = 14.dp,
-                vertical = if (compact) 9.dp else 10.dp
+                horizontal = 12.dp,
+                vertical = if (compact) 8.dp else 12.dp
             ),
             horizontalArrangement = Arrangement.spacedBy(11.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -430,18 +590,19 @@ private fun LoginValueCard(
                     text = title,
                     style = MaterialTheme.typography.titleSmall.copy(
                         fontWeight = FontWeight.SemiBold,
-                        fontSize = if (compact) 13.sp else 14.sp
+                        fontSize = if (compact) 13.sp else 14.sp,
+                        lineHeight = if (compact) 17.sp else 18.sp
                     ),
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = LoginPrimaryText
                 )
                 if (!description.isNullOrBlank()) {
                     Text(
                         text = description,
                         style = MaterialTheme.typography.bodySmall.copy(
-                            fontSize = 11.5.sp,
-                            lineHeight = 14.5.sp
+                            fontSize = 12.sp,
+                            lineHeight = 16.8.sp
                         ),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = LoginSecondaryText
                     )
                 }
             }

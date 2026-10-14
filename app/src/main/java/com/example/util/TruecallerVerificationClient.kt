@@ -26,7 +26,9 @@ data class TruecallerProfileResult(
     val authorizationCode: String = "",
     val codeVerifier: String = "",
     val state: String = "",
-    val scopesGranted: List<String> = emptyList()
+    val scopesGranted: List<String> = emptyList(),
+    // User-entered expectation only; never used as proof of identity.
+    val expectedPhoneNumber: String = ""
 )
 
 interface TruecallerVerificationClient {
@@ -175,6 +177,9 @@ object PlatformTruecallerVerificationClient : TruecallerVerificationClient {
                         .consentMode(TcSdkOptions.CONSENT_MODE_BOTTOMSHEET)
                         .consentHeadingOption(TcSdkOptions.SDK_CONSENT_HEADING_LOG_IN_TO)
                         .ctaText(TcSdkOptions.CTA_TEXT_CONTINUE)
+                        // OAuth SDK 3.x equivalent of legacy SDK_OPTION_WITH_OTP:
+                        // supports all users and Truecaller's missed-call/SMS fallback where available.
+                        .footerType(TcSdkOptions.FOOTER_TYPE_ANOTHER_MOBILE_NO)
                         .sdkOptions(TcSdkOptions.OPTION_VERIFY_ALL_USERS)
                         .build()
 

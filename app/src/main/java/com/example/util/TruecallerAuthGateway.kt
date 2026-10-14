@@ -74,6 +74,18 @@ object TruecallerAuthGateway {
                     }
 
                     val phone = normalizeVerifiedPhone(root.optString("phone", ""))
+                    val expectedPhone = profile.expectedPhoneNumber
+                        .takeIf { it.isNotBlank() }
+                        ?.let(::normalizeVerifiedPhone)
+                    if (profile.expectedPhoneNumber.isNotBlank() &&
+                        (expectedPhone.isNullOrBlank() || expectedPhone != phone)
+                    ) {
+                        return@withContext Result.failure(
+                            IllegalStateException(
+                                "The verified Truecaller number does not match the number entered. Return to sign-in and retry with the correct number."
+                            )
+                        )
+                    }
                     val profileId = root.optString("profile_id", "").trim()
                     val accessToken = root.optString("access_jwt", "").trim().ifBlank {
                         root.optString("access_token", "").trim()
