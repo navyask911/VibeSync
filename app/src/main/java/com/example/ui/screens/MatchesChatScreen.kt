@@ -1187,7 +1187,7 @@ private fun ContactOnVibeSyncRow(
     ) {
         Box(
             modifier = Modifier
-                .size(46.dp)
+                .size(48.dp)
                 .clickable {
                     if (linkedProfile != null) {
                         onViewProfile(
@@ -1208,7 +1208,7 @@ private fun ContactOnVibeSyncRow(
                 emoji = contact.avatarEmoji.ifBlank { "👤" },
                 colorStart = contact.vibeSyncUser?.gradientColorStart ?: 0xFFFF5E62,
                 colorEnd = contact.vibeSyncUser?.gradientColorEnd ?: 0xFFFF9966,
-                size = 44.dp,
+                size = 48.dp,
                 avatarUrl = contactPhoto,
                 avatarCacheVersion = contact.vibeSyncUser?.avatarCacheVersion ?: 0L
             )
@@ -1295,7 +1295,7 @@ private fun ContactToInviteRow(
     ) {
         Box(
             modifier = Modifier
-                .size(44.dp)
+                .size(48.dp)
                 .clip(CircleShape)
                 .clickable {
                     val phone = contact.phoneNumber.ifBlank { contact.id }
@@ -1317,7 +1317,7 @@ private fun ContactToInviteRow(
                 emoji = contact.avatarEmoji.ifBlank { "👤" },
                 colorStart = contact.vibeSyncUser?.gradientColorStart ?: 0xFFFF5E62,
                 colorEnd = contact.vibeSyncUser?.gradientColorEnd ?: 0xFFFF9966,
-                size = 44.dp,
+                size = 48.dp,
                 avatarUrl = contactPhoto,
                 avatarCacheVersion = contact.vibeSyncUser?.avatarCacheVersion ?: 0L
             )
