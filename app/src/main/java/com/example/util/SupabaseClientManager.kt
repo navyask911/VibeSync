@@ -53,7 +53,20 @@ object SupabaseClientManager {
             .writeTimeout(10, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
             .addInterceptor { chain ->
-                val response = chain.proceed(chain.request())
+                val originalRequest = chain.request()
+                val configuredHost = Uri.parse(SUPABASE_URL).host
+                // Enforce the verified VibeSync JWT on every request to this Supabase project,
+                // including older direct-function requests that still build their own Request.
+                val authenticatedRequest = if (
+                    configuredHost != null && originalRequest.url.host.equals(configuredHost, ignoreCase = true)
+                ) {
+                    val builder = originalRequest.newBuilder().header("apikey", SUPABASE_PUBLISHABLE_KEY)
+                    VibeSyncSessionManager.getAccessToken()?.takeIf { it.isNotBlank() }?.let {
+                        builder.header("Authorization", "Bearer " + it)
+                    }
+                    builder.build()
+                } else originalRequest
+                val response = chain.proceed(authenticatedRequest)
                 if (response.code == 401) {
                     // Peek rather than consume the body so existing response handlers still
                     // receive the full error. Only a clear session/JWT rejection invalidates
@@ -1224,6 +1237,10 @@ object SupabaseClientManager {
         onRpcResult: ((httpCode: Int?, success: Boolean, failure: String?) -> Unit)? = null
     ): Boolean = withContext(Dispatchers.IO) {
         try {
+            val accessToken = VibeSyncSessionManager.getAccessToken()
+                ?: return@withContext false
+            val sessionToken = VibeSyncSessionManager.getToken()
+                ?: return@withContext false
             val recipientInputs = listOf(recipientProfileId, receiverIdentity)
                 .map { it.trim() }
                 .filter { it.isNotBlank() }
@@ -1269,7 +1286,14 @@ object SupabaseClientManager {
                 put("p_media_url", msg.mediaUrl)
                 put("p_voice_duration_seconds", msg.voiceDurationSeconds)
             }
-            val request = buildRequest("rpc/send_encrypted_message", "POST", json.toString())
+            val request = Request.Builder()
+                .url("$SUPABASE_URL/functions/v1/vibesync-send-encrypted-message")
+                .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+                .header("Authorization", "Bearer " + accessToken)
+                .header("x-vibesync-session", sessionToken)
+                .header("Content-Type", "application/json")
+                .post(json.toString().toRequestBody(JSON_MEDIA_TYPE))
+                .build()
             httpClient.newCall(request).execute().use { response ->
                 val success = response.isSuccessful
                 val responseBody = response.body?.string().orEmpty()
