@@ -306,17 +306,43 @@ object VibeSyncSessionManager {
     fun getAccessToken(context: Context? = appContext): String? =
         getSession(context)?.accessToken?.takeIf { it.isNotBlank() }
 
+    /** The sub claim is a deterministic UUID v5, distinct from the legacy text profiles.id. */
+    fun getAuthUid(context: Context? = appContext): String? =
+        getSession(context)?.let { tokenClaims(it.accessToken)?.optString("sub")?.takeIf(::isUuid) }
+
     fun getAuthorizationToken(fallback: String, context: Context? = appContext): String =
         getAccessToken(context) ?: fallback
 
     fun hasValidSession(context: Context? = appContext): Boolean =
         getSession(context) != null
 
-    private fun isValid(session: Session): Boolean =
-        session.sessionToken.isNotBlank() &&
-            session.profileId.isNotBlank() &&
-            session.accessToken.isNotBlank() &&
-            session.expiresAtEpochSeconds > System.currentTimeMillis() / 1000L
+    private fun tokenClaims(token: String): JSONObject? {
+        val payload = token.split('.').getOrNull(1) ?: return null
+        return runCatching {
+            val bytes = Base64.decode(payload, Base64.URL_SAFE or Base64.NO_WRAP)
+            JSONObject(String(bytes, StandardCharsets.UTF_8))
+        }.getOrNull()
+    }
+
+    private fun isUuid(value: String): Boolean = runCatching {
+        java.util.UUID.fromString(value).toString().equals(value, ignoreCase = true)
+    }.getOrDefault(false)
+
+    private fun isValid(session: Session): Boolean {
+        if (session.sessionToken.isBlank() || session.profileId.isBlank() ||
+            session.accessToken.isBlank() ||
+            session.expiresAtEpochSeconds <= System.currentTimeMillis() / 1000L
+        ) return false
+        // Force a fresh Truecaller exchange for old custom JWTs whose sub was a 16-char profile ID.
+        val claims = tokenClaims(session.accessToken) ?: return false
+        return isUuid(claims.optString("sub", "")) &&
+            claims.optString("role", "") == "authenticated" &&
+            claims.optString("aud", "") == "authenticated" &&
+            claims.optString("iss", "") == "supabase" &&
+            claims.optString("profile_id", "") == session.profileId &&
+            claims.optString("jti", "").isNotBlank() &&
+            claims.optLong("exp", 0L) > System.currentTimeMillis() / 1000L
+    }
 
     private fun load(context: Context): Session? {
         appContext = context.applicationContext
