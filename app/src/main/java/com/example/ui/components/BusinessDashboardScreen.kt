@@ -852,20 +852,6 @@ private fun BusinessSuiteSecondaryTab(
     }
 }
 
-           BusinessSuiteSecondaryTab(
-                tab = selectedSuiteTab,
-                venue = venue,
-                analytics = localAnalytics,
-                onOpenBroadcast = onOpenBroadcast,
-                onOpenWallet = onOpenWallet,
-                onManageListing = onManageListing,
-                onUpgradeBadge = onUpgradeBadge,
-                onSelectAnalyticsRange = { selectedTimeframe = it }
-            )
-        }
-    }
-}
-
 @Composable
 private fun ExecutiveMetricCard(
     title: String,
