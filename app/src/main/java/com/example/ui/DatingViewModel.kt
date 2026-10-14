@@ -1168,6 +1168,35 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         android.util.Log.i("ProfileKeyExchange", "Queued contact-scoped profile-key exchange for an authorized peer.")
     }
 
+    /**
+     * Warm the in-band profile-key exchange when an authorized peer appears in Recent Stories.
+     * The private helper still rejects phonebook-only / unaccepted relationships before sharing
+     * any avatar key material.
+     */
+    fun ensureProfileKeyExchangeForStoryOwner(peerProfileId: String) {
+        val peerId = peerProfileId.trim()
+        val appContext = getApplication<Application>()
+        val ownProfileId = com.example.util.VibeSyncSessionManager.getProfileId(appContext).orEmpty()
+        if (peerId.isBlank() || ownProfileId.isBlank() || peerId.equals(ownProfileId, ignoreCase = true)) return
+
+        viewModelScope.launch {
+            try {
+                val match = database.matchDao().getMatchByProfileId(peerId) ?: return@launch
+                val peer = database.profileDao().getProfileByIdSync(peerId)
+                    ?: com.example.util.SupabaseClientManager.fetchProfileById(peerId)?.also {
+                        database.profileDao().insertProfile(it)
+                    }
+                    ?: return@launch
+                queueProfileKeyExchangeIfAuthorized(match, peer)
+            } catch (t: Throwable) {
+                android.util.Log.w(
+                    "ProfileKeyExchange",
+                    "Recent-story avatar key warm-up did not complete: ${t.javaClass.simpleName}"
+                )
+            }
+        }
+    }
+
     fun openChat(match: MatchEntity, profile: ProfileEntity) {
         com.example.util.AlertSoundAndVibrationManager.stopAllSounds(getApplication())
         val resolvedProfile = com.example.util.ContactResolver.matchChatSessionParticipant(getApplication(), profile)
