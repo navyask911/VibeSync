@@ -15,11 +15,33 @@ const admin = SUPABASE_URL && SERVICE_ROLE_KEY
   ? createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
   : null;
 
-function json(body: unknown, status = 200) {
+function json(body: unknown, status = 200, extraHeaders: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...extraHeaders },
   });
+}
+
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+function clientIp(request: Request): string {
+  return request.headers.get("cf-connecting-ip")?.trim() ||
+    request.headers.get("x-real-ip")?.trim() ||
+    request.headers.get("x-forwarded-for")?.split(",").map((v) => v.trim()).filter(Boolean).pop() || "unknown";
+}
+function takeRateLimit(key: string, limit: number, windowMs: number): number {
+  const now = Date.now();
+  let bucket = rateBuckets.get(key);
+  if (!bucket || bucket.resetAt <= now) {
+    bucket = { count: 0, resetAt: now + windowMs };
+    rateBuckets.set(key, bucket);
+  }
+  if (bucket.count >= limit) return Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+  bucket.count += 1;
+  if (rateBuckets.size > 10000) {
+    for (const [candidate, value] of rateBuckets) if (value.resetAt <= now) rateBuckets.delete(candidate);
+    while (rateBuckets.size > 12000) rateBuckets.delete(rateBuckets.keys().next().value!);
+  }
+  return 0;
 }
 
 async function resolveProfileId(sessionToken: string): Promise<string | null> {
@@ -35,10 +57,14 @@ async function resolveProfileId(sessionToken: string): Promise<string | null> {
 
 Deno.serve(async (request: Request) => {
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  const retryAfter = takeRateLimit("ice:ip:" + clientIp(request), 30, 60_000);
+  if (retryAfter > 0) return json({ error: "rate_limited", retry_after_seconds: retryAfter }, 429, { "retry-after": String(retryAfter) });
   if (!admin || !SUPABASE_URL) return json({ error: "server_configuration_incomplete" }, 503);
   const sessionToken = request.headers.get("x-vibesync-session")?.trim() ?? "";
   const profileId = await resolveProfileId(sessionToken);
   if (!profileId) return json({ error: "verified_vibesync_session_required" }, 401);
+  const profileRetry = takeRateLimit("ice:profile:" + profileId, 8, 60_000);
+  if (profileRetry > 0) return json({ error: "rate_limited", retry_after_seconds: profileRetry }, 429, { "retry-after": String(profileRetry) });
 
   // TURN API credentials remain server-only; clients receive short-lived ICE username/credential.
   if (!TURN_KEY_ID || !TURN_API_TOKEN) {
