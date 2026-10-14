@@ -658,14 +658,14 @@ fun DiscoverScreen(
                                 Text(business.tagline.ifBlank { business.description }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
                                 Row(
                                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     OutlinedButton(
                                         onClick = { viewModel?.toggleFollowBusiness(business.id) },
-                                        modifier = Modifier.weight(1f).height(40.dp).testTag("connect_follow_${business.id}"),
+                                        modifier = Modifier.weight(1f).height(44.dp).testTag("connect_follow_${business.id}"),
                                         shape = RoundedCornerShape(12.dp),
-                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                                     ) { Text(if (business.isFollowed) "Following" else "Follow", fontSize = 11.sp, maxLines = 1) }
                                     OutlinedButton(
                                         onClick = {
@@ -674,9 +674,9 @@ fun DiscoverScreen(
                                             viewModel?.recordBusinessProfileClick(business.id)
                                             selectedBusinessForDetail = business
                                         },
-                                        modifier = Modifier.weight(1f).height(40.dp).testTag("connect_business_details_${business.id}"),
+                                        modifier = Modifier.weight(1.2f).height(44.dp).testTag("connect_business_details_${business.id}"),
                                         shape = RoundedCornerShape(12.dp),
-                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 8.dp)
                                     ) { Text("Details", fontSize = 11.sp, maxLines = 1) }
                                 }
                             }
