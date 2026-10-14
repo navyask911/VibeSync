@@ -13,9 +13,11 @@ Set or rotate values from a trusted terminal or CI secret step with `supabase se
 
 ## Custom access token hook
 
-The SQL migration creates `public.custom_access_token_hook(jsonb)` and grants execution only to `supabase_auth_admin`. In the Supabase Dashboard, enable **Authentication → Hooks → Custom Access Token** and select:
+The SQL migration creates `public.custom_access_token_hook(jsonb)` and grants execution to `supabase_auth_admin` only (apart from the database owner). The reconciled migration workflow enables the hosted **Authentication → Hooks → Custom Access Token** setting via the Supabase Management API after applying migrations, then reads the setting back to verify it. The local CLI configuration uses:
 
-`pg-functions://postgres/custom_access_token_hook`
+`pg-functions://postgres/public/custom_access_token_hook`
+
+If the workflow fails at the Auth hook step due to project-level Management API permissions, enable that exact URI under Authentication → Hooks → Custom Access Token in the Supabase Dashboard.
 
 VibeSync's current Truecaller exchange issues its own signed JWT, so `verify-truecaller` embeds `is_superadmin` and `app_metadata.role` directly after server-side verification. The top-level JWT `role` remains `authenticated`, the valid PostgREST database role.
 

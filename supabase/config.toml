@@ -26,3 +26,9 @@ verify_jwt = false
 
 [functions.vibesync-wallet-payment]
 verify_jwt = false
+
+# Add the application claims hook for local environments. The migrations workflow also
+# configures this hook on the hosted project through the Supabase Management API.
+[auth.hook.custom_access_token]
+enabled = true
+uri = "pg-functions://postgres/public/custom_access_token_hook"

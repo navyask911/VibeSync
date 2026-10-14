@@ -64,3 +64,30 @@ jobs:
 
       - name: Apply pending migrations
         run: supabase db push
+
+      - name: Enable and verify Supabase custom access token hook
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_ACCESS_TOKEN"
+          hook_uri="pg-functions://postgres/public/custom_access_token_hook"
+          payload="$(jq -cn --arg uri "$hook_uri" '{hook_custom_access_token_enabled:true, hook_custom_access_token_uri:$uri}')"
+          auth_config_url="https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_ID/config/auth"
+          patch_code="$(curl --silent --show-error --output /tmp/vibesync-auth-hook-patch.json --write-out '%{http_code}' \
+            --request PATCH "$auth_config_url" \
+            --header "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            --header "Content-Type: application/json" \
+            --data "$payload")"
+          if [[ ! "$patch_code" =~ ^2[0-9][0-9]$ ]]; then
+            echo "Could not enable the Supabase custom access-token hook (HTTP $patch_code)."
+            exit 1
+          fi
+          read_code="$(curl --silent --show-error --output /tmp/vibesync-auth-hook-readback.json --write-out '%{http_code}' \
+            --request GET "$auth_config_url" \
+            --header "Authorization: Bearer $SUPABASE_ACCESS_TOKEN")"
+          if [[ ! "$read_code" =~ ^2[0-9][0-9]$ ]] || \
+             ! jq -e --arg uri "$hook_uri" '.hook_custom_access_token_enabled == true and .hook_custom_access_token_uri == $uri' \
+               /tmp/vibesync-auth-hook-readback.json >/dev/null; then
+            echo "Supabase Auth hook configuration did not match the requested enabled URI (HTTP $read_code)."
+            exit 1
+          fi
+          echo "Custom access-token hook is enabled and verified."
