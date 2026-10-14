@@ -1572,15 +1572,17 @@ fun StatusCaptionUploadPreviewDialog(
         // on Android 15 edge-to-edge windows.
         androidx.compose.foundation.layout.BoxWithConstraints(
             modifier = Modifier
-                .fillMaxSize()
+                .fillMaxWidth(0.99f)
+                .fillMaxHeight(0.99f)
+                .windowInsetsPadding(WindowInsets.safeDrawing)
                 .imePadding(),
             contentAlignment = Alignment.Center
         ) {
             val previewMaxHeight = maxHeight * 0.58f
             Column(
                 modifier = Modifier
-                    .fillMaxWidth(0.97f)
-                    .fillMaxHeight(0.97f)
+                    .fillMaxWidth(0.99f)
+                    .fillMaxHeight(0.99f)
                     .clip(RoundedCornerShape(24.dp))
                     .background(Brush.linearGradient(listOf(Color(currentBgStart), Color(currentBgEnd)))),
                 verticalArrangement = Arrangement.SpaceBetween
@@ -1830,7 +1832,10 @@ fun StatusStoryViewer(
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
         Box(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxWidth(0.99f)
+                .fillMaxHeight(0.99f)
+                .windowInsetsPadding(WindowInsets.safeDrawing),
             contentAlignment = Alignment.Center
         ) {
             Box(
