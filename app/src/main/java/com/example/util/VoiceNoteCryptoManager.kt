@@ -63,7 +63,8 @@ object VoiceNoteCryptoManager {
     suspend fun prepareReferenceForOutbox(
         context: Context,
         messageId: String,
-        mediaUrl: String
+        mediaUrl: String,
+        matchId: String = ""
     ): String? = withContext(Dispatchers.IO) {
         payloadFromLocalReference(mediaUrl)?.let { existing ->
             val path = runCatching { JSONObject(existing).optString("object_path") }.getOrDefault("")
@@ -84,7 +85,21 @@ object VoiceNoteCryptoManager {
             val keyStream = ByteArrayOutputStream()
             CleartextKeysetHandle.write(keyset, JsonKeysetWriter.withOutputStream(keyStream))
             val keysetJson = keyStream.toString("UTF-8")
-            val objectPath = "voice-notes/" + UUID.randomUUID().toString() + ".m4a.enc"
+            val profileId = VibeSyncSessionManager.getProfileId().orEmpty().trim()
+            if (profileId.isBlank() || profileId.contains('/') || profileId.contains("..")) {
+                Log.w("VoiceNoteCrypto", "A verified owner profile is required for voice-note storage.")
+                return@withContext null
+            }
+            val safeMatchId = matchId.trim().trim('/')
+            if (safeMatchId.contains('/') || safeMatchId.contains("..")) {
+                Log.w("VoiceNoteCrypto", "Invalid conversation ID for voice-note storage.")
+                return@withContext null
+            }
+            val objectPath = buildString {
+                append(profileId).append("/voice-notes/")
+                if (safeMatchId.isNotBlank()) append(safeMatchId).append('/')
+                append(UUID.randomUUID().toString()).append(".m4a.enc")
+            }
             val uploaded = SupabaseClientManager.uploadEncryptedVoiceNote(objectPath, encryptedAudio)
             if (!uploaded) {
                 Log.w("VoiceNoteCrypto", "Ciphertext upload failed; keeping the outbox item pending.")

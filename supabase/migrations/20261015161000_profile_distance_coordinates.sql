@@ -81,7 +81,8 @@ revoke all on function public.upsert_my_profile(jsonb) from public;
 grant execute on function public.upsert_my_profile(jsonb) to anon, authenticated;
 
 -- Append approximate coordinates without exposing hidden coordinates.
-create or replace view public.vibesync_profiles_public as
+create or replace view public.vibesync_profiles_public
+with (security_invoker = true) as
 select
   id, name, bio, age, gender, city, country, country_flag, place, occupation,
   qualification, avatar_emoji, avatar_url, marital_status, account_status,

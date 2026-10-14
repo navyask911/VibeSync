@@ -45,6 +45,17 @@ jobs:
           test -n "$SUPABASE_DB_PASSWORD"
           supabase link             --project-ref "$SUPABASE_PROJECT_ID"             --password "$SUPABASE_DB_PASSWORD"
 
+      - name: Reconcile superseded legacy migration entries
+        run: |
+          set -euo pipefail
+          for version in 20261008121000 20261008121500 20261009150000; do
+            if supabase migration list --linked | awk -F'|' -v v="$version" '$2 ~ v { found=1 } END { exit found ? 0 : 1 }'; then
+              echo "Migration $version is already recorded as applied."
+            else
+              supabase migration repair --status applied "$version"
+            fi
+          done
+
       - name: Inspect linked migration history
         run: supabase migration list --linked
 

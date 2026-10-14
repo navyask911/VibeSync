@@ -16,6 +16,12 @@ create table if not exists public.super_admins (
   created_by text
 );
 
+-- Older production schema stores super-admin identities as (user_id, phone) rather than profile_id.
+-- Keep the migration compatible with both deployed shapes; the lookup below checks all available columns.
+alter table public.super_admins add column if not exists profile_id text;
+alter table public.super_admins add column if not exists user_id text;
+alter table public.super_admins add column if not exists phone text;
+
 create table if not exists public.verification_requests (
   id uuid primary key default gen_random_uuid(),
   user_id text not null references public.profiles(id) on delete cascade,
@@ -42,7 +48,19 @@ grant insert (user_id, badge_tier, applicant_email, documents_url) on public.ver
 create or replace function public.is_vibesync_super_admin()
 returns boolean language sql stable security definer set search_path = pg_catalog, public
 as $$
-  select exists (select 1 from public.super_admins where profile_id = public.vibesync_jwt_profile_id());
+  select exists (
+    select 1
+    from public.super_admins sa
+    where (nullif(sa.profile_id, '') = public.vibesync_jwt_profile_id())
+       or (nullif(sa.user_id, '') = public.vibesync_jwt_profile_id())
+       or (
+         nullif(sa.phone, '') is not null
+         and sa.phone = nullif(
+           (nullif(current_setting('request.jwt.claims', true), '')::jsonb)->>'phone',
+           ''
+         )
+       )
+  );
 $$;
 revoke all on function public.is_vibesync_super_admin() from public, anon;
 grant execute on function public.is_vibesync_super_admin() to authenticated;
