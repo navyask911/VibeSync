@@ -624,6 +624,7 @@ fun BusinessDashboardScreen(
                     }
                 }
             }
+        }
         } else {
             Box(
                 modifier = Modifier
