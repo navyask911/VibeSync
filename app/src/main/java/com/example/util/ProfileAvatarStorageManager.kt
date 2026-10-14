@@ -175,6 +175,10 @@ object ProfileAvatarStorageManager {
         return avatarUrl.split("|||").mapNotNull { value ->
             val trimmed = value.trim()
             if (trimmed.startsWith("vibesync-avatar-enc://")) return@mapNotNull trimmed
+            val publicAvatarPrefix = "${SupabaseClientManager.SUPABASE_URL}/storage/v1/object/public/avatars/"
+            if (trimmed.substringBefore('?').startsWith(publicAvatarPrefix, ignoreCase = true)) {
+                return@mapNotNull trimmed
+            }
             val uri = runCatching { Uri.parse(trimmed) }.getOrNull()
             val path = uri?.path.orEmpty()
             if (uri?.scheme.equals("file", ignoreCase = true) && path.contains("/avatars/")) {
