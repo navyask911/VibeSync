@@ -10,3 +10,9 @@ verify_jwt = false
 
 [functions.report-bandwidth]
 verify_jwt = false
+
+[functions.vibesync-send-encrypted-message]
+verify_jwt = false
+
+[functions.vibesync-call-admission]
+verify_jwt = false
