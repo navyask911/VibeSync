@@ -91,7 +91,7 @@ object ChatMessageEventCodec {
                     json.optString("vibesync_event") == REACTION_EVENT -> {
                     val target = json.optString("target_message_id")
                     val emoji = json.optString("emoji")
-                    if (target.isNotBlank() && emoji in ALLOWED_REACTIONS) {
+                    if (target.isNotBlank() && EmojiCatalog.isEmojiSequence(emoji)) {
                         return Decoded("", eventType = MEDIA_TYPE_REACTION, targetMessageId = target, emoji = emoji)
                     }
                 }
@@ -177,7 +177,7 @@ object ChatMessageEventCodec {
                 when (decoded.eventType) {
                 MEDIA_TYPE_REACTION -> {
                     val emoji = decoded.emoji ?: return@withTransaction false
-                    if (emoji !in ALLOWED_REACTIONS) return@withTransaction false
+                    if (!EmojiCatalog.isEmojiSequence(emoji)) return@withTransaction false
                     if (!target.isDeleted && !target.isDeletedForEveryone) {
                         dao.updateMessage(target.copy(
                             reactionsJson = toggleReaction(target.reactionsJson, emoji, actorId)
@@ -242,7 +242,7 @@ object ChatMessageEventCodec {
     }
 
     fun toggleReaction(raw: String, emoji: String, actorId: String): String {
-        if (emoji !in ALLOWED_REACTIONS || actorId.isBlank()) return normalized(raw).toString()
+        if (!EmojiCatalog.isEmojiSequence(emoji) || actorId.isBlank()) return normalized(raw).toString()
         val state = normalized(raw)
         val actors = state.optJSONArray(emoji)?.let { arr ->
             (0 until arr.length()).mapNotNull { arr.optString(it).takeIf(String::isNotBlank) }.toMutableSet()
@@ -255,19 +255,28 @@ object ChatMessageEventCodec {
 
     fun reactionCounts(raw: String): List<Pair<String, Int>> {
         val state = normalized(raw)
-        return ALLOWED_REACTIONS.mapNotNull { emoji ->
+        val counts = mutableListOf<Pair<String, Int>>()
+        val keys = state.keys()
+        while (keys.hasNext()) {
+            val emoji = keys.next()
             val count = state.optJSONArray(emoji)?.length() ?: 0
-            if (count > 0) emoji to count else null
+            if (EmojiCatalog.isEmojiSequence(emoji) && count > 0) counts += emoji to count
         }
+        return counts.sortedByDescending { it.second }
     }
 
     private fun normalized(raw: String): JSONObject {
         val source = try { JSONObject(raw) } catch (_: Throwable) { JSONObject() }
         val result = JSONObject()
-        ALLOWED_REACTIONS.forEach { emoji ->
-            val actors = source.optJSONArray(emoji) ?: return@forEach
+        val keys = source.keys()
+        while (keys.hasNext()) {
+            val emoji = keys.next()
+            if (!EmojiCatalog.isEmojiSequence(emoji)) continue
+            val actors = source.optJSONArray(emoji) ?: continue
             val unique = LinkedHashSet<String>()
-            for (i in 0 until actors.length()) actors.optString(i).trim().takeIf(String::isNotBlank)?.let(unique::add)
+            for (i in 0 until actors.length()) {
+                actors.optString(i).trim().takeIf(String::isNotBlank)?.let(unique::add)
+            }
             if (unique.isNotEmpty()) result.put(emoji, JSONArray().apply { unique.sorted().forEach { put(it) } })
         }
         return result

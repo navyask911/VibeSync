@@ -194,6 +194,7 @@ import com.example.data.model.ChatMessageEntity
 import com.example.data.model.MatchEntity
 import com.example.data.model.ProfileEntity
 import com.example.ui.components.DatingAvatar
+import com.example.ui.components.FullEmojiBottomSheet
 import com.example.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -2726,48 +2727,14 @@ private fun ChatDetailScreenContent(
         )
     }
 
-    // Expanded reaction picker, opened from the floating reaction bar's ellipsis button.
+    // Full Unicode emoji sheet shared with Story Viewer; any selected emoji is sent as the reaction event.
     expandedReactionMessage?.let { msg ->
-        AlertDialog(
-            onDismissRequest = { expandedReactionMessage = null },
-            title = { Text("More reactions", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    com.example.util.ChatMessageEventCodec.ALLOWED_REACTIONS.chunked(3).forEach { rowEmojis ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            rowEmojis.forEach { emoji ->
-                                Surface(
-                                    color = MaterialTheme.colorScheme.surfaceVariant,
-                                    shape = CircleShape,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clickable {
-                                            onReactToMessage(msg.messageId, emoji)
-                                            expandedReactionMessage = null
-                                            selectedMessageForAction = null
-                                        }
-                                        .testTag("expanded_reaction_${emoji.hashCode()}")
-                                ) {
-                                    Text(
-                                        text = emoji,
-                                        textAlign = TextAlign.Center,
-                                        fontSize = 25.sp,
-                                        modifier = Modifier.padding(vertical = 10.dp)
-                                    )
-                                }
-                            }
-                            repeat((3 - rowEmojis.size).coerceAtLeast(0)) {
-                                Spacer(modifier = Modifier.weight(1f))
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { expandedReactionMessage = null }) { Text("Close") }
+        FullEmojiBottomSheet(
+            onDismiss = { expandedReactionMessage = null },
+            onEmojiSelected = { emoji ->
+                onReactToMessage(msg.messageId, emoji)
+                expandedReactionMessage = null
+                selectedMessageForAction = null
             }
         )
     }

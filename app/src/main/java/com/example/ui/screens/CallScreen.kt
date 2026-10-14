@@ -2,6 +2,8 @@ package com.example.ui.screens
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.Context
+import android.media.AudioManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -16,6 +18,8 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VideocamOff
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -56,6 +60,9 @@ fun CallScreen(
     onEndCall: () -> Unit
 ) {
     val context = LocalContext.current
+    val audioManager = remember(context) {
+        context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    }
     val scope = rememberCoroutineScope()
     val signaling = remember(callId, localProfileId, remoteProfileId) {
         WebRtcSignalingManager.getOrCreate(callId, localProfileId, remoteProfileId)
@@ -69,6 +76,7 @@ fun CallScreen(
     var permissionsGranted by remember(isVideo) { mutableStateOf(false) }
     var permissionsRequested by remember { mutableStateOf(false) }
     var micEnabled by remember { mutableStateOf(true) }
+    var speakerEnabled by remember { mutableStateOf(false) }
     var cameraEnabled by remember(isVideo) { mutableStateOf(isVideo) }
     var remoteVideoAvailable by remember { mutableStateOf(false) }
     var callStatus by remember { mutableStateOf(if (isCaller) "Connecting..." else "Ringing...") }
@@ -182,8 +190,14 @@ fun CallScreen(
         if (callStatus != "Connected") firewallWarning = true
     }
 
-    DisposableEffect(client, localRenderer, remoteRenderer) {
-        onDispose { client.releaseRenderers() }
+    DisposableEffect(client, localRenderer, remoteRenderer, audioManager) {
+        onDispose {
+            client.releaseRenderers()
+            runCatching {
+                audioManager.isSpeakerphoneOn = false
+                audioManager.mode = AudioManager.MODE_NORMAL
+            }
+        }
     }
 
     Surface(Modifier.fillMaxSize().testTag("webrtc_call_screen"), color = CallBackground) {
@@ -309,13 +323,30 @@ fun CallScreen(
                 ) {
                     FilledIconButton(onClick = {
                         micEnabled = !micEnabled
-                        client.toggleMic(micEnabled)
+                        client.toggleMic(micEnabled) // maps directly to localAudioTrack.setEnabled(micEnabled)
                     }, modifier = Modifier.size(56.dp),
                         colors = IconButtonDefaults.filledIconButtonColors(
                             containerColor = if (micEnabled) Color.White.copy(alpha = 0.18f) else Color.White,
                             contentColor = if (micEnabled) Color.White else Color.Black
                         )) {
                         Icon(if (micEnabled) Icons.Default.Mic else Icons.Default.MicOff, "Mute microphone")
+                    }
+                    FilledIconButton(
+                        onClick = {
+                            speakerEnabled = !speakerEnabled
+                            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                            audioManager.isSpeakerphoneOn = speakerEnabled
+                        },
+                        modifier = Modifier.size(56.dp),
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = if (speakerEnabled) CallMint else Color.White.copy(alpha = 0.18f),
+                            contentColor = if (speakerEnabled) Color.Black else Color.White
+                        )
+                    ) {
+                        Icon(
+                            if (speakerEnabled) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
+                            contentDescription = if (speakerEnabled) "Speakerphone on" else "Speakerphone off"
+                        )
                     }
                     if (isVideo) {
                         FilledIconButton(onClick = {

@@ -153,6 +153,7 @@ import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import com.example.data.model.StatusStoryEntity
 import com.example.ui.DatingViewModel
+import com.example.ui.components.FullEmojiBottomSheet
 import com.example.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -1780,6 +1781,7 @@ fun StatusStoryViewer(
     var isPaused by remember { mutableStateOf(false) }
 
     val quickReactionEmojis = remember { listOf("❤️", "😂", "😮", "😢", "🙏", "🔥", "👏", "💯") }
+    var showFullEmojiPicker by remember(activeStory.id) { mutableStateOf(false) }
     var activeFloatingReaction by remember { mutableStateOf<String?>(null) }
 
     val storyDurationMs = remember(activeStory.id, activeStory.mediaType, activeStory.videoDurationSeconds) {
@@ -2157,6 +2159,12 @@ fun StatusStoryViewer(
                                         Text(text = emoji, fontSize = 19.sp)
                                     }
                                 }
+                                IconButton(
+                                    onClick = { showFullEmojiPicker = true },
+                                    modifier = Modifier.size(34.dp).testTag("story_more_reactions")
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = "More story reactions", tint = Color.White)
+                                }
                             }
 
                             // Reply Input Row + Heart Like Button
@@ -2219,6 +2227,17 @@ fun StatusStoryViewer(
                 }
             }
         }
+    }
+
+    if (showFullEmojiPicker) {
+        FullEmojiBottomSheet(
+            onDismiss = { showFullEmojiPicker = false },
+            onEmojiSelected = { emoji ->
+                showFullEmojiPicker = false
+                activeFloatingReaction = emoji
+                onSendReaction(activeStory.userId, activeStory.userName, activeStory.caption, emoji)
+            }
+        )
     }
 }
 

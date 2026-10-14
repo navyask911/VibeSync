@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
 import android.util.Base64
 import android.util.Log
 import java.io.ByteArrayOutputStream
@@ -13,14 +14,15 @@ object ImageCompressorHelper {
     private const val TAG = "ImageCompressorHelper"
 
     /**
-     * Reads image from Uri, downscales to max 1024px dimension, compresses to 75% quality JPEG,
-     * and encodes to Base64 string prefixed with "IMG_B64:".
+     * Image gateway used before message/story encryption: fit within 1600x1600, encode as lossy
+     * WebP on Android 30+ (JPEG on older Android), and apply 80% quality by default.
+     * Encoded bytes keep the existing IMG_B64 envelope so encryption callers need no format changes.
      */
     fun compressAndEncodeImageUriToBase64(
         context: Context,
         uriString: String,
-        maxDimension: Int = 800,
-        initialQuality: Int = 70
+        maxDimension: Int = 1600,
+        initialQuality: Int = 80
     ): String? {
         if (uriString.isBlank()) return null
         if (uriString.startsWith("IMG_B64:") || uriString.startsWith("IMG_URL:") || uriString.startsWith("http")) {
@@ -58,30 +60,16 @@ object ImageCompressorHelper {
                 activeBitmap = Bitmap.createScaledBitmap(activeBitmap, newWidth, newHeight, true)
             }
 
-            // Adaptive compression loop to enforce upper limit of ~80 KB (81920 bytes)
-            var quality = initialQuality
-            val maxSizeBytes = 80 * 1024
-            var bytes: ByteArray
-            var baos: ByteArrayOutputStream
-
-            do {
-                baos = ByteArrayOutputStream()
-                activeBitmap.compress(Bitmap.CompressFormat.JPEG, quality, baos)
-                bytes = baos.toByteArray()
-                if (bytes.size <= maxSizeBytes || quality <= 20) break
-                quality -= 10
-            } while (quality > 10)
-
-            // If still over 80 KB after quality reduction, scale down further
-            while (bytes.size > maxSizeBytes && activeBitmap.width > 200 && activeBitmap.height > 200) {
-                val scale = 0.8f
-                val newW = (activeBitmap.width * scale).toInt()
-                val newH = (activeBitmap.height * scale).toInt()
-                activeBitmap = Bitmap.createScaledBitmap(activeBitmap, newW, newH, true)
-                baos = ByteArrayOutputStream()
-                activeBitmap.compress(Bitmap.CompressFormat.JPEG, quality, baos)
-                bytes = baos.toByteArray()
+            val baos = ByteArrayOutputStream()
+            val format = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Bitmap.CompressFormat.WEBP_LOSSY
+            } else {
+                @Suppress("DEPRECATION")
+                Bitmap.CompressFormat.WEBP
             }
+            activeBitmap.compress(format, initialQuality.coerceIn(1, 100), baos)
+            val bytes = baos.toByteArray()
+            if (bytes.isEmpty()) return null
 
             val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
             "IMG_B64:$b64"

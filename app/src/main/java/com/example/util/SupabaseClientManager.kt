@@ -1463,7 +1463,7 @@ object SupabaseClientManager {
             try {
                 val safeMatch = java.net.URLEncoder.encode(canonicalMatchId, "UTF-8")
                 val request = buildRequest(
-                    endpoint = "chat_messages?select=message_id,sender_id,is_delivered,is_read&match_id=eq.$safeMatch&order=timestamp.asc",
+                    endpoint = "chat_messages?select=message_id,sender_id,is_delivered,is_read,read_at&match_id=eq.$safeMatch&order=timestamp.asc",
                     method = "GET"
                 )
                 httpClient.newCall(request).execute().use { response ->
@@ -1484,7 +1484,7 @@ object SupabaseClientManager {
                                     messageId = messageId,
                                     senderId = senderId,
                                     isDelivered = row.optBoolean("is_delivered", false),
-                                    isRead = row.optBoolean("is_read", false)
+                                    isRead = row.optBoolean("is_read", false) || row.optString("read_at").isNotBlank()
                                 )
                             )
                         }
