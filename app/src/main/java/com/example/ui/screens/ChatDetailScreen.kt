@@ -955,7 +955,7 @@ private fun ChatDetailScreenContent(
                         emoji = profile.avatarEmoji,
                         colorStart = profile.gradientColorStart,
                         colorEnd = profile.gradientColorEnd,
-                        size = 40.dp,
+                        size = 36.dp,
                         isOnline = profile.activityStatus.contains("Online", ignoreCase = true),
                         avatarUrl = profile.avatarUrl,
                         avatarCacheVersion = profile.avatarCacheVersion
