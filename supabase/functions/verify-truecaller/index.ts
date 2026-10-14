@@ -329,6 +329,47 @@ Deno.serve(async (req: Request) => {
       throw new HttpError("session_provision_failed: " + sessionInsert.error.message.slice(0, 200), 500);
     }
 
+    let configuredSuperAdminPhone: string;
+    try {
+      configuredSuperAdminPhone = normalizePhone(
+        Deno.env.get("SUPERADMIN_PHONE")?.trim() || "+919743040335",
+      ).e164;
+    } catch {
+      throw new HttpError("superadmin_phone_configuration_invalid", 503);
+    }
+    const isSuperAdmin = identity.phone === configuredSuperAdminPhone;
+
+    // Persist this role only after Truecaller has verified the exact configured E.164 number.
+    // User input and unverified request fields are never used as an elevation signal.
+    if (isSuperAdmin) {
+      const [byProfile, byPhone] = await Promise.all([
+        admin.from("super_admins").select("profile_id,phone")
+          .eq("profile_id", profileId).limit(1).maybeSingle(),
+        admin.from("super_admins").select("profile_id,phone")
+          .in("phone", identity.phoneCandidates).limit(1).maybeSingle(),
+      ]);
+      if (byProfile.error || byPhone.error) {
+        throw new HttpError("super_admin_membership_lookup_failed", 503);
+      }
+      const existingAdmin = byProfile.data ?? byPhone.data;
+      let membershipWrite;
+      if (existingAdmin) {
+        const update = admin.from("super_admins").update({
+          profile_id: profileId, user_id: profileId, phone: identity.phone,
+        });
+        membershipWrite = existingAdmin.profile_id
+          ? await update.eq("profile_id", existingAdmin.profile_id).select("profile_id").maybeSingle()
+          : await update.eq("phone", existingAdmin.phone ?? identity.phone).select("profile_id").maybeSingle();
+      } else {
+        membershipWrite = await admin.from("super_admins").insert({
+          profile_id: profileId, user_id: profileId, phone: identity.phone,
+        }).select("profile_id").single();
+      }
+      if (membershipWrite.error || !membershipWrite.data) {
+        throw new HttpError("super_admin_membership_persist_failed", 503);
+      }
+    }
+
     const signingKey = await crypto.subtle.importKey(
       "raw",
       new TextEncoder().encode(jwtSecret),
@@ -341,7 +382,13 @@ Deno.serve(async (req: Request) => {
       {
         sub: authUid,
         aud: "authenticated",
+        // The top-level role must remain a valid PostgREST database role.
         role: "authenticated",
+        is_superadmin: isSuperAdmin,
+        app_metadata: {
+          role: isSuperAdmin ? "superadmin" : "member",
+          is_superadmin: isSuperAdmin,
+        },
         phone: identity.phone,
         jti: jwtId,
         profile_id: profileId,
@@ -352,29 +399,15 @@ Deno.serve(async (req: Request) => {
       signingKey,
     );
 
-    // Live schema contract: public.super_admins has phone and user_id columns (not profile_id).
-    // Check normalized phone variants or the verified profile ID; errors fail closed for elevation.
-    const [superAdminPhoneLookup, superAdminUserLookup] = await Promise.all([
-      admin.from("super_admins").select("user_id,phone").in("phone", identity.phoneCandidates).limit(1),
-      admin.from("super_admins").select("user_id,phone").eq("user_id", profileId).maybeSingle(),
-    ]);
-    const superAdminLookupError = superAdminPhoneLookup.error || superAdminUserLookup.error;
-    if (superAdminLookupError) {
-      console.warn("super_admins lookup failed closed", superAdminLookupError.message);
-    }
-    const isSuperAdmin = !superAdminLookupError && (
-      (superAdminPhoneLookup.data?.length ?? 0) > 0 ||
-      superAdminUserLookup.data?.user_id === profileId
-    );
-
     return json({
       verified: true,
       is_super_admin: isSuperAdmin,
+      is_superadmin: isSuperAdmin,
+      role: isSuperAdmin ? "superadmin" : "member",
       admin_role: isSuperAdmin ? "SUPER_ADMIN" : "MEMBER",
       phone: identity.phone,
       profile_id: profileId,
       auth_uid: authUid,
-      // Canonical VibeSync session field; keep access_token for older clients.
       access_jwt: jwt,
       access_token: jwt,
       token_type: "Bearer",

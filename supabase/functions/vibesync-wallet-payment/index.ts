@@ -125,7 +125,13 @@ async function verifyPayment(profileId: string, body: Record<string, unknown>) {
       Number(payment.amount) !== Math.round(Number(order.total_amount_inr) * 100) || String(payment.currency) !== "INR") {
     return json({ ok: false, error: "payment_not_captured_or_amount_mismatch" }, 409);
   }
-  const { data: settled, error: settleError } = await admin.rpc("complete_business_payment_order", { p_order_id: recordId, p_payment_id: paymentId });
+  const { data: settled, error: settleError } = await admin.rpc("process_payment_activation", {
+    p_provider_order_id: String(order.provider_order_id),
+    p_provider_payment_id: paymentId,
+    p_amount_paise: Number(payment.amount),
+    p_currency: String(payment.currency),
+    p_payment_status: String(payment.status),
+  });
   if (settleError || !settled?.ok) return json({ ok: false, error: "wallet_settlement_failed" }, 500);
   return json({ ...settled, ok: true });
 }

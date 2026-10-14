@@ -16,3 +16,13 @@ verify_jwt = false
 
 [functions.vibesync-call-admission]
 verify_jwt = false
+
+# These handlers validate custom VibeSync sessions or cryptographic provider signatures internally.
+[functions.export-vault]
+verify_jwt = false
+
+[functions.razorpay-webhook]
+verify_jwt = false
+
+[functions.vibesync-wallet-payment]
+verify_jwt = false
