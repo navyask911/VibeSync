@@ -2,6 +2,7 @@ package com.example.util
 
 import android.content.Context
 import android.net.Uri
+import android.util.Base64
 import android.util.Log
 import com.example.BuildConfig
 import com.example.data.model.ChatMessageEntity
@@ -1472,52 +1473,81 @@ object SupabaseClientManager {
     }
 
     /**
-     * Upload a profile image to the public-read, owner-write profile-avatars bucket.
-     * Storage RLS restricts writes to the active session's profile folder.
+     * Upload encrypted avatar bytes only. Storage writes require the matching active VibeSync
+     * session and signed Supabase JWT; the publishable key is never a Bearer-token fallback.
      */
     suspend fun uploadProfileAvatar(
+        context: Context,
         file: File,
         profileId: String,
         contentType: String,
         storageObjectName: String = "$profileId.jpg"
-    ): String? =
-        withContext(Dispatchers.IO) {
-            if (!file.isFile || file.length() <= 0L || profileId.isBlank()) return@withContext null
-            if (!VibeSyncSessionManager.getProfileId().orEmpty().equals(profileId, ignoreCase = true)) {
-                Log.w(TAG, "Refusing avatar upload because the active profile does not own the destination folder.")
-                return@withContext null
-            }
-            try {
-                val objectName = storageObjectName.trim().ifBlank { "$profileId.jpg" }
-                require(objectName in setOf(
-                    "$profileId.jpg", "${profileId}_2.jpg", "${profileId}_3.jpg",
-                    "$profileId.enc", "${profileId}_2.enc", "${profileId}_3.enc"
-                )) {
-                    "Avatar storage object name must be bound to the active profile ID."
-                }
-                val encodedPath = Uri.encode(objectName)
-                val request = Request.Builder()
-                    .url("$SUPABASE_URL/storage/v1/object/avatars/$encodedPath")
-                    .header("apikey", SUPABASE_PUBLISHABLE_KEY)
-                    .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_PUBLISHABLE_KEY)}")
-                    .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
-                    .header("Content-Type", contentType)
-                    .header("x-upsert", "true")
-                    .put(file.asRequestBody(contentType.toMediaType()))
-                    .build()
-                httpClient.newCall(request).execute().use { response ->
-                    val body = response.body?.string().orEmpty()
-                    if (!response.isSuccessful) {
-                        Log.w(TAG, "Profile avatar upload failed HTTP ${response.code}: ${body.take(250)}")
-                        return@withContext null
-                    }
-                }
-                "$SUPABASE_URL/storage/v1/object/public/avatars/$encodedPath?v=${file.lastModified()}"
-            } catch (t: Throwable) {
-                Log.w(TAG, "Profile avatar upload notice: ${t.javaClass.simpleName}: ${t.message}")
-                null
-            }
+    ): String? = withContext(Dispatchers.IO) {
+        if (!file.isFile || file.length() <= 0L || profileId.isBlank()) return@withContext null
+
+        val session = VibeSyncSessionManager.getSession(context)
+        if (
+            session == null ||
+            !session.profileId.equals(profileId, ignoreCase = true) ||
+            session.sessionToken.isBlank() ||
+            session.accessToken.isBlank()
+        ) {
+            Log.w(TAG, "Refusing avatar upload: matching authenticated VibeSync session/JWT missing.")
+            return@withContext null
         }
+        val nowSeconds = System.currentTimeMillis() / 1000L
+        if (session.expiresAtEpochSeconds <= nowSeconds + 5L) {
+            Log.w(TAG, "Refusing avatar upload: authenticated session expired or near expiry.")
+            return@withContext null
+        }
+        val jwtParts = session.accessToken.split(".")
+        if (jwtParts.size != 3) {
+            Log.w(TAG, "Refusing avatar upload: access token is not a signed JWT.")
+            return@withContext null
+        }
+        val jwtExpiry = runCatching {
+            val payload = Base64.decode(
+                jwtParts[1],
+                Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+            )
+            JSONObject(String(payload, Charsets.UTF_8)).optLong("exp", 0L)
+        }.getOrDefault(0L)
+        if (jwtExpiry <= nowSeconds + 5L) {
+            Log.w(TAG, "Refusing avatar upload: Supabase access JWT expired or missing exp.")
+            return@withContext null
+        }
+
+        try {
+            val objectName = storageObjectName.trim().ifBlank { "$profileId.jpg" }
+            require(objectName in setOf(
+                "$profileId.jpg", "${profileId}_2.jpg", "${profileId}_3.jpg",
+                "$profileId.enc", "${profileId}_2.enc", "${profileId}_3.enc"
+            )) {
+                "Avatar storage object name must be bound to the active profile ID."
+            }
+            val encodedPath = Uri.encode(objectName)
+            val request = Request.Builder()
+                .url("$SUPABASE_URL/storage/v1/object/avatars/$encodedPath")
+                .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+                .header("Authorization", "Bearer ${session.accessToken}")
+                .header("x-vibesync-session", session.sessionToken)
+                .header("Content-Type", contentType)
+                .header("x-upsert", "true")
+                .put(file.asRequestBody(contentType.toMediaType()))
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Profile avatar upload failed HTTP ${response.code}: ${body.take(250)}")
+                    return@withContext null
+                }
+            }
+            "$SUPABASE_URL/storage/v1/object/public/avatars/$encodedPath?v=${file.lastModified()}"
+        } catch (t: Throwable) {
+            Log.w(TAG, "Profile avatar upload notice: ${t.javaClass.simpleName}: ${t.message}")
+            null
+        }
+    }
 
     /** Download encrypted avatar bytes only; plaintext is never provided by the backend. */
     suspend fun downloadEncryptedProfileAvatar(profileId: String, slot: Int = 1): ByteArray? =
