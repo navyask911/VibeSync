@@ -1825,18 +1825,12 @@ fun StatusStoryViewer(
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
         Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .navigationBarsPadding()
-                .imePadding()
-                .background(Color.Black.copy(alpha = 0.9f)),
+            modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
         ) {
             Box(
                 modifier = Modifier
-                    .fillMaxWidth(0.99f)
-                    .fillMaxHeight(0.9f)
-                    .clip(RoundedCornerShape(16.dp))
+                    .fillMaxSize()
                     .background(
                         Brush.linearGradient(
                             listOf(
@@ -1845,7 +1839,6 @@ fun StatusStoryViewer(
                             )
                         )
                     )
-                    .statusBarsPadding()
                     .pointerInput(activeStory.id, currentIndex) {
                         detectTapGestures(
                             onPress = {
@@ -1877,18 +1870,14 @@ fun StatusStoryViewer(
                 // Media background/foreground image
                 if (activeStory.mediaUrl.isNotBlank()) {
                     Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(top = 76.dp, bottom = 125.dp),
+                        modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
                     ) {
                         AsyncImage(
                             model = activeStory.mediaUrl,
                             contentDescription = "Story media",
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .fillMaxHeight(),
-                            contentScale = ContentScale.Fit
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
                         )
 
                         if (activeStory.mediaType == "VIDEO") {
@@ -1916,6 +1905,7 @@ fun StatusStoryViewer(
                         modifier = Modifier
                             .fillMaxWidth()
                             .align(Alignment.TopCenter)
+                            .statusBarsPadding()
                             .padding(horizontal = 12.dp, vertical = 8.dp)
                     ) {
                         // Multi-Segment Visual Progress Indicator
@@ -2078,6 +2068,7 @@ fun StatusStoryViewer(
                                 .align(Alignment.BottomCenter)
                                 .fillMaxWidth()
                                 .navigationBarsPadding()
+                                .imePadding()
                                 .padding(horizontal = 14.dp, vertical = 10.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
@@ -2138,6 +2129,7 @@ fun StatusStoryViewer(
                                 .align(Alignment.BottomCenter)
                                 .fillMaxWidth()
                                 .navigationBarsPadding()
+                                .imePadding()
                                 .padding(horizontal = 10.dp, vertical = 6.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
