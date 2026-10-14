@@ -55,16 +55,16 @@ fun DatingAvatar(
     }
     val peerVersionFlow = remember(context, encryptedOwnerId) {
         if (encryptedOwnerId.isBlank()) kotlinx.coroutines.flow.flowOf(1)
-        else com.example.util.ProfileKeyManager.peerProfileVersionFlow(context, encryptedOwnerId)
+        else com.example.util.ProfileKeyManager.peerProfileKeyRevisionFlow(context, encryptedOwnerId)
     }
-    val peerProfileVersion by peerVersionFlow.collectAsState(initial = 1)
+    val peerKeyRevision by peerVersionFlow.collectAsState(initial = 0)
     var resolvedAvatarBitmap by remember(avatarUrl, avatarCacheVersion) {
         mutableStateOf<Bitmap?>(null)
     }
     var resolvedAvatarUrl by remember(avatarUrl, avatarCacheVersion) {
         mutableStateOf(if (avatarUrl.startsWith("vibesync-avatar-enc://")) "" else avatarUrl)
     }
-    LaunchedEffect(avatarUrl, avatarCacheVersion, peerProfileVersion) {
+    LaunchedEffect(avatarUrl, avatarCacheVersion, peerKeyRevision) {
         if (avatarUrl.startsWith("vibesync-avatar-enc://")) {
             resolvedAvatarUrl = ""
             resolvedAvatarBitmap = null
