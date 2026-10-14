@@ -1563,26 +1563,29 @@ fun StatusCaptionUploadPreviewDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
-        Box(
+        // Keep the dialog's content viewport above the IME. The app-bar and bottom
+        // actions handle their respective system-bar insets locally to avoid clipped controls
+        // on Android 15 edge-to-edge windows.
+        androidx.compose.foundation.layout.BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
-                .systemBarsPadding()
-                .navigationBarsPadding()
                 .imePadding(),
             contentAlignment = Alignment.Center
         ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth(0.97f)
-                .fillMaxHeight(0.97f)
-                .clip(RoundedCornerShape(24.dp))
-                .background(Brush.linearGradient(listOf(Color(currentBgStart), Color(currentBgEnd)))),
-            verticalArrangement = Arrangement.SpaceBetween
-        ) {
+            val previewMaxHeight = maxHeight * 0.58f
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth(0.97f)
+                    .fillMaxHeight(0.97f)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(Brush.linearGradient(listOf(Color(currentBgStart), Color(currentBgEnd)))),
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
             // Top Header: Back button, Title & Color palette picker
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .statusBarsPadding()
                     .padding(horizontal = 14.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
@@ -1637,8 +1640,9 @@ fun StatusCaptionUploadPreviewDialog(
             // Middle: Flexible Preview Media fitting dynamically
             Box(
                 modifier = Modifier
-                    .weight(1f)
+                    .weight(1f, fill = false)
                     .fillMaxWidth()
+                    .heightIn(max = previewMaxHeight)
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center
             ) {
@@ -1673,7 +1677,13 @@ fun StatusCaptionUploadPreviewDialog(
             // Bottom Caption Bar & Upload Send Button with safe area edge-to-edge window insets
             Surface(
                 color = Color(0xF20B1220),
-                modifier = Modifier.fillMaxWidth()
+                // Insets belong to the action container so the caption and send target remain
+                // above gesture and three-button navigation areas, including keyboard resize.
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .imePadding()
+                    .padding(bottom = 16.dp)
             ) {
                 Row(
                     modifier = Modifier
