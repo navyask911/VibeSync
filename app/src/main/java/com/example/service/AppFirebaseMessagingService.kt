@@ -136,8 +136,7 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                         context = applicationContext,
                         senderId = "business_broadcast:" + data["broadcast_id"].orEmpty(),
                         senderName = businessName,
-                        messageText = (headline + "
-" + body).take(800),
+                        messageText = (headline + "\n" + body).take(800),
                         senderPhotoUrl = data["banner_url"].orEmpty(),
                         mediaType = "BUSINESS_BROADCAST",
                         channelId = AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES

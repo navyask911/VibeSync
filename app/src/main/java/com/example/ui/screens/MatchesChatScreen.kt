@@ -1048,7 +1048,8 @@ private fun MatchesChatScreenContent(
                             latestMessage = latestMessageMap[match.matchId],
                             onClick = { onOpenChat(match, profile) },
                             onViewProfile = onOpenProfileDetail,
-                            syncedLocalPhotos = syncedLocalPhotos
+                            syncedLocalPhotos = syncedLocalPhotos,
+                            publishedBusinesses = publishedBusinesses
                         )
                     }
                 }

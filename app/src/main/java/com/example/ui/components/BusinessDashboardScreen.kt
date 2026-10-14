@@ -625,7 +625,26 @@ fun BusinessDashboardScreen(
                 }
             }
         } else {
- 
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                BusinessSuiteSecondaryTab(
+                    tab = selectedSuiteTab,
+                    venue = venue,
+                    analytics = localAnalytics,
+                    onOpenBroadcast = onOpenBroadcast,
+                    onOpenWallet = onOpenWallet,
+                    onManageListing = onManageListing,
+                    onUpgradeBadge = onUpgradeBadge,
+                    onSelectAnalyticsRange = { selectedTimeframe = it }
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun BusinessSuiteSecondaryTab(
     tab: Int,
