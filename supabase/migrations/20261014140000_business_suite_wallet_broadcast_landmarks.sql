@@ -208,6 +208,44 @@ end $$;
 revoke all on function public.record_business_analytics_event(text,text,jsonb) from public,anon;
 grant execute on function public.record_business_analytics_event(text,text,jsonb) to authenticated;
 
+-- The live project may have the legacy super_admins(user_id, phone) shape rather
+-- than super_admins(profile_id). Detect the deployed column and fail closed if absent.
+create or replace function public.is_vibesync_super_admin()
+returns boolean
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public
+as $
+declare
+  uid text := public.vibesync_jwt_profile_id();
+  authorized boolean := false;
+  admins_oid oid := to_regclass('public.super_admins');
+begin
+  if uid is null or not public.vibesync_jwt_session_active() or admins_oid is null then
+    return false;
+  end if;
+
+  if exists (
+    select 1 from pg_attribute
+    where attrelid = admins_oid and attname = 'profile_id' and not attisdropped
+  ) then
+    execute 'select exists (select 1 from public.super_admins where profile_id = $1)'
+      into authorized using uid;
+  elsif exists (
+    select 1 from pg_attribute
+    where attrelid = admins_oid and attname = 'user_id' and not attisdropped
+  ) then
+    execute 'select exists (select 1 from public.super_admins where user_id = $1)'
+      into authorized using uid;
+  end if;
+
+  return coalesce(authorized, false);
+end;
+$;
+revoke all on function public.is_vibesync_super_admin() from public, anon;
+grant execute on function public.is_vibesync_super_admin() to authenticated;
+
 create or replace function public.admin_update_curated_landmark(
  p_business_id text,p_name text,p_description text,p_photo_url text,p_opening_hours text,
  p_latitude double precision,p_longitude double precision,p_landmark_category public.curated_landmark_category
