@@ -1,5 +1,9 @@
 package com.example.ui.components
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.util.Log
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
@@ -48,6 +52,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -97,11 +102,92 @@ import com.example.ui.DatingViewModel
 import com.example.util.LocationTrackerHelper
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 import androidx.compose.material.icons.filled.WorkspacePremium
+
+/**
+ * Runs a verified business purchase through a server-created Razorpay order.
+ * Client callbacks only carry payment proof; wallet/badge changes happen only after the Edge
+ * Function validates the signature and confirms a captured, amount-matching payment with Razorpay.
+ */
+suspend fun performVerifiedBusinessCheckout(
+    context: Context,
+    businessId: String,
+    purchaseType: String,
+    points: Int = 0,
+    verificationTier: String = ""
+): org.json.JSONObject? {
+    val activity = context.findActivityForBusinessCheckout()
+        ?: return org.json.JSONObject().put("ok", false).put("error", "activity_unavailable")
+    val order = com.example.util.SupabaseClientManager.createBusinessPaymentOrder(
+        businessId = businessId,
+        purchaseType = purchaseType,
+        points = points,
+        verificationTier = verificationTier
+    ) ?: return org.json.JSONObject().put("ok", false).put("error", "payment_order_creation_failed")
+    val orderRecordId = order.optString("order_record_id").trim()
+    val gatewayOrderId = order.optString("razorpay_order_id").trim()
+    val keyId = order.optString("key_id").trim()
+    val amountPaise = order.optInt("amount_paise", 0)
+    if (orderRecordId.isBlank() || gatewayOrderId.isBlank() || keyId.isBlank() || amountPaise <= 0) {
+        return org.json.JSONObject().put("ok", false).put("error", "invalid_server_payment_order")
+    }
+
+    val pending = try {
+        com.example.util.PaymentGatewayManager.prepareForOrder(orderRecordId, gatewayOrderId)
+    } catch (failure: Throwable) {
+        Log.w("BusinessCheckout", "Could not prepare payment callback: ${failure.javaClass.simpleName}")
+        return org.json.JSONObject().put("ok", false).put("error", "checkout_already_active")
+    }
+    try {
+        com.example.util.PaymentGatewayManager.openCheckout(
+            activity = activity,
+            keyId = keyId,
+            amountPaise = amountPaise,
+            orderId = gatewayOrderId,
+            merchantName = "VibeSync Business",
+            description = when (purchaseType.uppercase()) {
+                "WALLET_RECHARGE" -> "$points VibeSync business points"
+                "VERIFICATION_BADGE" -> "${verificationTier.uppercase()} business verification"
+                else -> "VibeSync business purchase"
+            },
+            contact = com.example.util.VibeSyncSessionManager.getSession(context)?.phoneNumber.orEmpty()
+        )
+        val outcome = withTimeoutOrNull(180_000L) { pending.await() }
+            ?: return org.json.JSONObject().put("ok", false).put("error", "payment_result_timeout")
+        if (outcome.recordId != orderRecordId || !outcome.error.isNullOrBlank() ||
+            outcome.paymentId.isBlank() || outcome.signature.isBlank() ||
+            (outcome.gatewayOrderId.isNotBlank() && outcome.gatewayOrderId != gatewayOrderId)
+        ) {
+            return org.json.JSONObject().put("ok", false)
+                .put("error", outcome.error ?: "payment_callback_incomplete")
+        }
+
+        return com.example.util.SupabaseClientManager.verifyBusinessPaymentOrder(
+            orderRecordId = orderRecordId,
+            paymentId = outcome.paymentId,
+            signature = outcome.signature
+        ) ?: org.json.JSONObject().put("ok", false).put("error", "server_payment_verification_failed")
+    } catch (failure: Throwable) {
+        Log.w("BusinessCheckout", "Checkout did not settle: ${failure.javaClass.simpleName}")
+        return org.json.JSONObject().put("ok", false).put("error", "payment_checkout_failed")
+    } finally {
+        com.example.util.PaymentGatewayManager.clearPendingOrder(orderRecordId)
+    }
+}
+
+private fun Context.findActivityForBusinessCheckout(): Activity? {
+    var current: Context = this
+    while (current is ContextWrapper) {
+        if (current is Activity) return current
+        current = current.baseContext
+    }
+    return current as? Activity
+}
 
 /**
  * Visual badge for Verification Tiers: Gold, Silver, Blue Tick, and Standard.
@@ -520,97 +606,116 @@ fun VerificationTierSelectionSection(
 
         val tiers = listOf(
             TierCardItem(
-                id = "GOLD",
-                badgeEmoji = "⭐",
-                title = "Gold Verified",
-                price = "₹499/yr",
-                priceInt = 499,
-                priorityLabel = "Priority 1 Search Ranking",
-                perks = listOf("⭐ Highest priority in GPS & category search", "1,500 Bonus Points (₹75 value)", "VIP Verified Gold Badge on card & profile"),
-                accentColor = Color(0xFFFFB300),
-                bgColor = Color(0xFFFFF8E1)
+                id = "GOLD", badgeEmoji = "👑", title = "Gold Crown Verified",
+                price = "₹499/yr", priceInt = 499, priorityLabel = "TOP SEARCH PLACEMENT",
+                perks = listOf("Top search placement", "Gold badge on profile and chats", "2× broadcast discount"),
+                accentColor = Color(0xFFFFA500), bgColor = Color(0xFFFFD700)
             ),
             TierCardItem(
-                id = "SILVER",
-                badgeEmoji = "🛡️",
-                title = "Silver Verified",
-                price = "₹299/yr",
-                priceInt = 299,
-                priorityLabel = "Priority 2 Search Ranking",
-                perks = listOf("🛡️ Ranks above Blue Tick & Standard venues", "800 Bonus Points (₹40 value)", "Silver Shield Verified Badge"),
-                accentColor = Color(0xFF78909C),
-                bgColor = Color(0xFFECEFF1)
+                id = "SILVER", badgeEmoji = "♛", title = "Silver Crown Verified",
+                price = "₹299/yr", priceInt = 299, priorityLabel = "GROWING BRANDS",
+                perks = listOf("Verified badge on profile and chats", "Boosted search placement", "Broadcast advertising access"),
+                accentColor = Color(0xFF66717D), bgColor = Color(0xFFE0E0E0)
             ),
             TierCardItem(
-                id = "BLUE_TICK",
-                badgeEmoji = "✓",
-                title = "Blue Tick Verified",
-                price = "₹199/yr",
-                priceInt = 199,
-                priorityLabel = "Priority 3 Search Ranking",
-                perks = listOf("✓ Priority over standard unverified listings", "400 Bonus Points (₹20 value)", "Official Blue Tick Verification badge"),
-                accentColor = Color(0xFF1E88E5),
-                bgColor = Color(0xFFE3F2FD)
+                id = "BLUE_TICK", badgeEmoji = "✓", title = "Blue Verified",
+                price = "₹199/yr", priceInt = 199, priorityLabel = "AUTHENTICITY",
+                perks = listOf("Electric-blue verified checkmark", "Authenticity and trust in search", "Checkmark shown in chats"),
+                accentColor = Color(0xFF1DA1F2), bgColor = Color(0xFFDDF2FF)
             ),
             TierCardItem(
-                id = "STANDARD",
-                badgeEmoji = "🏷️",
-                title = "Standard Listing",
-                price = "₹0 add-on",
-                priceInt = 0,
-                priorityLabel = "Priority 4 (Unverified)",
-                perks = listOf("Included with standard listing", "500 Starter Points included", "Standard directory placement"),
-                accentColor = Color(0xFF9E9E9E),
-                bgColor = Color(0xFFF5F5F5)
+                id = "STANDARD", badgeEmoji = "🏷️", title = "Standard Listing",
+                price = "₹0 add-on", priceInt = 0, priorityLabel = "STANDARD",
+                perks = listOf("Standard directory placement", "Basic business profile", "No paid verification badge"),
+                accentColor = Color(0xFF9E9E9E), bgColor = Color(0xFFF5F5F5)
             )
         )
 
         tiers.forEach { tier ->
             val isSelected = selectedTier == tier.id
+            val gradient = when (tier.id) {
+                "GOLD" -> Brush.linearGradient(listOf(Color(0xFFFFD700), Color(0xFFFFA500)))
+                "SILVER" -> Brush.linearGradient(listOf(Color(0xFFE0E0E0), Color(0xFFB0B0B0)))
+                "BLUE_TICK" -> Brush.linearGradient(listOf(Color(0xFFEAF7FF), Color(0xFFB7E3FF)))
+                else -> Brush.linearGradient(listOf(Color(0xFFF5F5F5), Color(0xFFE8E8E8)))
+            }
             Card(
                 shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = if (isSelected) tier.bgColor else MaterialTheme.colorScheme.surface),
-                border = BorderStroke(if (isSelected) 2.dp else 1.dp, if (isSelected) tier.accentColor else MaterialTheme.colorScheme.outlineVariant),
+                colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+                border = BorderStroke(if (isSelected) 3.dp else 1.dp, if (isSelected) tier.accentColor else MaterialTheme.colorScheme.outlineVariant),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = 4.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(gradient)
                     .clickable { onSelectTier(tier.id) }
             ) {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(tier.badgeEmoji, fontSize = 24.sp)
+                    if (tier.id == "BLUE_TICK") {
+                        Surface(shape = CircleShape, color = Color(0xFF1DA1F2), modifier = Modifier.size(34.dp)) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Verified, contentDescription = "Blue verified check", tint = Color.White, modifier = Modifier.size(24.dp))
+                            }
+                        }
+                    } else {
+                        Text(tier.badgeEmoji, fontSize = 29.sp)
+                    }
                     Spacer(modifier = Modifier.width(10.dp))
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(tier.title, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(tier.title, fontFamily = FontFamily.Serif, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp, color = Color(0xFF20242A))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = tier.accentColor.copy(alpha = 0.2f)
-                            ) {
+                            Surface(shape = RoundedCornerShape(6.dp), color = tier.accentColor.copy(alpha = 0.18f)) {
                                 Text(
                                     tier.priorityLabel,
-                                    fontFamily = FontFamily.Serif,
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (tier.id == "GOLD") Color(0xFFE65100) else MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    fontFamily = FontFamily.Serif, fontSize = 8.sp, fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF20242A), modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
                                 )
                             }
                         }
-                        Text(tier.perks.first(), fontFamily = FontFamily.Serif, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Column(horizontalAlignment = Alignment.End) {
-                        Text(tier.price, fontFamily = FontFamily.Serif, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
-                        if (isSelected) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = "Selected", tint = tier.accentColor, modifier = Modifier.size(18.dp))
+                        tier.perks.forEach { perk ->
+                            Text("• $perk", fontFamily = FontFamily.Serif, fontSize = 10.sp, color = Color(0xFF2E3338))
                         }
                     }
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(tier.price, fontFamily = FontFamily.Serif, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp, color = Color(0xFF1E293B))
+                        RadioButton(selected = isSelected, onClick = { onSelectTier(tier.id) })
+                    }
+                }
+            }
+        }
+
+        // Live profile and chat-header badge preview updates with the radio selection above.
+        val previewTier = tiers.first { it.id == selectedTier }
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),
+            border = BorderStroke(1.dp, previewTier.accentColor.copy(alpha = 0.65f))
+        ) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Live preview", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surface, modifier = Modifier.size(42.dp)) {
+                        Box(contentAlignment = Alignment.Center) { Text("🏪", fontSize = 22.sp) }
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Your Business", fontWeight = FontWeight.Bold)
+                        Text("Profile listing", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    TierPreviewMark(selectedTier)
+                }
+                HorizontalDivider()
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Chat header", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Your Business", fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.width(4.dp))
+                    TierPreviewMark(selectedTier)
                 }
             }
         }
@@ -629,6 +734,16 @@ private data class TierCardItem(
     val bgColor: Color
 )
 
+@Composable
+private fun TierPreviewMark(tier: String) {
+    when (tier.uppercase()) {
+        "GOLD" -> Text("👑", fontSize = 15.sp)
+        "SILVER" -> Text("♛", fontSize = 16.sp, color = Color(0xFF8A949E))
+        "BLUE_TICK" -> Icon(Icons.Default.Verified, contentDescription = "Blue verified", tint = Color(0xFF1DA1F2), modifier = Modifier.size(17.dp))
+        else -> Text("○", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
 /**
  * Business Wallet Balance & Top-Up Dialog (1 Point = ₹0.05).
  */
@@ -639,26 +754,42 @@ fun BusinessWalletDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    var showTopUpPayment by remember { mutableStateOf(false) }
-    var selectedPackagePoints by remember { mutableIntStateOf(1000) }
-    var selectedPackageCost by remember { mutableIntStateOf(50) }
+    val scope = rememberCoroutineScope()
+    var walletPoints by remember(business.id) { mutableIntStateOf(business.walletPoints) }
+    var pointsExpiring by remember(business.id) { mutableIntStateOf(0) }
+    var recentDeductions by remember(business.id) { mutableIntStateOf(0) }
+    var customPointsText by remember { mutableStateOf("") }
+    var selectedPackagePoints by remember { mutableIntStateOf(500) }
+    var checkoutInProgress by remember { mutableStateOf(false) }
 
-    val currentPoints = business.walletPoints
-    val rupeeValue = currentPoints * 0.05
+    val packs = listOf(
+        WalletPack(500, 25, 0, "Starter reach"),
+        WalletPack(2500, 125, 0, "Growth reach"),
+        WalletPack(10000, 500, 0, "Best Value")
+    )
+    val customPoints = customPointsText.toIntOrNull()
+    val isCustomInput = customPointsText.isNotBlank()
+    val customPointsValid = !isCustomInput || (customPoints != null && customPoints in 100..1_000_000)
+    val pointsToBuy = if (isCustomInput && customPointsValid) customPoints!! else selectedPackagePoints
+    val basePrice = pointsToBuy * 0.05
+    val gstAmount = basePrice * 0.18
+    val totalPrice = basePrice + gstAmount
 
-    if (showTopUpPayment) {
-        VenturePaymentGatewayDialog(
-            title = "Reload Business Wallet",
-            purpose = "$selectedPackagePoints Wallet Points (+ Reach $selectedPackagePoints Followers)",
-            amount = selectedPackageCost,
-            onSuccess = { txnId ->
-                viewModel.topUpBusinessWallet(business.id, selectedPackagePoints) {
-                    showTopUpPayment = false
-                    Toast.makeText(context, "Wallet credited with $selectedPackagePoints points! Txn: $txnId", Toast.LENGTH_SHORT).show()
-                }
-            },
-            onDismiss = { showTopUpPayment = false }
-        )
+    LaunchedEffect(business.id) {
+        val snapshot = com.example.util.SupabaseClientManager.fetchBusinessWalletSnapshot(business.id)
+        if (snapshot?.optBoolean("ok", false) == true) {
+            walletPoints = snapshot.optInt("balance", business.walletPoints).coerceAtLeast(0)
+            pointsExpiring = snapshot.optInt("points_expiring", 0).coerceAtLeast(0)
+            val entries = snapshot.optJSONArray("recent_entries")
+            var deductions = 0
+            if (entries != null) for (index in 0 until entries.length()) {
+                val entry = entries.optJSONObject(index) ?: continue
+                val delta = entry.optInt("points_delta", 0)
+                if (delta < 0) deductions += -delta
+            }
+            recentDeductions = deductions
+            viewModel.reconcileBusinessWalletBalance(business.id, walletPoints)
+        }
     }
 
     Dialog(
@@ -668,174 +799,149 @@ fun BusinessWalletDialog(
         Surface(
             shape = RoundedCornerShape(20.dp),
             color = MaterialTheme.colorScheme.surface,
-            modifier = Modifier
-                .fillMaxWidth(0.92f)
-                .padding(vertical = 24.dp)
+            modifier = Modifier.fillMaxWidth(0.92f).padding(vertical = 24.dp)
         ) {
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp)
-                    .verticalScroll(rememberScrollState())
+                modifier = Modifier.fillMaxWidth().padding(20.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Header
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Surface(
-                            shape = CircleShape,
-                            color = Color(0xFFE8F5E9),
-                            modifier = Modifier.size(38.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Default.Wallet, contentDescription = null, tint = Color(0xFF2E7D32), modifier = Modifier.size(20.dp))
-                            }
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text("Business Points Wallet", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                            Text(business.name, fontFamily = FontFamily.Serif, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
+                    Column {
+                        Text("Business Points Wallet", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                        Text(business.name, fontFamily = FontFamily.Serif, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Default.Close, contentDescription = "Close")
+                        Icon(Icons.Default.Close, contentDescription = "Close wallet")
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Wallet Card
                 Card(
                     shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1B5E20)),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF14532D)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.padding(18.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("CURRENT BALANCE", fontFamily = FontFamily.Serif, color = Color(0xFF81C784), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = Color.White.copy(alpha = 0.2f)
-                            ) {
-                                Text(
-                                    "1 Point = ₹0.05",
-                                    fontFamily = FontFamily.Serif,
-                                    color = Color.White,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
-                            }
+                    Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text("AVAILABLE POINTS", color = Color(0xFFBBF7D0), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text(walletPoints.toString(), color = Color.White, fontSize = 32.sp, fontWeight = FontWeight.ExtraBold)
+                        Text("Available balance synced from the verified wallet ledger.", color = Color.White.copy(alpha = 0.86f), fontSize = 11.sp)
+                        HorizontalDivider(color = Color.White.copy(alpha = 0.25f), modifier = Modifier.padding(vertical = 5.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Recent deductions", color = Color.White, fontSize = 12.sp)
+                            Text("$recentDeductions pts", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "$currentPoints pts",
-                            fontFamily = FontFamily.Serif,
-                            fontSize = 32.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = Color.White
-                        )
-                        Text(
-                            text = "≈ ₹${String.format(Locale.getDefault(), "%.2f", rupeeValue)} INR worth of broadcasts",
-                            fontFamily = FontFamily.Serif,
-                            fontSize = 13.sp,
-                            color = Color(0xFFC8E6C9)
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        HorizontalDivider(color = Color.White.copy(alpha = 0.2f))
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text(
-                            text = "🚀 Can broadcast to up to $currentPoints followers. Undelivered messages (no double tick ✓✓) are automatically refunded back to this wallet!",
-                            fontFamily = FontFamily.Serif,
-                            fontSize = 11.sp,
-                            color = Color.White.copy(alpha = 0.9f)
-                        )
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Points expiring in 30 days", color = Color.White, fontSize = 12.sp)
+                            Text("$pointsExpiring pts", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
-
-                Text("Reload Wallet Packages", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                Spacer(modifier = Modifier.height(8.dp))
-
-                val packages = listOf(
-                    WalletPack(points = 500, cost = 25, bonus = 0, label = "Starter Pack (Reach 500 followers)"),
-                    WalletPack(points = 1000, cost = 50, bonus = 50, label = "Popular Pack (Reach 1,000+ followers)"),
-                    WalletPack(points = 2500, cost = 125, bonus = 200, label = "Growth Pack (Reach 2,700 followers)"),
-                    WalletPack(points = 5000, cost = 250, bonus = 500, label = "Mega Pack (Reach 5,500 followers)")
-                )
-
-                packages.forEach { pack ->
-                    val isSel = selectedPackagePoints == pack.points
+                Text("Recharge points", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                packs.forEach { pack ->
+                    val selected = selectedPackagePoints == pack.points && !isCustomInput
+                    val base = pack.points * 0.05
+                    val gst = base * 0.18
                     Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = if (isSel) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                        border = BorderStroke(if (isSel) 2.dp else 1.dp, if (isSel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp)
-                            .clickable {
-                                selectedPackagePoints = pack.points + pack.bonus
-                                selectedPackageCost = pack.cost
-                            }
+                        modifier = Modifier.fillMaxWidth().clickable {
+                            selectedPackagePoints = pack.points
+                            customPointsText = ""
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                        border = BorderStroke(if (selected) 2.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant)
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
+                        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("${pack.points} Points", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                    if (pack.bonus > 0) {
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Surface(
-                                            shape = RoundedCornerShape(4.dp),
-                                            color = Color(0xFF2E7D32)
-                                        ) {
-                                            Text(
-                                                "+${pack.bonus} FREE",
-                                                fontFamily = FontFamily.Serif,
-                                                color = Color.White,
-                                                fontSize = 9.sp,
-                                                fontWeight = FontWeight.ExtraBold,
-                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                            )
+                                    Text("%,d points".format(Locale.US, pack.points), fontWeight = FontWeight.Bold)
+                                    if (pack.label == "Best Value") {
+                                        Spacer(Modifier.width(6.dp))
+                                        Surface(shape = RoundedCornerShape(5.dp), color = Color(0xFF166534)) {
+                                            Text("BEST VALUE", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 5.dp, vertical = 3.dp))
                                         }
                                     }
                                 }
-                                Text(pack.label, fontFamily = FontFamily.Serif, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Base ₹%.2f + GST ₹%.2f = ₹%.2f".format(Locale.US, base, gst, base + gst), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                            Text("₹${pack.cost}", fontFamily = FontFamily.Serif, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, color = MaterialTheme.colorScheme.primary)
+                            RadioButton(selected = selected, onClick = {
+                                selectedPackagePoints = pack.points
+                                customPointsText = ""
+                            })
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(18.dp))
+                OutlinedTextField(
+                    value = customPointsText,
+                    onValueChange = { input -> customPointsText = input.filter(Char::isDigit).take(7) },
+                    label = { Text("Custom points (100–1,000,000)") },
+                    supportingText = {
+                        if (isCustomInput && !customPointsValid) Text("Enter between 100 and 1,000,000 points.")
+                        else Text("Base ₹%.2f + GST ₹%.2f (18%) = ₹%.2f".format(Locale.US, pointsToBuy * 0.05, pointsToBuy * 0.05 * 0.18, totalPrice))
+                    },
+                    isError = isCustomInput && !customPointsValid,
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
 
                 Button(
-                    onClick = { showTopUpPayment = true },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 3.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                    enabled = !checkoutInProgress && customPointsValid && pointsToBuy in 100..1_000_000,
+                    onClick = {
+                        scope.launch {
+                            checkoutInProgress = true
+                            val settled = try {
+                                performVerifiedBusinessCheckout(
+                                    context = context,
+                                    businessId = business.id,
+                                    purchaseType = "WALLET_RECHARGE",
+                                    points = pointsToBuy
+                                )
+                            } catch (failure: Throwable) {
+                                Log.w("BusinessWallet", "Checkout failed: ${failure.javaClass.simpleName}")
+                                null
+                            } finally {
+                                checkoutInProgress = false
+                            }
+                            if (settled?.optBoolean("ok", false) == true) {
+                                val snapshot = com.example.util.SupabaseClientManager.fetchBusinessWalletSnapshot(business.id)
+                                walletPoints = snapshot?.optInt("balance", -1)?.takeIf { it >= 0 }
+                                    ?: settled.optInt("balance", walletPoints + pointsToBuy)
+                                pointsExpiring = snapshot?.optInt("points_expiring", pointsExpiring) ?: pointsExpiring
+                                viewModel.reconcileBusinessWalletBalance(business.id, walletPoints)
+                                Toast.makeText(context, "Payment verified. Wallet now has $walletPoints points.", Toast.LENGTH_LONG).show()
+                            } else {
+                                val reason = settled?.optString("error").orEmpty()
+                                Toast.makeText(
+                                    context,
+                                    if (reason == "razorpay_keys_not_configured") "Secure checkout is not configured on the server yet."
+                                    else "Payment was not verified. No wallet points were added. Please retry checkout.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    shape = RoundedCornerShape(14.dp)
                 ) {
-                    Icon(Icons.Default.CreditCard, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Top-Up $selectedPackagePoints Points for ₹$selectedPackageCost", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    if (checkoutInProgress) {
+                        CircularProgressIndicator(modifier = Modifier.size(17.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Verifying payment…")
+                    } else {
+                        Icon(Icons.Default.CreditCard, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(7.dp))
+                        Text("Pay ₹%.2f securely".format(Locale.US, totalPrice), fontWeight = FontWeight.Bold)
+                    }
                 }
+                Text(
+                    "Points are credited only after server-side payment signature and captured-amount verification. Payment secrets are never stored in the app.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
@@ -858,15 +964,25 @@ fun SendFollowerBroadcastDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var title by remember { mutableStateOf("") }
     var content by remember { mutableStateOf("") }
+    var bannerUrl by remember { mutableStateOf("") }
+    var ctaLabel by remember { mutableStateOf("") }
+    var ctaUrl by remember { mutableStateOf("") }
+    var targetType by remember { mutableStateOf("ALL_FOLLOWERS") }
+    var radiusKm by remember { mutableIntStateOf(5) }
+    var interestTagsText by remember { mutableStateOf("food, shopping, local") }
     var isSending by remember { mutableStateOf(false) }
     var broadcastResult by remember { mutableStateOf<SocialConnectRepository.FollowerBroadcastResult?>(null) }
     var showTopUpShortcut by remember { mutableStateOf(false) }
 
-    val followers = business.followerCount.coerceAtLeast(1)
-    val requiredPoints = followers * 1
-    val hasEnoughPoints = business.walletPoints >= requiredPoints
+    // Audience estimates are conservative upper bounds. Server-side geolocation/interests and the
+    // wallet are rechecked transactionally before points are deducted.
+    val estimatedAudience = business.followerCount.coerceAtLeast(0)
+    val pointsPerUser = if (business.verificationTier.equals("GOLD", ignoreCase = true)) 0.5 else 1.0
+    val estimatedPoints = kotlin.math.ceil(estimatedAudience * pointsPerUser).toInt()
+    val estimatedBalanceSufficient = business.walletPoints >= estimatedPoints
 
     if (showTopUpShortcut) {
         BusinessWalletDialog(
@@ -883,256 +999,217 @@ fun SendFollowerBroadcastDialog(
         Surface(
             shape = RoundedCornerShape(20.dp),
             color = MaterialTheme.colorScheme.surface,
-            modifier = Modifier
-                .fillMaxWidth(0.92f)
-                .padding(vertical = 24.dp)
+            modifier = Modifier.fillMaxWidth(0.94f).padding(vertical = 16.dp)
         ) {
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp)
-                    .verticalScroll(rememberScrollState())
+                modifier = Modifier.fillMaxWidth().padding(18.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(11.dp)
             ) {
-                // Header
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Surface(
-                            shape = CircleShape,
-                            color = Color(0xFFE1F5FE),
-                            modifier = Modifier.size(38.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Default.Campaign, contentDescription = null, tint = Color(0xFF0288D1), modifier = Modifier.size(20.dp))
-                            }
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text("Broadcast to Followers", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                            Text(business.name, fontFamily = FontFamily.Serif, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
+                    Column(Modifier.weight(1f)) {
+                        Text("Ads with Us · Broadcast", fontWeight = FontWeight.ExtraBold, fontSize = 17.sp)
+                        Text(business.name, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    if (!isSending) {
-                        IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "Close")
-                        }
+                    IconButton(onClick = onDismiss, enabled = !isSending) {
+                        Icon(Icons.Default.Close, contentDescription = "Close broadcast")
                     }
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
-
-                if (broadcastResult != null) {
-                    val res = broadcastResult!!
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 8.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = Color(0xFFE8F5E9),
-                            modifier = Modifier.size(54.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Default.DoneAll, contentDescription = null, tint = Color(0xFF2E7D32), modifier = Modifier.size(32.dp))
+                broadcastResult?.let { result ->
+                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+                        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Default.Campaign, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(30.dp))
+                            Text(if (result.success) "Broadcast staged" else "Broadcast not sent", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
+                            Text(result.message, style = MaterialTheme.typography.bodyMedium)
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Eligible recipients")
+                                Text(result.totalFollowers.toString(), fontWeight = FontWeight.Bold)
+                            }
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Points charged")
+                                Text(result.pointsDeducted.toString(), fontWeight = FontWeight.Bold)
+                            }
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Current balance")
+                                Text(result.remainingWalletPoints.toString(), fontWeight = FontWeight.Bold)
+                            }
+                            Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Done") }
+                        }
+                    }
+                } ?: run {
+                    Text("1. Audience", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                        listOf(
+                            "ALL_FOLLOWERS" to "All Followers",
+                            "NEARBY" to "Local Nearby",
+                            "INTEREST_TAGS" to "Interest Tags"
+                        ).forEach { (value, label) ->
+                            Surface(
+                                shape = RoundedCornerShape(20.dp),
+                                color = if (targetType == value) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                modifier = Modifier.clickable { targetType = value }.padding(1.dp)
+                            ) {
+                                Text(label, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    color = if (targetType == value) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                             }
                         }
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text("Broadcast Dispatched!", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color(0xFF1B5E20))
-                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                    if (targetType == "NEARBY") {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf(5, 10).forEach { km ->
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (radiusKm == km) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                                    modifier = Modifier.clickable { radiusKm = km }
+                                ) {
+                                    Text("$km km", modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp), fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                    if (targetType == "INTEREST_TAGS") {
+                        OutlinedTextField(
+                            value = interestTagsText,
+                            onValueChange = { interestTagsText = it },
+                            label = { Text("Interest tags, comma separated") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                    }
 
-                        Card(
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("Estimated upper-bound cost", fontWeight = FontWeight.Bold)
+                            Text("$estimatedAudience × $pointsPerUser point/user = $estimatedPoints points", fontWeight = FontWeight.Bold)
+                            Text(
+                                "Exact nearby/tag audience and final charge are calculated by Supabase when you send. Gold tier receives the 50% rate.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Text("Wallet balance: ${business.walletPoints} points", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                    if (!estimatedBalanceSufficient) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.errorContainer,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Column(modifier = Modifier.padding(14.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text("Recipients Targeted:", fontFamily = FontFamily.Serif, fontSize = 12.sp)
-                                    Text("${res.totalFollowers} followers", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                }
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text("Double Tick Read (✓✓):", fontFamily = FontFamily.Serif, fontSize = 12.sp, color = Color(0xFF1565C0))
-                                    Text("${res.deliveredCount} read", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF1565C0))
-                                }
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text("Undelivered / Unread:", fontFamily = FontFamily.Serif, fontSize = 12.sp, color = Color(0xFFC62828))
-                                    Text("${res.undeliveredCount} followers", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFFC62828))
-                                }
-                                Spacer(modifier = Modifier.height(6.dp))
-                                HorizontalDivider()
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text("Points Reversed Back:", fontFamily = FontFamily.Serif, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2E7D32))
-                                    Text("+${res.pointsReversed} pts refunded", fontFamily = FontFamily.Serif, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp, color = Color(0xFF2E7D32))
-                                }
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text("New Wallet Balance:", fontFamily = FontFamily.Serif, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                    Text("${res.remainingWalletPoints} pts (₹${String.format(Locale.getDefault(), "%.2f", res.remainingWalletPoints * 0.05)})", fontFamily = FontFamily.Serif, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Button(
-                            onClick = onDismiss,
-                            modifier = Modifier.fillMaxWidth().height(48.dp),
-                            shape = RoundedCornerShape(16.dp),
-                            elevation = ButtonDefaults.buttonElevation(defaultElevation = 3.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                        ) {
-                            Text("Done", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                } else {
-                    // Calculation & Form
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = Color(0xFFE3F2FD),
-                        border = BorderStroke(1.dp, Color(0xFF90CAF9)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("Audience Reach:", fontFamily = FontFamily.Serif, fontSize = 11.sp, color = Color(0xFF0D47A1))
-                                Text("$followers followers", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Color(0xFF0D47A1))
-                            }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("Broadcast Rate (1 pt/follower):", fontFamily = FontFamily.Serif, fontSize = 11.sp, color = Color(0xFF0D47A1))
-                                Text("$requiredPoints pts (₹${String.format(Locale.getDefault(), "%.2f", requiredPoints * 0.05)})", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Color(0xFF0D47A1))
-                            }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("Your Wallet Balance:", fontFamily = FontFamily.Serif, fontSize = 11.sp, color = Color(0xFF0D47A1))
-                                Text("${business.walletPoints} pts", fontFamily = FontFamily.Serif, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = if (hasEnoughPoints) Color(0xFF2E7D32) else Color(0xFFC62828))
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                "✓✓ Double Tick Guarantee: Any follower who does not receive/read this broadcast will have their points automatically reversed back to your wallet.",
-                                fontFamily = FontFamily.Serif,
-                                fontSize = 11.sp,
-                                color = Color(0xFF1565C0)
-                            )
-                        }
-                    }
-
-                    if (!hasEnoughPoints) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(Color(0xFFFFEBEE), RoundedCornerShape(12.dp))
-                                .padding(8.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                "Insufficient points balance (${business.walletPoints} < $requiredPoints pts)",
-                                fontFamily = FontFamily.Serif,
-                                fontSize = 11.sp,
-                                color = Color(0xFFC62828),
-                                modifier = Modifier.weight(1f)
-                            )
-                            Button(
-                                onClick = { showTopUpShortcut = true },
-                                shape = RoundedCornerShape(12.dp),
-                                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                modifier = Modifier.height(32.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828))
-                            ) {
-                                Text("Top-Up", fontFamily = FontFamily.Serif, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Low Balance — Recharge Points to Broadcast", color = MaterialTheme.colorScheme.onErrorContainer, fontWeight = FontWeight.Bold)
+                                Button(onClick = { showTopUpShortcut = true }, modifier = Modifier.fillMaxWidth()) { Text("Recharge Points") }
+                                Text("You may still submit: the server checks the exact filtered audience before charging.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
                             }
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(14.dp))
-
+                    Text("2. Broadcast content", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     OutlinedTextField(
-                        value = title,
-                        onValueChange = { title = it },
-                        label = { Text("Broadcast Headline *", fontFamily = FontFamily.Serif) },
-                        placeholder = { Text("e.g. Flash 40% OFF Couple High-Tea This Weekend", fontFamily = FontFamily.Serif) },
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        value = title, onValueChange = { title = it.take(120) },
+                        label = { Text("Headline *") }, singleLine = true, modifier = Modifier.fillMaxWidth()
                     )
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
                     OutlinedTextField(
-                        value = content,
-                        onValueChange = { content = it },
-                        label = { Text("Broadcast Message Content *", fontFamily = FontFamily.Serif) },
-                        placeholder = { Text("Write updates, greetings, discounts or invitations for all your followers...", fontFamily = FontFamily.Serif) },
-                        minLines = 3,
-                        maxLines = 5,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        value = content, onValueChange = { content = it.take(1800) },
+                        label = { Text("Message *") }, minLines = 3, maxLines = 6, modifier = Modifier.fillMaxWidth()
                     )
-
-                    Spacer(modifier = Modifier.height(18.dp))
-
+                    OutlinedTextField(
+                        value = bannerUrl, onValueChange = { bannerUrl = it.take(1000) },
+                        label = { Text("Optional banner image URL") }, singleLine = true, modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedTextField(
+                            value = ctaLabel, onValueChange = { ctaLabel = it.take(50) },
+                            label = { Text("CTA label") }, singleLine = true, modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = ctaUrl, onValueChange = { ctaUrl = it.take(500) },
+                            label = { Text("CTA link (HTTPS)") }, singleLine = true, modifier = Modifier.weight(1f)
+                        )
+                    }
                     Button(
+                        enabled = title.isNotBlank() && content.isNotBlank() && !isSending &&
+                            (ctaUrl.isBlank() || ctaUrl.trim().startsWith("https://", ignoreCase = true)),
                         onClick = {
-                            if (title.isNotBlank() && content.isNotBlank()) {
+                            scope.launch {
                                 isSending = true
-                                viewModel.sendFollowerBroadcast(business.id, title, content) { res ->
+                                val staged = try {
+                                    com.example.util.SupabaseClientManager.stageBusinessBroadcast(
+                                        businessId = business.id,
+                                        title = title.trim(),
+                                        message = content.trim(),
+                                        targetType = targetType,
+                                        radiusKm = radiusKm,
+                                        interestTags = if (targetType == "INTEREST_TAGS") interestTagsText.split(",").map { it.trim() }.filter { it.isNotBlank() }.distinct() else emptyList(),
+                                        bannerUrl = bannerUrl.trim(),
+                                        ctaLabel = ctaLabel.trim(),
+                                        ctaUrl = ctaUrl.trim()
+                                    )
+                                } catch (_: Throwable) {
+                                    null
+                                } finally {
                                     isSending = false
-                                    broadcastResult = res
+                                }
+                                if (staged == null) {
+                                    Toast.makeText(context, "Broadcast could not be staged. Check your connection and try again.", Toast.LENGTH_LONG).show()
+                                } else if (!staged.optBoolean("ok", false)) {
+                                    val error = staged.optString("error", "broadcast_staging_failed")
+                                    if (error == "low_balance") showTopUpShortcut = true
+                                    Toast.makeText(
+                                        context,
+                                        if (error == "low_balance") "Low balance. Recharge points before sending this audience."
+                                        else "Broadcast was not sent: $error",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                } else {
+                                    val audience = staged.optInt("audience_size", estimatedAudience).coerceAtLeast(0)
+                                    val charged = staged.optInt("required_points", estimatedPoints).coerceAtLeast(0)
+                                    val balance = staged.optInt("balance", (business.walletPoints - charged).coerceAtLeast(0)).coerceAtLeast(0)
+                                    viewModel.reconcileBusinessWalletBalance(business.id, balance)
+                                    val dispatchTriggered = staged.optBoolean("dispatch_triggered", false)
+                                    val dispatch = staged.optJSONObject("dispatch")
+                                    val sentDevices = dispatch?.optInt("sent_devices", 0)?.coerceAtLeast(0) ?: 0
+                                    val failedDevices = dispatch?.optInt("failed_devices", 0)?.coerceAtLeast(0) ?: 0
+                                    val message = when {
+                                        dispatchTriggered && dispatch?.optString("status") == "DISPATCHED" ->
+                                            "Broadcast staged and dispatch completed. Device delivery/open rates will update as events arrive."
+                                        else -> "Broadcast staged securely. FCM dispatch is pending retry; no additional points were charged."
+                                    }
+                                    broadcastResult = SocialConnectRepository.FollowerBroadcastResult(
+                                        success = true,
+                                        totalFollowers = audience,
+                                        pointsDeducted = charged,
+                                        deliveredCount = sentDevices,
+                                        undeliveredCount = failedDevices,
+                                        pointsReversed = 0,
+                                        remainingWalletPoints = balance,
+                                        message = message
+                                    )
                                 }
                             }
                         },
-                        enabled = title.isNotBlank() && content.isNotBlank() && hasEnoughPoints && !isSending,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp),
-                        shape = RoundedCornerShape(16.dp),
-                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 3.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0288D1))
+                        modifier = Modifier.fillMaxWidth().height(50.dp),
+                        shape = RoundedCornerShape(14.dp)
                     ) {
                         if (isSending) {
-                            CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Dispatching to Followers...", fontFamily = FontFamily.Serif, fontSize = 13.sp)
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Staging & dispatching…")
                         } else {
-                            Icon(Icons.Default.Campaign, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Send to $followers Followers ($requiredPoints Pts)", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Icon(Icons.Default.Campaign, contentDescription = null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(7.dp))
+                            Text("Stage & Send Broadcast", fontWeight = FontWeight.Bold)
                         }
                     }
+                    Text(
+                        "Points are deducted transactionally by Supabase. No fabricated delivery counts or local-only wallet charges are used.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }
@@ -1696,37 +1773,10 @@ fun UpgradeTierDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var selectedTier by remember { mutableStateOf("GOLD") }
-    var showPayment by remember { mutableStateOf(false) }
+    var isCheckingOut by remember { mutableStateOf(false) }
     var celebratoryBannerMessage by remember { mutableStateOf<String?>(null) }
-
-    val fee = when (selectedTier) {
-        "GOLD" -> 499
-        "SILVER" -> 299
-        "BLUE_TICK" -> 199
-        else -> 0
-    }
-
-    if (showPayment) {
-        val tierTitle = when (selectedTier) {
-            "GOLD" -> "Gold Verified"
-            "SILVER" -> "Silver Verified"
-            "BLUE_TICK" -> "Blue Tick Verified"
-            else -> "Standard"
-        }
-        VenturePaymentGatewayDialog(
-            title = "Upgrade Verification Badge",
-            purpose = "$tierTitle Upgrade (1 Year Plan)",
-            amount = fee,
-            onSuccess = { txnId ->
-                viewModel.upgradeBusinessVerificationTier(business.id, selectedTier) {
-                    showPayment = false
-                    celebratoryBannerMessage = "🎉 Congratulations! Your $tierTitle Badge is now live!"
-                }
-            },
-            onDismiss = { showPayment = false }
-        )
-    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -1809,16 +1859,54 @@ fun UpgradeTierDialog(
                     }
 
                     Button(
-                        onClick = { 
+                        onClick = {
                             if (selectedTier == "STANDARD") {
                                 onDismiss()
-                            } else {
-                                showPayment = true 
+                            } else if (!isCheckingOut) {
+                                scope.launch {
+                                    isCheckingOut = true
+                                    val settled = try {
+                                        performVerifiedBusinessCheckout(
+                                            context = context,
+                                            businessId = business.id,
+                                            purchaseType = "VERIFICATION_BADGE",
+                                            verificationTier = selectedTier
+                                        )
+                                    } catch (failure: Throwable) {
+                                        Log.w("BusinessBadgeCheckout", "Checkout failure: ${failure.javaClass.simpleName}")
+                                        null
+                                    } finally {
+                                        isCheckingOut = false
+                                    }
+                                    if (settled?.optBoolean("ok", false) == true) {
+                                        viewModel.upgradeBusinessVerificationTier(business.id, selectedTier) {
+                                            scope.launch {
+                                                val snapshot = com.example.util.SupabaseClientManager.fetchBusinessWalletSnapshot(business.id)
+                                                val balance = snapshot?.optInt("balance", -1)?.takeIf { it >= 0 }
+                                                    ?: settled.optInt("balance", business.walletPoints)
+                                                viewModel.reconcileBusinessWalletBalance(business.id, balance)
+                                            }
+                                            val tierTitle = when (selectedTier) {
+                                                "GOLD" -> "Gold Crown Badge"
+                                                "SILVER" -> "Silver Crown Badge"
+                                                else -> "Blue Verified Badge"
+                                            }
+                                            celebratoryBannerMessage = "🎉 Payment verified. $tierTitle is now active for ${business.name}."
+                                        }
+                                    } else {
+                                        val error = settled?.optString("error").orEmpty()
+                                        Toast.makeText(
+                                            context,
+                                            if (error == "razorpay_keys_not_configured") "Secure checkout is not configured on the server yet."
+                                            else "Payment was not verified; the badge has not been upgraded.",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                }
                             }
                         },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp),
+                        enabled = !isCheckingOut,
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
                         shape = RoundedCornerShape(16.dp),
                         elevation = ButtonDefaults.buttonElevation(defaultElevation = 3.dp),
                         colors = ButtonDefaults.buttonColors(
@@ -1830,7 +1918,8 @@ fun UpgradeTierDialog(
                             }
                         )
                     ) {
-                        Text(actionButtonLabel, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        if (isCheckingOut) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        else Text(actionButtonLabel, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     }
                 }
             }

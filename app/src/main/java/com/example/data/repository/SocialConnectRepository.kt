@@ -4432,6 +4432,14 @@ class SocialConnectRepository(
         return newBalance
     }
 
+    /** Apply only a balance returned by the server-authoritative wallet settlement/snapshot. */
+    suspend fun reconcileBusinessWalletBalance(businessId: String, serverBalance: Int): Int {
+        if (businessId.isBlank() || serverBalance < 0) return 0
+        val business = businessDao.getBusinessByIdSync(businessId) ?: return 0
+        businessDao.updateWalletPoints(businessId, serverBalance)
+        return serverBalance
+    }
+
     suspend fun upgradeVerificationTier(businessId: String, newTier: String) {
         businessDao.updateVerificationTier(businessId, newTier)
     }

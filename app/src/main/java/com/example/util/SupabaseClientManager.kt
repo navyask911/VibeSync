@@ -1681,6 +1681,65 @@ object SupabaseClientManager {
         }
     }
 
+    /** Record a validated engagement event through the business analytics RPC. */
+    suspend fun recordBusinessAnalyticsEvent(
+        businessId: String,
+        eventType: String,
+        metadata: JSONObject = JSONObject()
+    ): Boolean = withContext(Dispatchers.IO) {
+        val normalized = eventType.trim().uppercase()
+        if (businessId.isBlank() || normalized !in setOf(
+                "VIEW", "IMPRESSION", "CHAT_INQUIRY", "BROADCAST_OPEN", "BROADCAST_CLICK", "LOCATION_CLICK", "CALL_CLICK"
+            ) || VibeSyncSessionManager.getProfileId().isNullOrBlank()
+        ) return@withContext false
+        try {
+            val request = buildRequest(
+                endpoint = "rpc/record_business_analytics_event",
+                method = "POST",
+                bodyJson = JSONObject()
+                    .put("p_business_id", businessId)
+                    .put("p_event_type", normalized)
+                    .put("p_event_metadata", metadata)
+                    .toString()
+            )
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) Log.w(TAG, "Business analytics event rejected HTTP ${response.code}.")
+                response.isSuccessful
+            }
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Business analytics event deferred: ${failure.javaClass.simpleName}")
+            false
+        }
+    }
+
+    /** Server-owned analytics totals. The RPC authorizes business ownership and date range. */
+    suspend fun fetchBusinessAnalyticsSnapshot(
+        businessId: String,
+        range: String
+    ): JSONObject? = withContext(Dispatchers.IO) {
+        val cleanRange = range.trim().uppercase()
+        if (businessId.isBlank() || VibeSyncSessionManager.getProfileId().isNullOrBlank() ||
+            cleanRange !in setOf("TODAY", "LAST 7 DAYS", "LAST 30 DAYS", "ALL TIME")
+        ) return@withContext null
+        try {
+            val request = buildRequest(
+                endpoint = "rpc/get_my_business_analytics_snapshot",
+                method = "POST",
+                bodyJson = JSONObject().put("p_business_id", businessId).put("p_range", cleanRange).toString()
+            )
+            httpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Business analytics snapshot failed HTTP ${response.code}.")
+                    null
+                } else runCatching { JSONObject(body) }.getOrNull()
+            }
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Business analytics snapshot deferred: ${failure.javaClass.simpleName}")
+            null
+        }
+    }
+
     /**
      * Upload encrypted avatar bytes only. Storage writes require the matching active VibeSync
      * session and signed Supabase JWT; the publishable key is never a Bearer-token fallback.

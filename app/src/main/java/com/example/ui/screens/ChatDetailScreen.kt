@@ -154,6 +154,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -445,6 +446,20 @@ private fun ChatDetailScreenContent(
         mutableStateOf(com.example.util.ChatThreadPreferences.wallpaperUri(context, profile.id))
     }
     val resolvedPartnerName = localNickname.ifBlank { profile.name }
+    val publishedBusinesses by remember(context) {
+        com.example.data.database.DatingDatabase.getDatabase(context).businessDao().getAllBusinesses()
+    }.collectAsState(initial = emptyList())
+    val chatBusiness = remember(profile.id, publishedBusinesses) {
+        publishedBusinesses.firstOrNull { business ->
+            business.isPublished && (
+                business.ownerUserId.equals(profile.id, ignoreCase = true) ||
+                    business.ownerUserId.equals(profile.phoneNumber, ignoreCase = true) ||
+                    business.id.equals(profile.id, ignoreCase = true)
+            )
+        }
+    }
+    val chatTitle = chatBusiness?.name?.takeIf { it.isNotBlank() } ?: resolvedPartnerName
+    val chatBadgeTier = chatBusiness?.verificationTier?.uppercase().orEmpty()
 
     var inputText by remember { mutableStateOf("") }
     val coroutineScope = rememberCoroutineScope()
@@ -931,7 +946,7 @@ private fun ChatDetailScreenContent(
                     modifier = Modifier.clickable { showChatSettingsSheet = true }
                 ) {
                     DatingAvatar(
-                        name = resolvedPartnerName,
+                        name = chatTitle,
                         emoji = profile.avatarEmoji,
                         colorStart = profile.gradientColorStart,
                         colorEnd = profile.gradientColorEnd,
@@ -944,7 +959,7 @@ private fun ChatDetailScreenContent(
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = resolvedPartnerName,
+                                text = chatTitle,
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface,
@@ -952,14 +967,28 @@ private fun ChatDetailScreenContent(
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f, fill = false)
                             )
-                            if (profile.isVerified) {
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Icon(
-                                    imageVector = Icons.Default.Verified,
-                                    contentDescription = "Verified Human",
-                                    tint = VibeSyncTeal,
-                                    modifier = Modifier.size(15.dp)
-                                )
+                            when (chatBadgeTier) {
+                                "GOLD" -> {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("👑", fontSize = 13.sp)
+                                }
+                                "SILVER" -> {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("♛", fontSize = 14.sp, color = Color(0xFF9AA4B2))
+                                }
+                                "BLUE_TICK" -> {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Icon(Icons.Default.Verified, contentDescription = "Verified business", tint = Color(0xFF1DA1F2), modifier = Modifier.size(15.dp))
+                                }
+                                else -> if (profile.isVerified) {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Icon(
+                                        imageVector = Icons.Default.Verified,
+                                        contentDescription = "Verified Human",
+                                        tint = VibeSyncTeal,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                }
                             }
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -4031,8 +4060,11 @@ private fun ChatDetailScreenContent(
         ChatThreadSettingsSheet(
             profile = profile,
             preferences = userPreferences,
-            displayName = resolvedPartnerName,
-            phoneNumber = profile.phoneNumber,
+            displayName = chatTitle,
+            phoneNumber = if (chatBusiness == null) profile.phoneNumber else "",
+            businessName = chatBusiness?.name.orEmpty(),
+            businessPhoneNumber = chatBusiness?.phoneNumber.orEmpty(),
+            businessVerificationTier = chatBadgeTier,
             isMuted = chatMuted,
             nickname = localNickname,
             onUpdatePreferences = onUpdateUserPreferences,

@@ -120,6 +120,7 @@ import com.example.ui.theme.CoralPink
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 @Composable
 fun BusinessProfileDialog(
@@ -128,6 +129,12 @@ fun BusinessProfileDialog(
     onDismissRequest: () -> Unit
 ) {
     val context = LocalContext.current
+    val analyticsScope = rememberCoroutineScope()
+    val recordRemoteEvent: (String) -> Unit = { eventType ->
+        analyticsScope.launch {
+            com.example.util.SupabaseClientManager.recordBusinessAnalyticsEvent(business.id, eventType)
+        }
+    }
     val postsFlow = remember(business.id) { viewModel.getPostsForBusiness(business.id) }
     val posts by postsFlow.collectAsState(initial = emptyList())
     val reviewsFlow = remember(business.id) { viewModel.getBusinessReviews(business.id) }
@@ -146,6 +153,7 @@ fun BusinessProfileDialog(
     // Pure Local Room SQL: Record Profile Visit (0 Supabase Weight)
     LaunchedEffect(business.id) {
         viewModel.recordBusinessVisit(business.id)
+        recordRemoteEvent("VIEW")
     }
 
     Dialog(
@@ -454,6 +462,7 @@ fun BusinessProfileDialog(
                                     .fillMaxWidth()
                                     .clickable {
                                         viewModel.recordBusinessNavigation(business.id)
+                                        recordRemoteEvent("LOCATION_CLICK")
                                         val geoUri = Uri.parse("geo:${business.latitude},${business.longitude}?q=${Uri.encode("${business.name}, ${business.address}")}")
                                         val mapIntent = Intent(Intent.ACTION_VIEW, geoUri)
                                         try {
@@ -516,6 +525,7 @@ fun BusinessProfileDialog(
                                 OutlinedButton(
                                     onClick = {
                                         viewModel.recordBusinessInquiry(business.id)
+                                        recordRemoteEvent("CALL_CLICK")
                                         val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${business.phoneNumber}"))
                                         context.startActivity(intent)
                                     },
@@ -530,6 +540,7 @@ fun BusinessProfileDialog(
                                 OutlinedButton(
                                     onClick = {
                                         viewModel.recordBusinessInquiry(business.id)
+                                        recordRemoteEvent("LOCATION_CLICK")
                                         val safeUrl = if (business.websiteUrl.startsWith("http")) business.websiteUrl else "https://${business.websiteUrl}"
                                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(safeUrl))
                                         context.startActivity(Intent.createChooser(intent, "Visit Website"))
@@ -548,6 +559,7 @@ fun BusinessProfileDialog(
                             Button(
                                 onClick = {
                                     viewModel.recordBusinessInquiry(business.id)
+                                    recordRemoteEvent("CHAT_INQUIRY")
                                     onDismissRequest()
                                     viewModel.startChatWithBusiness(business)
                                 },

@@ -37,13 +37,15 @@ import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.FragmentActivity
 import com.example.ui.DatingAppRoot
+import com.razorpay.PaymentData
+import com.razorpay.PaymentResultWithDataListener
 import com.example.ui.theme.MyApplicationTheme
 import com.example.util.AppNotificationManager
 import com.example.util.BiometricAuthManager
 import com.example.util.PlatformTruecallerVerificationClient
 import com.example.util.VibeSyncSessionManager
 
-class MainActivity : FragmentActivity() {
+class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
   private lateinit var truecallerActivityResultLauncher: ActivityResultLauncher<Intent>
   private var privacyPreferences: SharedPreferences? = null
   private val isAppLocked = mutableStateOf(false)
@@ -257,6 +259,22 @@ class MainActivity : FragmentActivity() {
         }
       }
     }
+  }
+
+  override fun onPaymentSuccess(razorpayPaymentID: String?, paymentData: PaymentData?) {
+    com.example.util.PaymentGatewayManager.reportSuccess(
+      paymentId = razorpayPaymentID.orEmpty(),
+      gatewayOrderId = paymentData?.orderId.orEmpty(),
+      signature = paymentData?.signature.orEmpty()
+    )
+  }
+
+  override fun onPaymentError(code: Int, response: String?, paymentData: PaymentData?) {
+    com.example.util.PaymentGatewayManager.reportError(
+      code = code,
+      response = response,
+      gatewayOrderId = paymentData?.orderId.orEmpty()
+    )
   }
 
   private inline fun safeInit(step: String, block: () -> Unit) {

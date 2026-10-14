@@ -31,6 +31,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
@@ -49,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import kotlinx.coroutines.launch
 import com.example.data.model.BusinessEntity
 import com.example.data.model.tierEnum
 import kotlin.math.roundToInt
@@ -66,6 +69,21 @@ fun BusinessCard(
     onSwipeFollow: (() -> Unit)? = null,
     isSwipable: Boolean = true
 ) {
+    val context = LocalContext.current
+    val analyticsScope = rememberCoroutineScope()
+    val openBusinessProfile: () -> Unit = {
+        analyticsScope.launch {
+            com.example.util.SupabaseClientManager.recordBusinessAnalyticsEvent(business.id, "VIEW")
+        }
+        onViewProfileClick()
+    }
+    LaunchedEffect(business.id) {
+        com.example.util.SupabaseClientManager.recordBusinessAnalyticsEvent(
+            business.id,
+            "IMPRESSION",
+            org.json.JSONObject().put("curated_landmark", business.isCuratedLandmark)
+        )
+    }
     var offsetX by remember { mutableFloatStateOf(0f) }
     val animatedOffsetX by androidx.compose.animation.core.animateFloatAsState(
         targetValue = offsetX,
@@ -114,7 +132,7 @@ fun BusinessCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(190.dp)
-                    .clickable { onViewProfileClick() }
+                    .clickable { openBusinessProfile() }
             )
 
             Column(
@@ -207,7 +225,7 @@ fun BusinessCard(
 
                 if (business.activeOfferSummary.isNotBlank()) {
                     Surface(
-                        modifier = Modifier.fillMaxWidth().clickable { onViewProfileClick() },
+                        modifier = Modifier.fillMaxWidth().clickable { openBusinessProfile() },
                         color = androidx.compose.ui.graphics.Color(0xFF17243D),
                         contentColor = androidx.compose.ui.graphics.Color.White,
                         shape = RoundedCornerShape(12.dp)
@@ -243,7 +261,7 @@ fun BusinessCard(
                         Text(if (business.isFollowed) "Following" else "Follow", fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
                     }
                     OutlinedButton(
-                        onClick = onViewProfileClick,
+                        onClick = openBusinessProfile,
                         modifier = Modifier.weight(1.2f).height(44.dp).testTag("view_business_timeline_${business.id}"),
                         border = androidx.compose.foundation.BorderStroke(1.dp, BusinessSapphire),
                         shape = RoundedCornerShape(12.dp),

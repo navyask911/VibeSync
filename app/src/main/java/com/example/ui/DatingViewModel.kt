@@ -3739,6 +3739,18 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    /** Reconcile Room to a balance verified by Supabase; never locally mint payment points. */
+    fun reconcileBusinessWalletBalance(
+        businessId: String,
+        serverBalance: Int,
+        onComplete: (Int) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val newBalance = repository.reconcileBusinessWalletBalance(businessId, serverBalance)
+            onComplete(newBalance)
+        }
+    }
+
     fun upgradeBusinessVerificationTier(
         businessId: String,
         newTier: String,

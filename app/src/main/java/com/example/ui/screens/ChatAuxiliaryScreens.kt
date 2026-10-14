@@ -497,6 +497,9 @@ fun ChatThreadSettingsSheet(
     preferences: UserPreferencesEntity?,
     displayName: String,
     phoneNumber: String,
+    businessName: String = "",
+    businessPhoneNumber: String = "",
+    businessVerificationTier: String = "",
     isMuted: Boolean,
     nickname: String,
     onUpdatePreferences: (UserPreferencesEntity) -> Unit,
@@ -587,14 +590,14 @@ fun ChatThreadSettingsSheet(
                                         maxLines = 2,
                                         overflow = TextOverflow.Ellipsis
                                     )
-                                    if (profile.isVerified) {
-                                        Spacer(Modifier.width(5.dp))
-                                        Icon(
-                                            Icons.Default.Verified,
-                                            contentDescription = "Verified",
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(18.dp)
-                                        )
+                                    when (businessVerificationTier.uppercase()) {
+                                        "GOLD" -> { Spacer(Modifier.width(5.dp)); Text("👑", fontSize = 17.sp) }
+                                        "SILVER" -> { Spacer(Modifier.width(5.dp)); Text("♛", fontSize = 18.sp, color = Color(0xFF9AA4B2)) }
+                                        "BLUE_TICK" -> { Spacer(Modifier.width(5.dp)); Icon(Icons.Default.Verified, contentDescription = "Verified business", tint = Color(0xFF1DA1F2), modifier = Modifier.size(18.dp)) }
+                                        else -> if (profile.isVerified) {
+                                            Spacer(Modifier.width(5.dp))
+                                            Icon(Icons.Default.Verified, contentDescription = "Verified", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                        }
                                     }
                                 }
                                 Text(
@@ -603,7 +606,51 @@ fun ChatThreadSettingsSheet(
                                     color = MaterialTheme.colorScheme.primary
                                 )
                                 Text(
-                                    text = safePhoneLabel,
+                                    text = if (businessName.isNotBlank()) "Business listing · contact details below" else safePhoneLabel,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    if (businessName.isNotBlank()) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(18.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.48f)),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.22f))
+                        ) {
+                            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Business Profile / Info", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Text(businessName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                Text("Contact Details", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    businessPhoneNumber.ifBlank { "Business phone not published" },
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Button(
+                                    onClick = {
+                                        if (businessPhoneNumber.isNotBlank()) {
+                                            runCatching {
+                                                context.startActivity(
+                                                    android.content.Intent(
+                                                        android.content.Intent.ACTION_DIAL,
+                                                        Uri.fromParts("tel", businessPhoneNumber.trim(), null)
+                                                    )
+                                                )
+                                            }
+                                        }
+                                    },
+                                    enabled = businessPhoneNumber.isNotBlank(),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(17.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Call Business")
+                                }
+                                Text(
+                                    "The business number is shown here only, not in the conversation title bar.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -730,7 +777,9 @@ fun ChatThreadSettingsSheet(
                     ThreadSettingRow("Chat Color", "Choose a local conversation color", "🎨", onChatColor)
                     ThreadSettingRow("Chat Wallpaper", "Set a picture behind this conversation", "▧", onWallpaper)
                     ThreadSettingRow("Sounds & Notifications", if (isMuted) "Muted for this conversation" else "Choose this chat's alert tone", "♫", onNotificationSound)
-                    ThreadSettingRow("Phone Contact Info", safePhoneLabel, "☎", onContactInfo)
+                    if (businessName.isBlank()) {
+                        ThreadSettingRow("Phone Contact Info", safePhoneLabel, "☎", onContactInfo)
+                    }
                     ThreadSettingRow("View Safety Number", "Verify the public-key fingerprint / QR code", "▦", onSafetyNumber)
                     ThreadSettingRow("Block / Report Spam", "Block this contact or report abuse", "⚠", onBlockReport, danger = true)
                     Spacer(Modifier.height(24.dp))

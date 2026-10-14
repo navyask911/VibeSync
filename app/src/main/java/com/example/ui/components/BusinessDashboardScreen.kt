@@ -640,14 +640,40 @@ private fun BusinessSuiteSecondaryTab(
     var target by remember(venue.id) { mutableStateOf("All Followers") }
     var radius by remember(venue.id) { mutableIntStateOf(5) }
     var interestTags by remember(venue.id) { mutableStateOf("food, shopping, local") }
-    val audience = when (target) {
-        "Local Nearby Users" -> (venue.followerCount * if (radius == 5) 0.22f else 0.38f).toInt().coerceAtLeast(0)
-        "Interest Tags" -> (venue.followerCount * 0.45f).toInt().coerceAtLeast(0)
-        else -> venue.followerCount.coerceAtLeast(0)
-    }
+    val audience = venue.followerCount.coerceAtLeast(0) // conservative upper bound; Supabase computes the exact target count
     val pointsPerUser = if (venue.verificationTier.equals("GOLD", true)) 0.5f else 1f
     val requiredPoints = kotlin.math.ceil(audience * pointsPerUser).toInt()
     var selectedRange by remember(venue.id) { mutableStateOf("Last 7 Days") }
+    var serverAnalytics by remember(venue.id) { mutableStateOf<org.json.JSONObject?>(null) }
+    var walletSnapshot by remember(venue.id) { mutableStateOf<org.json.JSONObject?>(null) }
+    var recentWalletDeductions by remember(venue.id) { mutableIntStateOf(0) }
+    LaunchedEffect(venue.id, tab, selectedRange) {
+        if (tab == 2) {
+            val snapshot = com.example.util.SupabaseClientManager.fetchBusinessWalletSnapshot(venue.id)
+            walletSnapshot = snapshot
+            val entries = snapshot?.optJSONArray("recent_entries")
+            var deducted = 0
+            if (entries != null) for (index in 0 until entries.length()) {
+                val entry = entries.optJSONObject(index) ?: continue
+                val delta = entry.optInt("points_delta", 0)
+                if (delta < 0) deducted += -delta
+            }
+            recentWalletDeductions = deducted
+        }
+        if (tab == 3) {
+            serverAnalytics = com.example.util.SupabaseClientManager.fetchBusinessAnalyticsSnapshot(venue.id, selectedRange)
+        }
+    }
+    val walletBalance = walletSnapshot?.optInt("balance", venue.walletPoints)?.coerceAtLeast(0) ?: venue.walletPoints
+    val walletPointsExpiring = walletSnapshot?.optInt("points_expiring", 0)?.coerceAtLeast(0) ?: 0
+    val profileViews = serverAnalytics?.optInt("profile_views", analytics.views_count) ?: analytics.views_count
+    val impressions = serverAnalytics?.optInt("impressions", analytics.views_count) ?: analytics.views_count
+    val chatInquiries = serverAnalytics?.optInt("chat_inquiries", analytics.inquiries_count) ?: analytics.inquiries_count
+    val broadcastOpens = serverAnalytics?.optInt("broadcast_opens", 0) ?: 0
+    val broadcastClicks = serverAnalytics?.optInt("broadcast_clicks", 0) ?: 0
+    val broadcastClickRate = serverAnalytics?.optDouble("broadcast_click_rate_pct", 0.0) ?: 0.0
+    val locationClicks = serverAnalytics?.optInt("location_clicks", analytics.navigations_count) ?: analytics.navigations_count
+    val callClicks = serverAnalytics?.optInt("call_clicks", 0) ?: 0
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 14.dp),
@@ -684,9 +710,10 @@ private fun BusinessSuiteSecondaryTab(
                             )
                         }
                         HorizontalDivider()
-                        Text("Estimated audience: $audience")
+                        Text("Estimated maximum audience: $audience")
                         Text("Points per user: ${if (pointsPerUser == 0.5f) "0.5 (Gold discount)" else "1"}")
-                        Text("$audience × $pointsPerUser = $requiredPoints required points", fontWeight = FontWeight.Bold)
+                        Text("Up to $audience × $pointsPerUser point/user = up to $requiredPoints points", fontWeight = FontWeight.Bold)
+                        Text("Final nearby/tag eligibility is evaluated by Supabase before any point debit.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text("Wallet balance: ${venue.walletPoints} points")
                         if (venue.walletPoints < requiredPoints) {
                             Text("Low Balance — Recharge Points to Broadcast", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
@@ -703,16 +730,15 @@ private fun BusinessSuiteSecondaryTab(
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Available Points", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text(venue.walletPoints.toString(), style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.ExtraBold)
-                        Text("Current Room balance; recharge must be confirmed by the payment provider before credit.")
+                        Text("Server-synced wallet balance; credits require verified payment settlement.")
                         HorizontalDivider()
                         Text("Recent deductions", fontWeight = FontWeight.Bold)
-                        Text("Confirmed ledger entries will display here when synced from the wallet backend.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("Points expiring", fontWeight = FontWeight.Bold)
-                        Text("Expiry information is not currently provided by the wallet ledger.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("$recentWalletDeductions points in recent deductions", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Points expiring within 30 days: $walletPointsExpiring", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    listOf("500 Points" to "₹25 + 18% GST", "2,500 Points" to "₹125 + 18% GST", "10,000 Points" to "₹500 + 18% GST").forEach { (pack, price) ->
+                    listOf("500 Points" to "₹25 + ₹4.50 GST = ₹29.50", "2,500 Points" to "₹125 + ₹22.50 GST = ₹147.50", "10,000 Points" to "₹500 + ₹90 GST = ₹590").forEach { (pack, price) ->
                         Card(
                             modifier = Modifier.weight(1f).clickable(onClick = onOpenWallet),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
@@ -747,18 +773,26 @@ private fun BusinessSuiteSecondaryTab(
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    ExecutiveMetricCard("Profile Views", formatExecutiveMetric(analytics.views_count), Icons.Default.Visibility, listOf(analytics.views_count, analytics.visits_count, analytics.inquiries_count), Modifier.weight(1f))
-                    ExecutiveMetricCard("Chat Inquiries", formatExecutiveMetric(analytics.inquiries_count), Icons.Default.Call, listOf(analytics.views_count, analytics.visits_count, analytics.inquiries_count), Modifier.weight(1f))
+                    ExecutiveMetricCard("Profile Views", formatExecutiveMetric(profileViews), Icons.Default.Visibility, listOf(profileViews, impressions, chatInquiries), Modifier.weight(1f))
+                    ExecutiveMetricCard("Impressions", formatExecutiveMetric(impressions), Icons.Default.Visibility, listOf(profileViews, impressions, broadcastOpens), Modifier.weight(1f))
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    ExecutiveMetricCard("Location Clicks", formatExecutiveMetric(analytics.navigations_count), Icons.Default.LocationOn, listOf(analytics.views_count, analytics.visits_count, analytics.navigations_count), Modifier.weight(1f))
-                    ExecutiveMetricCard("Store Visits", formatExecutiveMetric(analytics.visits_count), Icons.Default.People, listOf(analytics.views_count, analytics.visits_count, analytics.inquiries_count), Modifier.weight(1f))
+                    ExecutiveMetricCard("Direct Chat Inquiries", formatExecutiveMetric(chatInquiries), Icons.Default.Call, listOf(profileViews, chatInquiries, broadcastClicks), Modifier.weight(1f))
+                    ExecutiveMetricCard("Broadcast Opens", formatExecutiveMetric(broadcastOpens), Icons.Default.People, listOf(broadcastOpens, broadcastClicks, chatInquiries), Modifier.weight(1f))
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    ExecutiveMetricCard("Broadcast Click Rate", "${String.format(java.util.Locale.US, "%.1f", broadcastClickRate)}%", Icons.Default.TrendingUp, listOf(broadcastOpens, broadcastClicks, broadcastOpens), Modifier.weight(1f))
+                    ExecutiveMetricCard("Broadcast Clicks", formatExecutiveMetric(broadcastClicks), Icons.Default.Share, listOf(broadcastOpens, broadcastClicks, chatInquiries), Modifier.weight(1f))
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    ExecutiveMetricCard("Location Clicks", formatExecutiveMetric(locationClicks), Icons.Default.LocationOn, listOf(locationClicks, callClicks, chatInquiries), Modifier.weight(1f))
+                    ExecutiveMetricCard("Call Button Clicks", formatExecutiveMetric(callClicks), Icons.Default.Call, listOf(callClicks, locationClicks, chatInquiries), Modifier.weight(1f))
                 }
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("Engagement trend", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Canvas(Modifier.fillMaxWidth().height(160.dp)) {
-                            val values = listOf(analytics.views_count, analytics.visits_count, analytics.inquiries_count, analytics.navigations_count).map { it.coerceAtLeast(0).toFloat() }
+                            val values = listOf(profileViews, impressions, broadcastOpens, broadcastClicks, chatInquiries, locationClicks, callClicks).map { it.coerceAtLeast(0).toFloat() }
                             val maxValue = values.maxOrNull()?.coerceAtLeast(1f) ?: 1f
                             val points = values.mapIndexed { index, value ->
                                 Offset(x = size.width * index / values.lastIndex.coerceAtLeast(1), y = size.height - (value / maxValue) * (size.height * 0.82f) - size.height * 0.08f)
@@ -772,7 +806,10 @@ private fun BusinessSuiteSecondaryTab(
                             drawPath(path, color = MaterialTheme.colorScheme.primary, style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
                             points.forEach { drawCircle(MaterialTheme.colorScheme.primary, radius = 5.dp.toPx(), center = it) }
                         }
-                        Text("Views • Visits • Inquiries • Location clicks", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Views • Impressions • Broadcast opens/clicks • Inquiries • Location/call clicks", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (serverAnalytics == null) {
+                            Text("Live Supabase analytics are temporarily unavailable; local Room totals are shown where available.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                         Button(onClick = onManageListing) { Text("Manage Listing") }
                     }
                 }

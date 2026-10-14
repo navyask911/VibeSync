@@ -67,6 +67,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -165,6 +166,9 @@ private fun MatchesChatScreenContent(
     onOpenNoteToSelf: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val publishedBusinesses by remember(context) {
+        com.example.data.database.DatingDatabase.getDatabase(context).businessDao().getAllBusinesses()
+    }.collectAsState(initial = emptyList())
     val noteToSelfPreferences = remember(context) {
         context.getSharedPreferences("vibesync_note_to_self_preferences", android.content.Context.MODE_PRIVATE)
     }
@@ -900,7 +904,8 @@ private fun MatchesChatScreenContent(
                             latestMessage = latestMessageMap[match.matchId],
                             onClick = { onOpenChat(match, profile) },
                             onViewProfile = onOpenProfileDetail,
-                            syncedLocalPhotos = syncedLocalPhotos
+                            syncedLocalPhotos = syncedLocalPhotos,
+                            publishedBusinesses = publishedBusinesses
                         )
                     }
                 }
@@ -1538,9 +1543,21 @@ private fun VibeSyncConversationItem(
     latestMessage: com.example.data.model.ChatMessageEntity?,
     onClick: () -> Unit,
     onViewProfile: (ProfileEntity) -> Unit,
-    syncedLocalPhotos: androidx.compose.runtime.snapshots.SnapshotStateMap<String, String>
+    syncedLocalPhotos: androidx.compose.runtime.snapshots.SnapshotStateMap<String, String>,
+    publishedBusinesses: List<com.example.data.model.BusinessEntity>
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val chatBusiness = remember(profile.id, publishedBusinesses) {
+        publishedBusinesses.firstOrNull { business ->
+            business.isPublished && (
+                business.ownerUserId.equals(profile.id, ignoreCase = true) ||
+                    business.ownerUserId.equals(profile.phoneNumber, ignoreCase = true) ||
+                    business.id.equals(profile.id, ignoreCase = true)
+            )
+        }
+    }
+    val conversationTitle = chatBusiness?.name?.takeIf { it.isNotBlank() } ?: profile.name
+    val conversationTier = chatBusiness?.verificationTier?.uppercase().orEmpty()
     val avatarLookupKey = profile.phoneNumber.ifBlank { profile.id }
     val contactLookupPhone = profile.phoneNumber.ifBlank {
         profile.id.takeIf { com.example.util.SupabaseClientManager.isPhoneNumberCandidate(it) }.orEmpty()
@@ -1576,7 +1593,7 @@ private fun VibeSyncConversationItem(
     ) {
         // Avatar with real photo or stylized emoji
         DatingAvatar(
-            name = profile.name,
+            name = conversationTitle,
             emoji = profile.avatarEmoji,
             colorStart = profile.gradientColorStart,
             colorEnd = profile.gradientColorEnd,
@@ -1602,7 +1619,7 @@ private fun VibeSyncConversationItem(
                     modifier = Modifier.weight(1f, fill = false)
                 ) {
                     Text(
-                        text = profile.name,
+                        text = conversationTitle,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = if (match.hasUnread) FontWeight.Bold else FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface,
@@ -1611,14 +1628,14 @@ private fun VibeSyncConversationItem(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    if (profile.isVerified) {
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Icon(
-                            imageVector = Icons.Default.Verified,
-                            contentDescription = "Verified Human",
-                            tint = VibeSyncTeal,
-                            modifier = Modifier.size(15.dp)
-                        )
+                    when (conversationTier) {
+                        "GOLD" -> { Spacer(modifier = Modifier.width(4.dp)); Text("👑", fontSize = 13.sp) }
+                        "SILVER" -> { Spacer(modifier = Modifier.width(4.dp)); Text("♛", fontSize = 14.sp, color = Color(0xFF9AA4B2)) }
+                        "BLUE_TICK" -> { Spacer(modifier = Modifier.width(4.dp)); Icon(Icons.Default.Verified, contentDescription = "Verified business", tint = Color(0xFF1DA1F2), modifier = Modifier.size(15.dp)) }
+                        else -> if (profile.isVerified) {
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(imageVector = Icons.Default.Verified, contentDescription = "Verified Human", tint = VibeSyncTeal, modifier = Modifier.size(15.dp))
+                        }
                     }
                 }
 
