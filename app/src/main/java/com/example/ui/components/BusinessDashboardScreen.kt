@@ -664,6 +664,14 @@ private fun BusinessSuiteSecondaryTab(
     val pointsPerUser = if (venue.verificationTier.equals("GOLD", true)) 0.5f else 1f
     val requiredPoints = kotlin.math.ceil(audience * pointsPerUser).toInt()
     var selectedRange by remember(venue.id) { mutableStateOf("Last 7 Days") }
+    val trendMetricOptions = listOf(
+        "Views" to "views",
+        "Impressions" to "impressions",
+        "Broadcast opens" to "broadcast_opens",
+        "Clicks" to "broadcast_clicks",
+        "Chat inquiries" to "inquiries"
+    )
+    var selectedTrendMetric by remember(venue.id) { mutableStateOf("views") }
     var serverAnalytics by remember(venue.id) { mutableStateOf<org.json.JSONObject?>(null) }
     var walletSnapshot by remember(venue.id) { mutableStateOf<org.json.JSONObject?>(null) }
     var recentWalletDeductions by remember(venue.id) { mutableIntStateOf(0) }
@@ -694,6 +702,18 @@ private fun BusinessSuiteSecondaryTab(
     val broadcastClickRate = serverAnalytics?.optDouble("broadcast_click_rate_pct", 0.0) ?: 0.0
     val locationClicks = serverAnalytics?.optInt("location_clicks", analytics.navigations_count) ?: analytics.navigations_count
     val callClicks = serverAnalytics?.optInt("call_clicks", 0) ?: 0
+    val trendSeries: List<Float> = remember(serverAnalytics, selectedTrendMetric) {
+        val trendRows = serverAnalytics?.optJSONArray("trend")
+        if (trendRows == null || trendRows.length() == 0) {
+            emptyList()
+        } else {
+            (0 until trendRows.length()).mapNotNull { index ->
+                trendRows.optJSONObject(index)?.optInt(selectedTrendMetric, 0)
+                    ?.coerceAtLeast(0)?.toFloat()
+            }
+        }
+    }
+    val chartColor = MaterialTheme.colorScheme.primary
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 14.dp),
@@ -811,8 +831,23 @@ private fun BusinessSuiteSecondaryTab(
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("Engagement trend", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            trendMetricOptions.forEach { (label, key) ->
+                                FilterChip(
+                                    selected = selectedTrendMetric == key,
+                                    onClick = { selectedTrendMetric = key },
+                                    label = { Text(label, maxLines = 1, softWrap = false) }
+                                )
+                            }
+                        }
                         Canvas(Modifier.fillMaxWidth().height(160.dp)) {
-                            val values = listOf(profileViews, impressions, broadcastOpens, broadcastClicks, chatInquiries, locationClicks, callClicks).map { it.coerceAtLeast(0).toFloat() }
+                            val values = trendSeries.ifEmpty {
+                                listOf(profileViews, impressions, broadcastOpens, broadcastClicks, chatInquiries, locationClicks, callClicks)
+                                    .map { it.coerceAtLeast(0).toFloat() }
+                            }
                             val maxValue = values.maxOrNull()?.coerceAtLeast(1f) ?: 1f
                             val points = values.mapIndexed { index, value ->
                                 Offset(x = size.width * index / values.lastIndex.coerceAtLeast(1), y = size.height - (value / maxValue) * (size.height * 0.82f) - size.height * 0.08f)
@@ -823,10 +858,10 @@ private fun BusinessSuiteSecondaryTab(
                                     points.drop(1).forEach { lineTo(it.x, it.y) }
                                 }
                             }
-                            drawPath(path, color = MaterialTheme.colorScheme.primary, style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-                            points.forEach { drawCircle(MaterialTheme.colorScheme.primary, radius = 5.dp.toPx(), center = it) }
+                            drawPath(path, color = chartColor, style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+                            points.forEach { drawCircle(chartColor, radius = 5.dp.toPx(), center = it) }
                         }
-                        Text("Views • Impressions • Broadcast opens/clicks • Inquiries • Location/call clicks", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Daily trend from Supabase where available; local totals are used as a fallback.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         if (serverAnalytics == null) {
                             Text("Live Supabase analytics are temporarily unavailable; local Room totals are shown where available.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
