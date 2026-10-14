@@ -80,6 +80,12 @@ Use the tracked .env.example as a template; supply actual configuration through 
 - The public avatars bucket intentionally exposes primary profile avatar images. Do not use it for secret/private media.
 - Private chat payloads should be encrypted before transport; do not add plaintext to logs, FCM payloads or analytics.
 
+## Free-tier readiness and validation
+
+The free-tier readiness benchmark guide documents repeatable REST/PostgREST, Supavisor SQL-pool and Edge Function burst tests. Run them against staging first; they create concurrent read traffic and are not automatically run against production by Android CI. A 500-request benchmark is a load sample, not proof that 100,000 registered or concurrent users are supported. Capacity claims require sustained/soak measurements and review of current provider-plan limits.
+
+The public avatars bucket serves profile-image URLs directly. Storage object metadata reads are restricted by an owner-scoped policy migration; public URL reads do not imply permission to enumerate the bucket or read private application tables.
+
 ## CI/CD
 
 GitHub Actions workflows validate the Android build, scan tracked files for leaked secrets, verify Truecaller wiring, assemble/verify release artifacts and apply Supabase migrations. Check the Actions run attached to the exact commit before declaring a release ready.

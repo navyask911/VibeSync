@@ -1,0 +1,38 @@
+name: Benchmark Script Self-Tests
+
+on:
+  push:
+    branches:
+      - main
+      - fix/release-startup-icons-ci
+    paths:
+      - "scripts/benchmarks/**"
+      - ".github/workflows/benchmark-script-tests.yml"
+      - "docs/FREE_TIER_READINESS_BENCHMARKS.md"
+  pull_request:
+    paths:
+      - "scripts/benchmarks/**"
+      - ".github/workflows/benchmark-script-tests.yml"
+      - "docs/FREE_TIER_READINESS_BENCHMARKS.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark-mocks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scripts/benchmarks/requirements.txt
+      - name: Install benchmark dependencies
+        run: python -m pip install -r scripts/benchmarks/requirements.txt
+      - name: Python syntax check
+        run: python -m py_compile scripts/benchmarks/*.py
+      - name: Run local mock-server self-tests
+        run: python -m unittest discover -s scripts/benchmarks -p 'test_*.py' -v

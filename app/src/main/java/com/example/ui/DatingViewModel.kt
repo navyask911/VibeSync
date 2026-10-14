@@ -937,7 +937,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             val appContext = getApplication<Application>()
             val compressedTempFile = runCatching {
                 val uri = android.net.Uri.parse(mediaUrl)
-                val path = uri.path?.let(::java.io.File)
+                val path: java.io.File? = uri.path?.let { java.io.File(it) }
                 val cacheRoot = appContext.cacheDir.canonicalPath + java.io.File.separator
                 path?.takeIf {
                     uri.scheme == "file" &&

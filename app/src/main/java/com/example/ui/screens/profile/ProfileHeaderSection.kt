@@ -198,32 +198,16 @@ fun ProfileHeaderSection(
                     .testTag("round_profile_photo_touch"),
                 contentAlignment = Alignment.Center
             ) {
-                if (preferences.avatarUrl.isNotBlank()) {
-                    DatingAvatar(
-                        name = preferences.userName,
-                        emoji = "👤",
-                        colorStart = 0xFF14B8A6,
-                        colorEnd = 0xFFEC4899,
-                        size = 100.dp,
-                        avatarUrl = preferences.avatarUrl,
-                        avatarCacheVersion = preferences.avatarCacheVersion,
-                        modifier = Modifier.fillMaxSize().clip(CircleShape)
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(VibeSyncTeal.copy(alpha = 0.15f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Person,
-                            contentDescription = null,
-                            tint = VibeSyncTeal,
-                            modifier = Modifier.size(54.dp)
-                        )
-                    }
-                }
+                DatingAvatar(
+                    name = preferences.userName,
+                    emoji = "👤",
+                    colorStart = 0xFF14B8A6,
+                    colorEnd = 0xFFEC4899,
+                    size = 100.dp,
+                    avatarUrl = preferences.avatarUrl,
+                    avatarCacheVersion = preferences.avatarCacheVersion,
+                    modifier = Modifier.fillMaxSize().clip(CircleShape)
+                )
                 Surface(
                     modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp).size(36.dp).clickable {
                         photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))

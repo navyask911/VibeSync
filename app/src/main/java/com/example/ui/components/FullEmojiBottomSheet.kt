@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -24,6 +25,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -43,6 +45,7 @@ fun FullEmojiBottomSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var selectedCategory by remember { mutableIntStateOf(0) }
+    var searchQuery by remember { mutableStateOf("") }
     val categories = remember { EmojiCatalog.categories }
 
     ModalBottomSheet(
@@ -73,7 +76,20 @@ fun FullEmojiBottomSheet(
                     )
                 }
             }
-            val emojis = categories[selectedCategory].emojis
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                placeholder = { Text("Search emoji or category") },
+                singleLine = true
+            )
+            val emojis = remember(selectedCategory, searchQuery, categories) {
+                if (searchQuery.isBlank()) {
+                    categories[selectedCategory].emojis
+                } else {
+                    EmojiCatalog.search(searchQuery)
+                }
+            }
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(minSize = 44.dp),
                 modifier = Modifier.fillMaxWidth().weight(1f),

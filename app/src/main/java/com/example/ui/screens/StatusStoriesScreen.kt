@@ -43,6 +43,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
@@ -176,6 +177,7 @@ fun StatusStoriesScreen(
     viewModel: DatingViewModel,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val myStories by viewModel.myStatusStories.collectAsState()
     val friendsStories by viewModel.friendsStatusStories.collectAsState()
     val userPrefs by viewModel.userPreferences.collectAsState()
