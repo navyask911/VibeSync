@@ -125,9 +125,14 @@ fun BusinessDashboardScreen(
     venue: BusinessEntity,
     allVenues: List<BusinessEntity> = emptyList(),
     onSelectVenue: (BusinessEntity) -> Unit = {},
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    onOpenBroadcast: () -> Unit = {},
+    onOpenWallet: () -> Unit = {},
+    onManageListing: () -> Unit = {},
+    onUpgradeBadge: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    var selectedSuiteTab by remember { mutableIntStateOf(0) }
     var selectedTimeframe by remember { mutableStateOf("This Week") }
     var venueSearchQuery by remember { mutableStateOf("") }
     var showFilterOptions by remember { mutableStateOf(false) }
@@ -368,10 +373,31 @@ fun BusinessDashboardScreen(
                             })
                         }
                     }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        listOf(
+                            "Overview",
+                            "Ads with Us",
+                            "Recharge & Balance",
+                            "Performance & Reach",
+                            "Profile & Catalog"
+                        ).forEachIndexed { index, label ->
+                            FilterChip(
+                                selected = selectedSuiteTab == index,
+                                onClick = { selectedSuiteTab = index },
+                                label = { Text(label, maxLines = 1, softWrap = false) },
+                                modifier = Modifier.testTag("business_suite_route_$index")
+                            )
+                        }
+                    }
                 }
             }
         }
     ) { innerPadding ->
+        if (selectedSuiteTab == 0) {
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -598,6 +624,187 @@ fun BusinessDashboardScreen(
                     }
                 }
             }
+        } else {
+ 
+@Composable
+private fun BusinessSuiteSecondaryTab(
+    tab: Int,
+    venue: BusinessEntity,
+    analytics: com.example.data.model.LocalBusinessAnalyticsEntity,
+    onOpenBroadcast: () -> Unit,
+    onOpenWallet: () -> Unit,
+    onManageListing: () -> Unit,
+    onUpgradeBadge: () -> Unit,
+    onSelectAnalyticsRange: (String) -> Unit
+) {
+    var target by remember(venue.id) { mutableStateOf("All Followers") }
+    var radius by remember(venue.id) { mutableIntStateOf(5) }
+    var interestTags by remember(venue.id) { mutableStateOf("food, shopping, local") }
+    val audience = when (target) {
+        "Local Nearby Users" -> (venue.followerCount * if (radius == 5) 0.22f else 0.38f).toInt().coerceAtLeast(0)
+        "Interest Tags" -> (venue.followerCount * 0.45f).toInt().coerceAtLeast(0)
+        else -> venue.followerCount.coerceAtLeast(0)
+    }
+    val pointsPerUser = if (venue.verificationTier.equals("GOLD", true)) 0.5f else 1f
+    val requiredPoints = kotlin.math.ceil(audience * pointsPerUser).toInt()
+    var selectedRange by remember(venue.id) { mutableStateOf("Last 7 Days") }
+
+    Column(
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        when (tab) {
+            1 -> {
+                Text("Ads with Us", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(
+                    "Draft a broadcast for your audience. The estimate is indicative; the server rechecks the eligible audience and wallet balance before charging points.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("Audience", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf("All Followers", "Local Nearby Users", "Interest Tags").forEach { option ->
+                                FilterChip(selected = target == option, onClick = { target = option }, label = { Text(option) })
+                            }
+                        }
+                        if (target == "Local Nearby Users") {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                listOf(5, 10).forEach { km ->
+                                    FilterChip(selected = radius == km, onClick = { radius = km }, label = { Text("$km km") })
+                                }
+                            }
+                        }
+                        if (target == "Interest Tags") {
+                            OutlinedTextField(
+                                value = interestTags,
+                                onValueChange = { interestTags = it },
+                                label = { Text("Interest tags, comma separated") },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                        HorizontalDivider()
+                        Text("Estimated audience: $audience")
+                        Text("Points per user: ${if (pointsPerUser == 0.5f) "0.5 (Gold discount)" else "1"}")
+                        Text("$audience × $pointsPerUser = $requiredPoints required points", fontWeight = FontWeight.Bold)
+                        Text("Wallet balance: ${venue.walletPoints} points")
+                        if (venue.walletPoints < requiredPoints) {
+                            Text("Low Balance — Recharge Points to Broadcast", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                            Button(onClick = onOpenWallet, modifier = Modifier.fillMaxWidth()) { Text("Recharge Points") }
+                        } else {
+                            Button(onClick = onOpenBroadcast, modifier = Modifier.fillMaxWidth()) { Text("Create & Send Broadcast") }
+                        }
+                    }
+                }
+            }
+            2 -> {
+                Text("Recharge & Balance", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Available Points", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(venue.walletPoints.toString(), style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.ExtraBold)
+                        Text("Current Room balance; recharge must be confirmed by the payment provider before credit.")
+                        HorizontalDivider()
+                        Text("Recent deductions", fontWeight = FontWeight.Bold)
+                        Text("Confirmed ledger entries will display here when synced from the wallet backend.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Points expiring", fontWeight = FontWeight.Bold)
+                        Text("Expiry information is not currently provided by the wallet ledger.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    listOf("500 Points" to "₹25 + 18% GST", "2,500 Points" to "₹125 + 18% GST", "10,000 Points" to "₹500 + 18% GST").forEach { (pack, price) ->
+                        Card(
+                            modifier = Modifier.weight(1f).clickable(onClick = onOpenWallet),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                        ) {
+                            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(pack, fontWeight = FontWeight.Bold)
+                                Text(price, style = MaterialTheme.typography.bodySmall)
+                                Text(if (pack.startsWith("10,000")) "Best Value" else "Recharge", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
+                Button(onClick = onOpenWallet, modifier = Modifier.fillMaxWidth()) { Text("Open Wallet & Checkout") }
+            }
+            3 -> {
+                Text("Performance & Reach", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("Today", "Last 7 Days", "Last 30 Days", "All Time").forEach { range ->
+                        FilterChip(
+                            selected = selectedRange == range,
+                            onClick = {
+                                selectedRange = range
+                                onSelectAnalyticsRange(when (range) {
+                                    "Today" -> "Today"
+                                    "Last 7 Days" -> "This Week"
+                                    "Last 30 Days" -> "This Month"
+                                    else -> "All Time"
+                                })
+                            },
+                            label = { Text(range) }
+                        )
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    ExecutiveMetricCard("Profile Views", formatExecutiveMetric(analytics.views_count), Icons.Default.Visibility, listOf(analytics.views_count, analytics.visits_count, analytics.inquiries_count), Modifier.weight(1f))
+                    ExecutiveMetricCard("Chat Inquiries", formatExecutiveMetric(analytics.inquiries_count), Icons.Default.Call, listOf(analytics.views_count, analytics.visits_count, analytics.inquiries_count), Modifier.weight(1f))
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    ExecutiveMetricCard("Location Clicks", formatExecutiveMetric(analytics.navigations_count), Icons.Default.LocationOn, listOf(analytics.views_count, analytics.visits_count, analytics.navigations_count), Modifier.weight(1f))
+                    ExecutiveMetricCard("Store Visits", formatExecutiveMetric(analytics.visits_count), Icons.Default.People, listOf(analytics.views_count, analytics.visits_count, analytics.inquiries_count), Modifier.weight(1f))
+                }
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Engagement trend", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Canvas(Modifier.fillMaxWidth().height(160.dp)) {
+                            val values = listOf(analytics.views_count, analytics.visits_count, analytics.inquiries_count, analytics.navigations_count).map { it.coerceAtLeast(0).toFloat() }
+                            val maxValue = values.maxOrNull()?.coerceAtLeast(1f) ?: 1f
+                            val points = values.mapIndexed { index, value ->
+                                Offset(x = size.width * index / values.lastIndex.coerceAtLeast(1), y = size.height - (value / maxValue) * (size.height * 0.82f) - size.height * 0.08f)
+                            }
+                            val path = Path().apply {
+                                if (points.isNotEmpty()) {
+                                    moveTo(points.first().x, points.first().y)
+                                    points.drop(1).forEach { lineTo(it.x, it.y) }
+                                }
+                            }
+                            drawPath(path, color = MaterialTheme.colorScheme.primary, style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+                            points.forEach { drawCircle(MaterialTheme.colorScheme.primary, radius = 5.dp.toPx(), center = it) }
+                        }
+                        Text("Views • Visits • Inquiries • Location clicks", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Button(onClick = onManageListing) { Text("Manage Listing") }
+                    }
+                }
+            }
+            4 -> {
+                Text("Manage Listing", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(venue.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text(venue.category, color = MaterialTheme.colorScheme.primary)
+                        Text(venue.description.ifBlank { "Add a business description to help customers learn about this listing." })
+                        Text(venue.address.ifBlank { venue.city }, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("The business phone belongs in contact details, never the chat title.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                Button(onClick = onManageListing, modifier = Modifier.fillMaxWidth()) { Text("Edit Profile & Catalog") }
+                OutlinedButton(onClick = onUpgradeBadge, modifier = Modifier.fillMaxWidth()) { Text("Verification Badge & Premium Listing") }
+            }
+        }
+    }
+}
+
+           BusinessSuiteSecondaryTab(
+                tab = selectedSuiteTab,
+                venue = venue,
+                analytics = localAnalytics,
+                onOpenBroadcast = onOpenBroadcast,
+                onOpenWallet = onOpenWallet,
+                onManageListing = onManageListing,
+                onUpgradeBadge = onUpgradeBadge,
+                onSelectAnalyticsRange = { selectedTimeframe = it }
+            )
         }
     }
 }

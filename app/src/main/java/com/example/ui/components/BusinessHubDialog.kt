@@ -579,7 +579,11 @@ fun BusinessHubContent(
                                     venue = activeVenue,
                                     allVenues = myCreatedBusinesses,
                                     onSelectVenue = { selectedVenueForDashboard = it },
-                                    onNavigateBack = { selectedTab = 0 }
+                                    onNavigateBack = { selectedTab = 0 },
+                                    onOpenBroadcast = { activeBroadcastBiz = activeVenue },
+                                    onOpenWallet = { activeWalletBiz = activeVenue },
+                                    onManageListing = { editingBusiness = activeVenue },
+                                    onUpgradeBadge = { activeUpgradeBiz = activeVenue }
                                 )
                             } else {
                                 Box(
