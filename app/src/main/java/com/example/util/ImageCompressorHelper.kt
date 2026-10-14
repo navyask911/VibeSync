@@ -8,6 +8,7 @@ import android.os.Build
 import android.util.Base64
 import android.util.Log
 import java.io.ByteArrayOutputStream
+import java.io.File
 
 object ImageCompressorHelper {
 
@@ -76,6 +77,32 @@ object ImageCompressorHelper {
         } catch (e: Exception) {
             Log.w(TAG, "Notice compressing image Uri '$uriString': ${e.message}")
             uriString
+        }
+    }
+
+    /**
+     * Produces a short-lived file URI for media upload paths that stream from ContentResolver.
+     * The image has already passed through the same 1600px / 80%-quality WebP compression gateway.
+     * The caller must delete the returned cache file after upload completes.
+     */
+    fun compressImageUriToCacheFile(
+        context: Context,
+        uriString: String,
+        maxDimension: Int = 1600,
+        quality: Int = 80
+    ): Uri? {
+        if (uriString.isBlank()) return null
+        val encoded = compressAndEncodeImageUriToBase64(context, uriString, maxDimension, quality)
+            ?.takeIf { it.startsWith("IMG_B64:") } ?: return null
+        return try {
+            val bytes = Base64.decode(encoded.removePrefix("IMG_B64:"), Base64.NO_WRAP)
+            if (bytes.isEmpty()) return null
+            val target = File(context.cacheDir, "vibesync_compressed_${System.currentTimeMillis()}.webp")
+            target.writeBytes(bytes)
+            Uri.fromFile(target)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not stage compressed image for upload: ${e.message}")
+            null
         }
     }
 

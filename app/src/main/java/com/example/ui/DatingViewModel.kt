@@ -934,16 +934,31 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         backgroundMusicUri: String = ""
     ) {
         viewModelScope.launch {
-            val result = repository.uploadUserStatus(
-                mediaType = mediaType,
-                caption = caption,
-                mediaUrl = mediaUrl,
-                videoDurationSeconds = videoDurationSeconds,
-                backgroundColorStart = backgroundColorStart,
-                backgroundColorEnd = backgroundColorEnd,
-                privacy = privacy,
-                backgroundMusicUri = backgroundMusicUri
-            )
+            val appContext = getApplication<Application>()
+            val compressedTempFile = runCatching {
+                val uri = android.net.Uri.parse(mediaUrl)
+                val path = uri.path?.let(::java.io.File)
+                val cacheRoot = appContext.cacheDir.canonicalPath + java.io.File.separator
+                path?.takeIf {
+                    uri.scheme == "file" &&
+                        it.name.startsWith("vibesync_compressed_") &&
+                        it.canonicalPath.startsWith(cacheRoot)
+                }
+            }.getOrNull()
+            val result = try {
+                repository.uploadUserStatus(
+                    mediaType = mediaType,
+                    caption = caption,
+                    mediaUrl = mediaUrl,
+                    videoDurationSeconds = videoDurationSeconds,
+                    backgroundColorStart = backgroundColorStart,
+                    backgroundColorEnd = backgroundColorEnd,
+                    privacy = privacy,
+                    backgroundMusicUri = backgroundMusicUri
+                )
+            } finally {
+                runCatching { compressedTempFile?.delete() }
+            }
             when (result) {
                 is SocialConnectRepository.UploadStatusResult.Success -> {
                     _showStatusUploadSheet.value = false

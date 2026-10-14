@@ -558,10 +558,13 @@ fun StatusStoriesScreen(
             backgroundMusicUri = pendingAudioTrackUri,
             onDismiss = { pendingMediaUpload = null; pendingAudioTrackUri = "" },
             onPostStatus = { finalCaption, bgStart, bgEnd, musicUri ->
+                val compressedPhotoUri = if (mediaType.equals("PHOTO", ignoreCase = true)) {
+                    com.example.util.ImageCompressorHelper.compressImageUriToCacheFile(context, uri.toString())
+                } else null
                 viewModel.uploadStatus(
                     mediaType = mediaType,
                     caption = finalCaption,
-                    mediaUrl = uri.toString(),
+                    mediaUrl = (compressedPhotoUri ?: uri).toString(),
                     videoDurationSeconds = if (mediaType == "VIDEO") 15 else 0,
                     backgroundColorStart = bgStart,
                     backgroundColorEnd = bgEnd,
