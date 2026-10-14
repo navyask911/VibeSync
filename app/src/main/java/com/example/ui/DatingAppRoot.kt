@@ -52,6 +52,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -287,6 +288,7 @@ fun DatingAppRoot(
     // One private broadcast inbox per authenticated profile enables incoming call discovery
     // without polling or writing invitations/SDP/ICE to any database table.
     val localCallProfileId = com.example.util.VibeSyncSessionManager.getProfileId(context).orEmpty().trim()
+    val latestMatches by rememberUpdatedState(matches)
     LaunchedEffect(isLoggedIn, localCallProfileId) {
         if (!isLoggedIn || localCallProfileId.isBlank()) return@LaunchedEffect
         val inbox = WebRtcCallInboxManager(localCallProfileId)
@@ -298,6 +300,7 @@ fun DatingAppRoot(
                         WebRtcSignalingManager.callIdFor(localCallProfileId, invite.callerProfileId)
                     }.getOrNull() ?: return@launch
                     if (invite.callId != pairCallId || invite.recipientProfileId != localCallProfileId) return@launch
+                    if (latestMatches.none { it.profileId == invite.callerProfileId }) return@launch
                     val pairChannel = WebRtcSignalingManager.getOrCreate(
                         pairCallId, localCallProfileId, invite.callerProfileId
                     )

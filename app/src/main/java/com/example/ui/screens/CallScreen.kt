@@ -212,8 +212,7 @@ fun CallScreen(
             }
 
             if (permissionsGranted && isVideo) {
-                AndroidView(
-                    factory = { localRenderer },
+                Box(
                     modifier = Modifier.align(Alignment.TopEnd).padding(top = 100.dp, end = 18.dp)
                         .offset { IntOffset(pipOffset.x.toInt(), pipOffset.y.toInt()) }
                         .size(width = 112.dp, height = 154.dp).clip(RoundedCornerShape(16.dp))
@@ -222,9 +221,18 @@ fun CallScreen(
                                 change.consume()
                                 pipOffset = Offset(pipOffset.x + dragAmount.x, pipOffset.y + dragAmount.y)
                             }
-                        },
-                    update = {}
-                )
+                        }
+                ) {
+                    AndroidView(factory = { localRenderer }, modifier = Modifier.fillMaxSize(), update = {})
+                    if (!cameraEnabled) {
+                        Box(
+                            Modifier.fillMaxSize().background(Color(0xFF292A35)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("You", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                        }
+                    }
+                }
             }
 
             Column(
