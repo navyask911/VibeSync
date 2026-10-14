@@ -347,7 +347,9 @@ interface StatusStoryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertStories(stories: List<StatusStoryEntity>)
 
-    @Query("UPDATE status_stories SET isViewed = 1, viewsCount = viewsCount + 1 WHERE id = :storyId")
+    // Mark once only: the Room Flow updates the Recent Stories ring immediately without
+    // incrementing viewsCount again when an already-viewed story is reopened.
+    @Query("UPDATE status_stories SET isViewed = 1, viewsCount = viewsCount + 1 WHERE id = :storyId AND isViewed = 0")
     suspend fun markStoryViewed(storyId: String)
 
     @Query("UPDATE status_stories SET likesCount = CASE WHEN isLikedByMe = 1 THEN MAX(0, likesCount - 1) ELSE likesCount + 1 END, isLikedByMe = CASE WHEN isLikedByMe = 1 THEN 0 ELSE 1 END WHERE id = :storyId")
