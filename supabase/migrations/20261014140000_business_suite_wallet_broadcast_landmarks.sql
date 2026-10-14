@@ -257,8 +257,8 @@ begin
  opening_hours=coalesce(p_opening_hours,''),latitude=p_latitude,longitude=p_longitude,landmark_category=p_landmark_category,
  category=p_landmark_category::text,updated_at=now() where id=p_business_id;
 end $$;
-revoke all on function public.admin_update_curated_landmark(text,text,text,text,double precision,double precision,public.curated_landmark_category) from public,anon;
-grant execute on function public.admin_update_curated_landmark(text,text,text,text,double precision,double precision,public.curated_landmark_category) to authenticated;
+revoke all on function public.admin_update_curated_landmark(text,text,text,text,text,double precision,double precision,public.curated_landmark_category) from public,anon;
+grant execute on function public.admin_update_curated_landmark(text,text,text,text,text,double precision,double precision,public.curated_landmark_category) to authenticated;
 
 insert into public.businesses(id,owner_profile_id,name,category,description,address,city,latitude,longitude,rating,review_count,banner_url,logo_emoji,is_verified,follower_count,active_offer_summary,verification_tier,wallet_points,is_listing_paid,is_published,is_curated_landmark,landmark_category,created_at_epoch_ms)
 values
