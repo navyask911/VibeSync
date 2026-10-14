@@ -87,7 +87,67 @@ class SocialConnectRepository(
     init {
         appScope.launch(Dispatchers.IO) {
             purgeGhostNullData()
+            seedCuratedLandmarks()
+            refreshPublishedBusinessDirectory()
         }
+    }
+
+    private suspend fun refreshPublishedBusinessDirectory() {
+        val remote = com.example.util.SupabaseClientManager.fetchPublishedBusinessListings() ?: return
+        val merged = remote.map { incoming ->
+            val local = businessDao.getBusinessByIdSync(incoming.id)
+            incoming.copy(
+                isFollowed = local?.isFollowed ?: incoming.isFollowed,
+                isUserCreated = local?.isUserCreated ?: incoming.isUserCreated,
+                ownerUserId = if (local?.isUserCreated == true) local.ownerUserId else incoming.ownerUserId
+            )
+        }
+        if (merged.isNotEmpty()) businessDao.insertBusinesses(merged)
+    }
+
+    private suspend fun seedCuratedLandmarks() {
+        businessDao.insertBusinesses(listOf(
+            BusinessEntity(
+                id = "landmark_cubbon_park", name = "Cubbon Park", category = "PARK",
+                description = "A leafy public park in central Bengaluru with walking paths and open lawns.",
+                address = "Kasturba Road, Bengaluru", city = "Bengaluru", latitude = 12.9763, longitude = 77.5929,
+                rating = 0.0, reviewCount = 0,
+                bannerUrl = "https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1000&q=80",
+                logoEmoji = "🌳", isVerified = true, isUserCreated = false, ownerUserId = "system-curated",
+                activeOfferSummary = "Free public landmark", verificationTier = "STANDARD", walletPoints = 0,
+                isListingPaid = false, isPublished = true, isCuratedLandmark = true, landmarkCategory = "PARK"
+            ),
+            BusinessEntity(
+                id = "landmark_lalbagh", name = "Lalbagh Botanical Garden", category = "PARK",
+                description = "Historic botanical garden with a glass house, gardens and a lake.",
+                address = "Lalbagh Road, Bengaluru", city = "Bengaluru", latitude = 12.9507, longitude = 77.5848,
+                rating = 0.0, reviewCount = 0,
+                bannerUrl = "https://images.unsplash.com/photo-1472396961693-142e6e269027?auto=format&fit=crop&w=1000&q=80",
+                logoEmoji = "🌿", isVerified = true, isUserCreated = false, ownerUserId = "system-curated",
+                activeOfferSummary = "Free public landmark", verificationTier = "STANDARD", walletPoints = 0,
+                isListingPaid = false, isPublished = true, isCuratedLandmark = true, landmarkCategory = "PARK"
+            ),
+            BusinessEntity(
+                id = "landmark_vidhana_soudha", name = "Vidhana Soudha", category = "MONUMENT",
+                description = "Bengaluru's landmark seat of the Karnataka state legislature. Exterior viewing only.",
+                address = "Dr Ambedkar Veedhi, Bengaluru", city = "Bengaluru", latitude = 12.9799, longitude = 77.5907,
+                rating = 0.0, reviewCount = 0,
+                bannerUrl = "https://images.unsplash.com/photo-1518005020951-eccb494ad742?auto=format&fit=crop&w=1000&q=80",
+                logoEmoji = "🏛️", isVerified = true, isUserCreated = false, ownerUserId = "system-curated",
+                activeOfferSummary = "Free public landmark", verificationTier = "STANDARD", walletPoints = 0,
+                isListingPaid = false, isPublished = true, isCuratedLandmark = true, landmarkCategory = "MONUMENT"
+            ),
+            BusinessEntity(
+                id = "landmark_commercial_street", name = "Commercial Street", category = "LOCAL_FAVORITE",
+                description = "A popular central Bengaluru shopping street with independent shops and eateries.",
+                address = "Commercial Street, Bengaluru", city = "Bengaluru", latitude = 12.9831, longitude = 77.6082,
+                rating = 0.0, reviewCount = 0,
+                bannerUrl = "https://images.unsplash.com/photo-1441986300917-64674bd600d8?auto=format&fit=crop&w=1000&q=80",
+                logoEmoji = "🛍️", isVerified = true, isUserCreated = false, ownerUserId = "system-curated",
+                activeOfferSummary = "Free public landmark", verificationTier = "STANDARD", walletPoints = 0,
+                isListingPaid = false, isPublished = true, isCuratedLandmark = true, landmarkCategory = "LOCAL_FAVORITE"
+            )
+        ))
     }
 
     val allApiRequests = apiCredentialRequestDao.getAllRequestsFlow()
@@ -4128,6 +4188,7 @@ class SocialConnectRepository(
         val newStatus = !biz.isFollowed
         val delta = if (newStatus) 1 else -1
         businessDao.updateFollowStatus(businessId, newStatus, delta)
+        runCatching { com.example.util.SupabaseClientManager.setBusinessFollowRemote(businessId, newStatus) }
     }
 
     suspend fun createBusinessProfile(
@@ -4196,6 +4257,13 @@ class SocialConnectRepository(
                 createdAt = System.currentTimeMillis()
             )
             businessDao.insertBusiness(business)
+
+            // Server RPC forces is_published=true and derives owner from the verified session.
+            val published = runCatching {
+                com.example.util.SupabaseClientManager.upsertBusinessListing(business)
+            }.getOrDefault(false)
+            if (!published) Log.w("SocialConnectRepository", "Business cached locally; Supabase publish was deferred.")
+            appScope.launch(Dispatchers.IO) { refreshPublishedBusinessDirectory() }
 
             try {
                 com.example.util.BusinessHubSyncManager.syncVenueToFirestore(business)

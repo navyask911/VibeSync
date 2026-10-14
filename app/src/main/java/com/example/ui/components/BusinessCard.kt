@@ -121,6 +121,22 @@ fun BusinessCard(
                 modifier = Modifier.fillMaxWidth().padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(9.dp)
             ) {
+                if (business.isCuratedLandmark) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = androidx.compose.ui.graphics.Color(0xFFDCFCE7),
+                        modifier = Modifier.testTag("badge_curated_landmark")
+                    ) {
+                        Text(
+                            text = "📍 FREE PUBLIC LANDMARK · ${business.landmarkCategory.replace('_', ' ')}",
+                            color = androidx.compose.ui.graphics.Color(0xFF166534),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                        )
+                    }
+                }
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,

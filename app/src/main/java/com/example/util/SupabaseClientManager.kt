@@ -5,6 +5,7 @@ import android.net.Uri
 import android.util.Base64
 import android.util.Log
 import com.example.BuildConfig
+import com.example.data.model.BusinessEntity
 import com.example.data.model.ChatMessageEntity
 import com.example.data.model.FriendshipRequestEntity
 import com.example.data.model.ProfileEntity
@@ -1468,6 +1469,123 @@ object SupabaseClientManager {
             }
         } catch (t: Throwable) {
             Log.w(TAG, "Encrypted voice download transport failure: ${t.javaClass.simpleName}")
+            null
+        }
+    }
+
+    /**
+     * Publish/update a business owned by the current verified profile. The RPC derives ownership
+     * from the session, not from the submitted payload.
+     */
+    suspend fun upsertBusinessListing(business: BusinessEntity): Boolean = withContext(Dispatchers.IO) {
+        if (VibeSyncSessionManager.getProfileId().isNullOrBlank() || business.id.isBlank() || business.name.isBlank()) return@withContext false
+        try {
+            val payload = JSONObject()
+                .put("id", business.id).put("name", business.name.trim()).put("tagline", business.tagline)
+                .put("category", business.category).put("description", business.description).put("address", business.address)
+                .put("city", business.city).put("latitude", business.latitude).put("longitude", business.longitude)
+                .put("banner_url", business.bannerUrl).put("logo_emoji", business.logoEmoji)
+                .put("phone_number", business.phoneNumber).put("website_url", business.websiteUrl)
+                .put("social_handle", business.socialHandle).put("active_offer_summary", business.activeOfferSummary)
+                .put("is_listing_paid", business.isListingPaid).put("listing_payment_txn_id", business.listingPaymentTxnId)
+                .put("photo_gallery_json", business.photoGalleryJson).put("created_at_epoch_ms", business.createdAt)
+            val request = buildRequest("rpc/upsert_my_business_listing", "POST",
+                JSONObject().put("p_payload", payload).toString())
+            httpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) Log.w(TAG, "Business publish failed HTTP ${response.code}: ${body.take(180)}")
+                response.isSuccessful
+            }
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Business publish deferred: ${failure.javaClass.simpleName}")
+            false
+        }
+    }
+
+    /** Return only publicly published businesses and free curated landmarks. */
+    suspend fun fetchPublishedBusinessListings(): List<BusinessEntity>? = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = "businesses?select=id,owner_profile_id,name,tagline,category,description,address,city,latitude,longitude,rating,review_count,banner_url,logo_emoji,phone_number,website_url,social_handle,is_verified,follower_count,active_offer_summary,verification_tier,wallet_points,is_listing_paid,listing_payment_txn_id,photo_gallery_json,created_at_epoch_ms,is_published,is_curated_landmark,landmark_category&is_published=eq.true&order=is_curated_landmark.desc,name.asc&limit=500"
+            httpClient.newCall(buildRequest(endpoint,"GET")).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Published directory fetch failed HTTP ${response.code}")
+                    return@withContext null
+                }
+                val currentOwnerId = VibeSyncSessionManager.getProfileId().orEmpty()
+                val rows = JSONArray(body)
+                buildList {
+                    for (i in 0 until rows.length()) {
+                        val row = rows.optJSONObject(i) ?: continue
+                        val id = row.optString("id").trim()
+                        val name = row.optString("name").trim()
+                        if (id.isBlank() || name.isBlank()) continue
+                        val ownerId = row.optString("owner_profile_id").trim()
+                        add(BusinessEntity(
+                            id=id, name=name, tagline=row.optString("tagline",""),
+                            category=row.optString("category","LOCAL_FAVORITE"),
+                            description=row.optString("description",""), address=row.optString("address",""),
+                            city=row.optString("city","Bengaluru"), latitude=row.optDouble("latitude",12.9716),
+                            longitude=row.optDouble("longitude",77.5946), rating=row.optDouble("rating",0.0),
+                            reviewCount=row.optInt("review_count",0), bannerUrl=row.optString("banner_url",""),
+                            logoEmoji=row.optString("logo_emoji","📍"), phoneNumber=row.optString("phone_number",""),
+                            websiteUrl=row.optString("website_url",""), socialHandle=row.optString("social_handle",""),
+                            isVerified=row.optBoolean("is_verified",false) || row.optBoolean("is_curated_landmark",false),
+                            isFollowed=false, followerCount=row.optInt("follower_count",0),
+                            isUserCreated=ownerId.isNotBlank() && ownerId.equals(currentOwnerId,ignoreCase=true),
+                            ownerUserId=ownerId.ifBlank { "system-curated" },
+                            activeOfferSummary=row.optString("active_offer_summary",""),
+                            verificationTier=row.optString("verification_tier","STANDARD"),
+                            walletPoints=row.optInt("wallet_points",0), isListingPaid=row.optBoolean("is_listing_paid",false),
+                            listingPaymentTxnId=row.optString("listing_payment_txn_id",""),
+                            photoGalleryJson=row.optString("photo_gallery_json",""),
+                            createdAt=row.optLong("created_at_epoch_ms",System.currentTimeMillis()),
+                            isPublished=row.optBoolean("is_published",true),
+                            isCuratedLandmark=row.optBoolean("is_curated_landmark",false),
+                            landmarkCategory=row.optString("landmark_category","LOCAL_FAVORITE")
+                        ))
+                    }
+                }
+            }
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Published directory refresh deferred: ${failure.javaClass.simpleName}")
+            null
+        }
+    }
+
+    suspend fun setBusinessFollowRemote(businessId: String, following: Boolean): Boolean = withContext(Dispatchers.IO) {
+        if (businessId.isBlank() || VibeSyncSessionManager.getProfileId().isNullOrBlank()) return@withContext false
+        try {
+            val request = buildRequest("rpc/set_my_business_follow","POST",
+                JSONObject().put("p_business_id",businessId).put("p_following",following).toString())
+            httpClient.newCall(request).execute().use { it.isSuccessful }
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Business follow sync deferred: ${failure.javaClass.simpleName}")
+            false
+        }
+    }
+
+    suspend fun stageBusinessBroadcast(
+        businessId: String, title: String, message: String, targetType: String, radiusKm: Int,
+        interestTags: List<String>, bannerUrl: String = "", ctaLabel: String = "", ctaUrl: String = ""
+    ): JSONObject? = withContext(Dispatchers.IO) {
+        if (businessId.isBlank() || title.isBlank() || message.isBlank()) return@withContext null
+        try {
+            val body = JSONObject().put("p_business_id",businessId).put("p_title",title.trim())
+                .put("p_message",message.trim()).put("p_banner_url",bannerUrl).put("p_cta_label",ctaLabel)
+                .put("p_cta_url",ctaUrl).put("p_target_type",targetType).put("p_radius_km",radiusKm)
+                .put("p_interest_tags",JSONArray(interestTags)).toString()
+            httpClient.newCall(buildRequest("rpc/stage_my_business_broadcast","POST",body)).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Broadcast staging failed HTTP ${response.code}: ${text.take(180)}")
+                    return@withContext null
+                }
+                val parsed = runCatching { JSONObject(text) }.getOrNull() ?: return@withContext null
+                parsed.takeIf { it.optBoolean("ok", true) && !it.has("error") }
+            }
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Broadcast staging deferred: ${failure.javaClass.simpleName}")
             null
         }
     }
