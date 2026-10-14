@@ -664,7 +664,7 @@ fun DatingAppRoot(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            if (activeChat == null) {
+            if (activeChat == null && !showSettingsScreen) {
                 val currentTab = pagerState.currentPage
                 NavigationBar(
                     containerColor = MaterialTheme.colorScheme.surface,
@@ -718,6 +718,38 @@ fun DatingAppRoot(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
+            if (showSettingsScreen) {
+                ProfileScreen(
+            preferences = preferences,
+            onUpdatePreferences = { viewModel.updatePreferences(it) },
+            onToggleProfileLock = { viewModel.toggleProfileLock(it) },
+            onResetData = { viewModel.resetAllData() },
+            onDeleteAccount = { viewModel.deleteAccount() },
+            onOpenAdminPortal = { viewModel.openAdminPortal() },
+            onLogout = { viewModel.logout() },
+            superLikesCount = superLikesCount,
+            isSpotlightActive = isSpotlightActive,
+            onSyncCloudBackup = { email, phrase -> viewModel.syncGoogleCloudBackupNow(email = email, encryptionPassphrase = phrase) },
+            onRestoreCloudBackup = { email, phrase -> viewModel.restoreFromGoogleCloudBackup(email = email, encryptionPassphrase = phrase) },
+            onUpdateSchedule = { freq, wifiOnly -> viewModel.updateBackupScheduleSettings(freq, wifiOnly) },
+            isBackupInProgress = isBackupInProgress,
+            isRestoreInProgress = isRestoreInProgress,
+            onOpenMpinSetup = { viewModel.openMpinSetupPrompt() },
+            onSetMpin = { pin -> viewModel.updateMpin(pin) },
+            onTriggerFaceVerification = { viewModel.triggerFaceVerification() },
+            onOpenFriendsList = { viewModel.openFriendsList() },
+            onOpenChat = { targetId -> viewModel.startChatWithProfile(targetId) },
+            acceptedFriends = acceptedFriends,
+            mutualFriendsMap = mutualFriendsMap,
+            allProfiles = allAdminProfiles,
+            onUnbanProfile = { id -> viewModel.unbanProfile(id) },
+            onToggleHideFriends = { hide -> viewModel.toggleHideFriendsList(hide) },
+            onRefreshLiveLocation = { viewModel.refreshLiveLocation() },
+            onUpdatePhoneNumber = { verifiedPhone -> viewModel.updateVerifiedPhoneNumber(verifiedPhone) },
+            onSyncFrontLoginToBackend = { viewModel.syncFrontLoginToBackendProfile(context) },
+            onRefreshAllSettings = { viewModel.refreshAllSettingsAndBackend() }
+        )
+            } else {
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize().weight(1f),
@@ -771,42 +803,10 @@ fun DatingAppRoot(
                     )
                 }
             }
+            }
         }
     }
 
-    // Settings is intentionally outside the pager and is opened only by the overflow menu.
-    AnimatedVisibility(visible = showSettingsScreen, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
-        ProfileScreen(
-            preferences = preferences,
-            onUpdatePreferences = { viewModel.updatePreferences(it) },
-            onToggleProfileLock = { viewModel.toggleProfileLock(it) },
-            onResetData = { viewModel.resetAllData() },
-            onDeleteAccount = { viewModel.deleteAccount() },
-            onOpenAdminPortal = { viewModel.openAdminPortal() },
-            onLogout = { viewModel.logout() },
-            superLikesCount = superLikesCount,
-            isSpotlightActive = isSpotlightActive,
-            onSyncCloudBackup = { email, phrase -> viewModel.syncGoogleCloudBackupNow(email = email, encryptionPassphrase = phrase) },
-            onRestoreCloudBackup = { email, phrase -> viewModel.restoreFromGoogleCloudBackup(email = email, encryptionPassphrase = phrase) },
-            onUpdateSchedule = { freq, wifiOnly -> viewModel.updateBackupScheduleSettings(freq, wifiOnly) },
-            isBackupInProgress = isBackupInProgress,
-            isRestoreInProgress = isRestoreInProgress,
-            onOpenMpinSetup = { viewModel.openMpinSetupPrompt() },
-            onSetMpin = { pin -> viewModel.updateMpin(pin) },
-            onTriggerFaceVerification = { viewModel.triggerFaceVerification() },
-            onOpenFriendsList = { viewModel.openFriendsList() },
-            onOpenChat = { targetId -> viewModel.startChatWithProfile(targetId) },
-            acceptedFriends = acceptedFriends,
-            mutualFriendsMap = mutualFriendsMap,
-            allProfiles = allAdminProfiles,
-            onUnbanProfile = { id -> viewModel.unbanProfile(id) },
-            onToggleHideFriends = { hide -> viewModel.toggleHideFriendsList(hide) },
-            onRefreshLiveLocation = { viewModel.refreshLiveLocation() },
-            onUpdatePhoneNumber = { verifiedPhone -> viewModel.updateVerifiedPhoneNumber(verifiedPhone) },
-            onSyncFrontLoginToBackend = { viewModel.syncFrontLoginToBackendProfile(context) },
-            onRefreshAllSettings = { viewModel.refreshAllSettingsAndBackend() }
-        )
-    }
 
     // Local-only Note to Self is intentionally separate from peer messaging, outbox and Realtime.
     AnimatedVisibility(
