@@ -1584,6 +1584,23 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         if (peerProfile != null && exchange.dateOfBirth.isNotBlank()) {
                             database.profileDao().insertProfile(peerProfile.copy(dateOfBirth = exchange.dateOfBirth))
                         }
+                        // A key exchange is a two-way handshake: after the sender's authenticated
+                        // avatar key is committed, enqueue ours if we have not already shared it.
+                        // The queue helper independently enforces accepted/mutual authorization and
+                        // deduplicates identical payloads, so this does not create an exchange loop.
+                        if (peerProfile != null) {
+                            runCatching {
+                                val exchangeMatch = database.matchDao().getMatchByIdSync(targetMatchId)
+                                if (exchangeMatch != null) {
+                                    queueProfileKeyExchangeIfAuthorized(exchangeMatch, peerProfile)
+                                }
+                            }.onFailure {
+                                android.util.Log.w(
+                                    "ProfileKeyExchange",
+                                    "Could not queue the reciprocal profile-key envelope: ${it.javaClass.simpleName}"
+                                )
+                            }
+                        }
                         // Force the open profile dialog to re-check contact reciprocity after the
                         // peer's authenticated key exchange has been committed to local storage.
                         val currentlySelected = _selectedProfileDetail.value
