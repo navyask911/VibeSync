@@ -37,6 +37,9 @@ object ProfileKeyManager {
     private const val SHARE_STATE_PREFS = "vibesync_profile_key_share_state"
     private const val PROFILE_VERSION_PREFS = "vibesync_profile_avatar_versions"
     private val peerProfileVersionFlows = ConcurrentHashMap<String, MutableStateFlow<Int>>()
+    // Revision changes on every accepted key exchange, including the first install of version 1.
+    // UI avatar loaders observe this separately so a failed pre-key decrypt is retried immediately.
+    private val peerProfileKeyRevisionFlows = ConcurrentHashMap<String, MutableStateFlow<Int>>()
 
     /** Monotonic profile-avatar version used by peers to invalidate cached rendered images. */
     fun currentProfileVersion(context: Context, profileId: String): Int =
@@ -58,10 +61,19 @@ object ProfileKeyManager {
         return maxOf(roomVersion ?: 1, prefsVersion, 1)
     }
 
-    /** Observable version stream so visible avatar components reload on authenticated key rotation. */
+    /** Observable server-advertised profile version for authenticated key rotations. */
     fun peerProfileVersionFlow(context: Context, peerProfileId: String): StateFlow<Int> =
         peerProfileVersionFlows.getOrPut(stableKey(peerProfileId)) {
             MutableStateFlow(1)
+        }.asStateFlow()
+
+    /**
+     * UI invalidation signal for an accepted key exchange. The first version-1 key install must
+     * trigger a reload too, even though its advertised profile version equals the default value.
+     */
+    fun peerProfileKeyRevisionFlow(context: Context, peerProfileId: String): StateFlow<Int> =
+        peerProfileKeyRevisionFlows.getOrPut(stableKey(peerProfileId)) {
+            MutableStateFlow(0)
         }.asStateFlow()
 
     /** Allocate a new version without switching the active key before ciphertext upload succeeds. */
@@ -258,6 +270,10 @@ object ProfileKeyManager {
             // Publish only after the Room key/version pair is committed, so observers never fetch
             // the new ciphertext with an old cached key version.
             peerProfileVersionFlows.getOrPut(stableKey(owner)) { MutableStateFlow(profileVersion) }.value = profileVersion
+            // Advance a dedicated revision as well: when the first successful exchange delivers
+            // version 1, assigning profileVersion above may not emit because the flow is already 1.
+            val keyRevision = peerProfileKeyRevisionFlows.getOrPut(stableKey(owner)) { MutableStateFlow(0) }
+            keyRevision.value = if (keyRevision.value == Int.MAX_VALUE) 1 else keyRevision.value + 1
 
             ReceivedExchange(
                 ownerProfileId = owner,
