@@ -2,6 +2,14 @@
 
 Revision date: 15 October 2026.
 
+## Current Supabase Free quotas (checked 15 October 2026)
+
+Supabase's published plan documentation currently lists these Free-plan quotas: 50,000 monthly active users; 500,000 Edge Function invocations; 500 MB database size per project; 1 GB file storage; 5 GB egress; 2 million Realtime messages; and 200 peak Realtime connections. The compute table lists the Free/Nano instance at 60 database connections and 200 connection-pooler clients. Verify these numbers again in the live dashboard before a release because plan limits can change.
+
+Official references: [Supabase pricing](https://supabase.com/pricing), [billing and plan quotas](https://supabase.com/docs/guides/platform/billing-on-supabase), and [compute and connection limits](https://supabase.com/docs/guides/platform/compute-and-disk).
+
+Consequently, 100,000 **monthly active users** exceeds the published Free MAU quota. A benchmark cannot increase that quota. 100,000 registered accounts is a different metric, but the actual active-user count, concurrent load, storage, egress, Realtime messages/connections, and database load still must remain within the limits. Do not publish a “100k-user Free-tier ready” claim on the basis of these scripts.
+
 These scripts are measurement tools, not evidence that a free-tier plan can sustain 100,000 active users. Registered-user count is not a concurrency target. Do not state 100k-user readiness until realistic ramp/soak traffic, the target project's current plan limits, and production-like data distributions have been measured.
 
 ## Connection types matter
