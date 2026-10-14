@@ -129,20 +129,19 @@ fun DatingAvatar(
                 .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape),
             contentAlignment = Alignment.Center
         ) {
+            val fallbackSize = (size.value * if (fallbackLabel.length > 1) 0.36f else 0.45f).sp
+            Text(
+                text = fallbackLabel,
+                fontSize = fallbackSize,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
             if (avatarImageModel != null) {
                 AsyncImage(
                     model = avatarImageModel,
                     contentDescription = "$name's profile photo",
-                    modifier = Modifier.size(size),
+                    modifier = Modifier.size(size).clip(CircleShape),
                     contentScale = ContentScale.Crop
-                )
-            } else {
-                val fallbackSize = (size.value * if (fallbackLabel.length > 1) 0.36f else 0.45f).sp
-                Text(
-                    text = fallbackLabel,
-                    fontSize = fallbackSize,
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface
                 )
             }
         }
