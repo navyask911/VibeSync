@@ -11,7 +11,7 @@ if ((__ENV.CONFIRM_LOAD_TEST || '') !== 'YES') {
 }
 const SUPABASE_URL = (__ENV.SUPABASE_URL || '').replace(/\/+$/, '');
 const API_KEY = __ENV.SUPABASE_ANON_KEY || '';
-const BEARER = __ENV.SUPABASE_BEARER_TOKEN || API_KEY;
+const BEARER = __ENV.SUPABASE_BEARER_TOKEN || '';
 if (!SUPABASE_URL || !API_KEY) {
   throw new Error('Set SUPABASE_URL (bare project URL) and SUPABASE_ANON_KEY.');
 }
@@ -41,14 +41,17 @@ export default function () {
     SUPABASE_URL + '/functions/v1/verify-truecaller',
     JSON.stringify({}),
     {
-      headers: {
-        apikey: API_KEY,
-        Authorization: 'Bearer ' + BEARER,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        'Cache-Control': 'no-store',
-        'User-Agent': 'VibeSync-Edge-Rate-Limit-Burst/1.0',
-      },
+      headers: (() => {
+        const headers = {
+          apikey: API_KEY,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'Cache-Control': 'no-store',
+          'User-Agent': 'VibeSync-Edge-Rate-Limit-Burst/1.0',
+        };
+        if (BEARER) headers.Authorization = 'Bearer ' + BEARER;
+        return headers;
+      })(),
       timeout: '10s',
       tags: { endpoint: 'verify-truecaller', workload: 'rate-limit-burst' },
     },

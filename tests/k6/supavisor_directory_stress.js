@@ -10,7 +10,7 @@ if ((__ENV.CONFIRM_LOAD_TEST || '') !== 'YES') {
 }
 const SUPABASE_URL = (__ENV.SUPABASE_URL || '').replace(/\/+$/, '');
 const API_KEY = __ENV.SUPABASE_ANON_KEY || '';
-const BEARER = __ENV.SUPABASE_BEARER_TOKEN || API_KEY;
+const BEARER = __ENV.SUPABASE_BEARER_TOKEN || '';
 if (!SUPABASE_URL || !API_KEY) {
   throw new Error('Set SUPABASE_URL (bare project URL) and SUPABASE_ANON_KEY.');
 }
@@ -42,13 +42,16 @@ export const options = {
 
 export default function () {
   const response = http.get(TARGET, {
-    headers: {
-      apikey: API_KEY,
-      Authorization: 'Bearer ' + BEARER,
-      Accept: 'application/json',
-      'Cache-Control': 'no-store',
-      'User-Agent': 'VibeSync-100k-readiness-k6/1.0',
-    },
+    headers: (() => {
+      const headers = {
+        apikey: API_KEY,
+        Accept: 'application/json',
+        'Cache-Control': 'no-store',
+        'User-Agent': 'VibeSync-100k-readiness-k6/1.0',
+      };
+      if (BEARER) headers.Authorization = 'Bearer ' + BEARER;
+      return headers;
+    })(),
     timeout: __ENV.REQUEST_TIMEOUT || '10s',
     tags: { endpoint: 'hosted_public_directory', workload: '500-vu' },
   });

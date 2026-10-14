@@ -269,12 +269,13 @@ class WebRtcSignalingManager private constructor(
     }
 
     suspend fun sendCandidate(candidate: org.webrtc.IceCandidate) {
+        // Candidate trickle must never reopen an ephemeral channel after peer connection.
         send(SignalingPayload(
             type = "ice_candidate",
             sdpMid = candidate.sdpMid,
             sdpMLineIndex = candidate.sdpMLineIndex,
             candidate = candidate.sdp
-        ))
+        ), connectIfNeeded = false)
     }
 
     suspend fun hangUp() {
@@ -287,9 +288,17 @@ class WebRtcSignalingManager private constructor(
         clearPendingEvents()
     }
 
-    private suspend fun send(signal: SignalingPayload) {
-        connect()
-        val socket = webSocket ?: error("Realtime signaling is not connected.")
+    private suspend fun send(signal: SignalingPayload, connectIfNeeded: Boolean = true) {
+        if (connectIfNeeded) {
+            connect()
+        } else if (!isJoined || webSocket == null) {
+            return
+        }
+        val socket = webSocket ?: if (connectIfNeeded) {
+            error("Realtime signaling is not connected.")
+        } else {
+            return
+        }
         val body = signal.toJson()
             .put("senderProfileId", localProfileId)
             .put("recipientProfileId", remoteProfileId)
