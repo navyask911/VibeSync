@@ -1526,14 +1526,21 @@ object SupabaseClientManager {
                 "Avatar storage object name must be bound to the active profile ID."
             }
             val encodedPath = Uri.encode(objectName)
+            // The payload is AES-GCM ciphertext, but the avatars bucket only accepts image MIME
+            // types. The source image was normalized to JPEG before encryption; label the stored
+            // object image/jpeg so Storage's MIME allow-list does not reject octet-stream bytes.
+            val storageContentType = when (contentType.substringBefore(';').trim().lowercase(java.util.Locale.ROOT)) {
+                "image/jpeg", "image/webp" -> contentType.substringBefore(';').trim().lowercase(java.util.Locale.ROOT)
+                else -> "image/jpeg"
+            }
             val request = Request.Builder()
                 .url("$SUPABASE_URL/storage/v1/object/avatars/$encodedPath")
                 .header("apikey", SUPABASE_PUBLISHABLE_KEY)
                 .header("Authorization", "Bearer ${session.accessToken}")
                 .header("x-vibesync-session", session.sessionToken)
-                .header("Content-Type", contentType)
+                .header("Content-Type", storageContentType)
                 .header("x-upsert", "true")
-                .put(file.asRequestBody(contentType.toMediaType()))
+                .put(file.asRequestBody(storageContentType.toMediaType()))
                 .build()
             httpClient.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()

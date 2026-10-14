@@ -144,7 +144,7 @@ object ProfileAvatarStorageManager {
                         context = appContext,
                         file = encrypted,
                         profileId = prepared.profileId,
-                        contentType = "application/octet-stream",
+                        contentType = "image/jpeg",
                         storageObjectName = prepared.objectName
                     )
                 }.getOrNull()
