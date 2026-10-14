@@ -1098,7 +1098,6 @@ fun DatingAppRoot(
 
     // Real-Time Non-Intrusive Bottom Overlay for Network Disconnection & Sync Pause
     NetworkConnectivityOverlay(
-        customNetworkState = networkState,
         onManualRetry = { viewModel.retryNetworkCheck() }
     )
 
