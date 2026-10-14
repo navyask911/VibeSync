@@ -18,9 +18,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONArray
@@ -153,9 +156,36 @@ class WebRtcSignalingManager private constructor(
     /** Invite the callee on its private inbox topic before broadcasting SDP on the pair topic. */
     suspend fun sendInvite(isVideo: Boolean) {
         val jwt = VibeSyncSessionManager.getAccessToken().orEmpty()
-        require(jwt.isNotBlank() && VibeSyncSessionManager.getToken().orEmpty().isNotBlank()) {
-            "A verified VibeSync session is required for private call signaling."
+        val sessionToken = VibeSyncSessionManager.getToken().orEmpty()
+        val authUid = VibeSyncSessionManager.getAuthUid().orEmpty()
+        require(jwt.isNotBlank() && sessionToken.isNotBlank() && authUid.isNotBlank()) {
+            "A UUID-subject verified VibeSync session is required for private call signaling."
         }
+
+        // Admission is rate-limited in the Edge Function before it looks up the session in Postgres.
+        // The Realtime RLS remains the final participant boundary for the private inbox/pair topics.
+        val admissionBody = JSONObject()
+            .put("call_id", callId)
+            .put("recipient_profile_id", remoteProfileId)
+            .put("is_video", isVideo)
+            .toString()
+            .toRequestBody("application/json; charset=utf-8".toMediaType())
+        val admissionRequest = Request.Builder()
+            .url(SUPABASE_URL.trimEnd('/') + "/functions/v1/vibesync-call-admission")
+            .header("apikey", SUPABASE_ANON_KEY)
+            .header("Authorization", "Bearer " + jwt)
+            .header("x-vibesync-session", sessionToken)
+            .header("Content-Type", "application/json")
+            .post(admissionBody)
+            .build()
+        val admissionStatus = withContext(Dispatchers.IO) {
+            SupabaseClientManager.httpClient.newCall(admissionRequest).execute().use { it.code }
+        }
+        check(admissionStatus in 200..299) {
+            if (admissionStatus == 429) "Too many call attempts. Please wait before calling again."
+            else "Call admission failed (HTTP " + admissionStatus + ")."
+        }
+
         val host = URI(SUPABASE_URL.trimEnd('/')).host ?: error("Supabase URL host is missing.")
         val url = okhttp3.HttpUrl.Builder().scheme("https").host(host)
             .addPathSegments("realtime/v1/websocket")
