@@ -152,6 +152,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.PlainTooltip
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberTooltipState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -4490,7 +4494,7 @@ private fun MessageInfoLine(label: String, value: String) {
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun VibeSyncChatBubble(
     message: ChatMessageEntity,
@@ -5286,24 +5290,46 @@ private fun VibeSyncChatBubble(
                         val isFailed = status == "FAILED"
                         val isRead = readReceiptsEnabled && (status == "READ" || message.isRead)
                         val isDelivered = status == "DELIVERED" || message.isDelivered
+                        val isWaitingForRecipientKey = message.deliveryState.equals("PENDING", ignoreCase = true) &&
+                            message.lastSyncError.contains("RecipientKeyNotFoundException", ignoreCase = true)
 
-                        // Neutral grey for sent/delivered; electric blue only for read receipts.
-                        val (icon, tint) = when {
-                            isRead -> Icons.Default.DoneAll to VibeSyncReadTickBlue
-                            isDelivered -> Icons.Default.DoneAll to VibeSyncMetadataDark
-                            else -> Icons.Default.Check to VibeSyncMetadataDark
+                        if (isWaitingForRecipientKey) {
+                            TooltipBox(
+                                positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                                tooltip = {
+                                    PlainTooltip {
+                                        Text("Waiting for recipient to register security keys")
+                                    }
+                                },
+                                state = rememberTooltipState()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Schedule,
+                                    contentDescription = "Waiting for recipient to register security keys",
+                                    tint = if (isOutgoing) Color.White.copy(alpha = 0.72f)
+                                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                        } else {
+                            // Neutral grey for sent/delivered; electric blue only for read receipts.
+                            val (icon, tint) = when {
+                                isRead -> Icons.Default.DoneAll to VibeSyncReadTickBlue
+                                isDelivered -> Icons.Default.DoneAll to VibeSyncMetadataDark
+                                else -> Icons.Default.Check to VibeSyncMetadataDark
+                            }
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = when {
+                                    isFailed -> "Failed"
+                                    isRead -> "Read"
+                                    isDelivered -> "Delivered"
+                                    else -> "Sent"
+                                },
+                                tint = tint,
+                                modifier = Modifier.size(14.dp)
+                            )
                         }
-                        Icon(
-                            imageVector = icon,
-                            contentDescription = when {
-                                isFailed -> "Failed"
-                                isRead -> "Read"
-                                isDelivered -> "Delivered"
-                                else -> "Sent"
-                            },
-                            tint = tint,
-                            modifier = Modifier.size(14.dp)
-                        )
                     }
                 }
                 val reactionBadges = if (message.isDeleted || message.isDeletedForEveryone) {

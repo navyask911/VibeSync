@@ -10,6 +10,9 @@ import com.example.data.model.VibeContactEntity
 import com.example.util.ContactResolver
 import com.example.util.PhonebookHelper
 import com.example.util.SupabaseClientManager
+import com.example.util.TinkCryptoManager
+import com.example.util.TinkKeyRepository
+import com.example.service.VibeSyncOutboxWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -135,6 +138,35 @@ class ContactRepository(
                 }.awaitAll()
             }
 
+            // Refresh keys only for peers with pending outgoing messages, avoiding key lookups for
+            // every contact on every phonebook sync.
+            val pendingRecipientIds = VibeSyncOutboxWorker.pendingRecipientProfileIds(context)
+            val recipientsWithFreshKeys = mutableSetOf<String>()
+            pendingRecipientIds.forEach { pendingPeerId ->
+                val cachedPeer = matchedProfilesById[pendingPeerId]
+                    ?: matchedProfilesById.entries.firstOrNull { it.key.equals(pendingPeerId, ignoreCase = true) }?.value
+                val localPeer = cachedPeer ?: runCatching {
+                    profileDao.getProfileByIdSync(pendingPeerId)
+                }.getOrNull()?.let { stored ->
+                    val phoneKey = PhonebookHelper.normalizeToE164(stored.phoneNumber)
+                    matchedProfilesByPhone[phoneKey] ?: stored
+                }
+                if (localPeer != null) {
+                    val key = TinkKeyRepository.fetchRecipientPublicKey(
+                        profileId = localPeer.id,
+                        fallbackPhoneNumber = localPeer.phoneNumber
+                    )?.takeIf { TinkCryptoManager.validatePublicKeysetJson(it) }
+                    if (!key.isNullOrBlank()) {
+                        val updatedPeer = localPeer.copy(publicIdentityKey = key)
+                        matchedProfilesById[updatedPeer.id] = updatedPeer
+                        val normalizedPhone = PhonebookHelper.normalizeToE164(updatedPeer.phoneNumber)
+                        if (normalizedPhone.isNotBlank()) matchedProfilesByPhone[normalizedPhone] = updatedPeer
+                        recipientsWithFreshKeys.add(pendingPeerId)
+                        Log.i(TAG, "Refreshed recipient Tink public key during contact sync; key material remains public-only.")
+                    }
+                }
+            }
+
             // No raw-phone profile-table query or Firestore fallback is used.
             // Bind each local contact to the canonical profile ID returned by Supabase.
             val registeredVibeContacts = mutableListOf<PhoneContact>()
@@ -214,6 +246,11 @@ class ContactRepository(
             }
             if (userContactEntities.isNotEmpty()) {
                 userContactDao.insertContacts(userContactEntities)
+            }
+
+            // Room commits first; then immediately replace any WorkManager retry in backoff.
+            recipientsWithFreshKeys.forEach { recipientId ->
+                VibeSyncOutboxWorker.signalKeyAvailable(context, recipientId)
             }
 
             val elapsedMs = System.currentTimeMillis() - startTime

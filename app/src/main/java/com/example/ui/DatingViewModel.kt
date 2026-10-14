@@ -2735,6 +2735,23 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             accessToken = accessToken
         )
 
+        // Await first-device-key publication before completing login. Failure does not discard the
+        // authenticated session; the startup/outbox retry path will repeat the dual-store RPC.
+        val deviceKeyPublished = runCatching {
+            kotlinx.coroutines.withTimeoutOrNull(12_000L) {
+                com.example.util.TinkKeyRepository.publishDevicePublicKey(
+                    context = getApplication(),
+                    expectedProfileId = profileId
+                )
+            } ?: false
+        }.getOrElse { failure ->
+            android.util.Log.w("AuthSessionManager", "Initial Tink key publication deferred: ${failure.javaClass.simpleName}")
+            false
+        }
+        if (!deviceKeyPublished) {
+            android.util.Log.w("AuthSessionManager", "Login continues, but outbox sends will wait until the device key is published.")
+        }
+
         // Always check the verified phone as well as the gateway-issued profile ID. Older
         // accounts can be keyed differently from the ID returned by the authentication gateway.
         val profileById = SupabaseClientManager.fetchProfileById(profileId)

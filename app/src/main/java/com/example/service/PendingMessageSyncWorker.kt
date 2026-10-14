@@ -539,15 +539,22 @@ object PendingMessageSyncScheduler {
     private const val UNIQUE_PREFIX = "vibesync-chat-message-"
     private val sweepScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    fun enqueue(context: Context, messageId: String) {
+    fun enqueue(context: Context, messageId: String) =
+        enqueueInternal(context, messageId, replaceExisting = false)
+
+    /** Bypass a key-related retry backoff as soon as the recipient's public key is available. */
+    fun enqueueNow(context: Context, messageId: String) =
+        enqueueInternal(context, messageId, replaceExisting = true)
+
+    private fun enqueueInternal(context: Context, messageId: String, replaceExisting: Boolean) {
         val safeId = messageId.trim()
         if (safeId.isBlank()) {
             Log.w(TAG, "Refusing to enqueue a chat message with a blank ID.")
             return
         }
         try {
-            val request = OneTimeWorkRequestBuilder<PendingMessageSyncWorker>()
-                .setInputData(workDataOf(PendingMessageSyncWorker.KEY_MESSAGE_ID to safeId))
+            val request = OneTimeWorkRequestBuilder<VibeSyncOutboxWorker>()
+                .setInputData(workDataOf(VibeSyncOutboxWorker.KEY_MESSAGE_ID to safeId))
                 .setConstraints(
                     Constraints.Builder()
                         .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -559,10 +566,10 @@ object PendingMessageSyncScheduler {
                 .build()
             WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
                 UNIQUE_PREFIX + safeId,
-                ExistingWorkPolicy.KEEP,
+                if (replaceExisting) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
                 request
             )
-            Log.i(TAG, "Enqueued unique durable chat work for $safeId.")
+            Log.i(TAG, "${if (replaceExisting) "Re-enqueued" else "Enqueued"} durable chat work for $safeId.")
         } catch (t: Throwable) {
             Log.e(TAG, "Could not enqueue outbox work for $safeId; startup sweep will recover it.", t)
         }
