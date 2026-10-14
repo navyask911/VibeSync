@@ -43,9 +43,11 @@ Deno.serve(async (request: Request) => {
     const candidateType = String(body.candidate_type ?? "").toLowerCase();
     const bytesSent = Number(body.bytes_sent);
     const bytesReceived = Number(body.bytes_received);
+    const totalBytes = Number(body.total_bytes);
     if (!callId || callId.length > 256 || candidateType !== "relay" ||
         !Number.isSafeInteger(bytesSent) || bytesSent < 0 ||
-        !Number.isSafeInteger(bytesReceived) || bytesReceived < 0) {
+        !Number.isSafeInteger(bytesReceived) || bytesReceived < 0 ||
+        !Number.isSafeInteger(totalBytes) || totalBytes !== bytesSent + bytesReceived) {
       return json({ error: "invalid_relay_usage_report" }, 400);
     }
 
@@ -62,7 +64,7 @@ Deno.serve(async (request: Request) => {
       console.error("Relay usage persistence failed:", error.code);
       return json({ error: "usage_report_failed" }, 500);
     }
-    return json({ ok: true, candidate_type: "relay", bytes_sent: bytesSent, bytes_received: bytesReceived });
+    return json({ ok: true, candidate_type: "relay", bytes_sent: bytesSent, bytes_received: bytesReceived, total_bytes: totalBytes });
   } catch {
     return json({ error: "invalid_json" }, 400);
   }

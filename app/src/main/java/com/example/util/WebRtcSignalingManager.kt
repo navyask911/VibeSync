@@ -97,7 +97,7 @@ class WebRtcSignalingManager private constructor(
             .host(host)
             .addPathSegments("realtime/v1/websocket")
             .addQueryParameter("apikey", SUPABASE_ANON_KEY)
-            .addQueryParameter("vsn", "1.0.0")
+            .addQueryParameter("vsn", "2.0.0")
             .build()
         val ready = CompletableDeferred<Unit>()
         joinResult = ready
@@ -160,7 +160,7 @@ class WebRtcSignalingManager private constructor(
         val url = okhttp3.HttpUrl.Builder().scheme("https").host(host)
             .addPathSegments("realtime/v1/websocket")
             .addQueryParameter("apikey", SUPABASE_ANON_KEY)
-            .addQueryParameter("vsn", "1.0.0").build()
+            .addQueryParameter("vsn", "2.0.0").build()
         val completed = CompletableDeferred<Unit>()
         val inviteSocket = client.newWebSocket(
             Request.Builder().url(url).header("apikey", SUPABASE_ANON_KEY)
@@ -173,7 +173,7 @@ class WebRtcSignalingManager private constructor(
                     joinedInboxRef = ref
                     val inboxTopic = "realtime:call-inbox:" + remoteProfileId
                     val channelConfig = JSONObject()
-                        .put("broadcast", JSONObject().put("ack", false).put("self", false))
+                        .put("broadcast", JSONObject().put("ack", true).put("self", false))
                         .put("presence", JSONObject().put("key", ""))
                         .put("private", true)
                     socket.send(frame(ref, ref, inboxTopic, "phx_join",
@@ -183,28 +183,33 @@ class WebRtcSignalingManager private constructor(
                     try {
                         val packet = JSONArray(text)
                         if (packet.length() < 5) return
-                        if (packet.optString(3) == "phx_reply" &&
-                            packet.optJSONObject(4)?.optString("status") == "ok" && !invitationSent
-                        ) {
-                            invitationSent = true
-                            val topic = "realtime:call-inbox:" + remoteProfileId
-                            val data = JSONObject()
-                                .put("type", "incoming_call")
-                                .put("callId", callId)
-                                .put("senderProfileId", localProfileId)
-                                .put("recipientProfileId", remoteProfileId)
-                                .put("isVideo", isVideo)
-                            val envelope = JSONObject().put("type", "broadcast")
-                                .put("event", "incoming_call").put("payload", data)
-                            val ref = refCounter.incrementAndGet().toString()
-                            socket.send(frame(joinedInboxRef, ref, topic, "broadcast", envelope).toString())
-                            scope.launch {
-                                delay(250)
+                        val event = packet.optString(3)
+                        val payload = packet.optJSONObject(4) ?: JSONObject()
+                        if (event == "phx_reply" && payload.optString("status") == "ok") {
+                            if (!invitationSent) {
+                                // First acknowledgement is the private channel join.
+                                invitationSent = true
+                                val topic = "realtime:call-inbox:" + remoteProfileId
+                                val data = JSONObject()
+                                    .put("type", "incoming_call")
+                                    .put("callId", callId)
+                                    .put("senderProfileId", localProfileId)
+                                    .put("recipientProfileId", remoteProfileId)
+                                    .put("isVideo", isVideo)
+                                val envelope = JSONObject().put("type", "broadcast")
+                                    .put("event", "incoming_call").put("payload", data)
+                                val ref = refCounter.incrementAndGet().toString()
+                                if (!socket.send(frame(joinedInboxRef, ref, topic, "broadcast", envelope).toString())) {
+                                    completed.completeExceptionally(IllegalStateException("Call invitation could not be queued."))
+                                }
+                            } else {
+                                // Broadcast acknowledgement confirms Realtime accepted the invitation.
                                 completed.complete(Unit)
-                                socket.close(1000, "Invitation queued")
+                                socket.close(1000, "Invitation acknowledged")
                             }
-                        }
-                        if (packet.optString(3) == "phx_error" || packet.optString(3) == "phx_close") {
+                        } else if (event == "phx_reply" && payload.optString("status") != "ok") {
+                            completed.completeExceptionally(IllegalStateException("Call invitation was rejected."))
+                        } else if (event == "phx_error" || event == "phx_close") {
                             completed.completeExceptionally(IllegalStateException("Call invitation was rejected."))
                         }
                     } catch (_: Throwable) {

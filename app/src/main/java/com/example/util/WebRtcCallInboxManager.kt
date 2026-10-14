@@ -62,7 +62,7 @@ class WebRtcCallInboxManager(private val localProfileId: String) {
         val url = okhttp3.HttpUrl.Builder().scheme("https").host(host)
             .addPathSegments("realtime/v1/websocket")
             .addQueryParameter("apikey", SUPABASE_ANON_KEY)
-            .addQueryParameter("vsn", "1.0.0").build()
+            .addQueryParameter("vsn", "2.0.0").build()
         val ready = CompletableDeferred<Unit>()
         joinResult = ready
         socket = client.newWebSocket(

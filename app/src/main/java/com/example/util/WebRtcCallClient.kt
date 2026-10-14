@@ -388,6 +388,7 @@ class WebRtcCallClient(
             .put("candidate_type", "relay")
             .put("bytes_sent", bytesSent.coerceAtLeast(0L))
             .put("bytes_received", bytesReceived.coerceAtLeast(0L))
+            .put("total_bytes", safeTotalBytes(bytesSent, bytesReceived))
         val request = Request.Builder()
             .url(SupabaseClientManager.SUPABASE_URL.trimEnd('/') + "/functions/v1/report-bandwidth")
             .header("apikey", SupabaseClientManager.SUPABASE_PUBLISHABLE_KEY)
@@ -481,6 +482,12 @@ class WebRtcCallClient(
         val sent = pair.members["bytesSent"].asLongOrZero()
         val received = pair.members["bytesReceived"].asLongOrZero()
         return sent to received
+    }
+
+    private fun safeTotalBytes(bytesSent: Long, bytesReceived: Long): Long {
+        val sent = bytesSent.coerceAtLeast(0L)
+        val received = bytesReceived.coerceAtLeast(0L)
+        return if (Long.MAX_VALUE - sent < received) Long.MAX_VALUE else sent + received
     }
 
     private fun Any?.asLongOrZero(): Long = when (this) {
