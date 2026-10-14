@@ -10,6 +10,7 @@ import android.net.Uri
 import android.util.LruCache
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -113,7 +114,7 @@ object ProfileAvatarStorageManager {
         } finally { square.recycle() }
     }
 
-    /** Upload ciphertext only; the local JPEG remains the on-device Coil source. */
+    /** Upload ciphertext only; retry transient failures and preserve the private local preview. */
     suspend fun uploadPreparedAvatar(prepared: PreparedAvatar): String? =
         withContext(Dispatchers.IO) {
             if (!prepared.file.isFile || prepared.file.length() !in 1 until MAX_BYTES.toLong()) {
@@ -122,31 +123,46 @@ object ProfileAvatarStorageManager {
             }
             val encrypted = prepared.encryptedFile?.takeIf { it.isFile && it.length() > 28L }
                 ?: return@withContext null
-            val uploaded = SupabaseClientManager.uploadProfileAvatar(
-                file = encrypted,
-                profileId = prepared.profileId,
-                contentType = "application/octet-stream",
-                storageObjectName = prepared.objectName
-            )
-            if (uploaded.isNullOrBlank()) {
-                null
-            } else {
-                val appContext = prepared.applicationContext
-                if (appContext == null || !ProfileKeyManager.activateProfileVersion(
-                        appContext, prepared.profileId, prepared.profileVersion
-                    )
+            val appContext = prepared.applicationContext ?: return@withContext null
+            var uploadedUrl: String? = null
+
+            for (attempt in 1..3) {
+                val session = VibeSyncSessionManager.getSession(appContext)
+                val nowSeconds = System.currentTimeMillis() / 1000L
+                if (
+                    session == null ||
+                    !session.profileId.equals(prepared.profileId, ignoreCase = true) ||
+                    session.sessionToken.isBlank() ||
+                    session.accessToken.isBlank() ||
+                    session.expiresAtEpochSeconds <= nowSeconds + 5L
                 ) {
-                    prepared.file.delete()
-                    encrypted.delete()
-                    Log.w(TAG, "Avatar ciphertext uploaded but key version could not be activated.")
+                    Log.w(TAG, "Encrypted avatar upload paused: matching, unexpired session/JWT unavailable.")
                     return@withContext null
                 }
-                // Do not leave the sanitized plaintext staging image or temporary ciphertext on disk
-                // after Supabase confirms the ciphertext upload.
-                prepared.file.delete()
-                encrypted.delete()
-                encryptedAvatarReference(prepared.profileId, prepared.slot)
+                uploadedUrl = runCatching {
+                    SupabaseClientManager.uploadProfileAvatar(
+                        context = appContext,
+                        file = encrypted,
+                        profileId = prepared.profileId,
+                        contentType = "application/octet-stream",
+                        storageObjectName = prepared.objectName
+                    )
+                }.getOrNull()
+                if (!uploadedUrl.isNullOrBlank()) break
+                if (attempt < 3) delay(350L * attempt)
             }
+
+            if (uploadedUrl.isNullOrBlank()) {
+                Log.w(TAG, "Encrypted avatar upload failed after retries; local cache/ciphertext retained.")
+                return@withContext null
+            }
+            if (!ProfileKeyManager.activateProfileVersion(appContext, prepared.profileId, prepared.profileVersion)) {
+                Log.w(TAG, "Avatar uploaded but its key version could not be activated; local files are retained.")
+                return@withContext null
+            }
+            // Keep the sanitized JPEG in app cache for Compose preview/fallback.
+            encrypted.delete()
+            encryptedAvatarReference(prepared.profileId, prepared.slot)
         }
 
     fun encryptedAvatarReference(profileId: String, slot: Int = 1): String =
