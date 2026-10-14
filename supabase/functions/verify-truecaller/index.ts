@@ -340,8 +340,18 @@ Deno.serve(async (req: Request) => {
     const isSuperAdmin = identity.phone === configuredSuperAdminPhone;
 
     // Persist this role only after Truecaller has verified the exact configured E.164 number.
-    // User input and unverified request fields are never used as an elevation signal.
+    // A configured-phone rotation must revoke stale superadmin identities before issuing the new claim.
+    // This is intentionally a single-root-admin model; support staff use staff_assignments separately.
     if (isSuperAdmin) {
+      const staleMemberships = await admin.from("super_admins").delete().neq("phone", identity.phone);
+      if (staleMemberships.error) {
+        throw new HttpError("stale_super_admin_membership_cleanup_failed", 503);
+      }
+      const unboundMemberships = await admin.from("super_admins").delete().is("phone", null);
+      if (unboundMemberships.error) {
+        throw new HttpError("unbound_super_admin_membership_cleanup_failed", 503);
+      }
+
       const [byProfile, byPhone] = await Promise.all([
         admin.from("super_admins").select("profile_id,phone")
           .eq("profile_id", profileId).limit(1).maybeSingle(),
