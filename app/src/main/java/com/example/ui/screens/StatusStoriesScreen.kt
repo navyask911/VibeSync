@@ -23,6 +23,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -49,6 +50,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -131,6 +133,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -190,6 +193,20 @@ fun StatusStoriesScreen(
     // Automatically fetch and update the feed with new Stories from mutual contacts upon opening
     LaunchedEffect(Unit) {
         viewModel.fetchMutualFriendsStories()
+    }
+
+    val recentStoryOwnerIds = remember(friendsStories) {
+        friendsStories.asSequence()
+            .filterNot { it.isAd }
+            .map { it.userId.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .toList()
+    }
+    LaunchedEffect(recentStoryOwnerIds) {
+        recentStoryOwnerIds.forEach { peerId ->
+            viewModel.ensureProfileKeyExchangeForStoryOwner(peerId)
+        }
     }
 
     // Intercept back button to dismiss overlays cleanly
@@ -704,6 +721,47 @@ fun VibeSyncStatusRow(
     isViewed: Boolean = false,
     onClick: () -> Unit
 ) {
+    val context = LocalContext.current.applicationContext
+    // Only the first active avatar is needed for a round story thumbnail. Encrypted avatar
+    // pointers are resolved with the peer's exchanged Tink key, never sent to Coil as a URL.
+    val avatarReference = remember(avatarUrl) {
+        avatarUrl.split("|||").firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+    }
+    val encryptedOwnerId = remember(avatarReference) {
+        avatarReference.takeIf { it.startsWith("vibesync-avatar-enc://") }
+            ?.removePrefix("vibesync-avatar-enc://")
+            ?.substringBefore('/')
+            .orEmpty()
+    }
+    val keyRevisionFlow = remember(context, encryptedOwnerId) {
+        if (encryptedOwnerId.isBlank()) {
+            kotlinx.coroutines.flow.flowOf(0)
+        } else {
+            com.example.util.ProfileKeyManager.peerProfileKeyRevisionFlow(context, encryptedOwnerId)
+        }
+    }
+    val peerKeyRevision by keyRevisionFlow.collectAsState(initial = 0)
+    var decryptedAvatar by remember(avatarReference) { mutableStateOf<Bitmap?>(null) }
+    var networkAvatarLoaded by remember(avatarReference) { mutableStateOf(false) }
+    val initial = remember(title) {
+        title.trim().firstOrNull()?.uppercaseChar()?.toString().orEmpty().ifBlank { "?" }
+    }
+
+    LaunchedEffect(avatarReference, peerKeyRevision) {
+        decryptedAvatar = null
+        networkAvatarLoaded = false
+        if (avatarReference.startsWith("vibesync-avatar-enc://")) {
+            // This method downloads ciphertext only, authenticates/decrypts using Google Tink
+            // AES-256-GCM and the peer key, then returns a bounded in-memory Bitmap.
+            decryptedAvatar = runCatching {
+                com.example.util.ProfileAvatarStorageManager.resolveAvatarForDisplay(
+                    context = context,
+                    reference = avatarReference
+                )
+            }.getOrNull()
+        }
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -715,7 +773,6 @@ fun VibeSyncStatusRow(
             modifier = Modifier.size(46.dp),
             contentAlignment = Alignment.Center
         ) {
-            // VibeSync Status Ring around Avatar
             Canvas(modifier = Modifier.size(45.dp)) {
                 drawCircle(
                     color = if (isViewed) Color(0xFFD1D7DB) else VibeSyncGreen,
@@ -723,26 +780,50 @@ fun VibeSyncStatusRow(
                 )
             }
 
-            // Avatar circle thumbnail
             Box(
                 modifier = Modifier
                     .size(38.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFFE2E8EC)),
+                    .background(MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center
             ) {
-                if (avatarUrl.isNotBlank()) {
-                    AsyncImage(
-                        model = avatarUrl,
-                        contentDescription = title,
-                        modifier = Modifier.fillMaxSize(),
+                // Always render a styled initial first, so empty/loading/invalid images never show
+                // an empty white circle. A valid decrypted/network image naturally covers it.
+                Text(
+                    text = initial,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+
+                if (decryptedAvatar != null) {
+                    Image(
+                        bitmap = decryptedAvatar!!.asImageBitmap(),
+                        contentDescription = "$title's story avatar",
+                        modifier = Modifier.fillMaxSize().clip(CircleShape),
                         contentScale = ContentScale.Crop
                     )
-                } else {
-                    Text(
-                        text = avatarEmoji,
-                        fontSize = 18.sp
+                } else if (
+                    avatarReference.isNotBlank() &&
+                    !avatarReference.startsWith("vibesync-avatar-enc://")
+                ) {
+                    AsyncImage(
+                        model = avatarReference,
+                        contentDescription = "$title's story avatar",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                        onLoading = { networkAvatarLoaded = false },
+                        onSuccess = { networkAvatarLoaded = true },
+                        onError = { networkAvatarLoaded = false }
                     )
+                    if (!networkAvatarLoaded) {
+                        Text(
+                            text = initial,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
                 }
             }
         }
@@ -813,16 +894,18 @@ fun TypeAStatusComposerScreen(
         androidx.compose.foundation.layout.BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Brush.linearGradient(listOf(Color(currentBgStart), Color(currentBgEnd))))
-                .statusBarsPadding()
+                .systemBarsPadding()
                 .navigationBarsPadding()
-                .imePadding()
+                .imePadding(),
+            contentAlignment = Alignment.Center
         ) {
             Column(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .fillMaxWidth(0.97f)
+                    .fillMaxHeight(0.97f)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(Brush.linearGradient(listOf(Color(currentBgStart), Color(currentBgEnd))))
                     .verticalScroll(rememberScrollState())
-                    .imePadding()
             ) {
                 // Top Action Bar
                 Row(
@@ -1130,13 +1213,16 @@ fun AddStatusBottomSheet(
         containerColor = MaterialTheme.colorScheme.surface
     ) {
         androidx.compose.foundation.layout.BoxWithConstraints(
-            modifier = Modifier.fillMaxWidth().navigationBarsPadding().imePadding()
+            modifier = Modifier
+                .fillMaxWidth()
+                .systemBarsPadding()
+                .navigationBarsPadding()
+                .imePadding()
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = maxHeight)
-                    .statusBarsPadding()
+                    .heightIn(max = maxHeight * 0.97f)
                     .padding(bottom = 20.dp)
             ) {
             // Top Bar: 'X' close button and "Add Stories" title
@@ -1477,13 +1563,20 @@ fun StatusCaptionUploadPreviewDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Brush.linearGradient(listOf(Color(currentBgStart), Color(currentBgEnd))))
-                .statusBarsPadding()
+                .systemBarsPadding()
                 .navigationBarsPadding()
                 .imePadding(),
+            contentAlignment = Alignment.Center
+        ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth(0.97f)
+                .fillMaxHeight(0.97f)
+                .clip(RoundedCornerShape(24.dp))
+                .background(Brush.linearGradient(listOf(Color(currentBgStart), Color(currentBgEnd)))),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
             // Top Header: Back button, Title & Color palette picker
@@ -1580,7 +1673,7 @@ fun StatusCaptionUploadPreviewDialog(
             // Bottom Caption Bar & Upload Send Button with safe area edge-to-edge window insets
             Surface(
                 color = Color(0xF20B1220),
-                modifier = Modifier.fillMaxWidth().navigationBarsPadding().imePadding()
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
                     modifier = Modifier
@@ -1622,6 +1715,7 @@ fun StatusCaptionUploadPreviewDialog(
                     }
                 }
             }
+        }
         }
     }
 }
