@@ -66,6 +66,29 @@ fun ProfileHeaderSection(
             try {
                 val profileId = com.example.util.VibeSyncSessionManager.getProfileId(context).orEmpty().trim()
                 require(profileId.isNotBlank()) { "Sign in again before uploading profile photos." }
+                if (slot == 1) {
+                    val remoteUrl = com.example.util.SupabaseClientManager.uploadPublicProfileAvatar(
+                        context = context,
+                        sourceUri = sourceUri,
+                        profileId = profileId
+                    ).getOrElse { throw it }
+                    val uploadedPhotos = existingPhotos.toMutableList()
+                    if (uploadedPhotos.isEmpty()) uploadedPhotos.add(remoteUrl) else uploadedPhotos[0] = remoteUrl
+                    onUpdatePreferences(
+                        preferences.copy(
+                            avatarUrl = remoteUrl,
+                            profilePhotos = uploadedPhotos.filter { it.isNotBlank() }.joinToString("|||"),
+                            avatarCacheVersion = System.currentTimeMillis()
+                        )
+                    )
+                    android.widget.Toast.makeText(
+                        context,
+                        "Profile picture compressed to 512×512 and synced.",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                    return@launch
+                }
+
                 val prepared = com.example.util.ProfileAvatarStorageManager.preparePickedAvatar(
                     context = context,
                     sourceUri = sourceUri,
@@ -73,7 +96,7 @@ fun ProfileHeaderSection(
                     slot = slot
                 )
 
-                val isCanonicalAvatar = slot == 1 || preferences.avatarUrl.isBlank()
+                val isCanonicalAvatar = preferences.avatarUrl.isBlank()
                 val remoteUrl = com.example.util.ProfileAvatarStorageManager.uploadPreparedAvatar(prepared)
                 if (remoteUrl.isNullOrBlank()) {
                     prepared.file.delete()
@@ -157,7 +180,7 @@ fun ProfileHeaderSection(
             // One unified circular avatar, shared with discovery/profile identity.
             Box(
                 modifier = Modifier
-                    .size(112.dp)
+                    .size(100.dp)
                     .clip(CircleShape)
                     .border(
                         width = 3.dp,
@@ -181,7 +204,7 @@ fun ProfileHeaderSection(
                         emoji = "👤",
                         colorStart = 0xFF14B8A6,
                         colorEnd = 0xFFEC4899,
-                        size = 112.dp,
+                        size = 100.dp,
                         avatarUrl = preferences.avatarUrl,
                         avatarCacheVersion = preferences.avatarCacheVersion,
                         modifier = Modifier.fillMaxSize().clip(CircleShape)
@@ -202,24 +225,19 @@ fun ProfileHeaderSection(
                     }
                 }
                 Surface(
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp).clickable {
-                        if (photos.size < 3) {
-                            galleryPhotoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                        } else {
-                            photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                        }
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp).size(36.dp).clickable {
+                        photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                     },
                     shape = CircleShape,
                     color = MaterialTheme.colorScheme.primary,
                     border = androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.surface),
                     shadowElevation = 4.dp
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    Box(
+                        modifier = Modifier.size(36.dp),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Text("${photos.size}/3", color = MaterialTheme.colorScheme.onPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                        Icon(Icons.Default.Add, contentDescription = "Add profile photo", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(14.dp))
+                        Icon(Icons.Default.CameraAlt, contentDescription = "Change profile picture", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(19.dp))
                     }
                 }
             }
