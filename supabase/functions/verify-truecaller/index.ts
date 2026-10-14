@@ -9,6 +9,9 @@ const TRUECALLER_TOKEN_ENDPOINT = "https://oauth-account-noneu.truecaller.com/v1
 const TRUECALLER_USERINFO_ENDPOINT = "https://oauth-account-noneu.truecaller.com/v1/userinfo";
 const REQUEST_STATE_TTL_SECONDS = 600;
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+// Fixed application namespace for UUID v5 identity: stable across devices and deploys.
+const UUID_V5_NAMESPACE = "e3d4a2d1-66d5-5f26-8c2b-29f27b7e4a19";
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 const corsHeaders = {
   "access-control-allow-origin": "*",
@@ -25,8 +28,8 @@ class HttpError extends Error {
   }
 }
 
-function json(data: unknown, status = 200) {
-  return new Response(JSON.stringify(data), { status, headers: corsHeaders });
+function json(data: unknown, status = 200, extraHeaders: Record<string, string> = {}) {
+  return new Response(JSON.stringify(data), { status, headers: { ...corsHeaders, ...extraHeaders } });
 }
 
 function getSupabaseSecretKey(): string {
@@ -78,6 +81,50 @@ function randomHex(byteCount: number): string {
   const bytes = new Uint8Array(byteCount);
   crypto.getRandomValues(bytes);
   return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function clientIp(request: Request): string {
+  return request.headers.get("cf-connecting-ip")?.trim() ||
+    request.headers.get("x-real-ip")?.trim() ||
+    request.headers.get("x-forwarded-for")?.split(",").map((v) => v.trim()).filter(Boolean).pop() ||
+    "unknown";
+}
+
+function takeRateLimit(key: string, limit: number, windowMs: number): number {
+  const now = Date.now();
+  let bucket = rateBuckets.get(key);
+  if (!bucket || bucket.resetAt <= now) {
+    bucket = { count: 0, resetAt: now + windowMs };
+    rateBuckets.set(key, bucket);
+  }
+  if (bucket.count >= limit) return Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+  bucket.count += 1;
+  if (rateBuckets.size > 10000) {
+    for (const [candidate, value] of rateBuckets) {
+      if (value.resetAt <= now) rateBuckets.delete(candidate);
+    }
+    while (rateBuckets.size > 12000) rateBuckets.delete(rateBuckets.keys().next().value!);
+  }
+  return 0;
+}
+
+function uuidBytes(value: string): Uint8Array {
+  return new Uint8Array(value.replace(/-/g, "").match(/.{2}/g)!.map((part) => parseInt(part, 16)));
+}
+
+async function uuidV5(name: string): Promise<string> {
+  const namespace = uuidBytes(UUID_V5_NAMESPACE);
+  const nameBytes = new TextEncoder().encode(name);
+  const input = new Uint8Array(namespace.length + nameBytes.length);
+  input.set(namespace, 0);
+  input.set(nameBytes, namespace.length);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-1", input));
+  const bytes = digest.slice(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+  return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" + hex.slice(12, 16) +
+    "-" + hex.slice(16, 20) + "-" + hex.slice(20);
 }
 
 async function exchangeAuthorizationCode(code: string, codeVerifier: string): Promise<string> {
@@ -160,8 +207,17 @@ Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { status: 200, headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
 
+  // Per-isolate in-memory limits run before any database access. The gateway IP is preferred;
+  // forwarded-for falls back to the last proxy-added hop rather than the client-supplied first hop.
+  const ip = clientIp(req);
+  const minuteRetry = takeRateLimit("verify:ip-minute:" + ip, 8, 60_000);
+  const hourRetry = takeRateLimit("verify:ip-hour:" + ip, 35, 60 * 60_000);
+  const ipRetry = Math.max(minuteRetry, hourRetry);
+  if (ipRetry > 0) return json({ error: "rate_limited", retry_after_seconds: ipRetry }, 429, { "retry-after": String(ipRetry) });
+
   const serviceRoleKey = getSupabaseSecretKey();
-  const jwtSecret = Deno.env.get("APP_JWT_SECRET") || Deno.env.get("JWT_SECRET") || "";
+  // JWT_SECRET is canonical because PostgREST/Realtime verify this signature with the project JWT secret.
+  const jwtSecret = Deno.env.get("JWT_SECRET") || Deno.env.get("APP_JWT_SECRET") || "";
   if (!supabaseUrl || !serviceRoleKey || !jwtSecret || !TRUECALLER_PARTNER_KEY) {
     return json({
       error: "server_configuration_incomplete",
@@ -207,8 +263,15 @@ Deno.serve(async (req: Request) => {
     const accessToken = await exchangeAuthorizationCode(authorizationCode, codeVerifier);
     const identity = await fetchTruecallerUserInfo(accessToken);
 
+    // Do not allow verified-phone churn to bypass the IP bucket. This hashed in-memory key is
+    // deliberately not persisted and is checked before profile/session writes.
+    const phoneRateKey = await sha256Hex(identity.phone);
+    const phoneRetry = takeRateLimit("verify:phone-hour:" + phoneRateKey, 5, 60 * 60_000);
+    if (phoneRetry > 0) return json({ error: "rate_limited", retry_after_seconds: phoneRetry }, 429, { "retry-after": String(phoneRetry) });
+
     const fullPhoneHash = await sha256Hex(identity.last10);
     const profileId = fullPhoneHash.slice(0, 16);
+    const authUid = await uuidV5("vibesync:phone:" + identity.phone);
     const sessionToken = randomHex(32);
     const sessionHash = await sha256Hex(sessionToken);
     const jwtId = crypto.randomUUID();
@@ -228,6 +291,15 @@ Deno.serve(async (req: Request) => {
     }, { onConflict: "id" });
     if (profileUpsert.error) {
       throw new HttpError("profile_provision_failed: " + profileUpsert.error.message.slice(0, 200), 500);
+    }
+
+    const identityMapUpsert = await admin.from("vibesync_auth_identity_map").upsert({
+      auth_uid: authUid,
+      profile_id: profileId,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "auth_uid" });
+    if (identityMapUpsert.error) {
+      throw new HttpError("auth_identity_map_provision_failed: " + identityMapUpsert.error.message.slice(0, 200), 500);
     }
 
     const phoneLookupUpsert = await admin.from("phone_lookup_index").upsert({
@@ -267,7 +339,7 @@ Deno.serve(async (req: Request) => {
     const jwt = await djwt.create(
       { alg: "HS256", typ: "JWT" },
       {
-        sub: profileId,
+        sub: authUid,
         aud: "authenticated",
         role: "authenticated",
         phone: identity.phone,
@@ -301,6 +373,7 @@ Deno.serve(async (req: Request) => {
       admin_role: isSuperAdmin ? "SUPER_ADMIN" : "MEMBER",
       phone: identity.phone,
       profile_id: profileId,
+      auth_uid: authUid,
       // Canonical VibeSync session field; keep access_token for older clients.
       access_jwt: jwt,
       access_token: jwt,
