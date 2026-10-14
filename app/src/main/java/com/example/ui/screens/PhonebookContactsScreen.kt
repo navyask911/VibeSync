@@ -557,7 +557,7 @@ private fun ContactOnVibeSyncItem(
                 emoji = contact.avatarEmoji.ifBlank { "👤" },
                 colorStart = 0xFF00A884,
                 colorEnd = 0xFF128C7E,
-                size = 46.dp,
+                size = 48.dp,
                 avatarUrl = contactPhoto,
                 avatarCacheVersion = contact.vibeSyncUser?.avatarCacheVersion ?: 0L
             )
@@ -656,18 +656,14 @@ private fun ContactToInviteItem(
         verticalAlignment = Alignment.CenterVertically
     ) {
         // Avatar placeholder
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            modifier = Modifier.size(46.dp)
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Text(
-                    text = contact.avatarEmoji.ifBlank { "👤" },
-                    fontSize = 20.sp
-                )
-            }
-        }
+        DatingAvatar(
+            name = contact.name.ifBlank { "Contact" },
+            emoji = "👤",
+            colorStart = 0xFF00A884,
+            colorEnd = 0xFF128C7E,
+            size = 48.dp,
+            avatarUrl = contact.photoUrl
+        )
 
         Spacer(modifier = Modifier.width(14.dp))
 
