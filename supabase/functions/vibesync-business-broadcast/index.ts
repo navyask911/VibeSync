@@ -12,6 +12,24 @@ const SERVICE_ROLE_KEY = (() => {
 })();
 const SERVICE_ACCOUNT_TEXT = Deno.env.get("FIREBASE_SERVICE_ACCOUNT_JSON") ?? "";
 const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+function clientIp(request: Request): string {
+  return request.headers.get("cf-connecting-ip")?.trim() ||
+    request.headers.get("x-real-ip")?.trim() ||
+    request.headers.get("x-forwarded-for")?.split(",").map((v) => v.trim()).filter(Boolean).pop() || "unknown";
+}
+function takeRateLimit(key: string, limit: number, windowMs: number): number {
+  const now = Date.now();
+  let bucket = rateBuckets.get(key);
+  if (!bucket || bucket.resetAt <= now) { bucket = { count: 0, resetAt: now + windowMs }; rateBuckets.set(key, bucket); }
+  if (bucket.count >= limit) return Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+  bucket.count += 1;
+  if (rateBuckets.size > 10000) {
+    for (const [candidate, value] of rateBuckets) if (value.resetAt <= now) rateBuckets.delete(candidate);
+    while (rateBuckets.size > 12000) rateBuckets.delete(rateBuckets.keys().next().value!);
+  }
+  return 0;
+}
 const cors = {
   "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, apikey, content-type, x-vibesync-session",
   "Access-Control-Allow-Methods": "POST, OPTIONS", "Cache-Control": "no-store",
@@ -83,10 +101,14 @@ function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number) {
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (request.method !== "POST") return json({ ok: false, error: "method_not_allowed" }, 405);
+  const ipRetry = takeRateLimit("business-broadcast:ip:" + clientIp(request), 30, 60_000);
+  if (ipRetry > 0) return json({ ok: false, error: "rate_limited", retry_after_seconds: ipRetry }, 429);
   if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return json({ ok: false, error: "broadcast_backend_not_configured" }, 503);
   try {
     const profileId = await resolveProfileId(request.headers.get("x-vibesync-session") ?? "");
     if (!profileId) return json({ ok: false, error: "verified_vibesync_session_required" }, 401);
+    const accountRetry = takeRateLimit("business-broadcast:profile:" + profileId, 3, 60_000);
+    if (accountRetry > 0) return json({ ok: false, error: "rate_limited", retry_after_seconds: accountRetry }, 429);
     const body = await request.json(); const broadcastId = String(body.broadcast_id ?? "").trim();
     if (!broadcastId) return json({ ok: false, error: "broadcast_id_required" }, 400);
     const { data: broadcast, error: broadcastError } = await admin.from("business_broadcasts").select("*").eq("id", broadcastId).maybeSingle();
