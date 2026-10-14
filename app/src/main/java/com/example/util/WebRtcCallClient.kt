@@ -337,13 +337,16 @@ class WebRtcCallClient(
         }
     }
 
+    private fun publicStunServers(): MutableList<PeerConnection.IceServer> =
+        PUBLIC_STUN_URLS.map { url -> PeerConnection.IceServer.builder(url).createIceServer() }.toMutableList()
+
+    /**
+     * STUN-only for now: Cloudflare TURN is disabled to avoid paid/card setup.
+     * Public STUN entries are always retained even if the Edge config endpoint errors or times out.
+     * Any TURN entries returned by a future server response are ignored while TURN is on hold.
+     */
     private fun fetchIceServers(): List<PeerConnection.IceServer> {
-        val servers = mutableListOf(
-            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun.services.mozilla.com").createIceServer()
-        )
+        val fallbackServers = publicStunServers()
         return try {
             val request = Request.Builder()
                 .url(SupabaseClientManager.SUPABASE_URL.trimEnd('/') + "/functions/v1/get-ice-config")
@@ -352,33 +355,35 @@ class WebRtcCallClient(
                 .header("x-vibesync-session", VibeSyncSessionManager.getToken().orEmpty())
                 .post("{}".toRequestBody("application/json; charset=utf-8".toMediaType()))
                 .build()
-            val response = SupabaseClientManager.httpClient.newCall(request).execute()
-            response.use {
-                if (!it.isSuccessful) return servers
-                val json = JSONObject(it.body?.string().orEmpty())
-                val configured = json.optJSONArray("iceServers") ?: return servers
+            SupabaseClientManager.httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.i(TAG, "ICE config HTTP ${response.code}; using public STUN fallback.")
+                    return fallbackServers
+                }
+                val json = JSONObject(response.body?.string().orEmpty())
+                val configured = json.optJSONArray("iceServers") ?: return fallbackServers
+                val knownUrls = PUBLIC_STUN_URLS.toMutableSet()
                 for (index in 0 until configured.length()) {
                     val entry = configured.optJSONObject(index) ?: continue
-                    val urls = entry.opt("urls")
-                    val urlList = when (urls) {
-                        is String -> listOf(urls)
-                        is org.json.JSONArray -> (0 until urls.length()).mapNotNull { urls.optString(it).takeIf(String::isNotBlank) }
+                    val rawUrls = entry.opt("urls")
+                    val urls = when (rawUrls) {
+                        is String -> listOf(rawUrls)
+                        is org.json.JSONArray -> (0 until rawUrls.length()).mapNotNull { i ->
+                            rawUrls.optString(i).takeIf { it.isNotBlank() }
+                        }
                         else -> emptyList()
                     }
-                    if (urlList.isEmpty()) continue
-                    val username = entry.optString("username")
-                    val credential = entry.optString("credential")
-                    val builder = PeerConnection.IceServer.builder(urlList)
-                    if (username.isNotBlank() && credential.isNotBlank()) {
-                        builder.setUsername(username).setPassword(credential)
-                    }
-                    servers.add(builder.createIceServer())
+                    val stunUrls = urls.filter { it.startsWith("stun:", ignoreCase = true) }
+                        .filter { knownUrls.add(it) }
+                    if (stunUrls.isNotEmpty()) fallbackServers.addAll(
+                        stunUrls.map { PeerConnection.IceServer.builder(it).createIceServer() }
+                    )
                 }
             }
-            servers
+            fallbackServers
         } catch (failure: Throwable) {
-            Log.w(TAG, "Ephemeral TURN credentials not available; connecting with STUN-only candidates.")
-            servers
+            Log.w(TAG, "ICE config unavailable; public STUN fallback retained: ${failure.javaClass.simpleName}")
+            fallbackServers
         }
     }
 
@@ -520,6 +525,11 @@ class WebRtcCallClient(
 
     companion object {
         private const val TAG = "WebRtcCallClient"
+        private val PUBLIC_STUN_URLS = listOf(
+            "stun:stun.l.google.com:19302",
+            "stun:stun1.l.google.com:19302",
+            "stun:stun.cloudflare.com:3478"
+        )
         private val activeClients = ConcurrentHashMap<String, WebRtcCallClient>()
         fun endActiveCall(callId: String) {
             val client = activeClients[callId] ?: return

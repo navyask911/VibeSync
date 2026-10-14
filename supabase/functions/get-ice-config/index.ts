@@ -9,8 +9,12 @@ const SERVICE_ROLE_KEY = (() => {
   } catch { /* use legacy environment variable only as a compatibility fallback */ }
   return Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 })();
-const TURN_KEY_ID = Deno.env.get("CLOUDFLARE_TURN_KEY_ID") ?? "";
-const TURN_API_TOKEN = Deno.env.get("CLOUDFLARE_TURN_API_TOKEN") ?? "";
+// Cloudflare TURN is intentionally disabled while the app remains on the zero-cost STUN path.
+const PUBLIC_STUN_SERVERS = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun.cloudflare.com:3478" },
+];
 const admin = SUPABASE_URL && SERVICE_ROLE_KEY
   ? createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
   : null;
@@ -66,28 +70,12 @@ Deno.serve(async (request: Request) => {
   const profileRetry = takeRateLimit("ice:profile:" + profileId, 8, 60_000);
   if (profileRetry > 0) return json({ error: "rate_limited", retry_after_seconds: profileRetry }, 429, { "retry-after": String(profileRetry) });
 
-  // TURN API credentials remain server-only; clients receive short-lived ICE username/credential.
-  if (!TURN_KEY_ID || !TURN_API_TOKEN) {
-    return json({ error: "turn_service_not_configured", profile_id: profileId }, 503);
-  }
-  try {
-    const response = await fetch(
-      "https://rtc.live.cloudflare.com/v1/turn/keys/" + encodeURIComponent(TURN_KEY_ID) + "/credentials/generate-ice-servers",
-      {
-        method: "POST",
-        headers: { authorization: "Bearer " + TURN_API_TOKEN, "content-type": "application/json" },
-        body: JSON.stringify({ ttl: 3600 }),
-      },
-    );
-    if (!response.ok) {
-      console.warn("TURN credential request failed with HTTP", response.status);
-      return json({ error: "turn_credentials_unavailable" }, 502);
-    }
-    const result = await response.json();
-    const iceServers = Array.isArray(result.iceServers) ? result.iceServers : [];
-    if (!iceServers.length) return json({ error: "turn_credentials_missing" }, 502);
-    return json({ iceServers, expires_in_seconds: 3600 });
-  } catch {
-    return json({ error: "turn_credentials_unavailable" }, 502);
-  }
+  // STUN-only transport: no Cloudflare TURN API calls or TURN secrets/card setup are required.
+  // The Android client also keeps these public servers locally if this endpoint is unavailable.
+  return json({
+    iceServers: PUBLIC_STUN_SERVERS,
+    transport_mode: "stun-only",
+    turn_enabled: false,
+    expires_in_seconds: null,
+  });
 });

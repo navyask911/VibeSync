@@ -45,6 +45,9 @@ jobs:
           test -n "$SUPABASE_DB_PASSWORD"
           supabase link             --project-ref "$SUPABASE_PROJECT_ID"             --password "$SUPABASE_DB_PASSWORD"
 
+      - name: Inspect linked migration history
+        run: supabase migration list --linked
+
       - name: Preview pending migrations
         run: supabase db push --dry-run
 
