@@ -1,7 +1,10 @@
 package com.example.util
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
 import android.util.Base64
 import android.util.Log
 import com.example.BuildConfig
@@ -872,9 +875,13 @@ object SupabaseClientManager {
         val rawAvatarUrl = ContactResolver.sanitizeName(
             if (encAvatarUrl.isNotBlank()) decryptProfileField(encAvatarUrl) else ""
         )
-        // Public profile records may carry only opaque encrypted-avatar references. Legacy raw
-        // public URLs are deliberately suppressed rather than rendered as server-readable photos.
-        val avatarUrl = rawAvatarUrl.takeIf { it.startsWith("vibesync-avatar-enc://") }.orEmpty()
+        val publicAvatarPrefix = "$SUPABASE_URL/storage/v1/object/public/avatars/"
+        // Expose only opaque encrypted-avatar references or this project's explicitly public
+        // avatars bucket; arbitrary remote image URLs are suppressed rather than rendered.
+        val avatarUrl = rawAvatarUrl.takeIf {
+            it.startsWith("vibesync-avatar-enc://") ||
+                it.substringBefore('?').startsWith(publicAvatarPrefix, ignoreCase = true)
+        }.orEmpty()
         val gender = ContactResolver.sanitizeName(if (encGender.isNotBlank()) decryptProfileField(encGender) else "").ifBlank { "User" }
 
         val publicIdentityKey = obj.optSafeString("public_identity_key", "")
@@ -1819,6 +1826,123 @@ object SupabaseClientManager {
         } catch (failure: Throwable) {
             Log.w(TAG, "Business analytics snapshot deferred: ${failure.javaClass.simpleName}")
             null
+        }
+    }
+
+    /**
+     * Upload a user-selected profile picture to the public avatars bucket.
+     * Profile avatars are public profile metadata; private chat/story media uses separate flows.
+     * A matching, unexpired verified session is mandatory. Re-encoding strips source metadata,
+     * center-crops/scales to 512x512 and uploads WebP at quality 80 (JPEG fallback).
+     */
+    suspend fun uploadPublicProfileAvatar(
+        context: Context,
+        sourceUri: Uri,
+        profileId: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        var decoded: Bitmap? = null
+        var square: Bitmap? = null
+        var scaled: Bitmap? = null
+        var encodedBytes: ByteArray? = null
+        try {
+            val session = VibeSyncSessionManager.getSession(context)
+                ?: return@withContext Result.failure(IllegalStateException("Sign in again before uploading a profile photo."))
+            val activeProfileId = session.profileId.trim()
+            require(profileId.isNotBlank() && !profileId.contains('/') && !profileId.contains("..")) {
+                "A valid profile identity is required for this upload."
+            }
+            require(activeProfileId.equals(profileId, ignoreCase = true)) {
+                "The selected profile does not match the active signed-in account."
+            }
+            val nowSeconds = System.currentTimeMillis() / 1000L
+            require(session.sessionToken.isNotBlank() && session.accessToken.isNotBlank() &&
+                session.expiresAtEpochSeconds > nowSeconds + 5L) {
+                "Your secure session has expired. Sign in again before uploading a photo."
+            }
+            val jwtParts = session.accessToken.split(".")
+            require(jwtParts.size == 3) { "The signed Storage access token is invalid." }
+            val jwtPayload = Base64.decode(
+                jwtParts[1], Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+            )
+            val jwtExpiry = JSONObject(String(jwtPayload, Charsets.UTF_8)).optLong("exp", 0L)
+            require(jwtExpiry > nowSeconds + 5L) { "Your secure Storage token has expired." }
+
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(sourceUri)?.use {
+                BitmapFactory.decodeStream(it, null, bounds)
+            } ?: return@withContext Result.failure(IllegalArgumentException("The selected photo could not be opened."))
+            require(bounds.outWidth > 0 && bounds.outHeight > 0) { "The selected file is not a supported image." }
+            var sample = 1
+            while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 1024) sample *= 2
+            val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sample }
+            decoded = context.contentResolver.openInputStream(sourceUri)?.use {
+                BitmapFactory.decodeStream(it, null, decodeOptions)
+            } ?: return@withContext Result.failure(IllegalArgumentException("The selected image could not be decoded."))
+
+            val cropSide = minOf(decoded!!.width, decoded!!.height)
+            square = Bitmap.createBitmap(
+                decoded!!,
+                (decoded!!.width - cropSide) / 2,
+                (decoded!!.height - cropSide) / 2,
+                cropSide,
+                cropSide
+            )
+            if (square !== decoded) { decoded?.recycle(); decoded = null }
+            scaled = Bitmap.createScaledBitmap(square!!, 512, 512, true)
+            if (scaled !== square) { square?.recycle(); square = null }
+
+            val webpStream = java.io.ByteArrayOutputStream()
+            val webpFormat = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Bitmap.CompressFormat.WEBP_LOSSY
+            } else {
+                @Suppress("DEPRECATION")
+                Bitmap.CompressFormat.WEBP
+            }
+            val webpSucceeded = scaled!!.compress(webpFormat, 80, webpStream)
+            var contentType = "image/webp"
+            var extension = "webp"
+            encodedBytes = webpStream.toByteArray()
+            webpStream.close()
+            if (!webpSucceeded || encodedBytes!!.isEmpty()) {
+                val jpegStream = java.io.ByteArrayOutputStream()
+                require(scaled!!.compress(Bitmap.CompressFormat.JPEG, 80, jpegStream)) {
+                    "The selected photo could not be compressed."
+                }
+                encodedBytes?.fill(0)
+                encodedBytes = jpegStream.toByteArray()
+                jpegStream.close()
+                contentType = "image/jpeg"
+                extension = "jpg"
+            }
+            require(encodedBytes!!.isNotEmpty()) { "The selected photo produced an empty image." }
+
+            val objectPath = "$activeProfileId/avatar.$extension"
+            val encodedPath = Uri.encode(objectPath, "/")
+            val request = Request.Builder()
+                .url("$SUPABASE_URL/storage/v1/object/avatars/$encodedPath")
+                .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+                .header("Authorization", "Bearer ${session.accessToken}")
+                .header("x-vibesync-session", session.sessionToken)
+                .header("Content-Type", contentType)
+                .header("Cache-Control", "public, max-age=3600")
+                .header("x-upsert", "true")
+                .put(encodedBytes!!.toRequestBody(contentType.toMediaType()))
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    throw IllegalStateException("Avatar upload failed HTTP ${response.code}: ${body.take(240)}")
+                }
+            }
+            Result.success("$SUPABASE_URL/storage/v1/object/public/avatars/$encodedPath?v=${System.currentTimeMillis()}")
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Public profile avatar upload failed: ${failure.javaClass.simpleName}: ${failure.message}")
+            Result.failure(failure)
+        } finally {
+            encodedBytes?.fill(0)
+            runCatching { scaled?.recycle() }
+            runCatching { square?.recycle() }
+            runCatching { decoded?.recycle() }
         }
     }
 
