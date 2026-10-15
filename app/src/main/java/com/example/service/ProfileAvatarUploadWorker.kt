@@ -69,7 +69,10 @@ class ProfileAvatarUploadWorker(
 
         val uploaded = runCatching {
             val encrypted = ProfileAvatarStorageManager.encryptPreparedAvatar(prepared)
-            ProfileAvatarStorageManager.uploadPreparedAvatar(encrypted)
+            ProfileAvatarStorageManager.uploadPreparedAvatar(
+                prepared = encrypted,
+                publishAsPrimary = slot == 1
+            )
         }.onFailure { error ->
             Log.w(TAG, "Encrypted avatar background task failed: " + error.javaClass.simpleName)
         }.getOrNull()
