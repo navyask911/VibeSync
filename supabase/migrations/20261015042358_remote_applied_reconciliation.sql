@@ -1,0 +1,2 @@
+-- Reconciliation marker for a migration version already applied on production before its SQL source was synced to this branch.
+-- Do not add statements here or attempt to re-run the historical change. The live schema is preserved in production.
