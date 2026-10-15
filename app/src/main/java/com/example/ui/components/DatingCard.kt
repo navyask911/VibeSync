@@ -2,6 +2,8 @@ package com.example.ui.components
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -42,6 +44,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
@@ -98,6 +101,56 @@ fun DatingCard(
             photoList.getOrElse(currentPhotoIndex % photoList.size) { photoList[0] }
         } else {
             profile.getEffectiveAvatarUrl()
+        }
+    }
+
+    val avatarContext = LocalContext.current
+    val encryptedOwnerId = remember(activePhoto) {
+        activePhoto.takeIf { it.startsWith("vibesync-avatar-enc://") }
+            ?.removePrefix("vibesync-avatar-enc://")?.substringBefore('/').orEmpty()
+    }
+    val peerAvatarRevisionFlow = remember(avatarContext, encryptedOwnerId) {
+        if (encryptedOwnerId.isBlank()) kotlinx.coroutines.flow.flowOf(0)
+        else com.example.util.ProfileKeyManager.peerProfileKeyRevisionFlow(avatarContext, encryptedOwnerId)
+    }
+    val peerAvatarRevision by peerAvatarRevisionFlow.collectAsState(initial = 0)
+    var resolvedPhotoBitmap by remember(activePhoto, profile.avatarCacheVersion) {
+        mutableStateOf<Bitmap?>(null)
+    }
+    var resolvedPhotoUrl by remember(activePhoto, profile.avatarCacheVersion) {
+        mutableStateOf(
+            com.example.util.AvatarImageSupport.normalizeReference(activePhoto)
+                .takeUnless { it.startsWith("vibesync-avatar-enc://") }.orEmpty()
+        )
+    }
+    LaunchedEffect(activePhoto, profile.avatarCacheVersion, peerAvatarRevision) {
+        if (activePhoto.startsWith("vibesync-avatar-enc://")) {
+            resolvedPhotoUrl = ""
+            resolvedPhotoBitmap = null
+            resolvedPhotoBitmap = com.example.util.ProfileAvatarStorageManager
+                .resolveAvatarForDisplay(avatarContext, activePhoto, profile.avatarCacheVersion)
+        } else {
+            resolvedPhotoBitmap = null
+            resolvedPhotoUrl = com.example.util.AvatarImageSupport.normalizeReference(activePhoto)
+        }
+    }
+    val heroImageModel = remember(resolvedPhotoUrl, resolvedPhotoBitmap, profile.id, profile.avatarCacheVersion) {
+        when {
+            resolvedPhotoBitmap != null -> ImageRequest.Builder(avatarContext)
+                .data(resolvedPhotoBitmap)
+                .crossfade(true)
+                .diskCachePolicy(CachePolicy.DISABLED)
+                .memoryCachePolicy(CachePolicy.DISABLED)
+                .build()
+            resolvedPhotoUrl.isNotBlank() -> ImageRequest.Builder(avatarContext)
+                .data(resolvedPhotoUrl)
+                .memoryCacheKey("profile-avatar:${profile.id}:${resolvedPhotoUrl}:${profile.avatarCacheVersion}")
+                .diskCacheKey("profile-avatar:${profile.id}:${resolvedPhotoUrl}:${profile.avatarCacheVersion}")
+                .crossfade(true)
+                .diskCachePolicy(CachePolicy.ENABLED)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .build()
+            else -> null
         }
     }
 
@@ -194,16 +247,19 @@ fun DatingCard(
                             ),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (effectivePhoto.isNotBlank()) {
+                        if (resolvedPhotoBitmap != null) {
+                            Image(
+                                bitmap = resolvedPhotoBitmap!!.asImageBitmap(),
+                                contentDescription = "${profile.name} photo",
+                                modifier = Modifier.fillMaxSize().clickable {
+                                    if (photoList.size > 1) currentPhotoIndex = (currentPhotoIndex + 1) % photoList.size
+                                    else onInfoClick()
+                                },
+                                contentScale = ContentScale.Crop
+                            )
+                        } else if (heroImageModel != null) {
                             SubcomposeAsyncImage(
-                                model = ImageRequest.Builder(context)
-                                    .data(effectivePhoto)
-                                    .memoryCacheKey("profile-avatar:${profile.id}:$effectivePhoto:${profile.avatarCacheVersion}")
-                                    .diskCacheKey("profile-avatar:${profile.id}:$effectivePhoto:${profile.avatarCacheVersion}")
-                                    .crossfade(true)
-                                    .diskCachePolicy(CachePolicy.ENABLED)
-                                    .memoryCachePolicy(CachePolicy.ENABLED)
-                                    .build(),
+                                model = heroImageModel,
                                 contentDescription = "${profile.name} photo",
                                 modifier = Modifier
                                     .fillMaxSize()
