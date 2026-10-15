@@ -1015,6 +1015,7 @@ class SocialConnectRepository(
             (fromMatchedContacts + fromMatches).distinct().filter { it != profileId }
         }
 
+        val storyPostedAt = System.currentTimeMillis()
         val story = StatusStoryEntity(
             id = storyId,
             userId = profileId,
@@ -1027,7 +1028,7 @@ class SocialConnectRepository(
             caption = caption.trim(),
             backgroundColorStart = backgroundColorStart,
             backgroundColorEnd = backgroundColorEnd,
-            timestamp = now,
+            timestamp = storyPostedAt,
             isViewed = true,
             viewsCount = 1,
             isMyStatus = true,
@@ -1036,6 +1037,7 @@ class SocialConnectRepository(
         )
 
         val remoteResult = com.example.util.SupabaseClientManager.upsertStatusStoryRemote(
+            context = context,
             story = story,
             mediaObjectPath = mediaObjectPath,
             backgroundMusicObjectPath = backgroundMusicObjectPath,
