@@ -19,7 +19,7 @@
 
 - Group tables have RLS enabled. Reads require a verified session and active membership; envelope reads are further limited to recipient_profile_id = current profile.
 - Authenticated direct table writes are not granted; management and send operations go through the explicit RPCs. Group RPCs are marked SECURITY DEFINER with fixed search paths and have PUBLIC/anon execution revoked.
-- Only active members can join by a current invite code. Owners/admins can rotate or revoke invite links. Owners control deletion; owners/admins manage roles and group settings. The server enforces roles independently of UI visibility.
+- Only active members can join by a current invite code. Owners/admins can rotate or revoke invite links. Invite codes are returned by the group-list RPC only for owners/admins; direct table SELECT grants omit the invite_code column. Owners control deletion; owners/admins manage roles and group settings. The server enforces roles independently of UI visibility.
 - Android registers an HTTPS App Link for https://vibesync.app/g/{inviteCode} and joins via vibesync_join_chat_group_by_invite.
 
 ## Notifications and UX
