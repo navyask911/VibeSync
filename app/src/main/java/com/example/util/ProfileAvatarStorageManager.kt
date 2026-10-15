@@ -291,8 +291,35 @@ object ProfileAvatarStorageManager {
             .enqueueUniqueWork(uniqueName, ExistingWorkPolicy.REPLACE, request)
     }
 
+    /** Persist primary avatar metadata retries even if the process exits after upload. */
+    private fun enqueueAvatarMetadataSync(context: Context, profileId: String, avatarReference: String) {
+        val request = OneTimeWorkRequestBuilder<com.example.service.ProfileAvatarMetadataSyncWorker>()
+            .setInputData(
+                workDataOf(
+                    com.example.service.ProfileAvatarMetadataSyncWorker.KEY_PROFILE_ID to profileId,
+                    com.example.service.ProfileAvatarMetadataSyncWorker.KEY_AVATAR_REFERENCE to avatarReference
+                )
+            )
+            .setConstraints(
+                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+            )
+            .setBackoffCriteria(
+                BackoffPolicy.EXPONENTIAL, 30L, java.util.concurrent.TimeUnit.SECONDS
+            )
+            .addTag(com.example.service.ProfileAvatarMetadataSyncWorker.WORK_TAG)
+            .build()
+        WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+            "vibesync-avatar-metadata-" + safeHash(profileId),
+            ExistingWorkPolicy.REPLACE,
+            request
+        )
+    }
+
     /** Upload ciphertext only; retry transient failures and preserve the private local preview. */
-    suspend fun uploadPreparedAvatar(prepared: PreparedAvatar): String? =
+    suspend fun uploadPreparedAvatar(
+        prepared: PreparedAvatar,
+        publishAsPrimary: Boolean = prepared.slot == 1
+    ): String? =
         withContext(Dispatchers.IO) {
             if (!prepared.file.isFile || prepared.file.length() !in 1 until MAX_BYTES.toLong()) {
                 Log.w(TAG, "Refusing avatar upload because staged JPEG is missing or exceeds 150,000 bytes.")
@@ -337,10 +364,25 @@ object ProfileAvatarStorageManager {
                 Log.w(TAG, "Avatar uploaded but its key version could not be activated; local files are retained.")
                 return@withContext null
             }
+            val avatarReference = encryptedAvatarReference(prepared.profileId, prepared.slot)
+            if (publishAsPrimary) {
+                var metadataSaved = false
+                for (attempt in 1..3) {
+                    metadataSaved = SupabaseClientManager.updateOwnAvatarMetadata(
+                        context = appContext,
+                        profileId = prepared.profileId,
+                        avatarReference = avatarReference
+                    )
+                    if (metadataSaved) break
+                    if (attempt < 3) delay(350L * attempt)
+                }
+                if (!metadataSaved) enqueueAvatarMetadataSync(appContext, prepared.profileId, avatarReference)
+            }
+
             // Keep the sanitized JPEG in app cache for Compose preview/fallback.
             encrypted.delete()
             File(encrypted.absolutePath + ".version").delete()
-            encryptedAvatarReference(prepared.profileId, prepared.slot)
+            avatarReference
         }
 
     fun encryptedAvatarReference(profileId: String, slot: Int = 1): String =
