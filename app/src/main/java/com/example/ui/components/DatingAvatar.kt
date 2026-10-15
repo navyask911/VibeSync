@@ -52,7 +52,9 @@ fun DatingAvatar(
     // Profile metadata can contain a delimiter-separated photo gallery. Resolve the active first
     // encrypted pointer rather than passing the combined metadata string into the decryptor.
     val activeAvatarReference = remember(avatarUrl) {
-        avatarUrl.split("|||").firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+        com.example.util.AvatarImageSupport.normalizeReference(
+            avatarUrl.split("|||").firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+        )
     }
     val encryptedOwnerId = remember(activeAvatarReference) {
         activeAvatarReference.takeIf { it.startsWith("vibesync-avatar-enc://") }
@@ -77,7 +79,7 @@ fun DatingAvatar(
                 .resolveAvatarForDisplay(context, activeAvatarReference, avatarCacheVersion)
         } else {
             resolvedAvatarBitmap = null
-            resolvedAvatarUrl = activeAvatarReference
+            resolvedAvatarUrl = com.example.util.AvatarImageSupport.normalizeReference(activeAvatarReference)
         }
     }
     val avatarImageModel = remember(resolvedAvatarUrl, resolvedAvatarBitmap, activeAvatarReference, avatarCacheVersion) {
