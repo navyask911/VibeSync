@@ -38,8 +38,8 @@ fun PrivacySecurityControls(
 ) {
     val context = LocalContext.current.applicationContext
     val prefs = preferences ?: UserPreferencesEntity()
-    var screenSecurityEnabled by remember(context) {
-        mutableStateOf(BiometricAuthManager.isScreenSecurityEnabled(context))
+    var screenshotSecurityEnabled by remember(prefs.screenshotSecurityEnabled) {
+        mutableStateOf(prefs.screenshotSecurityEnabled)
     }
     var appLockEnabled by remember(context) {
         mutableStateOf(BiometricAuthManager.isBiometricLockEnabled(context))
@@ -56,13 +56,13 @@ fun PrivacySecurityControls(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         SecuritySettingCard(
-            title = "Screen Security",
-            description = "Block screenshots and hide sensitive previews in Android Recents.",
-            checked = screenSecurityEnabled,
-            testTag = "switch_screen_security",
+            title = "Screenshot Security",
+            description = "Block screenshots and hide app previews in Android Recents across chats, groups, and contacts.",
+            checked = screenshotSecurityEnabled,
+            testTag = "switch_screenshot_security",
             onCheckedChange = { enabled ->
-                BiometricAuthManager.setScreenSecurityEnabled(context, enabled)
-                screenSecurityEnabled = enabled
+                screenshotSecurityEnabled = enabled
+                onUpdatePreferences(prefs.copy(screenshotSecurityEnabled = enabled))
             }
         )
         SecuritySettingCard(
