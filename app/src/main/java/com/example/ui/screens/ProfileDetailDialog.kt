@@ -91,14 +91,16 @@ fun ProfileDetailDialog(
         com.example.util.ProfilePrivacyManager.canRevealSensitiveFields(context, profile, isMutualConnection)
     val canRevealPhone = (approvedPhoneRequest && isMutualConnection) ||
         com.example.util.ProfilePrivacyManager.canRevealPhoneNumber(context, profile)
-    val photoList = remember(profile.avatarUrl, profile.id) {
+    val photoList = remember(profile.avatarUrl, profile.avatarCacheVersion, profile.id) {
         profile.getPhotoList()
+            .map { com.example.util.AvatarImageSupport.normalizeReference(it) }
+            .filter(String::isNotBlank)
     }
     var currentPhotoIndex by remember(profile.id) { androidx.compose.runtime.mutableIntStateOf(0) }
     val activePhoto = if (photoList.isNotEmpty()) {
         photoList.getOrElse(currentPhotoIndex % photoList.size) { photoList[0] }
     } else {
-        profile.getEffectiveAvatarUrl()
+        ""
     }
     val encryptedPhotoOwnerId = remember(activePhoto) {
         activePhoto.takeIf { it.startsWith("vibesync-avatar-enc://") }
