@@ -15,7 +15,7 @@ object AvatarImageSupport {
             val suffix = reference.removePrefix("vibesync-avatar-enc://")
             val owner = suffix.substringBefore('/')
             val slotSuffix = suffix.removePrefix(owner)
-            if (owner.isBlank() || owner.contains("..") || owner.any(Char::isWhitespace)) return ""
+            if (owner.isBlank() || owner.contains("..") || owner.any { it.isWhitespace() }) return ""
             if (slotSuffix.isNotEmpty() && slotSuffix !in setOf("/2", "/3")) return ""
             return reference
         }
