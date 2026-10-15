@@ -1574,19 +1574,12 @@ fun StatusCaptionUploadPreviewDialog(
         // actions handle their respective system-bar insets locally to avoid clipped controls
         // on Android 15 edge-to-edge windows.
         androidx.compose.foundation.layout.BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxWidth(0.99f)
-                .fillMaxHeight(0.99f)
-                .windowInsetsPadding(WindowInsets.safeDrawing)
-                .imePadding(),
+            modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
         ) {
-            val previewMaxHeight = maxHeight * 0.58f
             Column(
                 modifier = Modifier
-                    .fillMaxWidth(0.99f)
-                    .fillMaxHeight(0.99f)
-                    .clip(RoundedCornerShape(24.dp))
+                    .fillMaxSize()
                     .background(Brush.linearGradient(listOf(Color(currentBgStart), Color(currentBgEnd)))),
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
@@ -1648,11 +1641,7 @@ fun StatusCaptionUploadPreviewDialog(
 
             // Middle: Flexible Preview Media fitting dynamically
             Box(
-                modifier = Modifier
-                    .weight(1f, fill = false)
-                    .fillMaxWidth()
-                    .heightIn(max = previewMaxHeight)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentAlignment = Alignment.Center
             ) {
                 if (mediaUri != null && mediaUri.toString().isNotBlank()) {
@@ -1660,7 +1649,7 @@ fun StatusCaptionUploadPreviewDialog(
                         model = mediaUri,
                         contentDescription = "Story media preview",
                         modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit
+                        contentScale = ContentScale.Crop
                     )
 
                     // If VIDEO, show Play Icon overlay in center
@@ -1692,7 +1681,7 @@ fun StatusCaptionUploadPreviewDialog(
                     .fillMaxWidth()
                     .navigationBarsPadding()
                     .imePadding()
-                    .padding(bottom = 16.dp)
+                    .padding(bottom = 8.dp)
             ) {
                 Row(
                     modifier = Modifier
@@ -1836,10 +1825,7 @@ fun StatusStoryViewer(
     ) {
         ForceSecureWindowEffect(enabled = true)
         Box(
-            modifier = Modifier
-                .fillMaxWidth(0.99f)
-                .fillMaxHeight(0.99f)
-                .windowInsetsPadding(WindowInsets.safeDrawing),
+            modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
         ) {
             Box(
