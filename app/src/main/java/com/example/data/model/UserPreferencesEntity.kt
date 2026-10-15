@@ -106,7 +106,9 @@ data class UserPreferencesEntity(
     val vibrationAlertsEnabled: Boolean = true,
     val messageSoundTone: String = "DEFAULT", // "DEFAULT", "CLASSIC_CHIME", "CRYSTAL_DROP", "WHISTLE_BREEZE", "GENTLE_VIBE", "SILENT"
     val matchSoundTone: String = "CELEBRATION", // "CELEBRATION", "COSMIC_MATCH", "SWEET_BELL", "SILENT"
-    val callRingtone: String = "STANDARD_RING" // "STANDARD_RING", "DIGITAL_WAVE", "MARIMBA", "SILENT"
+    val callRingtone: String = "STANDARD_RING", // "STANDARD_RING", "DIGITAL_WAVE", "MARIMBA", "SILENT"
+    // Stored in the SQLCipher-encrypted Room database. Screenshot capture is opt-in.
+    @androidx.room.ColumnInfo(defaultValue = "0") val screenshotSecurityEnabled: Boolean = false
 ) {
     val remainingSuperLikesToday: Int
         get() {
