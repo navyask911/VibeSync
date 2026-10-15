@@ -1391,6 +1391,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 val replyToText = record.optString("reply_to_text", "").ifBlank { null }
                 val replyToSender = record.optString("reply_to_sender", "").ifBlank { null }
                 val isForwarded = record.optBoolean("is_forwarded", false)
+                val forwardCount = record.optInt("forward_count", 0).coerceAtLeast(0)
 
                 val prefs = repository.userPreferences.firstOrNull()
                 val currentUserPhone = prefs?.verifiedMobileNumber ?: ""
@@ -1516,6 +1517,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                             replyToText = replyToText,
                             replyToSender = replyToSender,
                             isForwarded = isForwarded,
+                            forwardCount = forwardCount,
                             isEncrypted = true
                         )).copy(
                             matchId = fallbackMatchId,
@@ -1531,6 +1533,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                             replyToText = replyToText ?: prior?.replyToText,
                             replyToSender = replyToSender ?: prior?.replyToSender,
                             isForwarded = isForwarded || (prior?.isForwarded == true),
+                            forwardCount = maxOf(forwardCount, prior?.forwardCount ?: 0),
                             isEncrypted = true,
                             deliveryState = if (renderablePriorText != null) {
                                 prior?.deliveryState ?: "DELIVERED"
@@ -1657,6 +1660,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         replyToText = decodedPayload.replyToText ?: replyToText,
                         replyToSender = decodedPayload.replyToSender ?: replyToSender,
                         isForwarded = isForwarded,
+                        forwardCount = forwardCount,
                         isEncrypted = true,
                         deliveryState = if (shouldMarkRead) "READ" else "DELIVERED",
                         senderDisplayName = database.matchDao().getMatchByIdSync(targetMatchId)?.localContactName.orEmpty(),
@@ -2149,6 +2153,27 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             repository.forwardMessage(targetMatchId, message)
             _toastMessage.emit("Message forwarded ↪")
+        }
+    }
+
+    fun forwardMessages(
+        message: ChatMessageEntity,
+        directTargets: List<Pair<String, String>>,
+        targetGroupIds: List<String>
+    ) {
+        viewModelScope.launch {
+            val result = com.example.util.GroupMessagingManager.forwardMessageBatch(
+                context = getApplication(),
+                message = message,
+                directTargets = directTargets,
+                targetGroupIds = targetGroupIds,
+                chatMessageDao = database.chatMessageDao()
+            )
+            result.onSuccess { count ->
+                _toastMessage.emit("Message forwarded to $count chat${if (count == 1) "" else "s"} ↪")
+            }.onFailure { failure ->
+                _toastMessage.emit(failure.message ?: "Message could not be forwarded.")
+            }
         }
     }
 
