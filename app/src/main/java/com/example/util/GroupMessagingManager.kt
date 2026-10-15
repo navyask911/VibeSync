@@ -53,14 +53,21 @@ data class GroupMessagePayload(
     val senderName: String,
     val text: String,
     val timestamp: Long = System.currentTimeMillis(),
-    val groupTitle: String = ""
+    val groupTitle: String = "",
+    val isForwarded: Boolean = false,
+    val forwardCount: Int = 0,
+    val mediaType: String = "TEXT",
+    val mediaUrl: String = "",
+    val voiceDurationSeconds: Int = 0
 ) {
     fun toLocalEntity(currentProfileId: String = ""): ChatMessageEntity = ChatMessageEntity(
         messageId = id, matchId = groupId,
         senderId = if (senderId.isNotBlank() && senderId == currentProfileId) "USER" else senderId,
         text = text,
         timestamp = timestamp, isDelivered = true, isRead = true, isEncrypted = true,
-        mediaType = "TEXT", deliveryState = "SENT_TO_SERVER", senderDisplayName = senderName
+        mediaType = mediaType, mediaUrl = mediaUrl, voiceDurationSeconds = voiceDurationSeconds,
+        isForwarded = isForwarded, forwardCount = forwardCount,
+        deliveryState = "SENT_TO_SERVER", senderDisplayName = senderName
     )
 }
 
@@ -264,6 +271,195 @@ object GroupMessagingManager {
         }
     }
 
+    /**
+     * Batch-forward one decrypted message into direct chats and groups in one database transaction.
+     * Peer-specific Tink ciphertexts are generated locally; media paths/key payloads are reused.
+     */
+    suspend fun forwardMessageBatch(
+        context: Context,
+        message: ChatMessageEntity,
+        directTargets: List<Pair<String, String>>,
+        targetGroupIds: List<String>,
+        chatMessageDao: ChatMessageDao
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(!message.isDeleted && !message.isDeletedForEveryone && !message.isDeletedForMe) {
+                "Deleted messages cannot be forwarded."
+            }
+            require(!message.text.startsWith(TinkCryptoManager.TINK_PREFIX)) {
+                "This message must be decrypted before it can be forwarded."
+            }
+            val actor = VibeSyncSessionManager.getProfileId().orEmpty().trim()
+            require(actor.isNotBlank()) { "A verified VibeSync session is required." }
+            val depth = maxOf(message.forwardCount, if (message.isForwarded) 1 else 0)
+            val groups = targetGroupIds.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+            val direct = directTargets.map { it.first.trim() to it.second.trim() }
+                .filter { it.first.isNotBlank() && it.second.isNotBlank() }
+                .distinctBy { it.first.lowercase() + "|" + it.second.lowercase() }
+            val destinationCount = direct.size + groups.size
+            require(destinationCount in 1..5) { "You can only share with up to 5 chats" }
+            if (depth >= 5 && destinationCount > 1) {
+                throw IllegalArgumentException("Forwarded many times. You can only forward to 1 chat at a time.")
+            }
+            if (depth >= 1 && groups.size > 1) {
+                throw IllegalArgumentException("Forwarded messages can only be shared with 1 group at a time.")
+            }
+
+            val body = message.text.ifBlank {
+                when (message.mediaType.uppercase()) {
+                    "VOICE", "AUDIO" -> "Voice message"
+                    "IMAGE", "PHOTO" -> "Photo"
+                    "VIDEO" -> "Video"
+                    "DOCUMENT", "FILE" -> "Document"
+                    else -> if (message.mediaUrl.isNotBlank()) "Attachment" else ""
+                }
+            }
+            require(body.isNotBlank()) { "This message has no forwardable content." }
+            data class Destination(
+                val targetId: String,
+                val localMatchId: String?,
+                val recipientProfileId: String?,
+                val groupId: String?
+            )
+            val destinations = mutableListOf<Destination>()
+            direct.forEach { (localMatchId, recipientId) ->
+                require(!recipientId.equals(actor, ignoreCase = true)) { "You cannot forward a message to yourself." }
+                val canonicalChatId = SupabaseClientManager.canonicalChatMatchId(actor, recipientId)
+                require(canonicalChatId.isNotBlank()) { "Could not resolve a destination chat." }
+                destinations += Destination(canonicalChatId, localMatchId, recipientId, null)
+            }
+            groups.forEach { groupId ->
+                require(runCatching { UUID.fromString(groupId) }.isSuccess) { "Invalid destination group." }
+                destinations += Destination(groupId, null, null, groupId)
+            }
+            require(destinations.map { it.targetId.lowercase() }.distinct().size == destinations.size) {
+                "The same chat cannot be selected more than once."
+            }
+
+            val payloads = JSONArray()
+            val estimatedCount = depth + 1
+            for (destination in destinations) {
+                val targetMessageId = UUID.randomUUID().toString()
+                val encodedBody = ChatMessageEventCodec.encodeForEncryption(
+                    message.copy(
+                        messageId = targetMessageId,
+                        matchId = destination.targetId,
+                        senderId = "USER",
+                        text = body,
+                        isForwarded = true,
+                        forwardCount = estimatedCount
+                    ),
+                    fallbackBody = body
+                )
+                if (destination.groupId == null) {
+                    val recipientId = destination.recipientProfileId.orEmpty()
+                    val peer = DatingDatabase.getDatabase(context.applicationContext)
+                        .profileDao().getProfileByIdSync(recipientId)
+                    val publicKey = SupabaseClientManager.fetchPublicIdentityKey(
+                        profileId = recipientId,
+                        fallbackPhoneNumber = peer?.phoneNumber.orEmpty()
+                    ) ?: TinkKeyRepository.fetchRecipientPublicKey(recipientId).orEmpty()
+                    require(publicKey.isNotBlank()) {
+                        "A published encryption key is unavailable for ${peer?.name ?: "the selected contact"}."
+                    }
+                    val ciphertext = TinkCryptoManager.encryptForRecipientOrThrow(
+                        recipientPublicKeysetJson = publicKey,
+                        rawText = encodedBody,
+                        senderPhone = actor,
+                        receiverPhone = recipientId
+                    )
+                    payloads.put(JSONObject()
+                        .put("target_type", "direct")
+                        .put("target_chat_id", destination.targetId)
+                        .put("target_message_id", targetMessageId)
+                        .put("recipient_profile_id", recipientId)
+                        .put("ciphertext", ciphertext))
+                } else {
+                    val groupId = destination.groupId
+                    val roster = fetchGroupMembers(groupId)
+                        .filter { it.profileId.isNotBlank() }
+                        .distinctBy { it.profileId }
+                    require(roster.any { it.profileId.equals(actor, ignoreCase = true) }) {
+                        "You are no longer an active member of the selected group."
+                    }
+                    val senderName = roster.first { it.profileId.equals(actor, ignoreCase = true) }.displayName
+                    val envelopes = JSONArray()
+                    for (member in roster) {
+                        val publicKey = if (member.profileId.equals(actor, ignoreCase = true)) {
+                            TinkCryptoManager.getMyPublicKeysetJson(context.applicationContext)
+                        } else {
+                            TinkKeyRepository.fetchRecipientPublicKey(member.profileId).orEmpty()
+                        }
+                        require(publicKey.isNotBlank()) {
+                            "An encryption key is unavailable for ${member.displayName}."
+                        }
+                        val ciphertext = TinkCryptoManager.encryptGroupPayloadForRecipientOrThrow(
+                            publicKey, encodedBody, groupId, targetMessageId, actor, member.profileId
+                        )
+                        envelopes.put(JSONObject()
+                            .put("recipient_profile_id", member.profileId)
+                            .put("ciphertext", ciphertext))
+                    }
+                    payloads.put(JSONObject()
+                        .put("target_type", "group")
+                        .put("target_chat_id", groupId)
+                        .put("target_message_id", targetMessageId)
+                        .put("sender_name", senderName)
+                        .put("envelopes", envelopes))
+                }
+            }
+
+            val targetIds = JSONArray()
+            destinations.forEach { targetIds.put(it.targetId) }
+            val responseBody = rpc("vibesync_forward_message", JSONObject()
+                .put("p_source_message_id", message.messageId)
+                .put("p_target_chat_ids", targetIds)
+                .put("p_forward_payloads", payloads))
+            val serverForwardCount = runCatching { JSONObject(responseBody).optInt("forward_count", estimatedCount) }
+                .getOrDefault(estimatedCount).coerceAtLeast(1)
+
+            destinations.forEachIndexed { index, destination ->
+                val sent = payloads.optJSONObject(index) ?: return@forEachIndexed
+                val newId = sent.optString("target_message_id")
+                if (destination.groupId != null) {
+                    chatMessageDao.insertMessage(ChatMessageEntity(
+                        messageId = newId,
+                        matchId = destination.groupId,
+                        senderId = "USER",
+                        text = body,
+                        timestamp = System.currentTimeMillis(),
+                        isEncrypted = true,
+                        mediaType = message.mediaType,
+                        mediaUrl = message.mediaUrl,
+                        voiceDurationSeconds = message.voiceDurationSeconds,
+                        isForwarded = true,
+                        forwardCount = serverForwardCount,
+                        deliveryState = "SENT_TO_SERVER",
+                        outboxOwnerProfileId = actor,
+                        senderDisplayName = sent.optString("sender_name", "")
+                    ))
+                } else {
+                    chatMessageDao.insertMessage(ChatMessageEntity(
+                        messageId = newId,
+                        matchId = destination.localMatchId.orEmpty(),
+                        senderId = "USER",
+                        text = body,
+                        timestamp = System.currentTimeMillis(),
+                        isEncrypted = true,
+                        mediaType = message.mediaType,
+                        mediaUrl = message.mediaUrl,
+                        voiceDurationSeconds = message.voiceDurationSeconds,
+                        isForwarded = true,
+                        forwardCount = serverForwardCount,
+                        deliveryState = "SENT_TO_SERVER",
+                        outboxOwnerProfileId = actor
+                    ))
+                }
+            }
+            destinations.size
+        }
+    }
+
     suspend fun fetchGroupMessages(context: Context, groupId: String, knownGroupTitle: String? = null): Result<List<GroupMessagePayload>> = withContext(Dispatchers.IO) {
         runCatching {
             val profileId = VibeSyncSessionManager.getProfileId().orEmpty()
@@ -274,7 +470,7 @@ object GroupMessagingManager {
             }
             val safeGroup = encode(groupId)
             val safeProfile = encode(profileId)
-            val metadata = JSONArray(call("chat_group_messages?select=message_id,group_id,sender_profile_id,sender_name,created_at,media_type&group_id=eq.$safeGroup&order=created_at.asc&limit=100"))
+            val metadata = JSONArray(call("chat_group_messages?select=message_id,group_id,sender_profile_id,sender_name,created_at,media_type,media_url,voice_duration_seconds,forward_count,is_forwarded&group_id=eq.$safeGroup&order=created_at.asc&limit=100"))
             val envelopes = JSONArray(call("chat_group_message_envelopes?select=message_id,ciphertext&group_id=eq.$safeGroup&recipient_profile_id=eq.$safeProfile&limit=1000"))
             val byId = HashMap<String, String>()
             for (i in 0 until envelopes.length()) {
@@ -292,7 +488,20 @@ object GroupMessagingManager {
                     if (plain.isBlank()) continue
                     val timestamp = try { Instant.parse(row.optString("created_at")).toEpochMilli() }
                         catch (_: Throwable) { System.currentTimeMillis() }
-                    add(GroupMessagePayload(messageId, groupId, sender, row.optString("sender_name", "VibeSync member"), plain, timestamp, title))
+                    add(GroupMessagePayload(
+                        id = messageId,
+                        groupId = groupId,
+                        senderId = sender,
+                        senderName = row.optString("sender_name", "VibeSync member"),
+                        text = plain,
+                        timestamp = timestamp,
+                        groupTitle = title,
+                        isForwarded = row.optBoolean("is_forwarded", false),
+                        forwardCount = row.optInt("forward_count", 0).coerceAtLeast(0),
+                        mediaType = row.optString("media_type", "TEXT"),
+                        mediaUrl = row.optString("media_url", ""),
+                        voiceDurationSeconds = row.optInt("voice_duration_seconds", 0)
+                    ))
                 }
             }
         }
