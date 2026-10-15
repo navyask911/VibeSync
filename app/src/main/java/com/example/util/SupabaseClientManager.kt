@@ -2183,7 +2183,7 @@ object SupabaseClientManager {
         try {
             var pageIndex = 0
             while (pageIndex < maxPages) {
-                val endpoint = "chat_messages?select=message_id,match_id,sender_id,receiver_id,ciphertext,timestamp,is_delivered,is_read,media_url,media_type,voice_duration_seconds,created_at&match_id=eq.$safeMatch$afterFilter&order=created_at.asc,message_id.asc&limit=$pageSize&offset=$offset"
+                val endpoint = "chat_messages?select=message_id,match_id,sender_id,receiver_id,ciphertext,timestamp,is_delivered,is_read,media_url,media_type,voice_duration_seconds,forward_count,is_forwarded,created_at&match_id=eq.$safeMatch$afterFilter&order=created_at.asc,message_id.asc&limit=$pageSize&offset=$offset"
                 val request = buildRequest(endpoint, "GET")
                 val pageText = httpClient.newCall(request).execute().use { response ->
                     val body = response.body?.string().orEmpty()
@@ -2227,6 +2227,8 @@ object SupabaseClientManager {
 
                     // Server-side deletions still advance only after the row identity/timestamp is known.
                     val mediaType = row.optSafeString("media_type", "TEXT")
+                    val forwardCount = row.optInt("forward_count", 0).coerceAtLeast(0)
+                    val isForwarded = row.optBoolean("is_forwarded", false)
                     val mediaUrl = row.optSafeString("media_url", "")
                     val timestamp = row.optLong("timestamp", createdAt).takeIf { it > 0L } ?: createdAt
                     if (cipherText.isBlank()) {
@@ -2236,6 +2238,7 @@ object SupabaseClientManager {
                             ChatMessageEntity(
                                 messageId = id, matchId = remoteMatch, senderId = senderId,
                                 text = "", timestamp = timestamp, mediaType = mediaType, mediaUrl = mediaUrl,
+                                isForwarded = isForwarded, forwardCount = forwardCount,
                                 isDelivered = row.optBoolean("is_delivered", false),
                                 isRead = row.optBoolean("is_read", false), serverCreatedAt = createdAt
                             ),
@@ -2293,6 +2296,8 @@ object SupabaseClientManager {
                             isRead = row.optBoolean("is_read", false),
                             mediaUrl = mediaUrl,
                             mediaType = mediaType,
+                            isForwarded = isForwarded,
+                            forwardCount = forwardCount,
                             voiceDurationSeconds = row.optInt("voice_duration_seconds", 0),
                             isEncrypted = true,
                             serverCreatedAt = createdAt
@@ -2326,7 +2331,7 @@ object SupabaseClientManager {
         try {
             val safeMatch = java.net.URLEncoder.encode(matchId, "UTF-8")
             val request = buildRequest(
-                endpoint = "chat_messages?select=message_id,match_id,sender_id,receiver_id,ciphertext,timestamp,is_delivered,is_read,media_url,media_type,voice_duration_seconds,created_at&match_id=eq.$safeMatch&order=timestamp.asc",
+                endpoint = "chat_messages?select=message_id,match_id,sender_id,receiver_id,ciphertext,timestamp,is_delivered,is_read,media_url,media_type,voice_duration_seconds,forward_count,is_forwarded,created_at&match_id=eq.$safeMatch&order=timestamp.asc",
                 method = "GET"
             )
             httpClient.newCall(request).execute().use { response ->
@@ -2362,6 +2367,8 @@ object SupabaseClientManager {
                     if (decrypted.isBlank()) continue
                     val resolvedSenderId = senderId.ifBlank { aadParticipants?.first.orEmpty() }
                     val mediaType = obj.optSafeString("media_type", "TEXT")
+                    val forwardCount = obj.optInt("forward_count", 0).coerceAtLeast(0)
+                    val isForwarded = obj.optBoolean("is_forwarded", false)
                     val rawMedia = obj.optSafeString("media_url", "")
                     val ts = obj.optLong("timestamp", 0L).takeIf { it > 0 } ?: System.currentTimeMillis()
                     list.add(ChatMessageEntity(
@@ -2374,6 +2381,8 @@ object SupabaseClientManager {
                         isRead = obj.optBoolean("is_read", false),
                         mediaUrl = rawMedia,
                         mediaType = mediaType,
+                        isForwarded = isForwarded,
+                        forwardCount = forwardCount,
                         voiceDurationSeconds = obj.optInt("voice_duration_seconds", 0),
                         isEncrypted = true
                     ))
