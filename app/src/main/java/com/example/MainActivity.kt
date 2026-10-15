@@ -30,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.example.data.database.DatabaseKeyManager
 import com.example.data.database.EncryptedDatabaseBootstrap
+import com.example.data.database.DatingDatabase
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -52,12 +53,13 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
   private val appLockMessage = mutableStateOf<String?>(null)
   private var hasUnlockedCurrentLaunch = false
   private var backgroundedAtElapsedMs = 0L
+  @Volatile private var screenshotSecurityEnabled = false
+  private val forcedSecureSurfaceTokens = mutableSetOf<Any>()
   private var unlockPromptVisible = false
   private var needsExplicitUnlockTap = false
 
   private val privacyPreferencesListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
     when (key) {
-      BiometricAuthManager.KEY_SCREEN_SECURITY_ENABLED -> applyScreenSecurityFlag()
       BiometricAuthManager.KEY_BIOMETRIC_ENABLED -> {
         if (BiometricAuthManager.isBiometricLockEnabled(this)) {
           isAppLocked.value = true
@@ -151,6 +153,20 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
             isPreparingDatabase = false
           }
 
+          // Screenshot preference is stored in the SQLCipher-encrypted Room database.
+          // Keep the activity flag synchronized when Settings changes the preference.
+          LaunchedEffect(databaseReady) {
+            if (databaseReady) {
+              DatingDatabase.getDatabase(applicationContext)
+                .userPreferencesDao()
+                .getPreferences()
+                .collect { preferences ->
+                  screenshotSecurityEnabled = preferences?.screenshotSecurityEnabled == true
+                  applyScreenSecurityFlag()
+                }
+            }
+          }
+
           when {
             isPreparingDatabase -> DatabasePreparationScreen()
             databaseReady && isAppLocked.value -> AppLockScreen(
@@ -213,15 +229,30 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
 
   override fun onDestroy() {
     privacyPreferences?.unregisterOnSharedPreferenceChangeListener(privacyPreferencesListener)
+    synchronized(forcedSecureSurfaceTokens) { forcedSecureSurfaceTokens.clear() }
     safeInit("Truecaller cleanup") {
       PlatformTruecallerVerificationClient.clear()
     }
     super.onDestroy()
   }
 
+  /**
+   * Registers hard-enforced secure surfaces (e.g. story playback) without overriding the user's
+   * preference when the surface goes away. Tokens make nested/overlapping viewers safe.
+   */
+  fun setForcedSecureSurface(token: Any, active: Boolean) {
+    synchronized(forcedSecureSurfaceTokens) {
+      if (active) forcedSecureSurfaceTokens.add(token) else forcedSecureSurfaceTokens.remove(token)
+    }
+    applyScreenSecurityFlag()
+  }
+
   private fun applyScreenSecurityFlag() {
-    if (BiometricAuthManager.isScreenSecurityEnabled(this)) {
-      window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+    val secureSurfaceActive = synchronized(forcedSecureSurfaceTokens) {
+      forcedSecureSurfaceTokens.isNotEmpty()
+    }
+    if (screenshotSecurityEnabled || secureSurfaceActive) {
+      window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
     } else {
       window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
     }
