@@ -17,6 +17,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -156,6 +157,7 @@ enum class DatingTab(val title: String) {
     PROFILE("Profile")
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DatingAppRoot(
     viewModel: DatingViewModel = viewModel()
