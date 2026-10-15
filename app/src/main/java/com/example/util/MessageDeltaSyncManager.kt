@@ -254,6 +254,7 @@ object MessageDeltaSyncManager {
                         mediaUrl = if (existing.isDeleted || existing.isDeletedForEveryone) "" else fresh.mediaUrl,
                         reactionsJson = existing.reactionsJson,
                         isForwarded = existing.isForwarded || fresh.isForwarded,
+                        forwardCount = maxOf(existing.forwardCount, fresh.forwardCount),
                         outboxOwnerProfileId = existing.outboxOwnerProfileId,
                         syncAttempts = existing.syncAttempts,
                         lastSyncError = existing.lastSyncError,
