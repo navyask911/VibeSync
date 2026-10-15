@@ -586,7 +586,7 @@ object AppNotificationManager {
                     database.conversationNotificationPreferencesDao().delete(threadId)
                 }
 
-                val senderBitmap = senderPhotoUrl.takeIf { it.isNotBlank() }?.let { downloadBitmap(it) }
+                val senderBitmap = senderPhotoUrl.takeIf { it.isNotBlank() }?.let { resolveNotificationAvatar(appContext, it) }
                 val senderIcon = senderBitmap?.let { IconCompat.createWithBitmap(it) } ?: initialsIcon(senderTitle)
                 val senderPerson = Person.Builder()
                     .setName(senderTitle)
@@ -1395,6 +1395,17 @@ object AppNotificationManager {
             ) == PackageManager.PERMISSION_GRANTED
         } else {
             NotificationManagerCompat.from(context).areNotificationsEnabled()
+        }
+    }
+
+    /** Prefer VibeSync's in-memory Tink decrypt pipeline for encrypted profile avatar references. */
+    private suspend fun resolveNotificationAvatar(context: Context, reference: String): Bitmap? {
+        return if (reference.startsWith("vibesync-avatar-enc://")) {
+            runCatching {
+                ProfileAvatarStorageManager.resolveAvatarForDisplay(context.applicationContext, reference)
+            }.getOrNull()
+        } else {
+            downloadBitmap(reference)
         }
     }
 
