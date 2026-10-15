@@ -222,23 +222,20 @@ async function searchProfiles() {
   const term = $("profile-query").value.trim();
   if (term.length < 2) throw new Error("Enter at least two characters.");
   const target = $("profile-results");
-  empty(target,"Searching profiles…","Querying the authorized Supabase directory.");
-  const columns = "id,name,city,country,is_verified,account_status,is_deleted,updated_at";
-  const nameQuery = db.from("profiles").select(columns).ilike("name","%" + term.replace(/[%_]/g,"") + "%").limit(50);
-  const idQuery = db.from("profiles").select(columns).eq("id",term).limit(1);
-  const [names, exact] = await Promise.all([nameQuery,idQuery]);
-  if (names.error) throw names.error; if (exact.error) throw exact.error;
-  const map = new Map(); [...(exact.data || []),...(names.data || [])].forEach(p => map.set(p.id,p));
-  const rows = [...map.values()].map(p => ({...p,actions:moderationActions(p)}));
-  const view = table([
+  empty(target,"Searching profiles…","Querying the authorized server-side directory.");
+  const {data,error}=await db.rpc("vibesync_admin_search_profiles",{p_query:term});
+  if(error) throw error;
+  const records=data?.records||[];
+  const rows=records.map(profile=>({...profile,actions:moderationActions(profile)}));
+  target.replaceChildren(table([
     {label:"Profile",value:r=>{const c=el("div");c.append(el("strong","",r.name||"(unnamed profile)"),el("small","",r.id));return c;}},
     {label:"Location",value:r=>[r.city,r.country].filter(Boolean).join(", ")||"—"},
     {label:"Account status",value:r=>String(r.account_status||"UNKNOWN")+(r.is_deleted?" · deleted":"")},
     {label:"Verified",value:r=>r.is_verified?"Yes":"No"},
     {label:"Updated",value:r=>date(r.updated_at)},
     {label:"Actions",value:r=>r.actions}
-  ], rows);
-  target.replaceChildren(view);
+  ],rows));
+  if(!records.length) toast("No profiles matched that search.");
 }
 async function refreshPayments() {
   requireRole(["super_admin","finance_manager"]);
