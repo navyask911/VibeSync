@@ -525,9 +525,7 @@ fun DatingAppRoot(
                 viewModel.verifyTruecallerProfile(profile)
             },
             truecallerError = truecallerError,
-            onTruecallerRetry = { viewModel.clearTruecallerError() },
-            onOpenAdminPortal = {},
-            onStartSuperAdminAuth = { viewModel.startTruecallerSuperAdminAuth() }
+            onTruecallerRetry = { viewModel.clearTruecallerError() }
         )
     } else if (authState == AuthState.AUTHENTICATED && preferences == null) {
         // Wait for Room profile state after session restoration; never flash registration on a null emission.

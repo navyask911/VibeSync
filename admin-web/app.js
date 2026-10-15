@@ -20,6 +20,66 @@ const titleMap = {
 };
 let db = null, user = null, staff = null, authBusy = false, authorizedId = null, poller = null, channel = null, toastTimer = 0;
 
+
+const chartInstances=Object.create(null);
+const chartColors={teal:"#56d9c3",blue:"#83aaff",amber:"#f4b66d",red:"#f17d91",purple:"#bda3ff"};
+async function adminRpc(operation,args={}) {
+ const {data:sessionData,error:sessionError}=await db.auth.getSession(),session=sessionData?.session;
+ if(sessionError||!session?.access_token)return {data:null,error:new Error("A live staff session is required.")};
+ try{
+  const response=await fetch(`${cfg.supabaseUrl.replace(/\/$/,"")}/functions/v1/admin-portal-api`,{
+   method:"POST",headers:{"Content-Type":"application/json",apikey:cfg.supabaseAnonKey,Authorization:`Bearer ${session.access_token}`},
+   body:JSON.stringify({operation,args}),cache:"no-store"
+  });
+  const payload=await response.json().catch(()=>({}));
+  if(!response.ok||payload.error)return {data:null,error:new Error(payload.error||`Admin request failed (${response.status}).`)};
+  return {data:payload.data,error:null};
+ }catch(_){return {data:null,error:new Error("Admin API is temporarily unavailable. Retry after checking the network connection.")};}
+}
+function drawChart(canvasId,config){
+ if(typeof Chart==="undefined")return;const canvas=$(canvasId);if(!canvas)return;
+ if(chartInstances[canvasId])chartInstances[canvasId].destroy();
+ const base={responsive:true,maintainAspectRatio:false,interaction:{mode:"index",intersect:false},
+  plugins:{legend:{labels:{color:"#aec1d8",usePointStyle:true,boxWidth:8,padding:16}},
+   tooltip:{backgroundColor:"#132237",titleColor:"#eff8ff",bodyColor:"#c9d9eb",borderColor:"#314861",borderWidth:1}},
+  scales:{x:{ticks:{color:"#8da4bd",maxRotation:0,autoSkip:true},grid:{color:"rgba(105,133,165,.12)"}},
+   y:{beginAtZero:true,ticks:{color:"#8da4bd",precision:0},grid:{color:"rgba(105,133,165,.16)"}}}};
+ const options={...base,...(config.options||{}),plugins:{...base.plugins,...(config.options?.plugins||{})},scales:{...base.scales,...(config.options?.scales||{})}};
+ chartInstances[canvasId]=new Chart(canvas.getContext("2d"),{...config,options});
+}
+function renderTelemetryChart(rows){
+ const points=Array.isArray(rows)?rows:[];
+ drawChart("telemetry-chart",{type:"line",data:{
+  labels:points.map(p=>new Date(p.hour).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})),
+  datasets:[
+   {label:"Active connections",data:points.map(p=>Number(p.active_connections||0)),borderColor:chartColors.teal,backgroundColor:"rgba(86,217,195,.12)",fill:true,tension:.32,pointRadius:1.5,yAxisID:"y"},
+   {label:"Message throughput",data:points.map(p=>Number(p.message_throughput||0)),borderColor:chartColors.blue,backgroundColor:"rgba(131,170,255,.08)",fill:false,tension:.32,pointRadius:1.5,yAxisID:"y1"}
+  ]},options:{scales:{
+   x:{ticks:{color:"#8da4bd",maxRotation:0,autoSkip:true},grid:{color:"rgba(105,133,165,.12)"}},
+   y:{beginAtZero:true,position:"left",ticks:{color:"#8da4bd",precision:0},grid:{color:"rgba(105,133,165,.16)"}},
+   y1:{beginAtZero:true,position:"right",ticks:{color:"#8da4bd",precision:0},grid:{drawOnChartArea:false}}
+  }}});
+}
+function renderModerationChart(c={}){
+ drawChart("moderation-chart",{type:"line",data:{labels:["Active · 24h","Inactive","Verified badges"],datasets:[{
+  label:"Profiles",data:[Number(c.active||0),Number(c.inactive||0),Number(c.verified||0)],
+  borderColor:chartColors.purple,backgroundColor:"rgba(189,163,255,.2)",pointBackgroundColor:[chartColors.teal,chartColors.amber,chartColors.purple],pointRadius:5,fill:true,tension:.25
+ }]}});
+}
+function renderPaymentCharts(s={}){
+ const daily=Array.isArray(s.daily_transactions)?s.daily_transactions:[];
+ drawChart("payment-volume-chart",{type:"bar",data:{labels:daily.map(p=>p.date),datasets:[
+  {label:"All transactions",data:daily.map(p=>Number(p.total||0)),type:"line",borderColor:chartColors.blue,backgroundColor:"rgba(131,170,255,.12)",fill:false,tension:.25,pointRadius:2},
+  {label:"Success / paid",data:daily.map(p=>Number(p.succeeded||0)),backgroundColor:"rgba(86,217,195,.7)",borderColor:chartColors.teal,borderWidth:1,borderRadius:3},
+  {label:"Failed",data:daily.map(p=>Number(p.failed||0)),backgroundColor:"rgba(241,125,145,.65)",borderColor:chartColors.red,borderWidth:1,borderRadius:3}
+ ]}});
+ const gateways=Array.isArray(s.gateway_outcomes)?s.gateway_outcomes:[];
+ drawChart("gateway-outcomes-chart",{type:"bar",data:{labels:gateways.map(p=>p.provider||"Unknown"),datasets:[
+  {label:"Successful / paid",data:gateways.map(p=>Number(p.succeeded||0)),backgroundColor:"rgba(86,217,195,.7)",borderColor:chartColors.teal,borderWidth:1,borderRadius:3},
+  {label:"Failed",data:gateways.map(p=>Number(p.failed||0)),backgroundColor:"rgba(241,125,145,.65)",borderColor:chartColors.red,borderWidth:1,borderRadius:3}
+ ]}});
+}
+
 function configured() {
   return typeof cfg.supabaseUrl === "string" && cfg.supabaseUrl.startsWith("https://") &&
     typeof cfg.supabaseAnonKey === "string" && cfg.supabaseAnonKey.trim().length > 20 &&
@@ -167,9 +227,11 @@ async function refreshTelemetry() {
   if (!staff) return;
   $("telemetry-state").textContent = "Refreshing";
   try {
-    const { data, error } = await db.rpc("vibesync_get_admin_telemetry");
+    const { data, error } = await adminRpc("vibesync_get_admin_telemetry");
     if (error) throw error;
     const t = data || {}, c = t.counts || {};
+    renderTelemetryChart(t.hourly_activity || []);
+    renderModerationChart(t.user_cohorts || {});
     metricCards($("telemetry-cards"), [
       {label:"Registered profiles",value:c.profiles ?? 0,detail:"Profile records"},
       {label:"Active · last 24h",value:t.active_24h ?? 0,detail:"Known app-resume heartbeat"},
@@ -194,7 +256,7 @@ function moderationActions(profile) {
   actions.append(actionButton(verified ? "Unverify" : "Verify free", verified ? "" : "good", async event => {
     const b = event.currentTarget; b.disabled = true;
     try {
-      const { error } = await db.rpc("vibesync_admin_verify_profile", {p_profile_id:profile.id,p_verified:!verified});
+      const { error } = await adminRpc("vibesync_admin_verify_profile", {p_profile_id:profile.id,p_verified:!verified});
       if (error) throw error; toast("Free verification updated."); await searchProfiles();
     } catch (error) { toast(error.message || "Verification failed.", true); b.disabled = false; }
   }));
@@ -202,7 +264,7 @@ function moderationActions(profile) {
     if (!window.confirm("Mark this profile as spam? This action is audit logged.")) return;
     const b = event.currentTarget; b.disabled = true;
     try {
-      const { error } = await db.rpc("vibesync_admin_moderate_profile", {p_profile_id:profile.id,p_action:"spam",p_enabled:true,p_reason:"Admin review"});
+      const { error } = await adminRpc("vibesync_admin_moderate_profile", {p_profile_id:profile.id,p_action:"spam",p_enabled:true,p_reason:"Admin review"});
       if (error) throw error; toast("Spam flag saved."); await searchProfiles();
     } catch (error) { toast(error.message || "Spam action failed.", true); b.disabled = false; }
   }));
@@ -211,7 +273,7 @@ function moderationActions(profile) {
     if (!window.confirm((banned ? "Restore" : "Ban") + " this profile? This action is audit logged.")) return;
     const b = event.currentTarget; b.disabled = true;
     try {
-      const { error } = await db.rpc("vibesync_admin_moderate_profile", {p_profile_id:profile.id,p_action:"ban",p_enabled:!banned,p_reason:"Admin review"});
+      const { error } = await adminRpc("vibesync_admin_moderate_profile", {p_profile_id:profile.id,p_action:"ban",p_enabled:!banned,p_reason:"Admin review"});
       if (error) throw error; toast(banned ? "Profile restored." : "Profile banned."); await searchProfiles();
     } catch (error) { toast(error.message || "Ban action failed.", true); b.disabled = false; }
   }));
@@ -223,7 +285,7 @@ async function searchProfiles() {
   if (term.length < 2) throw new Error("Enter at least two characters.");
   const target = $("profile-results");
   empty(target,"Searching profiles…","Querying the authorized server-side directory.");
-  const {data,error}=await db.rpc("vibesync_admin_search_profiles",{p_query:term});
+  const {data,error}=await adminRpc("vibesync_admin_search_profiles",{p_query:term});
   if(error) throw error;
   const records=data?.records||[];
   const rows=records.map(profile=>({...profile,actions:moderationActions(profile)}));
@@ -240,8 +302,9 @@ async function searchProfiles() {
 async function refreshPayments() {
   requireRole(["super_admin","finance_manager"]);
   empty($("payment-results"),"Loading payment summary…","Server-side finance RPC.");
-  const {data,error}=await db.rpc("vibesync_admin_get_payment_summary"); if(error)throw error;
+  const {data,error}=await adminRpc("vibesync_admin_get_payment_summary"); if(error)throw error;
   const p=data||{};
+  renderPaymentCharts(p);
   metricCards($("payment-cards"),[
     {label:"Paid orders",value:p.paid_orders??0,detail:"Confirmed order state"},
     {label:"Pending orders",value:p.pending_orders??0,detail:"Awaiting completion"},
@@ -272,7 +335,7 @@ async function leaSearch(event) {
   event.preventDefault();requireRole(["super_admin","compliance_officer"]);
   if(!$("lea-confirm").checked)throw new Error("Confirm legal-process authorization.");
   text($("lea-status"),"Searching non-content metadata…");
-  const {data,error}=await db.rpc("vibesync_admin_search_lea_metadata",{
+  const {data,error}=await adminRpc("vibesync_admin_search_lea_metadata",{
     p_query:$("lea-query").value.trim(),p_case_reference:$("lea-case").value.trim(),p_legal_basis:$("lea-basis").value
   });
   if(error)throw error;
@@ -281,7 +344,7 @@ async function leaSearch(event) {
     request_id:data.request_id,generated_at:generated,record_count:rows.length,
     content_scope:"Non-content account metadata only; no message contents or encrypted payloads.",records:rows};
   const canonical=JSON.stringify(payload),digest=await sha256(canonical);
-  const {error:sealError}=await db.rpc("vibesync_admin_seal_compliance_export",{
+  const {error:sealError}=await adminRpc("vibesync_admin_seal_compliance_export",{
     p_export_id:data.request_id,p_sha256:digest,p_record_count:rows.length
   });
   if(sealError)throw new Error("Server could not persist the SHA-256 seal; export not downloaded. "+sealError.message);
@@ -315,7 +378,7 @@ function toCsv(rows){
 async function exportTable(name) {
   const rows=[];let offset=0;
   for(;;){
-    const {data,error}=await db.rpc("vibesync_admin_export_table_page",{p_table:name,p_offset:offset,p_limit:1000});
+    const {data,error}=await adminRpc("vibesync_admin_export_table_page",{p_table:name,p_offset:offset,p_limit:1000});
     if(error)throw new Error("Export of "+name+" failed: "+error.message);
     const page=data.records||[];rows.push(...page);offset+=page.length;
     text($("export-status"),"Exporting "+name+" · "+rows.length.toLocaleString("en-IN")+" rows");

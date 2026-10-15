@@ -1,6 +1,6 @@
 # VibeSync Admin Web
 
-Static staff portal served by GitHub Pages at https://admin.vibesync.social.
+Static staff portal served by GitHub Pages at https://navyask911.github.io/VibeSync/. Asset links are relative and work at the repository path without a custom domain.
 
 ## Public browser configuration
 
@@ -34,9 +34,8 @@ An authenticated user without an active roster row is signed out before dashboar
 
 ## Deploy prerequisites
 
-- Add a DNS CNAME for `admin` pointing to `navyask911.github.io`; configure the custom domain in repository Settings → Pages and wait for GitHub's DNS/HTTPS validation.
 - Set the repository's Pages source to GitHub Actions.
 - Set the public Supabase Actions variable noted above.
-- Apply the Supabase migration and deploy the `admin-fcm-broadcast` function. Configure `FIREBASE_SERVICE_ACCOUNT_JSON` only in Supabase Edge Function secrets, never in this repository or Pages variables.
+- Apply the Supabase migration and deploy the `admin-fcm-broadcast` and `admin-portal-api` functions. Configure `FIREBASE_SERVICE_ACCOUNT_JSON` only in Supabase Edge Function secrets, never in this repository or Pages variables.
 - Add the portal origin to Supabase Auth's allowed redirect URLs and ensure the email OTP/magic-link template is configured.
 - Provision and test each role, including denial of inactive staff and normal end-user accounts, before production use.

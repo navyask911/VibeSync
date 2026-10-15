@@ -8,6 +8,7 @@ on:
     paths:
       - 'supabase/migrations/**'
       - 'supabase/functions/admin-fcm-broadcast/**'
+      - 'supabase/functions/admin-portal-api/**'
       - '.github/workflows/deploy-migrations.yml'
   workflow_dispatch:
 
@@ -68,6 +69,9 @@ jobs:
 
       - name: Deploy staff-authorized FCM re-engagement function
         run: supabase functions deploy admin-fcm-broadcast --project-ref "$SUPABASE_PROJECT_ID"
+
+      - name: Deploy staff-authorized admin RPC gateway
+        run: supabase functions deploy admin-portal-api --project-ref "$SUPABASE_PROJECT_ID"
 
       - name: Enable and verify Supabase custom access token hook
         run: |

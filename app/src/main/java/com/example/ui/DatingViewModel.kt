@@ -6,8 +6,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.room.withTransaction
 import com.example.data.database.DatingDatabase
-import com.example.data.model.AdminEmployee
-import com.example.data.model.AdminRole
 import com.example.data.model.BlockEntity
 import com.example.data.model.BusinessEntity
 import com.example.data.model.photosList
@@ -16,8 +14,6 @@ import com.example.data.model.BusinessReviewEntity
 import com.example.data.model.ChannelBroadcastEntity
 import com.example.data.model.ChannelEntity
 import com.example.data.model.ChatMessageEntity
-import com.example.data.model.DefaultAdminEmployees
-import com.example.data.model.DefaultAdminRoles
 import com.example.data.model.FriendshipRequestEntity
 import com.example.data.model.MatchEntity
 import com.example.data.model.PhoneContact
@@ -661,24 +657,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     )
 
     // Admin & Developer Backend States
-    private val _isAdminLoggedIn = MutableStateFlow(false)
-    val isAdminLoggedIn: StateFlow<Boolean> = _isAdminLoggedIn.asStateFlow()
-
-    private val _adminLoginInProgress = MutableStateFlow(false)
-    val adminLoginInProgress: StateFlow<Boolean> = _adminLoginInProgress.asStateFlow()
-
-    private val _adminLoginError = MutableStateFlow<String?>(null)
-    val adminLoginError: StateFlow<String?> = _adminLoginError.asStateFlow()
-
-    private val _showAdminPortal = MutableStateFlow(false)
-    val showAdminPortal: StateFlow<Boolean> = _showAdminPortal.asStateFlow()
-
-    private val _adminRoles = MutableStateFlow<List<AdminRole>>(DefaultAdminRoles.allDefaultRoles)
-    val adminRoles: StateFlow<List<AdminRole>> = _adminRoles.asStateFlow()
-
-    private val _adminEmployees = MutableStateFlow<List<AdminEmployee>>(DefaultAdminEmployees.sampleStaff)
-    val adminEmployees: StateFlow<List<AdminEmployee>> = _adminEmployees.asStateFlow()
-
     // 30-Day Session & Fast MPIN State
     private val _isMpinUnlocked = MutableStateFlow(false)
     val isMpinUnlocked: StateFlow<Boolean> = _isMpinUnlocked.asStateFlow()
@@ -686,13 +664,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     // Auth & Verification States
     private val _truecallerError = MutableStateFlow<String?>(null)
     val truecallerError: StateFlow<String?> = _truecallerError.asStateFlow()
-    private val _superAdminAuthRequested = MutableStateFlow(false)
-
-    fun startTruecallerSuperAdminAuth() {
-        _superAdminAuthRequested.value = true
-        _truecallerError.value = null
-    }
-
     private val _activeMobile = MutableStateFlow("")
     val activeMobile: StateFlow<String> = _activeMobile.asStateFlow()
 
@@ -2698,103 +2669,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // Admin & Developer Backend Actions
-    fun openAdminPortal() {
-        _showAdminPortal.value = true
-        runSupabaseDiagnosticTest() // Instant connectivity test on portal entry
-        viewModelScope.launch {
-            repository.pullProfilesFromFirestore()
-            val currentPrefs = repository.userPreferences.first()
-            if (currentPrefs != null) {
-                SystemHealthDiagnosticsManager.registerActiveDeviceInCloud(
-                    context = getApplication(),
-                    phone = currentPrefs.verifiedMobileNumber,
-                    email = currentPrefs.googleEmail,
-                    name = currentPrefs.userName,
-                    isFaceVerified = currentPrefs.isFaceVerified
-                )
-            }
-            val profiles = repository.getAllProfilesSync()
-            SystemHealthDiagnosticsManager.runLiveFullDiagnostics(getApplication(), profiles)
-        }
-    }
-
-    fun closeAdminPortal() {
-        _showAdminPortal.value = false
-    }
-
-    fun loginAdmin(user: String, pass: String) {
-        _adminLoginInProgress.value = true
-        _adminLoginError.value = null
-        _isAdminLoggedIn.value = false
-        viewModelScope.launch {
-            try {
-                val prefs = repository.userPreferences.first() ?: UserPreferencesEntity()
-                val expectedUser = prefs.adminUsername.trim().ifBlank { "creator" }
-                val expectedPass = prefs.adminPassword.trim().ifBlank { "9999" }
-                if (!user.trim().equals(expectedUser, ignoreCase = true) || pass.trim() != expectedPass) {
-                    _adminLoginError.value = "Invalid administrator username or passcode."
-                } else if (com.example.util.SupabaseClientManager.isPlatformStaff()) {
-                    _isAdminLoggedIn.value = true
-                    _showAdminPortal.value = true
-                    _toastMessage.emit("Platform staff authorization verified.")
-                } else {
-                    _adminLoginError.value = "Passcode accepted, but this VibeSync session is not authorized as platform staff."
-                }
-            } catch (e: Exception) {
-                android.util.Log.w("AdminAuth", "Admin login verification failed: ${e.message}")
-                _adminLoginError.value = "Administrator verification is temporarily unavailable. Please retry."
-            } finally {
-                _adminLoginInProgress.value = false
-            }
-        }
-    }
-
-    fun updateAdminCredentials(newUsername: String, newPassword: String) {
-        viewModelScope.launch {
-            repository.updateAdminCredentials(newUsername, newPassword)
-            _toastMessage.emit("Admin credentials updated successfully 🔑")
-        }
-    }
-
-    fun createAdminRole(role: AdminRole) {
-        _adminRoles.value = _adminRoles.value + role
-        viewModelScope.launch {
-            _toastMessage.emit("New role '${role.roleName}' created! 🛡️")
-        }
-    }
-
-    fun assignAdminEmployee(employee: AdminEmployee) {
-        _adminEmployees.value = _adminEmployees.value + employee
-        viewModelScope.launch {
-            _toastMessage.emit("Staff member '${employee.name}' assigned as ${employee.roleName} 👥")
-        }
-    }
-
-    fun toggleEmployeeStatus(employeeId: String) {
-        _adminEmployees.value = _adminEmployees.value.map { emp ->
-            if (emp.id == employeeId) {
-                val newStatus = if (emp.status == "ACTIVE") "SUSPENDED" else "ACTIVE"
-                emp.copy(status = newStatus)
-            } else emp
-        }
-        viewModelScope.launch {
-            _toastMessage.emit("Staff status updated.")
-        }
-    }
-
-    fun deleteAdminEmployee(employeeId: String) {
-        _adminEmployees.value = _adminEmployees.value.filter { it.id != employeeId }
-        viewModelScope.launch {
-            _toastMessage.emit("Staff member assignment removed 🗑️")
-        }
-    }
-
-    fun logoutAdmin() {
-        _isAdminLoggedIn.value = false
-        _showAdminPortal.value = false
-    }
-
     fun banProfile(profileId: String, note: String = "Violated Community Guidelines / Spam") {
         viewModelScope.launch {
             repository.setProfileBan(profileId, true, note)
@@ -3130,12 +3004,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(Dispatchers.IO) {
             val result = com.example.util.TruecallerAuthGateway.verify(profile)
             result.onSuccess { identity ->
-                val isSuperAdminAttempt = _superAdminAuthRequested.value
-                _superAdminAuthRequested.value = false
-                if (isSuperAdminAttempt && !identity.isSuperAdmin) {
-                    _truecallerError.value = "Truecaller verified this account, but it is not registered as a VibeSync super-admin."
-                    return@onSuccess
-                }
                 try {
                     finalizeTruecallerAuthenticatedSession(
                         phone = identity.phone,
@@ -3147,19 +3015,13 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         lastName = identity.lastName,
                         avatarUrl = identity.avatarUrl
                     )
-                    if (isSuperAdminAttempt && identity.isSuperAdmin) {
-                        _isAdminLoggedIn.value = true
-                        openAdminPortal()
-                        _toastMessage.emit("Truecaller super-admin verification succeeded.")
-                    } else {
-                        _toastMessage.emit(
-                            if (identity.firstName.isNotBlank()) {
-                                "Verified instantly with Truecaller. Welcome ${identity.firstName}!"
-                            } else {
-                                "Verified instantly with Truecaller."
-                            }
-                        )
-                    }
+                    _toastMessage.emit(
+                        if (identity.firstName.isNotBlank()) {
+                            "Verified instantly with Truecaller. Welcome ${identity.firstName}!"
+                        } else {
+                            "Verified instantly with Truecaller."
+                        }
+                    )
                 } catch (e: Exception) {
                     android.util.Log.e(
                         "TruecallerAuthFlow",
@@ -3170,7 +3032,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         "Truecaller verified this account, but VibeSync could not save the secure local session. Check device storage and retry."
                 }
             }.onFailure { error ->
-                _superAdminAuthRequested.value = false
                 val detail = error.message?.trim().orEmpty()
                 android.util.Log.w("TruecallerAuthFlow", "Truecaller verification gateway failed: ${detail}", error)
                 // Keep HTTP status and connectivity/DNS diagnostics visible instead of replacing
@@ -3491,8 +3352,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             com.example.util.UserSessionManager.clearVerifiedSession(getApplication())
 
             // 3. Reset in-memory states and overlays
-            _showAdminPortal.value = false
-            _isAdminLoggedIn.value = false
             _activeChat.value = null
             _activeCall.value = null
             _selectedProfileDetail.value = null
@@ -3543,8 +3402,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             }
 
             // 3. Reset all in-memory states and overlays
-            _showAdminPortal.value = false
-            _isAdminLoggedIn.value = false
             _activeChat.value = null
             _activeCall.value = null
             _selectedProfileDetail.value = null

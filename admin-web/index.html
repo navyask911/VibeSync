@@ -10,6 +10,7 @@
   <title>VibeSync · Staff Admin</title>
   <link rel="stylesheet" href="./styles.css">
   <script src="./config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script type="module" src="./app.js"></script>
 </head>
 <body>
@@ -66,6 +67,7 @@
         <div class="section-intro"><div><p class="eyebrow">SYSTEM HEALTH</p><h2>Platform at a glance</h2><p class="muted">Server-derived counts refresh periodically; realtime invalidation is used when available.</p></div><button id="refresh-telemetry" class="btn btn-secondary" type="button">↻ Refresh</button></div>
         <div id="telemetry-cards" class="metric-grid"><div class="metric-card skeleton"></div><div class="metric-card skeleton"></div><div class="metric-card skeleton"></div><div class="metric-card skeleton"></div></div>
         <div class="panel-grid">
+          <article class="panel chart-panel chart-panel-full"><div class="panel-heading"><div><p class="eyebrow">LAST 24 HOURS</p><h3>Active connections & message throughput</h3></div><span class="state-pill">Live database aggregates</span></div><div class="chart-container"><canvas id="telemetry-chart" role="img" aria-label="Line chart of hourly active profile connections and message throughput"></canvas></div><p class="footnote">Connections use each profile’s latest app-resume heartbeat by hour. Message counts expose no message content.</p></article>
           <article class="panel"><div class="panel-heading"><div><p class="eyebrow">DIAGNOSTICS</p><h3>Live telemetry response</h3></div><span class="state-pill" id="telemetry-state">Checking</span></div><pre id="telemetry-json" class="json-view">Waiting for authorized telemetry…</pre><p class="footnote">The browser does not calculate platform totals or contain privileged database credentials.</p></article>
           <article class="panel"><div class="panel-heading"><div><p class="eyebrow">ACCESS MODEL</p><h3>Staff authorization</h3></div></div><div class="info-list"><div><span>Session source</span><strong>Supabase Auth</strong></div><div><span>Roster check</span><strong>admin_users</strong></div><div><span>Role enforcement</span><strong>Postgres RPC + RLS</strong></div><div><span>Service key in browser</span><strong class="text-good">Never</strong></div></div></article>
         </div>
@@ -73,6 +75,7 @@
 
       <section id="section-moderation" class="page-section">
         <div class="section-intro"><div><p class="eyebrow">TRUST & SAFETY</p><h2>User moderation</h2><p class="muted">Find existing profiles and apply audited, server-authorized actions.</p></div></div>
+        <article class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">ACCOUNT COHORTS</p><h3>Active, inactive & verified profiles</h3></div><span class="state-pill">Current profile state</span></div><div class="chart-container chart-container-short"><canvas id="moderation-chart" role="img" aria-label="Area chart of active, inactive, and verified profiles"></canvas></div><p class="footnote">Active within 24 hours, inactive beyond 24 hours or without a heartbeat, and verified badges. Current cohorts, not historical snapshots.</p></article>
         <article class="panel">
           <form id="profile-search-form" class="search-row"><div class="search-field"><label for="profile-query">Search profiles</label><input id="profile-query" type="search" minlength="2" maxlength="80" placeholder="Name or exact profile ID" required></div><button class="btn btn-primary" type="submit">Search users</button></form>
           <p class="footnote">Verification changes the free account verification flag only. It does not create a paid tier, subscription, or payment record.</p>
@@ -83,6 +86,10 @@
       <section id="section-payments" class="page-section">
         <div class="section-intro"><div><p class="eyebrow">FINANCE OPERATIONS</p><h2>Payment & ledger</h2><p class="muted">Server-side financial aggregates and recent business payment orders.</p></div><button id="refresh-payments" class="btn btn-secondary" type="button">↻ Refresh</button></div>
         <div id="payment-cards" class="metric-grid"></div>
+        <div class="panel-grid">
+          <article class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">LAST 14 DAYS</p><h3>Daily transaction volume</h3></div></div><div class="chart-container"><canvas id="payment-volume-chart" role="img" aria-label="Daily payment volume, paid orders and failed orders"></canvas></div></article>
+          <article class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">GATEWAY OUTCOMES</p><h3>Success vs. failure by gateway</h3></div></div><div class="chart-container"><canvas id="gateway-outcomes-chart" role="img" aria-label="Bar chart of successful and failed payment orders by gateway"></canvas></div></article>
+        </div>
         <article class="panel"><div class="panel-heading"><div><p class="eyebrow">TRANSACTION LOG</p><h3>Recent payment orders</h3></div><span id="webhook-state" class="state-pill state-warn">Webhook telemetry unverified</span></div><div id="payment-results" class="results-wrap"><div class="empty-state">Loading payment summary…</div></div><p id="webhook-note" class="footnote">Webhook health is unverified until delivery events are persisted; paid-order state alone is not a webhook health check.</p></article>
       </section>
 
