@@ -8,6 +8,8 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -39,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.data.database.DatingDatabase
+import com.example.data.model.ChatMessageEntity
 import com.example.ui.theme.RomanticViolet
 import com.example.util.GroupMember
 import com.example.util.GroupMessagePayload
@@ -84,6 +87,8 @@ data class GroupModel(
     }
 }
 
+data class ForwardTargetChat(val matchId: String, val profileId: String, val displayName: String)
+
 data class GroupMessageModel(
     val id: String, val groupId: String, val senderId: String, val senderName: String,
     val text: String, val timestamp: Long, val isMe: Boolean,
@@ -102,7 +107,7 @@ data class GroupMessageModel(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun GroupChatScreen(group: GroupModel, myUserName: String, onBack: () -> Unit) {
     val context = LocalContext.current
@@ -122,6 +127,93 @@ fun GroupChatScreen(group: GroupModel, myUserName: String, onBack: () -> Unit) {
     var sending by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
+    var forwardingMessage by remember(group.id) { mutableStateOf<GroupMessageModel?>(null) }
+    var selectedForwardChatIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var selectedForwardGroupIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var forwardableDirectChats by remember { mutableStateOf(emptyList<ForwardTargetChat>()) }
+    var forwardableGroups by remember { mutableStateOf(emptyList<GroupModel>()) }
+    var forwardLoadError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(forwardingMessage?.id) {
+        selectedForwardChatIds = emptySet()
+        selectedForwardGroupIds = emptySet()
+        forwardLoadError = null
+        if (forwardingMessage == null) {
+            forwardableDirectChats = emptyList()
+            forwardableGroups = emptyList()
+        } else {
+            try {
+                val matches = database.matchDao().getAllMatchesSync()
+                forwardableDirectChats = matches.mapNotNull { match ->
+                    val peerId = match.profileId.trim()
+                    if (peerId.isBlank() || peerId.equals(currentProfileId, ignoreCase = true)) {
+                        null
+                    } else {
+                        val peer = database.profileDao().getProfileByIdSync(peerId)
+                        ForwardTargetChat(
+                            matchId = match.matchId,
+                            profileId = peerId,
+                            displayName = peer?.name?.takeIf { it.isNotBlank() }
+                                ?: match.localContactName.takeIf { it.isNotBlank() }
+                                ?: peerId
+                        )
+                    }
+                }.distinctBy { it.matchId }
+                forwardableGroups = GroupMessagingManager.fetchMyGroups()
+                    .map { GroupModel.fromRemote(it) }
+                    .filterNot { it.id == group.id }
+                    .distinctBy { it.id }
+            } catch (failure: Throwable) {
+                forwardLoadError = failure.message ?: "Unable to load forwarding destinations."
+            }
+        }
+    }
+
+    fun forwardDepth(message: GroupMessageModel): Int =
+        maxOf(message.forwardCount, if (message.isForwarded) 1 else 0)
+
+    fun showForwardRuleToast(message: String) {
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    }
+
+    fun toggleForwardChat(targetId: String, message: GroupMessageModel) {
+        if (targetId in selectedForwardChatIds) {
+            selectedForwardChatIds = selectedForwardChatIds - targetId
+            return
+        }
+        val nextTotal = selectedForwardChatIds.size + selectedForwardGroupIds.size + 1
+        if (forwardDepth(message) >= 5 && nextTotal > 1) {
+            showForwardRuleToast("Forwarded many times. You can only forward to 1 chat at a time.")
+            return
+        }
+        if (nextTotal > 5) {
+            showForwardRuleToast("You can only share with up to 5 chats")
+            return
+        }
+        selectedForwardChatIds = selectedForwardChatIds + targetId
+    }
+
+    fun toggleForwardGroup(targetId: String, message: GroupMessageModel) {
+        if (targetId in selectedForwardGroupIds) {
+            selectedForwardGroupIds = selectedForwardGroupIds - targetId
+            return
+        }
+        val nextTotal = selectedForwardChatIds.size + selectedForwardGroupIds.size + 1
+        val depth = forwardDepth(message)
+        if (depth >= 5 && nextTotal > 1) {
+            showForwardRuleToast("Forwarded many times. You can only forward to 1 chat at a time.")
+            return
+        }
+        if (depth >= 1 && selectedForwardGroupIds.isNotEmpty()) {
+            showForwardRuleToast("Forwarded messages can only be shared with 1 group at a time.")
+            return
+        }
+        if (nextTotal > 5) {
+            showForwardRuleToast("You can only share with up to 5 chats")
+            return
+        }
+        selectedForwardGroupIds = selectedForwardGroupIds + targetId
+    }
 
     LaunchedEffect(group.id) {
         com.example.util.AppNotificationManager.setActiveChatSession(null, group.id)
@@ -309,7 +401,10 @@ fun GroupChatScreen(group: GroupModel, myUserName: String, onBack: () -> Unit) {
                                 color = tint.copy(alpha = if (self) 0.96f else 0.12f),
                                 shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp,
                                     bottomStart = if (self) 16.dp else 4.dp, bottomEnd = if (self) 4.dp else 16.dp),
-                                modifier = Modifier.widthIn(max = 300.dp)
+                                modifier = Modifier.widthIn(max = 300.dp).combinedClickable(
+                                    onClick = { },
+                                    onLongClick = { forwardingMessage = message }
+                                )
                             ) {
                                 Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                                     if (!self) {
@@ -357,6 +452,136 @@ fun GroupChatScreen(group: GroupModel, myUserName: String, onBack: () -> Unit) {
                 }
             }
         }
+    }
+
+    forwardingMessage?.let { message ->
+        val depth = forwardDepth(message)
+        val frequentlyForwarded = depth >= 5
+        val selectedTotal = selectedForwardChatIds.size + selectedForwardGroupIds.size
+        AlertDialog(
+            onDismissRequest = { forwardingMessage = null },
+            title = { Text("Forward Message", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(
+                    Modifier.fillMaxWidth().heightIn(max = 440.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        "Share with up to ${if (frequentlyForwarded) 1 else 5} chats",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "“${message.text.take(48)}${if (message.text.length > 48) "…" else ""}”",
+                        fontSize = 12.sp,
+                        fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                        maxLines = 2
+                    )
+                    Text("Chats", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    if (forwardableDirectChats.isEmpty()) {
+                        Text("No direct chats available.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.heightIn(max = 150.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            items(forwardableDirectChats, key = { "fwd-chat:${it.matchId}" }) { target ->
+                                val selected = target.matchId in selectedForwardChatIds
+                                Row(
+                                    Modifier.fillMaxWidth().clip(RoundedCornerShape(9.dp))
+                                        .clickable { toggleForwardChat(target.matchId, message) }
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(target.displayName, modifier = Modifier.weight(1f), fontSize = 13.sp, maxLines = 1)
+                                    Checkbox(checked = selected, onCheckedChange = null)
+                                }
+                            }
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Groups", fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                        Text("${forwardableGroups.size}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (forwardLoadError != null) {
+                        Text(forwardLoadError.orEmpty(), color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
+                    }
+                    if (forwardableGroups.isEmpty()) {
+                        Text("No other groups available.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.heightIn(max = 135.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            items(forwardableGroups, key = { "fwd-group:${it.id}" }) { target ->
+                                val selected = target.id in selectedForwardGroupIds
+                                Row(
+                                    Modifier.fillMaxWidth().clip(RoundedCornerShape(9.dp))
+                                        .clickable { toggleForwardGroup(target.id, message) }
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(target.name, modifier = Modifier.weight(1f), fontSize = 13.sp, maxLines = 1)
+                                    Checkbox(checked = selected, onCheckedChange = null)
+                                }
+                            }
+                        }
+                    }
+                    Text("$selectedTotal selected", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = selectedTotal in 1..(if (frequentlyForwarded) 1 else 5),
+                    onClick = {
+                        val source = ChatMessageEntity(
+                            messageId = message.id,
+                            matchId = message.groupId,
+                            senderId = if (message.isMe) "USER" else message.senderId,
+                            text = message.text,
+                            timestamp = message.timestamp,
+                            isEncrypted = true,
+                            mediaType = message.mediaType,
+                            mediaUrl = message.mediaUrl,
+                            voiceDurationSeconds = message.voiceDurationSeconds,
+                            isForwarded = message.isForwarded,
+                            forwardCount = message.forwardCount
+                        )
+                        val directTargets = forwardableDirectChats
+                            .filter { it.matchId in selectedForwardChatIds }
+                            .map { it.matchId to it.profileId }
+                        val groups = selectedForwardGroupIds.toList()
+                        forwardingMessage = null
+                        scope.launch {
+                            GroupMessagingManager.forwardMessageBatch(
+                                context = context,
+                                message = source,
+                                directTargets = directTargets,
+                                targetGroupIds = groups,
+                                chatMessageDao = database.chatMessageDao()
+                            ).onSuccess { count ->
+                                Toast.makeText(
+                                    context,
+                                    "Message forwarded to $count chat${if (count == 1) "" else "s"} ↪",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }.onFailure { failure ->
+                                Toast.makeText(
+                                    context,
+                                    failure.message ?: "Message could not be forwarded.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                        selectedForwardChatIds = emptySet()
+                        selectedForwardGroupIds = emptySet()
+                    }
+                ) { Text("Forward ($selectedTotal)") }
+            },
+            dismissButton = {
+                TextButton(onClick = { forwardingMessage = null }) { Text("Cancel") }
+            }
+        )
     }
 
     if (showInfo) {
