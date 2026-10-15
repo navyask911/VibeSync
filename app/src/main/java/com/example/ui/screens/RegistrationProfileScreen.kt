@@ -648,19 +648,23 @@ fun RegistrationProfileScreen(
             ) {
                 presetInterests.take(5).forEach { tag ->
                     val cleanTag = tag.substringBefore(" ")
-                    val isAlreadyPresent = interestsText.contains(cleanTag, ignoreCase = true)
+                    val isAlreadyPresent = com.example.util.OnboardingStatePolicy.containsCsvSelection(
+                        interestsText,
+                        cleanTag
+                    )
                     Surface(
                         shape = RoundedCornerShape(8.dp),
                         color = if (isAlreadyPresent) VibeSyncTeal.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant,
                         border = if (isAlreadyPresent) BorderStroke(1.dp, VibeSyncTeal) else null,
                         modifier = Modifier.clickable {
-                            if (!isAlreadyPresent) {
-                                interestsText = if (interestsText.isBlank()) cleanTag else "$interestsText, $cleanTag"
-                            }
+                            interestsText = com.example.util.OnboardingStatePolicy.toggleCsvSelection(
+                                interestsText,
+                                cleanTag
+                            )
                         }
                     ) {
                         Text(
-                            text = "+ $tag",
+                            text = if (isAlreadyPresent) "✓ $tag" else "+ $tag",
                             fontSize = 11.sp,
                             color = if (isAlreadyPresent) VibeSyncTeal else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)

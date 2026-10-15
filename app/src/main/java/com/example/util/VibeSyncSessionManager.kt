@@ -46,7 +46,8 @@ object VibeSyncSessionManager {
         val profileId: String,
         val phoneNumber: String,
         val expiresAtEpochSeconds: Long,
-        val accessToken: String = ""
+        val accessToken: String = "",
+        val hasCompletedOnboarding: Boolean = false
     )
 
     @Volatile private var cachedSession: Session? = null
@@ -214,6 +215,7 @@ object VibeSyncSessionManager {
             put("expires_at", session.expiresAtEpochSeconds)
             put("access_jwt", session.accessToken)
             put("access_token", session.accessToken)
+            put("has_completed_onboarding", session.hasCompletedOnboarding)
         }.toString()
 
     private fun persistSessionAsync(context: Context, session: Session, generation: Long) {
@@ -275,7 +277,18 @@ object VibeSyncSessionManager {
         require(sessionToken.isNotBlank() && profileId.isNotBlank() && expiresAtEpochSeconds > 0L) {
             "Valid VibeSync session is required"
         }
-        val session = Session(sessionToken, profileId, phoneNumber.trim(), expiresAtEpochSeconds, accessToken.trim())
+        // Preserve the marker only when the same verified profile signs in again.
+        val previousCompletion = getSession(context.applicationContext)
+            ?.takeIf { it.profileId.equals(profileId.trim(), ignoreCase = true) }
+            ?.hasCompletedOnboarding == true
+        val session = Session(
+            sessionToken = sessionToken,
+            profileId = profileId,
+            phoneNumber = phoneNumber.trim(),
+            expiresAtEpochSeconds = expiresAtEpochSeconds,
+            accessToken = accessToken.trim(),
+            hasCompletedOnboarding = previousCompletion
+        )
         require(session.accessToken.isNotBlank()) { "Signed VibeSync access JWT is required" }
         val app = context.applicationContext
         val generation: Long
@@ -288,6 +301,36 @@ object VibeSyncSessionManager {
         // Complete the login flow and notify Realtime before slow keystore/disk work.
         notifySessionChanged(session)
         persistSessionAsync(app, session, generation)
+    }
+
+    /**
+     * Persist onboarding completion inside the encrypted session blob. The marker is bound to
+     * the authenticated profile ID and survives Room re-emission or process recreation.
+     */
+    fun markOnboardingCompleted(
+        context: Context,
+        profileId: String,
+        completed: Boolean = true
+    ): Boolean {
+        val app = context.applicationContext
+        val current = getSession(app) ?: return false
+        if (!current.profileId.equals(profileId.trim(), ignoreCase = true)) return false
+
+        val updated = current.copy(hasCompletedOnboarding = completed)
+        val generation: Long
+        synchronized(this) {
+            val latest = cachedSession
+            if (latest == null ||
+                !latest.profileId.equals(profileId.trim(), ignoreCase = true)
+            ) return false
+            mutationVersion += 1L
+            generation = mutationVersion
+            cachedSession = updated
+            appContext = app
+        }
+        notifySessionChanged(updated)
+        persistSessionAsync(app, updated, generation)
+        return true
     }
 
     fun getSession(context: Context? = appContext): Session? {
@@ -366,7 +409,8 @@ object VibeSyncSessionManager {
                 expiresAtEpochSeconds = json.optLong("expires_at", 0L),
                 accessToken = json.optString("access_jwt", "").ifBlank {
                     json.optString("access_token", "")
-                }
+                },
+                hasCompletedOnboarding = json.optBoolean("has_completed_onboarding", false)
             )
         } catch (e: Throwable) {
             Log.w(TAG, "Corrupt VibeSync session discarded: ${e.message}")

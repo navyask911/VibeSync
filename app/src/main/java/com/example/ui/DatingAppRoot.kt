@@ -550,6 +550,9 @@ fun DatingAppRoot(
             onOpenAdminPortal = {},
             onStartSuperAdminAuth = { viewModel.startTruecallerSuperAdminAuth() }
         )
+    } else if (authState == AuthState.AUTHENTICATED && preferences == null) {
+        // Wait for Room profile state after session restoration; never flash registration on a null emission.
+        VibeSyncSplashScreen()
     } else if (!isProfileCompleted) {
         RegistrationProfileScreen(
             initialName = preferences?.userName ?: "",
