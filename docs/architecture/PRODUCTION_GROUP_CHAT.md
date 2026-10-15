@@ -30,8 +30,8 @@
 
 ## Deployment notes
 
-- 20261016000000_production_group_chat_architecture.sql creates the schema/RLS/RPCs, avatar storage path policies and the database-to-FCM webhook trigger.
-- 20261016001000_group_rpc_security_definer.sql explicitly sets the group RPC security attributes; 20261016002000_group_message_all_member_envelopes.sql adds the all-active-members envelope guard.
+- 20261015041235_production_group_chat_architecture.sql creates the schema/RLS/RPCs, avatar storage path policies and the database-to-FCM webhook trigger.
+- 20261015042338_group_rpc_security_definer.sql explicitly sets the group RPC security attributes; 20261015042358_group_message_all_member_envelopes.sql adds the all-active-members envelope guard.
 - The existing avatars Storage bucket is configured as public by the legacy profile-avatar flow. Group avatar writes are restricted by the new owner/admin path policies, but an object URL placed in avatar_url is still publicly readable to anyone who obtains it. Do not store sensitive imagery there; making group avatars private needs a separate private bucket or client-side encryption/signed-URL migration that does not break existing profile avatar reads.
 - Android App Link auto-verification requires the domain owner to host a valid /.well-known/assetlinks.json associating vibesync.app, the Android package and the release signing certificate. The manifest filter alone does not prove domain verification.
 - Messages to a member whose Tink public key has not yet been published are intentionally rejected rather than falling back to plaintext or server encryption.
