@@ -80,10 +80,10 @@ data class ProfileEntity(
         if (avatarUrl.isNotBlank()) {
             if (avatarUrl.contains("|||")) {
                 list.addAll(avatarUrl.split("|||").map { it.trim() }.filter { it.isNotBlank() })
-            } else if (avatarUrl.contains(",")) {
-                list.addAll(avatarUrl.split(",").map { it.trim() }.filter { it.isNotBlank() })
             } else {
-                list.add(avatarUrl)
+                // URL query strings can contain commas; only the explicit gallery delimiter
+                // represents multiple profile images.
+                list.add(avatarUrl.trim())
             }
         }
         if (list.isEmpty()) {
@@ -100,6 +100,6 @@ data class ProfileEntity(
      * fabricated stock portraits inferred from profile IDs or gender.
      */
     fun getEffectiveAvatarUrl(): String {
-        return avatarUrl.split("|||", ",").firstOrNull()?.trim().orEmpty()
+        return avatarUrl.split("|||").firstOrNull()?.trim().orEmpty()
     }
 }
