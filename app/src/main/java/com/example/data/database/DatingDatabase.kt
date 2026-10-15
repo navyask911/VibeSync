@@ -53,6 +53,8 @@ import com.example.data.dao.ApiCredentialRequestDao
 import com.example.data.model.LocalBusinessAnalyticsEntity
 import com.example.data.model.LocalBusinessAnalyticsEventEntity
 import com.example.data.model.ApiCredentialRequestEntity
+import com.example.data.model.ConversationNotificationPreferenceEntity
+import com.example.data.dao.ConversationNotificationPreferencesDao
 
 @Database(
     entities = [
@@ -79,9 +81,10 @@ import com.example.data.model.ApiCredentialRequestEntity
         ReportEntity::class,
         LocalBusinessAnalyticsEntity::class,
         LocalBusinessAnalyticsEventEntity::class,
-        ApiCredentialRequestEntity::class
+        ApiCredentialRequestEntity::class,
+        ConversationNotificationPreferenceEntity::class
     ],
-    version = 56,
+    version = 57,
     exportSchema = false
 )
 abstract class DatingDatabase : RoomDatabase() {
@@ -105,6 +108,7 @@ abstract class DatingDatabase : RoomDatabase() {
     abstract fun reportDao(): ReportDao
     abstract fun localBusinessAnalyticsDao(): LocalBusinessAnalyticsDao
     abstract fun apiCredentialRequestDao(): ApiCredentialRequestDao
+    abstract fun conversationNotificationPreferencesDao(): ConversationNotificationPreferencesDao
 
     companion object {
         @Volatile
@@ -421,6 +425,16 @@ abstract class DatingDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_56_57 = object : Migration(56, 57) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS conversation_notification_preferences (" +
+                        "conversationId TEXT NOT NULL PRIMARY KEY, " +
+                        "mutedUntilEpochMillis INTEGER NOT NULL DEFAULT 0)"
+                )
+            }
+        }
+
         fun getDatabase(context: Context): DatingDatabase {
             val appContext = context.applicationContext
             return INSTANCE ?: synchronized(this) {
@@ -471,7 +485,8 @@ abstract class DatingDatabase : RoomDatabase() {
                                 MIGRATION_52_53,
                                 MIGRATION_53_54,
                                 MIGRATION_54_55,
-                                MIGRATION_55_56
+                                MIGRATION_55_56,
+                                MIGRATION_56_57
                             )
                             // Fail closed instead of recreating a database that contains local history.
                             .build()

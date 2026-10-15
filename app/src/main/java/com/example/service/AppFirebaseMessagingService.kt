@@ -364,11 +364,13 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                             messageText = displayBody,
                             senderPhotoUrl = photoUrl,
                             mediaType = mediaType,
-                            channelId = if (!AppNotificationManager.isAppInForeground) {
-                                AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES
-                            } else {
-                                AppNotificationManager.CHANNEL_ID_MESSAGES
-                            }
+                            channelId = AppNotificationManager.CHANNEL_ID_CHAT_MESSAGES,
+                            conversationId = pushMatchId.ifBlank {
+                                if (senderOrMatchId.startsWith("match_", ignoreCase = true)) senderOrMatchId
+                                else "match_$senderOrMatchId"
+                            },
+                            messageId = messageId,
+                            messageTimestamp = timestamp
                         )
                     }
                 }
@@ -406,11 +408,10 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                             messageText = text,
                             senderPhotoUrl = photoUrl,
                             mediaType = mediaType,
-                            channelId = if (!AppNotificationManager.isAppInForeground) {
-                                AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES
-                            } else {
-                                AppNotificationManager.CHANNEL_ID_MESSAGES
-                            }
+                            channelId = AppNotificationManager.CHANNEL_ID_CHAT_MESSAGES,
+                            conversationId = if (senderOrMatchId.startsWith("match_", ignoreCase = true)) senderOrMatchId else "match_$senderOrMatchId",
+                            messageId = messageId,
+                            messageTimestamp = timestamp
                         )
                     }
                 }
@@ -442,11 +443,7 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     messageText = body,
                     senderPhotoUrl = imageUri,
                     mediaType = "TEXT",
-                    channelId = if (!AppNotificationManager.isAppInForeground) {
-                        AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES
-                    } else {
-                        AppNotificationManager.CHANNEL_ID_MESSAGES
-                    }
+                    channelId = AppNotificationManager.CHANNEL_ID_CHAT_MESSAGES
                 )
             }
         }

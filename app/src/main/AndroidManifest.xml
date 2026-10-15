@@ -114,7 +114,7 @@
             android:value="true" />
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
-            android:value="channel_vibe_messages_v4_default" />
+            android:value="vibesync_messages_channel" />
 
         <service
             android:name=".service.AppFirebaseMessagingService"
@@ -135,7 +135,18 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
-        <!-- Inline Reply & Action Broadcast Receiver -->
+        <!-- Notification actions are explicit, non-exported receivers; RemoteInput is mutable only at its PendingIntent. -->
+        <receiver
+            android:name=".service.DirectReplyReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".service.MarkAsReadReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".service.MuteConversationReceiver"
+            android:exported="false" />
+
+        <!-- Compatibility for action PendingIntents created by previous app versions. -->
         <receiver
             android:name=".service.NotificationActionReceiver"
             android:exported="false">

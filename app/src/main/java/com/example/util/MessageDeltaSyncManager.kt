@@ -310,7 +310,10 @@ object MessageDeltaSyncManager {
                         messageText = local.text,
                         senderPhotoUrl = sender?.avatarUrl.orEmpty().ifBlank { match.localPhotoUri },
                         mediaType = remote.mediaType,
-                        channelId = AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES
+                        channelId = AppNotificationManager.CHANNEL_ID_CHAT_MESSAGES,
+                        conversationId = match.matchId,
+                        messageId = remote.messageId,
+                        messageTimestamp = remote.timestamp
                     )
                 }
             }
