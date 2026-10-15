@@ -1114,12 +1114,13 @@ private fun MatchesChatScreenContent(
             CreateGroupDialog(
                 availableMembers = availableMembers,
                 onDismiss = { showCreateGroupDialog = false },
-                onCreateGroup = { name, desc, emoji, members ->
+                onCreateGroup = { name, desc, emoji, members, avatarUri ->
                     val newGroup = GroupModel(
                         id = java.util.UUID.randomUUID().toString(),
                         name = name,
                         description = desc,
                         emoji = emoji,
+                        avatarUrl = avatarUri?.toString().orEmpty(),
                         adminName = "You",
                         members = listOf("You") + members,
                         lastMessage = "Group created",
