@@ -114,8 +114,8 @@ object GroupMessagingManager {
                 val row = rows.optJSONObject(i) ?: continue
                 add(RemoteChatGroup(
                     id = row.optString("group_id"), title = row.optString("title", "Group"),
-                    description = row.optString("description"), avatarUrl = row.optString("avatar_url"),
-                    createdBy = row.optString("created_by"), inviteCode = row.optString("invite_code"),
+                    description = row.optString("description"), avatarUrl = nullable(row, "avatar_url").orEmpty(),
+                    createdBy = nullable(row, "created_by").orEmpty(), inviteCode = nullable(row, "invite_code").orEmpty(),
                     adminsOnlyMessages = row.optBoolean("admins_only_messages", false),
                     adminsOnlyInfoEditing = row.optBoolean("admins_only_info_editing", true),
                     role = row.optString("role", "member"), memberCount = row.optInt("member_count", 1),
