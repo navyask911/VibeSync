@@ -2,6 +2,30 @@
 -- Ownership remains bound to the verified profile and the current signed JWT session.
 begin;
 
+-- This helper must bypass the session table's service-role-only RLS policy to validate
+-- the caller's jti. It returns only a boolean and never exposes session rows or token values.
+create or replace function public.vibesync_jwt_session_active()
+returns boolean
+language sql
+stable
+security definer
+set search_path = pg_catalog, public
+as $
+  select exists (
+    select 1
+    from public.vibesync_sessions as s
+    where s.jwt_id = coalesce(
+      nullif(current_setting('request.jwt.claim.jti', true), ''),
+      nullif((nullif(current_setting('request.jwt.claims', true), '')::jsonb)->>'jti', '')
+    )
+      and s.profile_id = public.vibesync_jwt_profile_id()
+      and s.expires_at > now()
+  );
+$;
+
+revoke all on function public.vibesync_jwt_session_active() from public, anon;
+grant execute on function public.vibesync_jwt_session_active() to authenticated, service_role;
+
 alter table public.status_stories
   alter column "createdAt" set default ((extract(epoch from now()) * 1000)::bigint),
   alter column "expiresAt" set default (((extract(epoch from now()) * 1000)::bigint) + 86400000);
