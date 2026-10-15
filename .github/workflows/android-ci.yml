@@ -1,6 +1,5 @@
 name: VibeSync Android Release CI
-# Production release lane: tests, signing and verification for APK + Play-ready AAB.
-# Emulator/UI smoke tests remain deferred; JVM unit and Compose tests run on each release build.
+# Stable release lane: build, sign and verify the APK only. AAB packaging stays disabled until stable.
 
 on:
   push:
@@ -341,7 +340,7 @@ jobs:
             echo "KEYSTORE_PASSWORD, KEY_PASSWORD, and verified KEY_ALIAS are required."
             exit 1
           fi
-          ./gradlew assembleRelease bundleRelease
+          ./gradlew assembleRelease
 
       - name: Remove temporary secrets and generated configuration
         if: always()
@@ -405,34 +404,8 @@ jobs:
 
           echo "Release APK signature verified."
 
-      - name: Verify release AAB
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          AAB=(app/build/outputs/bundle/release/*.aab)
-          test -f "${AAB[0]}"
-
-          echo "Signed release AAB:"
-          ls -lh "${AAB[0]}"
-          jarsigner -verify "${AAB[0]}"
-
-          AAB_CERTS="$(keytool -printcert -jarfile "${AAB[0]}")"
-          printf '%s\n' "$AAB_CERTS"
-
-          normalize_fingerprint() {
-            printf '%s' "$1" | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]'
-          }
-          AAB_SHA1=$(printf '%s\n' "$AAB_CERTS" | awk -F': ' '/SHA1:/{print $NF; exit}' | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]')
-          AAB_SHA256=$(printf '%s\n' "$AAB_CERTS" | awk -F': ' '/SHA256:/{print $NF; exit}' | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]')
-          test -n "$AAB_SHA1"
-          test -n "$AAB_SHA256"
-          test "$AAB_SHA1" = "$(normalize_fingerprint "$VIBESYNC_RELEASE_SHA1")"
-          test "$AAB_SHA256" = "$(normalize_fingerprint "$VIBESYNC_RELEASE_SHA256")"
-          echo "Release AAB signature and production certificate fingerprints verified."
-
       - name: Publish versioned GitHub release
-        if: github.event_name == 'push' && contains(github.event.head_commit.message, 'VibeSync 1.2.0')
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, 'VibeSync 1.2.1')
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -440,7 +413,7 @@ jobs:
           set -euo pipefail
 
           VERSION_NAME="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)"
-          test "$VERSION_NAME" = "1.2.0"
+          test "$VERSION_NAME" = "1.2.1"
           TAG="v${VERSION_NAME}"
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists; refusing to overwrite published release assets."
@@ -460,28 +433,27 @@ jobs:
           - Forwarding RPC runs as SECURITY INVOKER with a restricted search path; current Supabase Security Advisor check reports no findings.
 
           ### Build
-          - Signed Android APK and Android App Bundle (AAB), both verified against the expected production signing certificate.
+          - Signed APK only for this stability release; AAB packaging remains disabled.
+          - APK signature is verified against the expected production signing certificate.
           - Kotlin compilation plus JVM unit and Compose UI tests run as release gates.
           EOF
 
           gh release create "$TAG" \
             app/build/outputs/apk/release/*.apk \
-            app/build/outputs/bundle/release/*.aab \
             --title "VibeSync ${VERSION_NAME}" \
             --notes-file "${RUNNER_TEMP}/release-notes.md" \
             --target "$GITHUB_SHA"
 
-      - name: Upload signed APK, AAB and test reports
+      - name: Upload signed APK and test reports
         # Canonical, versioned downloads are attached to the GitHub Release above.
         # Keep the convenience Actions artifact briefly and don't fail CI if quota is exhausted.
         continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
-          name: VibeSync-Android-Release
+          name: VibeSync-Android-Release-APK
           if-no-files-found: error
           retention-days: 1
           path: |
             app/build/outputs/apk/release/*.apk
-            app/build/outputs/bundle/release/*.aab
             app/build/outputs/mapping/release/**
             app/build/test-results/test/**/*.xml

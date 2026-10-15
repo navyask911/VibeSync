@@ -29,8 +29,8 @@ android {
     applicationId = "com.aistudio.freedating.mkwvxq"
     minSdk = 24
     targetSdk = 35
-    versionCode = 5
-    versionName = "1.2.0"
+    versionCode = 6
+    versionName = "1.2.1"
 
     buildConfigField("String", "TRUECALLER_CLIENT_ID", "\"$escapedTruecallerClientId\"")
     manifestPlaceholders["truecallerClientId"] = truecallerClientId

@@ -131,7 +131,8 @@ fun RegistrationProfileScreen(
         city: String,
         locationCoords: String,
         avatarEmoji: String,
-        photos: List<String>
+        photos: List<String>,
+        pendingAvatar: com.example.util.ProfileAvatarStorageManager.PreparedAvatar?
     ) -> Unit
 ) {
     val context = LocalContext.current
@@ -141,7 +142,8 @@ fun RegistrationProfileScreen(
         onBackToLogin()
     }
 
-    // 1. Profile Photo. Compress before previewing or saving a user-selected image.
+    // 1. Profile photo: prepare a private local preview only.
+    // Encryption and Storage I/O are deliberately deferred until after profile creation.
     var avatarUri by remember { mutableStateOf(initialAvatarUrl) }
     var avatarPreviewUri by remember { mutableStateOf(initialAvatarUrl) }
     var pendingPreparedAvatar by remember {
@@ -156,54 +158,55 @@ fun RegistrationProfileScreen(
             photoPreparationScope.launch {
                 val previousAvatar = avatarUri
                 val previousPreviewUri = avatarPreviewUri
+                val previousPreparedAvatar = pendingPreparedAvatar
                 isAvatarUploading = true
-                var stagedAvatar: com.example.util.ProfileAvatarStorageManager.PreparedAvatar? = null
                 try {
                     val profileId = com.example.util.VibeSyncSessionManager.getProfileId(context).orEmpty().trim()
-                    require(profileId.isNotBlank()) {
-                        "Your verified profile session is not ready. Retry sign-in before adding a photo."
-                    }
-                    val prepared = com.example.util.ProfileAvatarStorageManager.preparePickedAvatar(
+                    val prepared = com.example.util.ProfileAvatarStorageManager.preparePickedAvatarForRegistration(
                         context = context,
                         sourceUri = uri,
                         profileId = profileId,
                         slot = 1
                     )
-                    stagedAvatar = prepared
-                    // Keep the sanitized JPEG as a private local preview. Failed Storage uploads
-                    // retain the preview and ciphertext staging file for an authenticated retry.
+                    // Keep the sanitized JPEG locally for an uninterrupted preview.
+                    // The encrypted upload worker is queued only when a verified profile ID exists.
                     avatarUri = prepared.uri
                     avatarPreviewUri = prepared.uri
-                    val remoteUrl = runCatching {
-                        com.example.util.ProfileAvatarStorageManager.uploadPreparedAvatar(prepared)
-                    }.getOrNull()
-                    if (remoteUrl.isNullOrBlank()) {
-                        pendingPreparedAvatar = prepared
-                        avatarUri = prepared.uri
+                    pendingPreparedAvatar = prepared.takeIf { profileId.isNotBlank() }
+                    if (previousPreparedAvatar != null &&
+                        previousPreparedAvatar.file.canonicalPath != prepared.file.canonicalPath
+                    ) {
+                        previousPreparedAvatar.file.delete()
+                        previousPreparedAvatar.encryptedFile?.delete()
+                    }
+                    if (profileId.isBlank()) {
                         Toast.makeText(
                             context,
-                            "Photo is saved on this device. Check your connection and tap Save to retry the encrypted upload.",
+                            "Photo preview saved on this device. Complete registration; secure sync will require a verified session.",
                             Toast.LENGTH_LONG
                         ).show()
                     } else {
-                        pendingPreparedAvatar = null
-                        avatarUri = remoteUrl
-                        avatarPreviewUri = prepared.uri
+                        Toast.makeText(
+                            context,
+                            "Photo preview saved. Encrypted avatar sync will run after registration.",
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                 } catch (t: Throwable) {
-                    if (stagedAvatar != null && pendingPreparedAvatar !== stagedAvatar) {
-                        stagedAvatar?.file?.delete()
-                        stagedAvatar?.encryptedFile?.delete()
-                    }
-                    if (pendingPreparedAvatar == null) {
-                        avatarUri = previousAvatar
-                        avatarPreviewUri = previousPreviewUri
-                    }
+                    // Image preparation is optional. Preserve the current selection/preview and
+                    // never couple account creation to avatar encoding or encryption.
+                    avatarUri = previousAvatar
+                    avatarPreviewUri = previousPreviewUri
+                    pendingPreparedAvatar = previousPreparedAvatar
                     Toast.makeText(
                         context,
-                        t.message?.takeIf { it.isNotBlank() } ?: "Could not prepare the selected profile photo.",
+                        "Could not prepare the photo yet. You can still complete registration and add it later.",
                         Toast.LENGTH_LONG
                     ).show()
+                    android.util.Log.w(
+                        "VibeSyncRegistration",
+                        "Avatar preview preparation failed: " + t.javaClass.simpleName
+                    )
                 } finally {
                     isAvatarUploading = false
                 }
@@ -746,60 +749,51 @@ fun RegistrationProfileScreen(
                 )
             }
 
-            // 9. Full-Width Primary Save & Register Button
+            // 9. Full-width registration action. Avatar upload is handled after profile creation.
             Button(
                 onClick = {
                     if (isFormValid) {
-                        photoPreparationScope.launch {
-                            var photoForRegistration = avatarUri
-                            val pendingAvatar = pendingPreparedAvatar
-                            if (pendingAvatar != null) {
-                                isAvatarUploading = true
-                                val uploaded = try {
-                                    com.example.util.ProfileAvatarStorageManager.uploadPreparedAvatar(pendingAvatar)
-                                } catch (_: Throwable) {
-                                    null
-                                } finally {
-                                    isAvatarUploading = false
-                                }
-                                if (uploaded.isNullOrBlank()) {
-                                    Toast.makeText(
-                                        context,
-                                        "The encrypted avatar upload is still pending. Your local preview is preserved; check your connection and retry Save.",
-                                        Toast.LENGTH_LONG
-                                    ).show()
-                                    return@launch
-                                }
-                                pendingPreparedAvatar = null
-                                avatarUri = uploaded
-                                avatarPreviewUri = pendingAvatar.uri
-                                photoForRegistration = uploaded
-                            }
-                            val finalBio = bioText.ifBlank { "Hey there! I am using VibeSync ✨" }
-                            val finalPhotoList = if (photoForRegistration.isNotBlank()) listOf(photoForRegistration) else emptyList()
-                            onCompleteRegistration(
-                                fullName.trim(),
-                                calculatedAge,
-                                birthDateString,
-                                selectedGender,
-                                "Everyone",
-                                "Connection",
-                                detectedCountry,
-                                detectedCountryFlag,
-                                detectedCity,
-                                "Graduate",
-                                initialOccupation.ifBlank { "Member" },
-                                finalBio,
-                                interestsText,
-                                "Not specified",
-                                isDiscoveryEnabled,
-                                "$detectedCity, $detectedState",
-                                detectedCity,
-                                detectedCoords,
-                                if (photoForRegistration.isBlank()) "✨" else photoForRegistration,
-                                finalPhotoList
-                            )
+                        val stagedAvatar = pendingPreparedAvatar
+                        val photoForRegistration = when {
+                            stagedAvatar != null ->
+                                com.example.util.ProfileAvatarStorageManager.encryptedAvatarReference(
+                                    stagedAvatar.profileId, stagedAvatar.slot
+                                )
+                            avatarUri.startsWith("vibesync-avatar-enc://") -> avatarUri
+                            avatarUri.startsWith("https://") || avatarUri.startsWith("http://") -> avatarUri
+                            else -> ""
                         }
+                        val finalBio = bioText.ifBlank { "Hey there! I am using VibeSync ✨" }
+                        // Keep the local JPEG URI in Room's photo list for local fallback. The avatar
+                        // field itself is an opaque encrypted-object reference, never a private file URI.
+                        val finalPhotoList = when {
+                            stagedAvatar != null -> listOf(stagedAvatar.uri)
+                            photoForRegistration.isNotBlank() -> listOf(photoForRegistration)
+                            else -> emptyList()
+                        }
+                        onCompleteRegistration(
+                            fullName.trim(),
+                            calculatedAge,
+                            birthDateString,
+                            selectedGender,
+                            "Everyone",
+                            "Connection",
+                            detectedCountry,
+                            detectedCountryFlag,
+                            detectedCity,
+                            "Graduate",
+                            initialOccupation.ifBlank { "Member" },
+                            finalBio,
+                            interestsText,
+                            "Not specified",
+                            isDiscoveryEnabled,
+                            detectedCity + ", " + detectedState,
+                            detectedCity,
+                            detectedCoords,
+                            if (photoForRegistration.isBlank()) "✨" else photoForRegistration,
+                            finalPhotoList,
+                            stagedAvatar
+                        )
                     } else {
                         Toast.makeText(context, "Please enter your name and select date of birth.", Toast.LENGTH_SHORT).show()
                     }

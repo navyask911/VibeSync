@@ -2406,7 +2406,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         interests: String = "",
         maritalStatus: String = "Single (Never Married)",
         isOpenForDating: Boolean = true,
-        photos: List<String> = emptyList()
+        photos: List<String> = emptyList(),
+        pendingAvatar: com.example.util.ProfileAvatarStorageManager.PreparedAvatar? = null
     ) {
         val cleanName = name.trim()
         if (cleanName.length < 2) {
@@ -2443,6 +2444,22 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 maritalStatus = maritalStatus,
                 isOpenForDating = isOpenForDating
             )
+
+            // Durable best-effort sync: profile creation succeeds independently of avatar upload.
+            pendingAvatar?.let { staged ->
+                runCatching {
+                    com.example.util.ProfileAvatarStorageManager.enqueuePreparedAvatarUpload(
+                        context = getApplication<Application>().applicationContext,
+                        prepared = staged
+                    )
+                }.onFailure { failure ->
+                    android.util.Log.w(
+                        "DatingViewModel",
+                        "Could not enqueue encrypted avatar upload: " + failure.javaClass.simpleName
+                    )
+                }
+            }
+
             // Ask user to set 4-digit MPIN after registration by user interest
             val current = repository.userPreferences.first()
             if (current != null) {
@@ -2471,10 +2488,19 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     "city" to city.trim(),
                     "latitude" to latitude,
                     "longitude" to longitude,
-                    "avatarUrl" to com.example.util.ProfileAvatarStorageManager.serverAvatarReference(verifiedUserId, avatarUrl),
+                    "avatarUrl" to (
+                        pendingAvatar?.let { staged ->
+                            com.example.util.ProfileAvatarStorageManager.encryptedAvatarReference(
+                                staged.profileId,
+                                staged.slot
+                            )
+                        } ?: com.example.util.ProfileAvatarStorageManager.serverAvatarReference(verifiedUserId, avatarUrl)
+                    ),
                     "avatarEmoji" to (
-                        if (avatarUrl.startsWith("http") ||
+                        if (pendingAvatar != null ||
+                            avatarUrl.startsWith("http") ||
                             avatarUrl.startsWith("content") ||
+                            avatarUrl.startsWith("file:") ||
                             avatarUrl.startsWith("vibesync-avatar-enc://")
                         ) "" else avatarUrl
                     ),

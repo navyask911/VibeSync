@@ -556,7 +556,7 @@ fun DatingAppRoot(
             initialOccupation = preferences?.userOccupation ?: "",
             initialAvatarUrl = preferences?.avatarUrl ?: "",
             onBackToLogin = { viewModel.logout() },
-            onCompleteRegistration = { name, age, dob, gender, interestedIn, goal, country, countryFlag, place, qualification, occupation, bio, interests, maritalStatus, isOpenForDating, address, city, coords, avatar, photos ->
+            onCompleteRegistration = { name, age, dob, gender, interestedIn, goal, country, countryFlag, place, qualification, occupation, bio, interests, maritalStatus, isOpenForDating, address, city, coords, avatar, photos, pendingAvatar ->
                 val (parsedLat, parsedLon) = try {
                     val parts = coords.split(",")
                     val latVal = parts.getOrNull(0)?.replace("[^0-9.-]".toRegex(), "")?.toDoubleOrNull() ?: 12.9716
@@ -586,7 +586,8 @@ fun DatingAppRoot(
                     interests = interests,
                     maritalStatus = maritalStatus,
                     isOpenForDating = isOpenForDating,
-                    photos = photos
+                    photos = photos,
+                    pendingAvatar = pendingAvatar
                 )
             }
         )

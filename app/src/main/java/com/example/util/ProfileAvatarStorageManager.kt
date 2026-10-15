@@ -9,6 +9,14 @@ import android.graphics.Paint
 import android.net.Uri
 import android.util.LruCache
 import android.util.Log
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
+import com.example.service.ProfileAvatarUploadWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -114,6 +122,175 @@ object ProfileAvatarStorageManager {
         } finally { square.recycle() }
     }
 
+    /**
+     * Prepare only a sanitized, bounded local preview for registration. Key creation, AES-GCM
+     * encryption, and network upload are intentionally moved to ProfileAvatarUploadWorker.
+     */
+    suspend fun preparePickedAvatarForRegistration(
+        context: Context,
+        sourceUri: Uri,
+        profileId: String,
+        slot: Int = 1
+    ): PreparedAvatar = withContext(Dispatchers.IO) {
+        val decoded = decodeSampled(context, sourceUri) ?: error("Selected image could not be decoded.")
+        val square = try {
+            val cropSize = minOf(decoded.width, decoded.height)
+            val crop = Bitmap.createBitmap(
+                decoded,
+                (decoded.width - cropSize) / 2,
+                (decoded.height - cropSize) / 2,
+                cropSize,
+                cropSize
+            )
+            if (crop !== decoded) decoded.recycle()
+            if (crop.width == MAX_SIDE && crop.height == MAX_SIDE) crop
+            else Bitmap.createScaledBitmap(crop, MAX_SIDE, MAX_SIDE, true).also {
+                if (it !== crop) crop.recycle()
+            }
+        } catch (t: Throwable) {
+            decoded.recycle()
+            throw t
+        }
+        try {
+            check(square.width <= MAX_SIDE && square.height <= MAX_SIDE) {
+                "Avatar image exceeds the 512x512 dimension limit."
+            }
+            val cleanSlot = slot.coerceIn(1, 3)
+            val cleanProfileId = profileId.trim()
+            val cacheIdentity = cleanProfileId.ifBlank { "unbound-registration-avatar" }
+            val dir = File(context.cacheDir, "avatars").apply { mkdirs() }
+            val localFile = File(dir, safeHash(cacheIdentity) + "_" + cleanSlot + ".jpg")
+            val bytes = compressUnderLimit(square)
+            val byteCount = bytes.size
+            try {
+                localFile.outputStream().use { output ->
+                    output.write(bytes)
+                    output.flush()
+                }
+            } finally {
+                bytes.fill(0)
+            }
+            require(localFile.isFile && localFile.length() in 1 until MAX_BYTES.toLong()) {
+                "Compressed avatar must be strictly below 150,000 bytes."
+            }
+
+            // Remove stale ciphertext so the worker encrypts this newly-selected JPEG.
+            File(dir, safeHash(cacheIdentity) + "_" + cleanSlot + ".enc").delete()
+            File(dir, safeHash(cacheIdentity) + "_" + cleanSlot + ".enc.version").delete()
+            val encryptedName = when {
+                cleanProfileId.isBlank() -> ""
+                cleanSlot == 1 -> cleanProfileId + ".enc"
+                else -> cleanProfileId + "_" + cleanSlot + ".enc"
+            }
+            PreparedAvatar(
+                uri = Uri.fromFile(localFile).toString(),
+                file = localFile,
+                profileId = cleanProfileId,
+                objectName = encryptedName,
+                byteCount = byteCount,
+                slot = cleanSlot,
+                encryptedFile = null,
+                profileVersion = 0,
+                applicationContext = context.applicationContext
+            )
+        } finally {
+            square.recycle()
+        }
+    }
+
+    /** Encrypt the sanitized local JPEG with the active profile's Tink AES-256-GCM keyset. */
+    suspend fun encryptPreparedAvatar(prepared: PreparedAvatar): PreparedAvatar =
+        withContext(Dispatchers.IO) {
+            require(prepared.profileId.isNotBlank()) { "A verified profile ID is required for avatar encryption." }
+            val context = prepared.applicationContext
+                ?: error("Avatar upload application context is unavailable.")
+            require(prepared.file.isFile && prepared.file.length() in 1 until MAX_BYTES.toLong()) {
+                "Staged avatar preview is missing or exceeds the 150,000 byte limit."
+            }
+            val dir = File(context.cacheDir, "avatars").apply { mkdirs() }
+            val cleanSlot = prepared.slot.coerceIn(1, 3)
+            val objectName = if (cleanSlot == 1) prepared.profileId + ".enc"
+                else prepared.profileId + "_" + cleanSlot + ".enc"
+            val encryptedFile = File(dir, safeHash(prepared.profileId) + "_" + cleanSlot + ".enc")
+            val versionFile = File(dir, safeHash(prepared.profileId) + "_" + cleanSlot + ".enc.version")
+            val diskVersion = runCatching { versionFile.readText().trim().toInt() }.getOrDefault(0)
+
+            // A persistent marker makes retries upload exactly the ciphertext/key-version pair
+            // that was staged on the prior attempt rather than rotating keys on every retry.
+            if (encryptedFile.isFile && encryptedFile.length() > 28L && diskVersion >= 1) {
+                return@withContext prepared.copy(
+                    objectName = objectName,
+                    encryptedFile = encryptedFile,
+                    profileVersion = diskVersion
+                )
+            }
+
+            val nextVersion = ProfileKeyManager.nextProfileVersion(context, prepared.profileId)
+            val plaintext = prepared.file.readBytes()
+            val ciphertext = try {
+                ProfileKeyManager.encryptLocalAvatar(
+                    context = context,
+                    profileId = prepared.profileId,
+                    slot = cleanSlot,
+                    jpegBytes = plaintext,
+                    profileVersion = nextVersion
+                )
+            } finally {
+                plaintext.fill(0)
+            }
+            try {
+                encryptedFile.outputStream().use { output ->
+                    output.write(ciphertext)
+                    output.flush()
+                }
+                versionFile.writeText(nextVersion.toString())
+            } finally {
+                ciphertext.fill(0)
+            }
+            check(encryptedFile.isFile && encryptedFile.length() > 28L) {
+                "Encrypted avatar output is incomplete."
+            }
+            prepared.copy(
+                objectName = objectName,
+                encryptedFile = encryptedFile,
+                profileVersion = nextVersion,
+                applicationContext = context.applicationContext
+            )
+        }
+
+    /** Durable queue. Upload itself is strictly gated by a matching authenticated session/JWT. */
+    fun enqueuePreparedAvatarUpload(context: Context, prepared: PreparedAvatar) {
+        require(prepared.profileId.isNotBlank()) { "Cannot queue an avatar without its verified profile ID." }
+        val cacheAvatarRoot = File(context.cacheDir, "avatars").canonicalFile
+        val stagedFile = prepared.file.canonicalFile
+        require(stagedFile.path.startsWith(cacheAvatarRoot.path + File.separator)) {
+            "Avatar staging file must remain inside the app's private avatar cache."
+        }
+        val request = OneTimeWorkRequestBuilder<ProfileAvatarUploadWorker>()
+            .setInputData(
+                workDataOf(
+                    ProfileAvatarUploadWorker.KEY_PROFILE_ID to prepared.profileId,
+                    ProfileAvatarUploadWorker.KEY_LOCAL_PATH to stagedFile.absolutePath,
+                    ProfileAvatarUploadWorker.KEY_SLOT to prepared.slot.coerceIn(1, 3)
+                )
+            )
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build()
+            )
+            .setBackoffCriteria(
+                BackoffPolicy.EXPONENTIAL,
+                30L,
+                java.util.concurrent.TimeUnit.SECONDS
+            )
+            .addTag(ProfileAvatarUploadWorker.WORK_TAG)
+            .build()
+        val uniqueName = "vibesync-avatar-" + safeHash(prepared.profileId) + "-" + prepared.slot.coerceIn(1, 3)
+        WorkManager.getInstance(context.applicationContext)
+            .enqueueUniqueWork(uniqueName, ExistingWorkPolicy.REPLACE, request)
+    }
+
     /** Upload ciphertext only; retry transient failures and preserve the private local preview. */
     suspend fun uploadPreparedAvatar(prepared: PreparedAvatar): String? =
         withContext(Dispatchers.IO) {
@@ -162,6 +339,7 @@ object ProfileAvatarStorageManager {
             }
             // Keep the sanitized JPEG in app cache for Compose preview/fallback.
             encrypted.delete()
+            File(encrypted.absolutePath + ".version").delete()
             encryptedAvatarReference(prepared.profileId, prepared.slot)
         }
 
