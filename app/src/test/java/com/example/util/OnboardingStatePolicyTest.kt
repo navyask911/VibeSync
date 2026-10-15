@@ -29,8 +29,12 @@ class OnboardingStatePolicyTest {
             "Travel, Coffee",
             OnboardingStatePolicy.toggleCsvSelection("Travel", "Coffee")
         )
+    }
+
+    @Test
+    fun clickingASelectedPassionAgainRemovesItCaseInsensitively() {
         assertEquals(
-            "Travel, Coffee",
+            "Travel",
             OnboardingStatePolicy.toggleCsvSelection("Travel, Coffee", "COFFEE")
         )
     }
