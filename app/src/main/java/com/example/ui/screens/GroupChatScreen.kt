@@ -86,13 +86,18 @@ data class GroupModel(
 
 data class GroupMessageModel(
     val id: String, val groupId: String, val senderId: String, val senderName: String,
-    val text: String, val timestamp: Long, val isMe: Boolean
+    val text: String, val timestamp: Long, val isMe: Boolean,
+    val isForwarded: Boolean = false, val forwardCount: Int = 0,
+    val mediaType: String = "TEXT", val mediaUrl: String = "", val voiceDurationSeconds: Int = 0
 ) {
     companion object {
         fun fromRemote(message: GroupMessagePayload, currentProfileId: String) = GroupMessageModel(
             id = message.id, groupId = message.groupId, senderId = message.senderId,
             senderName = message.senderName, text = message.text, timestamp = message.timestamp,
-            isMe = message.senderId == currentProfileId
+            isMe = message.senderId == currentProfileId,
+            isForwarded = message.isForwarded, forwardCount = message.forwardCount,
+            mediaType = message.mediaType, mediaUrl = message.mediaUrl,
+            voiceDurationSeconds = message.voiceDurationSeconds
         )
     }
 }
@@ -311,7 +316,35 @@ fun GroupChatScreen(group: GroupModel, myUserName: String, onBack: () -> Unit) {
                                         Text(message.senderName, color = tint, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                         Spacer(Modifier.height(3.dp))
                                     }
-                                    Text(message.text, color = if (self) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface)
+                                    if (message.isForwarded || message.forwardCount > 0) {
+                                        Text(
+                                            if (message.forwardCount >= 5) "⏩ Forwarded many times" else "↪ Forwarded",
+                                            fontSize = 10.sp,
+                                            fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                                            color = if (self) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f)
+                                            else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Spacer(Modifier.height(3.dp))
+                                    }
+                                    when {
+                                        message.mediaType.uppercase() in setOf("IMAGE", "PHOTO", "VIDEO") && message.mediaUrl.isNotBlank() -> {
+                                            AsyncImage(
+                                                model = message.mediaUrl,
+                                                contentDescription = message.mediaType,
+                                                modifier = Modifier.widthIn(max = 260.dp).heightIn(max = 220.dp),
+                                                contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                                            )
+                                            if (message.text.isNotBlank()) Text(
+                                                message.text,
+                                                color = if (self) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+                                        message.mediaType.uppercase() in setOf("VOICE", "AUDIO") -> Text(
+                                            if (message.text.isBlank()) "Voice message" else message.text,
+                                            color = if (self) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                                        )
+                                        else -> Text(message.text, color = if (self) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface)
+                                    }
                                     Spacer(Modifier.height(3.dp))
                                     Text(SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(message.timestamp)),
                                         modifier = Modifier.align(Alignment.End), fontSize = 10.sp,
