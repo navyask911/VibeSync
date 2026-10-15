@@ -31,8 +31,17 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Validate static portal files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(tr -d '\r\n' < admin-web/CNAME)" = "admin.vibesync.social"
+          node --input-type=module --check < admin-web/app.js
+          grep -q "Content-Security-Policy" admin-web/index.html
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - name: Inject public Supabase browser configuration
         shell: bash
         run: |
