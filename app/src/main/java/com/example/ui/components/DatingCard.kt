@@ -231,8 +231,6 @@ fun DatingCard(
             Box(modifier = Modifier.fillMaxSize()) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     // Top Hero Visual (Photos 1, 2, 3 with Multi-Photo Swiping / Tapping)
-                    val context = LocalContext.current
-                    val effectivePhoto = activePhoto.ifBlank { profile.getEffectiveAvatarUrl() }
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
