@@ -58,7 +58,7 @@ fun ProfileHeaderSection(
 ) {
     val context = LocalContext.current
     val photoScope = rememberCoroutineScope()
-    val photos = remember(preferences.profilePhotos, preferences.avatarUrl) { preferences.getPhotoList().take(3) }
+    val photos = remember(preferences.profilePhotos, preferences.avatarUrl, preferences.avatarCacheVersion) { preferences.getPhotoList().take(3) }
 
     /** Compress each selected image before previewing or saving it. */
     fun prepareAndUploadPhoto(sourceUri: Uri, slot: Int, existingPhotos: List<String>) {
