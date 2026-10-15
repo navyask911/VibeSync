@@ -874,6 +874,9 @@ fun DatingAppRoot(
                 onForwardMessage = { targetMatchId, message ->
                     viewModel.forwardMessage(targetMatchId, message)
                 },
+                onForwardMessages = { message, directTargets, targetGroupIds ->
+                    viewModel.forwardMessages(message, directTargets, targetGroupIds)
+                },
                 onToggleStarMessage = { messageId ->
                     viewModel.toggleStarMessage(messageId)
                 },
