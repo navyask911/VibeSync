@@ -686,6 +686,7 @@ object SupabaseClientManager {
 
     /** Stores metadata only after the media is available in storage; RLS checks the active session. */
     suspend fun upsertStatusStoryRemote(
+        context: Context,
         story: StatusStoryEntity,
         mediaObjectPath: String,
         backgroundMusicObjectPath: String,
@@ -693,12 +694,30 @@ object SupabaseClientManager {
         profileId: String
     ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
-            if (profileId.isBlank() || profileId != story.userId) {
-                return@withContext Result.failure(IllegalStateException("Story owner does not match the active VibeSync profile."))
+            val session = VibeSyncSessionManager.getSession(context)
+                ?: return@withContext Result.failure(IllegalStateException("Sign in again before publishing a story."))
+            val activeProfileId = session.profileId.trim()
+            if (profileId.isBlank() ||
+                !activeProfileId.equals(profileId.trim(), ignoreCase = true) ||
+                !activeProfileId.equals(story.userId.trim(), ignoreCase = true)
+            ) {
+                return@withContext Result.failure(
+                    IllegalStateException("Story owner does not match the active authenticated profile.")
+                )
             }
+            val nowSeconds = System.currentTimeMillis() / 1000L
+            if (session.accessToken.isBlank() || session.sessionToken.isBlank() ||
+                session.expiresAtEpochSeconds <= nowSeconds + 5L
+            ) {
+                return@withContext Result.failure(
+                    IllegalStateException("The authenticated story-upload session is expired or incomplete.")
+                )
+            }
+
+            // status_stories.userId is the legacy text profile ID, not the JWT UUID subject.
             val payload = JSONObject().apply {
                 put("id", story.id)
-                put("userId", profileId)
+                put("userId", activeProfileId)
                 put("userName", story.userName)
                 put("userEmoji", story.userAvatarEmoji)
                 put("userAvatarUrl", story.userAvatarUrl)
@@ -709,22 +728,79 @@ object SupabaseClientManager {
                 put("captionText", story.caption)
                 put("backgroundColorStart", story.backgroundColorStart)
                 put("backgroundColorEnd", story.backgroundColorEnd)
-                put("createdAt", story.timestamp)
-                put("expiresAt", story.timestamp + 24L * 60L * 60L * 1000L)
+                // createdAt/expiresAt are server-owned and stamped by the database trigger.
                 put("privacy", story.privacy)
-                put("allowedViewerProfileIds", JSONArray(allowedViewerProfileIds.distinct().filter { it.isNotBlank() && it != profileId }))
+                put(
+                    "allowedViewerProfileIds",
+                    JSONArray(allowedViewerProfileIds.distinct().filter { it.isNotBlank() && it != activeProfileId })
+                )
             }.toString()
-            val request = buildRequest("status_stories", "POST", payload, preferHeader = "return=minimal")
+
+            val request = buildRequest(
+                endpoint = "status_stories",
+                method = "POST",
+                bodyJson = payload,
+                preferHeader = "return=minimal"
+            ).newBuilder()
+                .header("Authorization", "Bearer ${session.accessToken}")
+                .header("x-vibesync-session", session.sessionToken)
+                .build()
             httpClient.newCall(request).execute().use { response ->
                 val responseBody = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    return@withContext Result.failure(IllegalStateException("Story metadata insert failed HTTP ${response.code}: ${responseBody.take(400)}"))
+                    return@withContext Result.failure(
+                        IllegalStateException("Story metadata insert failed HTTP ${response.code}: ${responseBody.take(400)}")
+                    )
                 }
             }
             Result.success(Unit)
         } catch (t: Throwable) {
             Log.e("VibeSyncStories", "Story metadata insert failed: ${t.javaClass.simpleName}: ${t.message}", t)
             Result.failure(t)
+        }
+    }
+
+    /** Syncs only the primary opaque avatar reference through the owner-authorized profile RPC. */
+    suspend fun updateOwnAvatarMetadata(
+        context: Context,
+        profileId: String,
+        avatarReference: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        val session = VibeSyncSessionManager.getSession(context)
+            ?: return@withContext false
+        val cleanProfileId = profileId.trim()
+        val cleanReference = avatarReference.trim()
+        val expectedPrefix = "vibesync-avatar-enc://${cleanProfileId}"
+        if (cleanProfileId.isBlank() ||
+            !session.profileId.equals(cleanProfileId, ignoreCase = true) ||
+            !cleanReference.startsWith(expectedPrefix) ||
+            cleanReference.removePrefix(expectedPrefix).let { suffix ->
+                suffix.isNotEmpty() && suffix !in setOf("/2", "/3")
+            }
+        ) {
+            Log.w(TAG, "Avatar metadata sync skipped: reference or active owner did not match.")
+            return@withContext false
+        }
+        try {
+            val avatarPayload = JSONObject().put("avatar_url", cleanReference)
+            val request = buildRequest(
+                endpoint = "rpc/upsert_my_profile",
+                method = "POST",
+                bodyJson = JSONObject().put("payload", avatarPayload).toString()
+            ).newBuilder()
+                .header("Authorization", "Bearer ${session.accessToken}")
+                .header("x-vibesync-session", session.sessionToken)
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty().trim()
+                if (!response.isSuccessful || body != "true") {
+                    Log.w(TAG, "Primary avatar metadata sync failed HTTP ${response.code}.")
+                    false
+                } else true
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "Primary avatar metadata sync deferred: ${t.javaClass.simpleName}.")
+            false
         }
     }
 
