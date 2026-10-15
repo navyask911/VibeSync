@@ -153,6 +153,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import com.example.data.model.StatusStoryEntity
+import com.example.security.ForceSecureWindowEffect
 import com.example.ui.DatingViewModel
 import com.example.ui.components.FullEmojiBottomSheet
 import com.example.ui.theme.*
@@ -1833,6 +1834,7 @@ fun StatusStoryViewer(
         onDismissRequest = onClose,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
+        ForceSecureWindowEffect(enabled = true)
         Box(
             modifier = Modifier
                 .fillMaxWidth(0.99f)
