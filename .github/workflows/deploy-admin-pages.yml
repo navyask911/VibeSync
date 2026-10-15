@@ -24,8 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-      SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY || vars.SUPABASE_ANON_KEY }}
+      SUPABASE_URL: ${{ vars.SUPABASE_URL || secrets.SUPABASE_URL }}
+      SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY || vars.SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -52,7 +52,7 @@ jobs:
             printf 'window.VIBESYNC_CONFIG = Object.freeze(%s);\n' "$config" > admin-web/config.js
             echo "Configured the deployment artifact with the public Supabase key."
           else
-            echo "::warning::SUPABASE_PUBLISHABLE_KEY (or SUPABASE_ANON_KEY) repository variable is missing. Pages deploys with sign-in disabled."
+            echo "::warning::SUPABASE_PUBLISHABLE_KEY/SUPABASE_ANON_KEY variable or SUPABASE_ANON_KEY Actions secret is missing. Pages deploys with sign-in disabled."
           fi
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

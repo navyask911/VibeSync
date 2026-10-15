@@ -4,9 +4,9 @@ Static staff portal served by GitHub Pages at https://admin.vibesync.social.
 
 ## Public browser configuration
 
-Add a GitHub repository **Actions variable** named `SUPABASE_PUBLISHABLE_KEY` (preferred) or `SUPABASE_ANON_KEY` containing this project's public anon/publishable key. Optionally set `SUPABASE_URL`; otherwise the workflow uses the VibeSync project URL. Publishable/anon keys are intended for browser use and remain constrained by RLS and server-side role checks. Never configure a service-role/secret key as a Pages variable.
+Configure the public Supabase key using an Actions variable `SUPABASE_PUBLISHABLE_KEY` (preferred), an `SUPABASE_ANON_KEY` variable, or the existing Actions secret `SUPABASE_ANON_KEY`. The workflow also reads `SUPABASE_URL` from an Actions variable or existing secret; otherwise it uses the VibeSync project URL. Publishable/anon keys are intended for browser use and remain constrained by RLS and server-side role checks. Never configure a service-role/secret key as a Pages variable.
 
-The workflow injects the key only into the Pages deployment artifact. The checked-in `config.js` contains no key. Without the variable, Pages can deploy but sign-in remains disabled.
+If GitHub Pages has never been enabled for this repository, a repository owner/admin must first open Settings → Pages and choose **GitHub Actions** as the build/deployment source. The default workflow token cannot create the Pages site in this repository before that one-time setting is enabled. The workflow injects the key only into the Pages deployment artifact. The checked-in `config.js` contains no key. Without the variable, Pages can deploy but sign-in remains disabled.
 
 ## Provision a staff member
 

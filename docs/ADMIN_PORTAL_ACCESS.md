@@ -21,7 +21,7 @@ Replace every placeholder. Do not commit staff UUIDs or personal email addresses
 
 - Repository Pages source: GitHub Actions.
 - DNS CNAME: `admin` → `navyask911.github.io`.
-- Repository Actions variable: `SUPABASE_PUBLISHABLE_KEY`, or `SUPABASE_ANON_KEY`, containing only the public key. Optional `SUPABASE_URL`; fallback URL is the VibeSync Supabase project URL.
+- First enable Pages in repository Settings → Pages with GitHub Actions as the source; the workflow token cannot create the Pages site itself in this repository. Configure the public key through the `SUPABASE_PUBLISHABLE_KEY` / `SUPABASE_ANON_KEY` Actions variable or the existing `SUPABASE_ANON_KEY` Actions secret. The workflow reads the existing `SUPABASE_URL` variable/secret or uses the project URL fallback.
 - Supabase Auth redirect allow-list should include `https://admin.vibesync.social/`.
 - Never expose Supabase service-role keys, Firebase service-account JSON, database passwords, partner keys, or signing keys to Pages, browser JavaScript, or the APK.
 - Configure `FIREBASE_SERVICE_ACCOUNT_JSON` in Supabase Edge Function secrets for server-side FCM re-engagement. It is not needed for login and must not be stored in this repository.
