@@ -66,29 +66,7 @@ fun ProfileHeaderSection(
             try {
                 val profileId = com.example.util.VibeSyncSessionManager.getProfileId(context).orEmpty().trim()
                 require(profileId.isNotBlank()) { "Sign in again before uploading profile photos." }
-                if (slot == 1) {
-                    val remoteUrl = com.example.util.SupabaseClientManager.uploadPublicProfileAvatar(
-                        context = context,
-                        sourceUri = sourceUri,
-                        profileId = profileId
-                    ).getOrElse { throw it }
-                    val uploadedPhotos = existingPhotos.toMutableList()
-                    if (uploadedPhotos.isEmpty()) uploadedPhotos.add(remoteUrl) else uploadedPhotos[0] = remoteUrl
-                    onUpdatePreferences(
-                        preferences.copy(
-                            avatarUrl = remoteUrl,
-                            profilePhotos = uploadedPhotos.filter { it.isNotBlank() }.joinToString("|||"),
-                            avatarCacheVersion = System.currentTimeMillis()
-                        )
-                    )
-                    android.widget.Toast.makeText(
-                        context,
-                        "Profile picture compressed to 512×512 and synced.",
-                        android.widget.Toast.LENGTH_SHORT
-                    ).show()
-                    return@launch
-                }
-
+                val isCanonicalAvatar = slot == 1 || preferences.avatarUrl.isBlank()
                 val prepared = com.example.util.ProfileAvatarStorageManager.preparePickedAvatar(
                     context = context,
                     sourceUri = sourceUri,
@@ -96,8 +74,10 @@ fun ProfileHeaderSection(
                     slot = slot
                 )
 
-                val isCanonicalAvatar = preferences.avatarUrl.isBlank()
-                val remoteUrl = com.example.util.ProfileAvatarStorageManager.uploadPreparedAvatar(prepared)
+                val remoteUrl = com.example.util.ProfileAvatarStorageManager.uploadPreparedAvatar(
+                    prepared = prepared,
+                    publishAsPrimary = isCanonicalAvatar
+                )
                 if (remoteUrl.isNullOrBlank()) {
                     prepared.file.delete()
                     prepared.encryptedFile?.delete()
