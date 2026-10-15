@@ -1,7 +1,12 @@
 package com.example.ui
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.activity.compose.BackHandler
 import com.example.ui.theme.MyApplicationTheme
 import com.example.util.BiometricPromptHelper
@@ -11,6 +16,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -97,7 +103,6 @@ import com.example.ui.components.RestoreBackupPromptDialog
 import com.example.ui.components.InteractionsAndRequestsModal
 import com.example.ui.components.VibeSyncInAppNotificationBanner
 import com.example.ui.screens.AccountReportScreen
-import com.example.ui.screens.AdminBackendScreen
 import com.example.ui.screens.AuthLoginScreen
 import com.example.ui.screens.ChatDetailScreen
 import com.example.ui.screens.CallScreen
@@ -127,6 +132,22 @@ import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.outlined.Explore
 
+
+private fun openAdminWebPortal(context: Context) {
+    val uri = Uri.parse("https://admin.vibesync.social")
+    try {
+        val customTab = CustomTabsIntent.Builder().setShowTitle(true).build()
+        customTab.intent.setPackage("com.android.chrome")
+        customTab.launchUrl(context, uri)
+    } catch (_: ActivityNotFoundException) {
+        try {
+            context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(context, "No browser is available to open the admin portal.", Toast.LENGTH_SHORT).show()
+        }
+    }
+}
+
 enum class DatingTab(val title: String) {
     CHATS("Chats"),
     STATUS("Stories"),
@@ -147,6 +168,7 @@ fun DatingAppRoot(
     val allProfiles by viewModel.allProfiles.collectAsStateWithLifecycle()
     val matches by viewModel.rawMatches.collectAsStateWithLifecycle()
     val preferences by viewModel.userPreferences.collectAsStateWithLifecycle()
+    val isLoggedIn = preferences?.isLoggedIn ?: false
     val isSessionChecking by viewModel.isSessionChecking.collectAsStateWithLifecycle()
     val authState by viewModel.authState.collectAsStateWithLifecycle()
     val truecallerError by viewModel.truecallerError.collectAsStateWithLifecycle()
@@ -159,12 +181,17 @@ fun DatingAppRoot(
 
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     val syncContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner, isLoggedIn) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
                 // REST-only launch/resume repair; Realtime lives exclusively in ChatDetailScreen.
                 com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(syncContext)
                 com.example.service.PendingMessageSyncScheduler.enqueueAllPending(syncContext)
+                if (isLoggedIn) {
+                    coroutineScope.launch {
+                        com.example.util.SupabaseClientManager.recordPresence()
+                    }
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -173,22 +200,14 @@ fun DatingAppRoot(
 
     val chatMessages by viewModel.currentChatMessages.collectAsStateWithLifecycle()
 
-    val showAdminPortal by viewModel.showAdminPortal.collectAsStateWithLifecycle()
-    val isAdminLoggedIn by viewModel.isAdminLoggedIn.collectAsStateWithLifecycle()
-    val adminLoginInProgress by viewModel.adminLoginInProgress.collectAsStateWithLifecycle()
-    val adminLoginError by viewModel.adminLoginError.collectAsStateWithLifecycle()
     val allAdminProfiles by viewModel.allProfilesForAdmin.collectAsStateWithLifecycle()
-    val supabaseDiagnostic by viewModel.supabaseDiagnostic.collectAsStateWithLifecycle()
     val showFaceVerification by viewModel.showFaceVerification.collectAsStateWithLifecycle()
 
-    val adminRoles by viewModel.adminRoles.collectAsStateWithLifecycle()
-    val adminEmployees by viewModel.adminEmployees.collectAsStateWithLifecycle()
     val isMpinUnlocked by viewModel.isMpinUnlocked.collectAsStateWithLifecycle()
 
     val superLikesCount by viewModel.superLikesCount.collectAsStateWithLifecycle()
     val isSpotlightActive by viewModel.isSpotlightActive.collectAsStateWithLifecycle()
 
-    val demographicAnalytics by viewModel.demographicAnalytics.collectAsStateWithLifecycle()
     val activeCall by viewModel.activeCall.collectAsStateWithLifecycle()
 
     // Clean Phonebook Contact Gated Chat & Invites States
@@ -226,7 +245,6 @@ fun DatingAppRoot(
     val showFriendsListDialog by viewModel.showFriendsListDialog.collectAsStateWithLifecycle()
     val selectedBusiness by viewModel.selectedBusiness.collectAsStateWithLifecycle()
     val allBusinesses by viewModel.allBusinesses.collectAsStateWithLifecycle()
-    val allApiRequests by viewModel.allApiRequests.collectAsStateWithLifecycle()
     val pendingDeepLinkBizId by com.example.util.DeepLinkManager.pendingBusinessId.collectAsStateWithLifecycle()
     val pendingDeepLinkChatProfileId by com.example.util.DeepLinkManager.pendingChatProfileId.collectAsStateWithLifecycle()
     var showInteractionsModal by remember { mutableStateOf(false) }
@@ -298,7 +316,6 @@ fun DatingAppRoot(
     }
 
     // Authentication & Guard State Variables
-    val isLoggedIn = preferences?.isLoggedIn ?: false
 
     // One private broadcast inbox per authenticated profile enables incoming call discovery
     // without polling or writing invitations/SDP/ICE to any database table.
@@ -402,7 +419,7 @@ fun DatingAppRoot(
 
     // System Back Handler for Main Bottom Navigation Tabs (any tab -> Connect)
     BackHandler(
-        enabled = isLoggedIn && isMpinUnlocked && isProfileCompleted && !isAnyOverlayOpen && !showAdminPortal && !showFaceVerification && pagerState.currentPage != 0
+        enabled = isLoggedIn && isMpinUnlocked && isProfileCompleted && !isAnyOverlayOpen && !showFaceVerification && pagerState.currentPage != 0
     ) {
         coroutineScope.launch {
             pagerState.animateScrollToPage(0)
@@ -411,7 +428,7 @@ fun DatingAppRoot(
 
     // System Back Handler for Main Root Screen (Tab 0 Chats) - double tap back to exit safeguard
     BackHandler(
-        enabled = isLoggedIn && isMpinUnlocked && isProfileCompleted && !isAnyOverlayOpen && !showAdminPortal && !showFaceVerification && pagerState.currentPage == 0
+        enabled = isLoggedIn && isMpinUnlocked && isProfileCompleted && !isAnyOverlayOpen && !showFaceVerification && pagerState.currentPage == 0
     ) {
         val now = System.currentTimeMillis()
         if (now - lastRootBackPressTime < 2000L) {
@@ -423,10 +440,6 @@ fun DatingAppRoot(
     }
 
     // High Priority Back Handlers for Overlays & Sub-Screens
-    BackHandler(enabled = showAdminPortal) {
-        viewModel.closeAdminPortal()
-    }
-
     BackHandler(enabled = showFaceVerification) {
         if (showAccountRecoveryDialog) {
             viewModel.closeAccountRecovery()
@@ -504,42 +517,6 @@ fun DatingAppRoot(
         // Secure AuthState Root Navigator (Eliminates Infinite Splash Loading Loop)
         if (authState == AuthState.INITIALIZING || isSessionChecking) {
         VibeSyncSplashScreen()
-    } else if (showAdminPortal) {
-        AdminBackendScreen(
-            isAdminLoggedIn = isAdminLoggedIn,
-            onLoginAdmin = { u, p -> viewModel.loginAdmin(u, p) },
-            onLogoutAdmin = { viewModel.logoutAdmin() },
-            currentAdminUsername = preferences?.adminUsername ?: "platform staff",
-            adminLoginInProgress = adminLoginInProgress,
-            adminLoginError = adminLoginError,
-            onUpdateAdminCredentials = { u, p -> viewModel.updateAdminCredentials(u, p) },
-            roles = adminRoles,
-            employees = adminEmployees,
-            onCreateRole = { role -> viewModel.createAdminRole(role) },
-            onAssignEmployee = { emp -> viewModel.assignAdminEmployee(emp) },
-            onToggleEmployeeStatus = { id -> viewModel.toggleEmployeeStatus(id) },
-            onDeleteEmployee = { id -> viewModel.deleteAdminEmployee(id) },
-            profiles = allAdminProfiles,
-            demographicAnalytics = demographicAnalytics,
-            onBanProfile = { id, note -> viewModel.banProfile(id, note) },
-            onUnbanProfile = { id -> viewModel.unbanProfile(id) },
-            onToggleSpam = { id, cur -> viewModel.toggleSpamFlag(id, cur) },
-            onToggleVerification = { profile -> viewModel.toggleProfileVerification(profile) },
-            onDeleteProfile = { id -> viewModel.deleteProfile(id) },
-            onAddCustomProfile = { profile -> viewModel.addCustomProfile(profile) },
-            onRunAiSpamScan = { viewModel.runAiAntiSpamScan() },
-            onExportUserData = { userId, callback -> viewModel.exportLawEnforcementUserData(userId, callback) },
-            onExportActivityLogs = { callback -> viewModel.exportSystemActivityLogs(callback) },
-            onExportUserActivityLogs = { userId, callback -> viewModel.exportUserActivityLogs(userId, callback) },
-            onCleanDatabaseForTwoPhones = { viewModel.cleanDatabaseForTwoPhonesInstallation() },
-            onForceWipeAllBackendData = { viewModel.clearAllProfilesAndBackendData() },
-            supabaseDiagnostic = supabaseDiagnostic,
-            onRunDiagnosticTest = { viewModel.runSupabaseDiagnosticTest() },
-            apiRequests = allApiRequests,
-            onApproveApiRequest = { id, key, hook, notes -> viewModel.updateApiRequestApproval(id, "APPROVED", key, hook, notes) },
-            onRejectApiRequest = { id, notes -> viewModel.updateApiRequestApproval(id, "REJECTED", notes = notes) },
-            onClose = { viewModel.closeAdminPortal() }
-        )
     } else if (authState == AuthState.UNAUTHENTICATED) {
         AuthLoginScreen(
             onTruecallerProfileVerified = { profile ->
@@ -616,7 +593,13 @@ fun DatingAppRoot(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        modifier = Modifier.combinedClickable(
+                            onClick = { showSettingsScreen = false; coroutineScope.launch { pagerState.animateScrollToPage(0) } },
+                            onLongClick = { openAdminWebPortal(context) }
+                        ),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Image(
                             painter = androidx.compose.ui.res.painterResource(id = com.example.R.drawable.ic_launcher_foreground),
                             contentDescription = "VibeSync logo",
@@ -729,7 +712,7 @@ fun DatingAppRoot(
             onToggleProfileLock = { viewModel.toggleProfileLock(it) },
             onResetData = { viewModel.resetAllData() },
             onDeleteAccount = { viewModel.deleteAccount() },
-            onOpenAdminPortal = { viewModel.openAdminPortal() },
+            onOpenAdminPortal = { openAdminWebPortal(context) },
             onLogout = { viewModel.logout() },
             superLikesCount = superLikesCount,
             isSpotlightActive = isSpotlightActive,
@@ -768,7 +751,7 @@ fun DatingAppRoot(
                         onRewind = { viewModel.rewind() },
                         onOpenProfileDetail = { viewModel.openProfileDetail(it) },
                         onOpenFilters = {},
-                        onOpenAdmin = { viewModel.openAdminPortal() },
+                        onOpenAdmin = { openAdminWebPortal(context) },
                         onResetData = { viewModel.resetAllData() },
                         mutualFriendsMap = mutualFriendsMap,
                         onOpenInteractionsModal = { showInteractionsModal = true },
@@ -787,7 +770,7 @@ fun DatingAppRoot(
                         onInviteContact = { contact -> viewModel.openInviteContactDialog(contact) },
                         onRefreshContacts = { viewModel.loadPhonebookContacts(forceRefresh = true) },
                         onOpenProfile = {},
-                        onOpenAdmin = { viewModel.openAdminPortal() },
+                        onOpenAdmin = { openAdminWebPortal(context) },
                         onOpenInteractionsModal = { showInteractionsModal = true },
                         onOpenProfileDetail = { viewModel.openProfileDetail(it) },
                         currentUserName = noteToSelfDisplayName,

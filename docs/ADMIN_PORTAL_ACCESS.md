@@ -1,34 +1,45 @@
 # VibeSync Admin Portal Access
 
-## Hidden entry
+## Web portal
 
-On the Truecaller / secure phone-verification screen, tap the VibeSync logo/header seven times consecutively. This opens the Admin Portal Login screen. The shortcut only navigates to the login UI; it is not an authorization boundary.
+The staff portal is hosted separately from the Android APK at **https://admin.vibesync.social**. It uses Supabase Auth email OTP/magic-link sign-in and only renders operational dashboard state after the authenticated Auth UUID is found in `public.admin_users` with `is_active = true`.
 
-## Current local login gate
+The Android in-app mock Admin Ops screen and its destructive “wipe all backend data” action have been removed. From the app, a short press on the VibeSync logo returns to the Home/first tab; a long press opens the web portal in a Chrome Custom Tab (with a normal browser fallback). This gesture is navigation only, not an authorization mechanism.
 
-The Android app reads `adminUsername` and `adminPassword` from local Room preferences. When those fields are blank, the code currently falls back to:
+## Roles and provisioning
 
-- Username: `creator`
-- Passcode: `9999`
+The database supports `super_admin`, `moderator`, `finance_manager`, and `compliance_officer`. Staff are provisioned out of band by a project owner using the trusted Supabase SQL editor or server-side administrative path. The browser cannot create staff or assign itself privileges.
 
-These are client-side prompt values, not secure server credentials. They must not be treated as sufficient authorization for administrator functions.
+```sql
+INSERT INTO public.admin_users(user_id, email, display_name, role, is_active)
+VALUES ('<auth-user-uuid>', '<staff-email>', '<display-name>', 'super_admin', true);
+```
 
-## Server role mechanism found in source
+Replace every placeholder. Do not commit staff UUIDs or personal email addresses. Remove access by setting `is_active = false`. Avoid local fallback credentials such as `creator / 9999`: an in-app prompt is not a secure identity provider and must never authorize staff access.
 
-The migration `supabase/migrations/20261007_vibesync_security_core.sql` creates `public.platform_staff` with:
+## GitHub Pages configuration
 
-- `auth_user_id UUID`, referencing `auth.users(id)`
-- `role`, constrained to `OWNER`, `ADMIN`, `MODERATOR`, `SUPPORT`, or `LEGAL_REVIEW`
-- `active BOOLEAN`
+- Repository Pages source: GitHub Actions.
+- DNS CNAME: `admin` → `navyask911.github.io`.
+- Repository Actions variable: `SUPABASE_PUBLISHABLE_KEY`, or `SUPABASE_ANON_KEY`, containing only the public key. Optional `SUPABASE_URL`; fallback URL is the VibeSync Supabase project URL.
+- Supabase Auth redirect allow-list should include `https://admin.vibesync.social/`.
+- Never expose Supabase service-role keys, Firebase service-account JSON, database passwords, partner keys, or signing keys to Pages, browser JavaScript, or the APK.
+- Configure `FIREBASE_SERVICE_ACCOUNT_JSON` in Supabase Edge Function secrets for server-side FCM re-engagement. It is not needed for login and must not be stored in this repository.
 
-The `public.is_platform_staff()` RPC returns true only if an active row matches `auth.uid()`. Normal client roles cannot directly read or write the staff table.
+## Server-side permissions and limitations
 
-## No seeded production admin account
+- The telemetry, free verification, moderation, finance, compliance and export operations are implemented as SECURITY DEFINER RPCs with fixed `search_path`, explicit role checks, and audit entries where state changes or controlled exports occur.
+- Free profile verification changes `profiles.is_verified` only. It does not change paid verification tiers or subscription/payment state.
+- Compliance exports contain only profile/account metadata, exclude content and keys, and include a SHA-256 digest plus database audit record. The operator must independently verify legal process and organizational approval before disclosing the result.
+- Data preservation is bounded to role-specific, static allow-listed operational tables. Message contents/ciphertext, phone numbers, contact hashes, auth credentials, private keys, device tokens and raw media are not exportable through this UI.
+- Provider webhook health is shown as unverified until event delivery records are implemented. A successful payment order is not proof that a provider webhook endpoint is healthy.
+- Inactivity cohorts use `last_active_at`, recorded via a server-validated app-resume heartbeat. Older profiles with no recorded heartbeat are not included in push broadcasts.
+- FCM re-engagement uses an authenticated Edge Function, a super-admin role check, a per-user cooldown, and a limited batch size. Validate the target audience before sending.
 
-The repository contains no migration that provisions an admin staff row, Supabase Auth UID, or server admin password. The current Truecaller flow uses an Auth-free opaque VibeSync session header (`x-vibesync-session`) resolved by `public.vibesync_current_profile_id()`; that is a different identity mechanism from `auth.uid()`. Therefore, the current staff RPC can reject a normal Truecaller session even when the local prompt accepts its fallback values.
+## Verification before production
 
-**The current codebase does not identify a confirmed working production admin account.** Do not assume `creator / 9999` alone grants access, and do not embed a service-role key or fabricated owner UID in the Android app.
-
-## Required provisioning before production admin use
-
-A project owner must explicitly select the administrator identity and provision it through a trusted server-side Supabase administrative path. Then align the staff authorization RPC with the app's identity model (either use a real Supabase Auth JWT and `auth.uid()`, or implement a narrowly scoped role mapping for validated VibeSync profile sessions). Keep role-table writes server-only, audit role changes, and verify that inactive/non-staff sessions are denied. This UI/client commit does not modify or apply any SQL migration or assign a role.
+1. Configure the public key variable and Auth email redirects.
+2. Apply the SQL migration and verify each RPC exists.
+3. Deploy the `admin-fcm-broadcast` Edge Function and set its server-only Firebase service account secret.
+4. Provision a test identity for each role; confirm users without roster membership are denied and each role's forbidden sections/actions are rejected by Postgres.
+5. Confirm GitHub Pages DNS and HTTPS are active. A successful code commit does not by itself prove custom-domain validation or production migration application.

@@ -7,6 +7,7 @@ on:
       - fix/release-startup-icons-ci
     paths:
       - 'supabase/migrations/**'
+      - 'supabase/functions/admin-fcm-broadcast/**'
       - '.github/workflows/deploy-migrations.yml'
   workflow_dispatch:
 
@@ -64,6 +65,9 @@ jobs:
 
       - name: Apply pending migrations
         run: supabase db push
+
+      - name: Deploy staff-authorized FCM re-engagement function
+        run: supabase functions deploy admin-fcm-broadcast --project-ref "$SUPABASE_PROJECT_ID"
 
       - name: Enable and verify Supabase custom access token hook
         run: |

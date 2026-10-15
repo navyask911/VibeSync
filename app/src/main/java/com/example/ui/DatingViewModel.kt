@@ -3613,13 +3613,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun clearAllProfilesAndBackendData() {
-        viewModelScope.launch {
-            repository.clearAllProfilesAndDataInBackend(keepOwnUser = false)
-            _toastMessage.emit("All profiles & backend data completely wiped 🧹✨")
-        }
-    }
-
     init {
         MatchingManager.createNotificationChannels(getApplication())
         viewModelScope.launch(Dispatchers.IO) {

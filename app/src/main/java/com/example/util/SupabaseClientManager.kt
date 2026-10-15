@@ -152,6 +152,29 @@ object SupabaseClientManager {
         }
     }
 
+    /**
+     * Records an app-resume heartbeat for accurate 3/7-day inactivity cohorts.
+     * The RPC resolves the authenticated VibeSync profile server-side and accepts no profile ID.
+     */
+    suspend fun recordPresence(): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val request = buildRequest(
+                endpoint = "rpc/vibesync_touch_presence",
+                method = "POST",
+                bodyJson = "{}"
+            )
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    android.util.Log.d(TAG, "Presence heartbeat returned HTTP ${response.code}")
+                }
+                response.isSuccessful
+            }
+        } catch (error: Throwable) {
+            android.util.Log.d(TAG, "Presence heartbeat skipped: ${error.message}")
+            false
+        }
+    }
+
     private fun buildRequest(endpoint: String, method: String, bodyJson: String? = null, preferHeader: String? = null): Request {
         val url = if (endpoint.startsWith("http")) endpoint else "$SUPABASE_URL/rest/v1/$endpoint"
         val builder = Request.Builder()
