@@ -83,7 +83,7 @@ object BiometricAuthManager {
         context.getSystemService(KeyguardManager::class.java)?.isDeviceSecure == true
 
     fun isScreenSecurityEnabled(context: Context): Boolean =
-        getPrefs(context).getBoolean(KEY_SCREEN_SECURITY_ENABLED, true)
+        getPrefs(context).getBoolean(KEY_SCREEN_SECURITY_ENABLED, false)
 
     fun setScreenSecurityEnabled(context: Context, enabled: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_SCREEN_SECURITY_ENABLED, enabled).apply()
