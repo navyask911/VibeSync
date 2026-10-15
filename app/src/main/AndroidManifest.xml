@@ -85,6 +85,19 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="vibesync.app" android:pathPrefix="/g/" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="vibesync" android:host="group" />
+            </intent-filter>
+
             <!-- VibeSync Custom Deep Link Scheme for Venues & QR Stickers -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

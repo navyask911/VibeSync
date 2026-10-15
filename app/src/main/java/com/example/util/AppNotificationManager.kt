@@ -1423,4 +1423,72 @@ object AppNotificationManager {
             null
         }
     }
+
+
+    /** Group notifications use the group title and a distinct Person identity/icon for each sender. */
+    @SuppressLint("MissingPermission")
+    fun showGroupMessageNotification(
+        context: Context,
+        groupId: String,
+        groupTitle: String,
+        senderId: String,
+        senderName: String,
+        messageText: String,
+        messageTimestamp: Long = System.currentTimeMillis()
+    ) {
+        if (!hasNotificationPermission(context) || groupId.isBlank() || messageText.isBlank()) return
+        val appContext = context.applicationContext
+        if (isAppInForeground && activeChatMatchId.equals(groupId, ignoreCase = true)) return
+        val title = groupTitle.ifBlank { "VibeSync group" }
+        val sender = senderName.ifBlank { "VibeSync member" }
+        val conversationKey = "group:$groupId"
+        val notificationId = (conversationKey.hashCode() and 0x7fffffff).coerceAtLeast(1)
+        val senderPerson = Person.Builder()
+            .setName(sender)
+            .setKey(senderId.ifBlank { sender })
+            .setIcon(initialsIcon(sender))
+            .build()
+        val currentUser = Person.Builder().setName("You").setKey("current_user").build()
+        val style = NotificationCompat.MessagingStyle(currentUser)
+            .setConversationTitle(title)
+            .setGroupConversation(true)
+            .addMessage(NotificationCompat.MessagingStyle.Message(messageText, messageTimestamp, senderPerson))
+        val intent = Intent(appContext, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_NOTIFICATION_TYPE, "GROUP_CHAT")
+            putExtra(EXTRA_TARGET_ID, groupId)
+            putExtra(EXTRA_TARGET_NAME, title)
+            putExtra(EXTRA_CONVERSATION_ID, groupId)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            appContext, notificationId, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(appContext, CHANNEL_ID_CHAT_MESSAGES)
+            .setSmallIcon(android.R.drawable.sym_def_app_icon)
+            .setContentTitle(title)
+            .setContentText("$sender: $messageText")
+            .setStyle(style)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setColor(VIBESYNC_TEAL_COLOR)
+            .setGroup(CHAT_NOTIFICATION_GROUP_KEY)
+            .setOnlyAlertOnce(false)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+        conversationSummaries[conversationKey] = ConversationSummary(
+            conversationId = conversationKey,
+            title = title,
+            snippet = "$sender: ${messageText.take(140)}",
+            updatedAt = messageTimestamp
+        )
+        try {
+            NotificationManagerCompat.from(appContext).notify(notificationId, notification)
+            CoroutineScope(Dispatchers.IO).launch { runCatching { postChatGroupSummary(appContext) } }
+        } catch (failure: SecurityException) {
+            Log.w(TAG, "Group notification permission was revoked.", failure)
+        }
+    }
+
 }

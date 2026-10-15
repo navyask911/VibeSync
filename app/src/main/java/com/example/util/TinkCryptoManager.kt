@@ -616,4 +616,61 @@ object TinkCryptoManager {
             ""
         }
     }
+
+
+    /** Group ciphertext is recipient-specific and bound to group, message and participant identities. */
+    fun encryptGroupPayloadForRecipientOrThrow(
+        recipientPublicKeysetJson: String, rawText: String, groupId: String, messageId: String,
+        senderProfileId: String, recipientProfileId: String
+    ): String {
+        require(recipientPublicKeysetJson.isNotBlank()) { "Recipient group public key is missing." }
+        require(rawText.isNotBlank()) { "Cannot encrypt an empty group message." }
+        val aad = groupAssociatedData(groupId, messageId, senderProfileId, recipientProfileId)
+        initTink()
+        try {
+            val handle = CleartextKeysetHandle.read(JsonKeysetReader.withString(recipientPublicKeysetJson.trim()))
+            val ciphertext = handle.getPrimitive(HybridEncrypt::class.java)
+                .encrypt(rawText.toByteArray(Charsets.UTF_8), aad)
+            check(ciphertext.isNotEmpty()) { "Tink returned an empty group ciphertext." }
+            return "${TINK_PREFIX}${encodeCiphertextEnvelope(ciphertext, getPublicKeyMetadata(recipientPublicKeysetJson))}"
+        } catch (failure: Throwable) {
+            throw TinkEncryptionException(
+                "Group Tink encryption failed for recipient ${recipientProfileId.take(8)}: ${failure.javaClass.simpleName}",
+                failure
+            )
+        }
+    }
+
+    /** Decrypt only if group/message/sender/recipient match the original AEAD context. */
+    fun decryptGroupPayload(
+        context: Context, payload: String, groupId: String, messageId: String,
+        senderProfileId: String, recipientProfileId: String
+    ): String {
+        if (!payload.startsWith(TINK_PREFIX)) return ""
+        require(recipientProfileId.isNotBlank()) { "Current recipient profile is required." }
+        val handle = getOrCreateMyKeysetHandle(context) ?: return ""
+        return try {
+            val parsed = parseCiphertextEnvelope(payload)
+            val aad = groupAssociatedData(groupId, messageId, senderProfileId, recipientProfileId)
+            val plaintext = handle.getPrimitive(HybridDecrypt::class.java).decrypt(parsed.ciphertextBytes, aad)
+            String(plaintext, Charsets.UTF_8)
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Group ciphertext rejected by Tink authentication: ${failure.javaClass.simpleName}.")
+            ""
+        }
+    }
+
+    private fun groupAssociatedData(
+        groupId: String, messageId: String, senderProfileId: String, recipientProfileId: String
+    ): ByteArray {
+        val group = groupId.trim()
+        val message = messageId.trim()
+        val sender = senderProfileId.trim()
+        val recipient = recipientProfileId.trim()
+        require(group.isNotBlank() && message.isNotBlank() && sender.isNotBlank() && recipient.isNotBlank()) {
+            "Group AEAD context requires group, message, sender and recipient IDs."
+        }
+        return "vibesync-group-v1|$group|$message|$sender|$recipient".toByteArray(Charsets.UTF_8)
+    }
+
 }

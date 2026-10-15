@@ -16,6 +16,29 @@ object DeepLinkManager {
     private val _pendingBusinessId = MutableStateFlow<String?>(null)
     val pendingBusinessId: StateFlow<String?> = _pendingBusinessId.asStateFlow()
 
+    private val _pendingGroupInviteCode = MutableStateFlow<String?>(null)
+    val pendingGroupInviteCode: StateFlow<String?> = _pendingGroupInviteCode.asStateFlow()
+
+    fun consumePendingGroupInviteCode() {
+        _pendingGroupInviteCode.value = null
+    }
+
+    fun parseGroupInviteUri(uri: Uri?): String? {
+        if (uri == null) return null
+        val scheme = uri.scheme?.lowercase().orEmpty()
+        val host = uri.host?.lowercase().orEmpty()
+        val segments = uri.pathSegments
+        if (scheme in setOf("https", "http") && host == "vibesync.app" &&
+            segments.size == 2 && segments[0] == "g") {
+            return segments[1].trim().takeIf { it.matches(Regex("^[A-Za-z0-9_-]{16,128}$")) }
+        }
+        if (scheme == "vibesync" && host == "group") {
+            return (uri.getQueryParameter("code") ?: uri.getQueryParameter("invite"))?.trim()
+                ?.takeIf { it.matches(Regex("^[A-Za-z0-9_-]{16,128}$")) }
+        }
+        return null
+    }
+
     fun setPendingBusinessId(id: String?) {
         _pendingBusinessId.value = id
     }
@@ -67,5 +90,6 @@ object DeepLinkManager {
     fun handleIncomingUri(uri: Uri?) {
         parseChatDeepLinkUri(uri)?.let { _pendingChatProfileId.value = it }
         parseDeepLinkUri(uri)?.let { _pendingBusinessId.value = it }
+        parseGroupInviteUri(uri)?.let { _pendingGroupInviteCode.value = it }
     }
 }

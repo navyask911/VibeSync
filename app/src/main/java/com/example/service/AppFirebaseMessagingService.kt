@@ -88,6 +88,16 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
         if (remoteMessage.data.isNotEmpty()) {
             val data = remoteMessage.data
             val type = data["type"] ?: "MESSAGE"
+            if (type.equals("GROUP_CHAT_SYNC_WAKEUP", ignoreCase = true)) {
+                val groupId = data["group_id"].orEmpty().trim()
+                if (groupId.isNotBlank()) {
+                    GroupMessageSyncWorker.enqueue(applicationContext, groupId)
+                    Log.i(TAG, "Durable group message sync enqueued for group $groupId.")
+                } else {
+                    Log.w(TAG, "Ignored group-chat wakeup without group_id.")
+                }
+                return
+            }
             val senderOrMatchId = data["sender_id"] ?: data["match_id"] ?: "user_remote"
             val name = data["name"] ?: data["sender_name"] ?: "VibeSync Match"
             val text = data["text"] ?: data["message"] ?: data["body"] ?: "New notification"

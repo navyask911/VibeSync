@@ -1,5 +1,7 @@
 package com.example.ui.screens
 
+import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -73,6 +75,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -103,6 +106,9 @@ import com.example.ui.theme.VibeSyncUnreadBadge
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import com.example.util.GroupMessagingManager
 
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
@@ -222,12 +228,45 @@ private fun MatchesChatScreenContent(
     // Connect-first chat filters: All, Unread, Contacts, Groups, Connect
     var selectedFilter by remember { mutableStateOf("All") }
 
-    // Groups are data-driven; do not render hardcoded demo conversations.
+    // Restore only server-backed groups and refresh membership/pin/mute state while the list is visible.
     var groups by remember { mutableStateOf(emptyList<GroupModel>()) }
     var activeGroup by remember { mutableStateOf<GroupModel?>(null) }
     var showCreateGroupDialog by remember { mutableStateOf(false) }
+    var groupLoadError by remember { mutableStateOf<String?>(null) }
+    val groupScope = rememberCoroutineScope()
+    LaunchedEffect(Unit) {
+        while (true) {
+            try {
+                val remoteGroups = GroupMessagingManager.fetchMyGroups()
+                groups = remoteGroups.map { remote -> GroupModel.fromRemote(remote) }
+                groupLoadError = null
+            } catch (failure: Throwable) {
+                groupLoadError = failure.message ?: "Group list refresh failed."
+            }
+            delay(20_000)
+        }
+    }
 
-    if (activeGroup != null) {
+        val pendingGroupInviteCode by com.example.util.DeepLinkManager.pendingGroupInviteCode.collectAsState()
+    LaunchedEffect(pendingGroupInviteCode) {
+        val inviteCode = pendingGroupInviteCode ?: return@LaunchedEffect
+        try {
+            val groupId = GroupMessagingManager.joinByInvite(inviteCode)
+            com.example.util.DeepLinkManager.consumePendingGroupInviteCode()
+            val remote = GroupMessagingManager.fetchMyGroups().firstOrNull { it.id == groupId }
+            if (remote != null) {
+                val roster = GroupMessagingManager.fetchGroupMembers(groupId)
+                val joinedGroup = GroupModel.fromRemote(remote, roster)
+                groups = listOf(joinedGroup) + groups.filterNot { it.id == joinedGroup.id }
+                activeGroup = joinedGroup
+            }
+        } catch (failure: Throwable) {
+            com.example.util.DeepLinkManager.consumePendingGroupInviteCode()
+            Toast.makeText(context, failure.message ?: "This group invite is invalid or has been revoked.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+if (activeGroup != null) {
         GroupChatScreen(
             group = activeGroup!!,
             myUserName = "You",
@@ -515,7 +554,7 @@ private fun MatchesChatScreenContent(
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("Create New Group", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = RomanticViolet)
-                                Text("Add friends & contacts for group chat, voice & video calls", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Create a private, end-to-end encrypted group chat", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = RomanticViolet)
                         }
@@ -546,7 +585,7 @@ private fun MatchesChatScreenContent(
                                 modifier = Modifier.size(48.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
-                                    Text(group.emoji, fontSize = 24.sp)
+                                    if (group.avatarUrl.isNotBlank()) { com.example.ui.components.DatingAvatar(name = group.name, emoji = group.emoji, colorStart = 0xFF7754AAL, colorEnd = 0xFFAA5599L, size = 48.dp, avatarUrl = group.avatarUrl) } else Text(group.emoji, fontSize = 24.sp)
                                 }
                             }
 
@@ -603,7 +642,7 @@ private fun MatchesChatScreenContent(
                                 Spacer(modifier = Modifier.height(2.dp))
 
                                 Text(
-                                    text = "${group.members.size} members • Voice & Video call ready 📞📹",
+                                    text = "${group.memberCount} members • ${if (group.isPinned) "Pinned" else "Private group"}",
                                     fontSize = 10.sp,
                                     color = LikeGreen,
                                     fontWeight = FontWeight.Medium
@@ -972,30 +1011,54 @@ private fun MatchesChatScreenContent(
             )
         }
 
+        if (groupLoadError != null && selectedFilter == "Groups" && groups.isEmpty()) {
+            Text(
+                text = "Unable to load groups: ${groupLoadError}",
+                modifier = Modifier.align(Alignment.TopCenter).padding(12.dp),
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+
         if (showCreateGroupDialog) {
-            val availableMembers = remember(phonebookContacts, matches) {
-                val names = mutableListOf("Aarav", "Priya", "Vikram", "Ananya", "Rohan", "Sneha")
-                names.addAll(phonebookContacts.map { it.name })
-                names.distinct()
+            val memberProfileIdsByName = remember(phonebookContacts, profiles, profileMap.toMap()) {
+                val map = linkedMapOf<String, String>()
+                (profiles + profileMap.values.toList()).forEach { profile ->
+                    val display = profile.name.trim()
+                    if (display.isNotBlank() && profile.id.isNotBlank()) map[display] = profile.id
+                }
+                phonebookContacts.forEach { contact ->
+                    val id = contact.vibeSyncProfileId?.trim().orEmpty()
+                        .ifBlank { contact.vibeSyncUser?.id?.trim().orEmpty() }
+                    val display = contact.name.trim()
+                    if (display.isNotBlank() && id.isNotBlank()) map[display] = id
+                }
+                map
             }
+            val availableMembers = memberProfileIdsByName.keys.toList().sorted()
             CreateGroupDialog(
                 availableMembers = availableMembers,
+                memberProfileIdsByName = memberProfileIdsByName,
                 onDismiss = { showCreateGroupDialog = false },
-                onCreateGroup = { name, desc, emoji, members ->
-                    val newGroup = GroupModel(
-                        id = java.util.UUID.randomUUID().toString(),
-                        name = name,
-                        description = desc,
-                        emoji = emoji,
-                        adminName = "You",
-                        members = listOf("You") + members,
-                        lastMessage = "Group created",
-                        lastMessageTime = System.currentTimeMillis(),
-                        unreadCount = 0
-                    )
-                    groups = listOf(newGroup) + groups
+                onCreateGroup = { name, desc, emoji, members, avatarUri ->
                     showCreateGroupDialog = false
-                    activeGroup = newGroup
+                    groupScope.launch {
+                        try {
+                            val memberIds = members.mapNotNull { memberProfileIdsByName[it] }.distinct()
+                            val created = GroupMessagingManager.createGroup(name, desc, memberIds).getOrThrow()
+                            val uploadedAvatar = if (avatarUri != null) {
+                                GroupMessagingManager.uploadGroupAvatar(context, created.id, avatarUri).getOrNull()
+                            } else null
+                            val remote = GroupMessagingManager.fetchMyGroups().firstOrNull { it.id == created.id }
+                                ?: created.copy(avatarUrl = uploadedAvatar ?: created.avatarUrl)
+                            val roster = GroupMessagingManager.fetchGroupMembers(created.id)
+                            val model = GroupModel.fromRemote(remote, roster)
+                            groups = listOf(model) + groups.filterNot { it.id == model.id }
+                            activeGroup = model
+                        } catch (failure: Throwable) {
+                            Toast.makeText(context, failure.message ?: "Group could not be created.", Toast.LENGTH_LONG).show()
+                        }
+                    }
                 }
             )
         }
