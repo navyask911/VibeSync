@@ -10,7 +10,7 @@ language sql
 stable
 security definer
 set search_path = pg_catalog, public
-as $
+as $vibesync_session_check$
   select exists (
     select 1
     from public.vibesync_sessions as s
@@ -21,7 +21,7 @@ as $
       and s.profile_id = public.vibesync_jwt_profile_id()
       and s.expires_at > now()
   );
-$;
+$vibesync_session_check$;
 
 revoke all on function public.vibesync_jwt_session_active() from public, anon;
 grant execute on function public.vibesync_jwt_session_active() to authenticated, service_role;
@@ -35,7 +35,7 @@ returns trigger
 language plpgsql
 security invoker
 set search_path = pg_catalog, public
-as $$
+as $vibesync_story_trigger$
 declare
   active_profile_id text := public.vibesync_jwt_profile_id();
   server_now_ms bigint := ((extract(epoch from statement_timestamp()) * 1000)::bigint);
@@ -54,7 +54,7 @@ begin
   new."expiresAt" := server_now_ms + 86400000;
   return new;
 end;
-$$;
+$vibesync_story_trigger$;
 
 drop trigger if exists trg_status_story_owner_timestamps on public.status_stories;
 create trigger trg_status_story_owner_timestamps
