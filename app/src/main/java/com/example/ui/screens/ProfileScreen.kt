@@ -71,6 +71,7 @@ fun ProfileScreen(
     onUpdatePhoneNumber: (String) -> Unit = {},
     onSyncFrontLoginToBackend: () -> Unit = {},
     onRefreshAllSettings: () -> Unit = {},
+    onBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val prefs = preferences ?: UserPreferencesEntity()
@@ -136,6 +137,13 @@ fun ProfileScreen(
                     fontSize = 20.sp,
                     color = MaterialTheme.colorScheme.onSurface
                 )
+            },
+            navigationIcon = {
+                onBack?.let { back ->
+                    IconButton(onClick = back) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back to VibeSync")
+                    }
+                }
             },
             actions = {
                 Surface(

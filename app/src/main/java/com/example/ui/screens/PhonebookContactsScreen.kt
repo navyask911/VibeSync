@@ -423,16 +423,7 @@ fun PhonebookContactsScreen(
                 HorizontalDivider(thickness = 0.5.dp, modifier = Modifier.padding(horizontal = 16.dp))
             }
 
-            item {
-                Text(
-                    "${java.text.NumberFormat.getIntegerInstance(java.util.Locale.US).format(contacts.size)} Total Contacts",
-                    modifier = Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 4.dp),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            // SECTION 1: PHONEBOOK CONTACTS
+            // SECTION 1: CONTACTS ON VIBESYNC
             item {
                 Row(
                     modifier = Modifier
@@ -442,7 +433,7 @@ fun PhonebookContactsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Phonebook Contacts (${onVibeSyncContacts.size})",
+                        text = "CONTACTS ON VIBESYNC (${onVibeSyncContacts.size})",
                         style = MaterialTheme.typography.labelMedium.copy(
                             fontWeight = FontWeight.Bold,
                             color = VibeSyncTeal,
@@ -494,7 +485,7 @@ fun PhonebookContactsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Invitations (${inviteContacts.size})",
+                        text = "INVITE TO VIBESYNC (${inviteContacts.size})",
                         style = MaterialTheme.typography.labelMedium.copy(
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -557,7 +548,7 @@ private fun ContactOnVibeSyncItem(
                 emoji = contact.avatarEmoji.ifBlank { "👤" },
                 colorStart = 0xFF00A884,
                 colorEnd = 0xFF128C7E,
-                size = 48.dp,
+                size = 46.dp,
                 avatarUrl = contactPhoto,
                 avatarCacheVersion = contact.vibeSyncUser?.avatarCacheVersion ?: 0L
             )
@@ -656,14 +647,18 @@ private fun ContactToInviteItem(
         verticalAlignment = Alignment.CenterVertically
     ) {
         // Avatar placeholder
-        DatingAvatar(
-            name = contact.name.ifBlank { "Contact" },
-            emoji = "👤",
-            colorStart = 0xFF00A884,
-            colorEnd = 0xFF128C7E,
-            size = 48.dp,
-            avatarUrl = contact.photoUrl
-        )
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier.size(46.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    text = contact.avatarEmoji.ifBlank { "👤" },
+                    fontSize = 20.sp
+                )
+            }
+        }
 
         Spacer(modifier = Modifier.width(14.dp))
 

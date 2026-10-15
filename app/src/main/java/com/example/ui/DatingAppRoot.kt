@@ -97,6 +97,7 @@ import com.example.ui.components.InviteToVibeSyncDialog
 import com.example.ui.components.MandatoryPermissionsDialog
 import com.example.ui.components.MatchCelebrationDialog
 import com.example.ui.components.MpinSetupDialog
+import com.example.ui.components.NetworkSyncStatusBanner
 import com.example.ui.components.NetworkConnectivityOverlay
 import com.example.ui.components.OutgoingFriendshipDialog
 import com.example.ui.components.OutgoingLikeDialog
@@ -180,6 +181,7 @@ fun DatingAppRoot(
     val isPartnerTyping by viewModel.isPartnerTyping.collectAsStateWithLifecycle()
     val selectedDetail by viewModel.selectedProfileDetail.collectAsStateWithLifecycle()
     val activeReportProfile by viewModel.activeReportProfile.collectAsStateWithLifecycle()
+    val networkState by viewModel.networkState.collectAsStateWithLifecycle()
 
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     val syncContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
@@ -251,7 +253,6 @@ fun DatingAppRoot(
     val pendingDeepLinkChatProfileId by com.example.util.DeepLinkManager.pendingChatProfileId.collectAsStateWithLifecycle()
     var showInteractionsModal by remember { mutableStateOf(false) }
     var showSettingsScreen by remember { mutableStateOf(false) }
-    var showSettingsMenu by remember { mutableStateOf(false) }
     var showNoteToSelf by remember { mutableStateOf(false) }
 
     LaunchedEffect(showPhonebookScreen) {
@@ -410,7 +411,7 @@ fun DatingAppRoot(
 
     // Automatically fetch and update Stories when user opens the Stories tab
     LaunchedEffect(pagerState.currentPage) {
-        if (pagerState.currentPage == 2) {
+        if (pagerState.currentPage == 1) {
             viewModel.fetchMutualFriendsStories()
         }
     }
@@ -419,7 +420,7 @@ fun DatingAppRoot(
         showSettingsScreen = false
     }
 
-    // System Back Handler for Main Bottom Navigation Tabs (any tab -> Connect)
+    // System Back Handler for Main Bottom Navigation Tabs (any non-Chat tab -> Chat)
     BackHandler(
         enabled = isLoggedIn && isMpinUnlocked && isProfileCompleted && !isAnyOverlayOpen && !showFaceVerification && pagerState.currentPage != 0
     ) {
@@ -582,73 +583,6 @@ fun DatingAppRoot(
     } else {
         Scaffold(
         modifier = Modifier.fillMaxSize(),
-        topBar = {
-            // Shared and pinned app chrome for all four main destinations.
-            Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 3.dp) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .windowInsetsPadding(WindowInsets.statusBars)
-                        .padding(horizontal = 14.dp, vertical = 7.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        modifier = Modifier.combinedClickable(
-                            onClick = { showSettingsScreen = false; coroutineScope.launch { pagerState.animateScrollToPage(0) } },
-                            onLongClick = { openAdminWebPortal(context) }
-                        ),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Image(
-                            painter = androidx.compose.ui.res.painterResource(id = com.example.R.drawable.ic_launcher_foreground),
-                            contentDescription = "VibeSync logo",
-                            modifier = Modifier.size(30.dp)
-                        )
-                        androidx.compose.foundation.layout.Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = "VibeSync",
-                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.testTag("app_logo_global")
-                        )
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = { showInteractionsModal = true }, modifier = Modifier.size(38.dp).testTag("btn_global_interactions")) {
-                            Icon(Icons.Default.Groups, contentDescription = "Requests and interactions", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        IconButton(
-                            onClick = {
-                                viewModel.refreshAllSettingsAndBackend()
-                                viewModel.loadPhonebookContacts(forceRefresh = true, forceNetwork = true)
-                                viewModel.refreshFriendshipRequestsFromSupabase()
-                                viewModel.fetchMutualFriendsStories()
-                                viewModel.restoreUserBusinesses()
-                            },
-                            modifier = Modifier.size(38.dp).clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primaryContainer)
-                                .testTag("btn_resync_all_top")
-                        ) {
-                            Icon(Icons.Default.Refresh, contentDescription = "Refresh and resync data", tint = MaterialTheme.colorScheme.onPrimaryContainer)
-                        }
-                        Box {
-                            IconButton(onClick = { showSettingsMenu = true }, modifier = Modifier.size(38.dp).testTag("btn_global_overflow")) {
-                                Icon(Icons.Default.MoreVert, contentDescription = "Settings menu", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            DropdownMenu(expanded = showSettingsMenu, onDismissRequest = { showSettingsMenu = false }) {
-                                DropdownMenuItem(
-                                    text = { Text("Settings") },
-                                    onClick = {
-                                        showSettingsMenu = false
-                                        showSettingsScreen = true
-                                    }
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
             if (activeChat == null && !showSettingsScreen) {
@@ -661,40 +595,43 @@ fun DatingAppRoot(
                         .padding(horizontal = 12.dp, vertical = 4.dp).height(58.dp)
                         .clip(RoundedCornerShape(24.dp)).testTag("dating_bottom_nav")
                 ) {
+                    val unreadCount = matches.count { it.hasUnread }
                     NavigationBarItem(
                         selected = currentTab == 0,
                         onClick = { coroutineScope.launch { pagerState.animateScrollToPage(0) } },
-                        icon = { Icon(if (currentTab == 0) Icons.Default.Groups else Icons.Outlined.Groups, contentDescription = "Connect", modifier = Modifier.size(24.dp)) },
-                        label = { Text("Connect", fontSize = 11.sp, fontWeight = if (currentTab == 0) FontWeight.Bold else FontWeight.Normal) },
+                        icon = { BadgedBox(badge = { if (unreadCount > 0) Badge(containerColor = VibeSyncUnreadBadge) { Text("$unreadCount") } }) {
+                            Icon(if (currentTab == 0) Icons.Default.Chat else Icons.Outlined.Chat, contentDescription = "Chat", modifier = Modifier.size(24.dp))
+                        } },
+                        label = { Text("Chat", fontSize = 11.sp, fontWeight = if (currentTab == 0) FontWeight.Bold else FontWeight.Normal) },
                         colors = NavigationBarItemDefaults.colors(selectedIconColor = MaterialTheme.colorScheme.primary, selectedTextColor = MaterialTheme.colorScheme.primary, indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
-                        modifier = Modifier.testTag("tab_connect")
+                        modifier = Modifier.testTag("tab_chats")
                     )
-                    val unreadCount = matches.count { it.hasUnread }
                     NavigationBarItem(
                         selected = currentTab == 1,
                         onClick = { coroutineScope.launch { pagerState.animateScrollToPage(1) } },
-                        icon = { BadgedBox(badge = { if (unreadCount > 0) Badge(containerColor = VibeSyncUnreadBadge) { Text("$unreadCount") } }) {
-                            Icon(if (currentTab == 1) Icons.Default.Chat else Icons.Outlined.Chat, contentDescription = "Messages", modifier = Modifier.size(24.dp))
-                        } },
-                        label = { Text("Messages", fontSize = 11.sp, fontWeight = if (currentTab == 1) FontWeight.Bold else FontWeight.Normal) },
-                        colors = NavigationBarItemDefaults.colors(selectedIconColor = MaterialTheme.colorScheme.primary, selectedTextColor = MaterialTheme.colorScheme.primary, indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
-                        modifier = Modifier.testTag("tab_messages")
-                    )
-                    NavigationBarItem(
-                        selected = currentTab == 2,
-                        onClick = { coroutineScope.launch { pagerState.animateScrollToPage(2) } },
-                        icon = { Icon(if (currentTab == 2) Icons.Default.DonutLarge else Icons.Outlined.DonutLarge, contentDescription = "Stories", modifier = Modifier.size(24.dp)) },
-                        label = { Text("Stories", fontSize = 11.sp, fontWeight = if (currentTab == 2) FontWeight.Bold else FontWeight.Normal) },
+                        icon = { Icon(if (currentTab == 1) Icons.Default.DonutLarge else Icons.Outlined.DonutLarge, contentDescription = "Stories", modifier = Modifier.size(24.dp)) },
+                        label = { Text("Stories", fontSize = 11.sp, fontWeight = if (currentTab == 1) FontWeight.Bold else FontWeight.Normal) },
                         colors = NavigationBarItemDefaults.colors(selectedIconColor = MaterialTheme.colorScheme.primary, selectedTextColor = MaterialTheme.colorScheme.primary, indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
                         modifier = Modifier.testTag("tab_status")
                     )
                     NavigationBarItem(
+                        selected = currentTab == 2,
+                        onClick = { coroutineScope.launch { pagerState.animateScrollToPage(2) } },
+                        icon = { BadgedBox(badge = { val totalFriendsNotifications = pendingFriendRequests.size
+                            if (totalFriendsNotifications > 0) Badge(containerColor = MaterialTheme.colorScheme.primary) { Text("$totalFriendsNotifications") } }) {
+                            Icon(if (currentTab == 2) Icons.Default.Groups else Icons.Outlined.Groups, contentDescription = "Connect", modifier = Modifier.size(24.dp))
+                        } },
+                        label = { Text("Connect", fontSize = 11.sp, fontWeight = if (currentTab == 2) FontWeight.Bold else FontWeight.Normal) },
+                        colors = NavigationBarItemDefaults.colors(selectedIconColor = MaterialTheme.colorScheme.primary, selectedTextColor = MaterialTheme.colorScheme.primary, indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
+                        modifier = Modifier.testTag("tab_connect")
+                    )
+                    NavigationBarItem(
                         selected = currentTab == 3,
                         onClick = { coroutineScope.launch { pagerState.animateScrollToPage(3) } },
-                        icon = { Icon(if (currentTab == 3) Icons.Default.Person else Icons.Outlined.Person, contentDescription = "Contacts", modifier = Modifier.size(24.dp)) },
-                        label = { Text("Contacts", fontSize = 11.sp, fontWeight = if (currentTab == 3) FontWeight.Bold else FontWeight.Normal) },
+                        icon = { Icon(if (currentTab == 3) Icons.Default.Explore else Icons.Outlined.Explore, contentDescription = "Find", modifier = Modifier.size(24.dp)) },
+                        label = { Text("Find", fontSize = 11.sp, fontWeight = if (currentTab == 3) FontWeight.Bold else FontWeight.Normal) },
                         colors = NavigationBarItemDefaults.colors(selectedIconColor = MaterialTheme.colorScheme.primary, selectedTextColor = MaterialTheme.colorScheme.primary, indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
-                        modifier = Modifier.testTag("tab_contacts")
+                        modifier = Modifier.testTag("tab_find")
                     )
                 }
             }
@@ -707,93 +644,87 @@ fun DatingAppRoot(
         ) {
             if (showSettingsScreen) {
                 ProfileScreen(
-            preferences = preferences,
-            onUpdatePreferences = { viewModel.updatePreferences(it) },
-            onToggleProfileLock = { viewModel.toggleProfileLock(it) },
-            onResetData = { viewModel.resetAllData() },
-            onDeleteAccount = { viewModel.deleteAccount() },
-            onOpenAdminPortal = { openAdminWebPortal(context) },
-            onLogout = { viewModel.logout() },
-            superLikesCount = superLikesCount,
-            isSpotlightActive = isSpotlightActive,
-            onSyncCloudBackup = { email, phrase -> viewModel.syncGoogleCloudBackupNow(email = email, encryptionPassphrase = phrase) },
-            onRestoreCloudBackup = { email, phrase -> viewModel.restoreFromGoogleCloudBackup(email = email, encryptionPassphrase = phrase) },
-            onUpdateSchedule = { freq, wifiOnly -> viewModel.updateBackupScheduleSettings(freq, wifiOnly) },
-            isBackupInProgress = isBackupInProgress,
-            isRestoreInProgress = isRestoreInProgress,
-            onOpenMpinSetup = { viewModel.openMpinSetupPrompt() },
-            onSetMpin = { pin -> viewModel.updateMpin(pin) },
-            onTriggerFaceVerification = { viewModel.triggerFaceVerification() },
-            onOpenFriendsList = { viewModel.openFriendsList() },
-            onOpenChat = { targetId -> viewModel.startChatWithProfile(targetId) },
-            acceptedFriends = acceptedFriends,
-            mutualFriendsMap = mutualFriendsMap,
-            allProfiles = allAdminProfiles,
-            onUnbanProfile = { id -> viewModel.unbanProfile(id) },
-            onToggleHideFriends = { hide -> viewModel.toggleHideFriendsList(hide) },
-            onRefreshLiveLocation = { viewModel.refreshLiveLocation() },
-            onUpdatePhoneNumber = { verifiedPhone -> viewModel.updateVerifiedPhoneNumber(verifiedPhone) },
-            onSyncFrontLoginToBackend = { viewModel.syncFrontLoginToBackendProfile(context) },
-            onRefreshAllSettings = { viewModel.refreshAllSettingsAndBackend() }
-        )
+                    preferences = preferences,
+                    onBack = { showSettingsScreen = false },
+                    onUpdatePreferences = { viewModel.updatePreferences(it) },
+                    onToggleProfileLock = { viewModel.toggleProfileLock(it) },
+                    onResetData = { viewModel.resetAllData() },
+                    onDeleteAccount = { viewModel.deleteAccount() },
+                    onOpenAdminPortal = { openAdminWebPortal(context) },
+                    onLogout = { viewModel.logout() },
+                    superLikesCount = superLikesCount,
+                    isSpotlightActive = isSpotlightActive,
+                    onSyncCloudBackup = { email, phrase -> viewModel.syncGoogleCloudBackupNow(email = email, encryptionPassphrase = phrase) },
+                    onRestoreCloudBackup = { email, phrase -> viewModel.restoreFromGoogleCloudBackup(email = email, encryptionPassphrase = phrase) },
+                    onUpdateSchedule = { freq, wifiOnly -> viewModel.updateBackupScheduleSettings(freq, wifiOnly) },
+                    isBackupInProgress = isBackupInProgress,
+                    isRestoreInProgress = isRestoreInProgress,
+                    onOpenMpinSetup = { viewModel.openMpinSetupPrompt() },
+                    onSetMpin = { pin -> viewModel.updateMpin(pin) },
+                    onTriggerFaceVerification = { viewModel.triggerFaceVerification() },
+                    onOpenFriendsList = { viewModel.openFriendsList() },
+                    onOpenChat = { targetId -> viewModel.startChatWithProfile(targetId) },
+                    acceptedFriends = acceptedFriends,
+                    mutualFriendsMap = mutualFriendsMap,
+                    allProfiles = allAdminProfiles,
+                    onUnbanProfile = { id -> viewModel.unbanProfile(id) },
+                    onToggleHideFriends = { hide -> viewModel.toggleHideFriendsList(hide) },
+                    onRefreshLiveLocation = { viewModel.refreshLiveLocation() },
+                    onUpdatePhoneNumber = { verifiedPhone -> viewModel.updateVerifiedPhoneNumber(verifiedPhone) },
+                    onSyncFrontLoginToBackend = { viewModel.syncFrontLoginToBackendProfile(context) },
+                    onRefreshAllSettings = { viewModel.refreshAllSettingsAndBackend() }
+                )
             } else {
-            HorizontalPager(
-                state = pagerState,
-                modifier = Modifier.fillMaxSize().weight(1f),
-                userScrollEnabled = true,
-                beyondViewportPageCount = 1
-            ) { page ->
-                when (page) {
-                    0 -> DiscoverScreen(
-                        candidates = candidates,
-                        viewModel = viewModel,
-                        onSwipe = { profileId, dir -> viewModel.swipe(profileId, dir) },
-                        onRewind = { viewModel.rewind() },
-                        onOpenProfileDetail = { viewModel.openProfileDetail(it) },
-                        onOpenFilters = {},
-                        onOpenAdmin = { openAdminWebPortal(context) },
-                        onResetData = { viewModel.resetAllData() },
-                        mutualFriendsMap = mutualFriendsMap,
-                        onOpenInteractionsModal = { showInteractionsModal = true },
-                        onOpenReviewRequest = { viewModel.openFriendRequestReview(it) },
-                        userPreferences = preferences,
-                        onUpdatePreferences = { viewModel.updatePreferences(it) }
-                    )
-                    1 -> MatchesChatScreen(
-                        matches = matches,
-                        profiles = allProfiles,
-                        phonebookContacts = phonebookContacts,
-                        onOpenChat = { match, profile -> BiometricPromptHelper.verifyBeforeEnteringChat(context = context, contextName = profile.name, onVerified = { viewModel.openChat(match, profile) }) },
-                        getProfileSync = { id -> viewModel.getProfileSync(id) },
-                        onOpenPhonebook = { coroutineScope.launch { pagerState.animateScrollToPage(3) } },
-                        onSelectChatContact = { contact -> viewModel.startChatWithContact(contact) },
-                        onInviteContact = { contact -> viewModel.openInviteContactDialog(contact) },
-                        onRefreshContacts = { viewModel.loadPhonebookContacts(forceRefresh = true) },
-                        onOpenProfile = {},
-                        onOpenAdmin = { openAdminWebPortal(context) },
-                        onOpenInteractionsModal = { showInteractionsModal = true },
-                        onOpenProfileDetail = { viewModel.openProfileDetail(it) },
-                        currentUserName = noteToSelfDisplayName,
-                        onOpenNoteToSelf = { showNoteToSelf = true }
-                    )
-                    2 -> StatusStoriesScreen(viewModel = viewModel)
-                    3 -> PhonebookContactsScreen(
-                        contacts = phonebookContacts,
-                        isSyncing = isPhonebookSyncing,
-                        onSelectChatContact = { contact -> viewModel.startChatWithContact(contact) },
-                        onInviteContact = { contact -> viewModel.openInviteContactDialog(contact) },
-                        onRefreshContacts = { viewModel.loadPhonebookContacts(forceRefresh = true, forceNetwork = true) },
-                        onBack = { coroutineScope.launch { pagerState.animateScrollToPage(1) } },
-                        onStartChatWithNumber = { number -> viewModel.startChatWithNumber(number) },
-                        phoneNumberRequests = incomingPhoneNumberRequests,
-                        onRespondToPhoneNumberRequest = { requestId, accept -> viewModel.respondToPhoneNumberRequest(requestId, accept) }
-                    )
+                NetworkSyncStatusBanner(
+                    networkState = networkState,
+                    onRetryCheck = { viewModel.retryNetworkCheck() }
+                )
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.fillMaxSize().weight(1f),
+                    userScrollEnabled = true,
+                    beyondViewportPageCount = 2
+                ) { page ->
+                    when (page) {
+                        0 -> MatchesChatScreen(
+                            matches = matches,
+                            profiles = allProfiles,
+                            phonebookContacts = phonebookContacts,
+                            onOpenChat = { match, profile -> BiometricPromptHelper.verifyBeforeEnteringChat(context = context, contextName = profile.name, onVerified = { viewModel.openChat(match, profile) }) },
+                            getProfileSync = { id -> viewModel.getProfileSync(id) },
+                            onOpenPhonebook = { viewModel.openPhonebookScreen() },
+                            onSelectChatContact = { contact -> viewModel.startChatWithContact(contact) },
+                            onInviteContact = { contact -> viewModel.openInviteContactDialog(contact) },
+                            onRefreshContacts = { viewModel.loadPhonebookContacts() },
+                            onOpenProfile = { showSettingsScreen = true },
+                            onOpenAdmin = { openAdminWebPortal(context) },
+                            onOpenInteractionsModal = { showInteractionsModal = true },
+                            onOpenProfileDetail = { viewModel.openProfileDetail(it) },
+                            currentUserName = noteToSelfDisplayName,
+                            onOpenNoteToSelf = { showNoteToSelf = true }
+                        )
+                        1 -> StatusStoriesScreen(viewModel = viewModel)
+                        2 -> DiscoverScreen(
+                            candidates = candidates,
+                            viewModel = viewModel,
+                            onSwipe = { profileId, dir -> viewModel.swipe(profileId, dir) },
+                            onRewind = { viewModel.rewind() },
+                            onOpenProfileDetail = { viewModel.openProfileDetail(it) },
+                            onOpenFilters = { showSettingsScreen = true },
+                            onOpenAdmin = { openAdminWebPortal(context) },
+                            onResetData = { viewModel.resetAllData() },
+                            mutualFriendsMap = mutualFriendsMap,
+                            onOpenInteractionsModal = { showInteractionsModal = true },
+                            onOpenReviewRequest = { viewModel.openFriendRequestReview(it) },
+                            userPreferences = preferences,
+                            onUpdatePreferences = { viewModel.updatePreferences(it) }
+                        )
+                        3 -> com.example.ui.components.BusinessHubScreen(viewModel = viewModel, initialTab = 0)
+                    }
                 }
-            }
             }
         }
     }
-
 
     // Local-only Note to Self is intentionally separate from peer messaging, outbox and Realtime.
     AnimatedVisibility(

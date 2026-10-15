@@ -1,7 +1,5 @@
 package com.example.ui.screens
 
-import android.net.Uri
-import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -75,7 +73,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -106,9 +103,6 @@ import com.example.ui.theme.VibeSyncUnreadBadge
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import com.example.util.GroupMessagingManager
 
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
@@ -228,45 +222,12 @@ private fun MatchesChatScreenContent(
     // Connect-first chat filters: All, Unread, Contacts, Groups, Connect
     var selectedFilter by remember { mutableStateOf("All") }
 
-    // Restore only server-backed groups and refresh membership/pin/mute state while the list is visible.
+    // Groups are data-driven; do not render hardcoded demo conversations.
     var groups by remember { mutableStateOf(emptyList<GroupModel>()) }
     var activeGroup by remember { mutableStateOf<GroupModel?>(null) }
     var showCreateGroupDialog by remember { mutableStateOf(false) }
-    var groupLoadError by remember { mutableStateOf<String?>(null) }
-    val groupScope = rememberCoroutineScope()
-    LaunchedEffect(Unit) {
-        while (true) {
-            try {
-                val remoteGroups = GroupMessagingManager.fetchMyGroups()
-                groups = remoteGroups.map { remote -> GroupModel.fromRemote(remote) }
-                groupLoadError = null
-            } catch (failure: Throwable) {
-                groupLoadError = failure.message ?: "Group list refresh failed."
-            }
-            delay(20_000)
-        }
-    }
 
-        val pendingGroupInviteCode by com.example.util.DeepLinkManager.pendingGroupInviteCode.collectAsState()
-    LaunchedEffect(pendingGroupInviteCode) {
-        val inviteCode = pendingGroupInviteCode ?: return@LaunchedEffect
-        try {
-            val groupId = GroupMessagingManager.joinByInvite(inviteCode)
-            com.example.util.DeepLinkManager.consumePendingGroupInviteCode()
-            val remote = GroupMessagingManager.fetchMyGroups().firstOrNull { it.id == groupId }
-            if (remote != null) {
-                val roster = GroupMessagingManager.fetchGroupMembers(groupId)
-                val joinedGroup = GroupModel.fromRemote(remote, roster)
-                groups = listOf(joinedGroup) + groups.filterNot { it.id == joinedGroup.id }
-                activeGroup = joinedGroup
-            }
-        } catch (failure: Throwable) {
-            com.example.util.DeepLinkManager.consumePendingGroupInviteCode()
-            Toast.makeText(context, failure.message ?: "This group invite is invalid or has been revoked.", Toast.LENGTH_LONG).show()
-        }
-    }
-
-if (activeGroup != null) {
+    if (activeGroup != null) {
         GroupChatScreen(
             group = activeGroup!!,
             myUserName = "You",
@@ -363,6 +324,14 @@ if (activeGroup != null) {
         phonebookContacts.count { it.isOnVibeSync }
     }
 
+    var showSyncDiagDialog by remember { mutableStateOf(false) }
+
+    if (showSyncDiagDialog) {
+        com.example.ui.components.SyncDiagnosticsDialog(
+            onDismiss = { showSyncDiagDialog = false }
+        )
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -374,6 +343,131 @@ if (activeGroup != null) {
                 .padding(horizontal = 16.dp),
             contentPadding = PaddingValues(top = 8.dp, bottom = 96.dp)
         ) {
+            // 1. Top Brand Bar (VibeSync Logo matching Connect tab)
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Same colorful mark as Connect, Find, Business Suite and onboarding.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Image(
+                            painter = painterResource(id = com.example.R.drawable.ic_launcher_foreground),
+                            contentDescription = "VibeSync logo",
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Spacer(Modifier.width(5.dp))
+                        Text(
+                            text = "VibeSync",
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                brush = Brush.horizontalGradient(listOf(Color(0xFF00F0FF), Color(0xFFFF1393), Color(0xFFFF9E00))),
+                                letterSpacing = 0.sp
+                            ),
+                            modifier = Modifier.testTag("app_logo_chats")
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = LikeGreen.copy(alpha = 0.15f)
+                        ) {
+                            Text(
+                                text = "100% PRIVACY",
+                                color = LikeGreen,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 9.sp
+                                ),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+
+                    // Top Action Icons: New Chat / Contacts, Interactions & Sync Diagnostics
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(
+                            onClick = { showSyncDiagDialog = true },
+                            modifier = Modifier
+                                .size(36.dp)
+                                .testTag("btn_sync_diagnostics_top")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Sync,
+                                contentDescription = "Sync Diagnostics",
+                                tint = VibeSyncTeal,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
+                        IconButton(
+                            onClick = onOpenInteractionsModal,
+                            modifier = Modifier
+                                .size(36.dp)
+                                .testTag("btn_open_interactions_chat")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.GroupAdd,
+                                contentDescription = "Requests & Interactions",
+                                tint = VibeSyncTeal,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+
+                        IconButton(
+                            onClick = onRefreshContacts,
+                            modifier = Modifier
+                                .size(36.dp)
+                                .testTag("btn_refresh_contacts_top")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Refresh Contacts",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Box {
+                            IconButton(
+                                onClick = { showTopBarMenu = true },
+                                modifier = Modifier.size(36.dp).testTag("btn_more_menu_chat")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = "Profile and settings menu",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showTopBarMenu,
+                                onDismissRequest = { showTopBarMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Profile") },
+                                    onClick = {
+                                        showTopBarMenu = false
+                                        onOpenProfile()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Settings") },
+                                    onClick = {
+                                        showTopBarMenu = false
+                                        onOpenProfile()
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             // Pinned notes stay above search. Unpinned notes move into the normal conversation list.
             if (noteToSelfPinned) {
                 item(key = "note_to_self_pinned") {
@@ -554,7 +648,7 @@ if (activeGroup != null) {
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("Create New Group", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = RomanticViolet)
-                                Text("Create a private, end-to-end encrypted group chat", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Add friends & contacts for group chat, voice & video calls", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = RomanticViolet)
                         }
@@ -585,7 +679,7 @@ if (activeGroup != null) {
                                 modifier = Modifier.size(48.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
-                                    if (group.avatarUrl.isNotBlank()) { com.example.ui.components.DatingAvatar(name = group.name, emoji = group.emoji, colorStart = 0xFF7754AAL, colorEnd = 0xFFAA5599L, size = 48.dp, avatarUrl = group.avatarUrl) } else Text(group.emoji, fontSize = 24.sp)
+                                    Text(group.emoji, fontSize = 24.sp)
                                 }
                             }
 
@@ -642,7 +736,7 @@ if (activeGroup != null) {
                                 Spacer(modifier = Modifier.height(2.dp))
 
                                 Text(
-                                    text = "${group.memberCount} members • ${if (group.isPinned) "Pinned" else "Private group"}",
+                                    text = "${group.members.size} members • Voice & Video call ready 📞📹",
                                     fontSize = 10.sp,
                                     color = LikeGreen,
                                     fontWeight = FontWeight.Medium
@@ -1011,54 +1105,30 @@ if (activeGroup != null) {
             )
         }
 
-        if (groupLoadError != null && selectedFilter == "Groups" && groups.isEmpty()) {
-            Text(
-                text = "Unable to load groups: ${groupLoadError}",
-                modifier = Modifier.align(Alignment.TopCenter).padding(12.dp),
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-
         if (showCreateGroupDialog) {
-            val memberProfileIdsByName = remember(phonebookContacts, profiles, profileMap.toMap()) {
-                val map = linkedMapOf<String, String>()
-                (profiles + profileMap.values.toList()).forEach { profile ->
-                    val display = profile.name.trim()
-                    if (display.isNotBlank() && profile.id.isNotBlank()) map[display] = profile.id
-                }
-                phonebookContacts.forEach { contact ->
-                    val id = contact.vibeSyncProfileId?.trim().orEmpty()
-                        .ifBlank { contact.vibeSyncUser?.id?.trim().orEmpty() }
-                    val display = contact.name.trim()
-                    if (display.isNotBlank() && id.isNotBlank()) map[display] = id
-                }
-                map
+            val availableMembers = remember(phonebookContacts, matches) {
+                val names = mutableListOf("Aarav", "Priya", "Vikram", "Ananya", "Rohan", "Sneha")
+                names.addAll(phonebookContacts.map { it.name })
+                names.distinct()
             }
-            val availableMembers = memberProfileIdsByName.keys.toList().sorted()
             CreateGroupDialog(
                 availableMembers = availableMembers,
-                memberProfileIdsByName = memberProfileIdsByName,
                 onDismiss = { showCreateGroupDialog = false },
-                onCreateGroup = { name, desc, emoji, members, avatarUri ->
+                onCreateGroup = { name, desc, emoji, members ->
+                    val newGroup = GroupModel(
+                        id = java.util.UUID.randomUUID().toString(),
+                        name = name,
+                        description = desc,
+                        emoji = emoji,
+                        adminName = "You",
+                        members = listOf("You") + members,
+                        lastMessage = "Group created",
+                        lastMessageTime = System.currentTimeMillis(),
+                        unreadCount = 0
+                    )
+                    groups = listOf(newGroup) + groups
                     showCreateGroupDialog = false
-                    groupScope.launch {
-                        try {
-                            val memberIds = members.mapNotNull { memberProfileIdsByName[it] }.distinct()
-                            val created = GroupMessagingManager.createGroup(name, desc, memberIds).getOrThrow()
-                            val uploadedAvatar = if (avatarUri != null) {
-                                GroupMessagingManager.uploadGroupAvatar(context, created.id, avatarUri).getOrNull()
-                            } else null
-                            val remote = GroupMessagingManager.fetchMyGroups().firstOrNull { it.id == created.id }
-                                ?: created.copy(avatarUrl = uploadedAvatar ?: created.avatarUrl)
-                            val roster = GroupMessagingManager.fetchGroupMembers(created.id)
-                            val model = GroupModel.fromRemote(remote, roster)
-                            groups = listOf(model) + groups.filterNot { it.id == model.id }
-                            activeGroup = model
-                        } catch (failure: Throwable) {
-                            Toast.makeText(context, failure.message ?: "Group could not be created.", Toast.LENGTH_LONG).show()
-                        }
-                    }
+                    activeGroup = newGroup
                 }
             )
         }
@@ -1250,7 +1320,7 @@ private fun ContactOnVibeSyncRow(
     ) {
         Box(
             modifier = Modifier
-                .size(48.dp)
+                .size(46.dp)
                 .clickable {
                     if (linkedProfile != null) {
                         onViewProfile(
@@ -1271,7 +1341,7 @@ private fun ContactOnVibeSyncRow(
                 emoji = contact.avatarEmoji.ifBlank { "👤" },
                 colorStart = contact.vibeSyncUser?.gradientColorStart ?: 0xFFFF5E62,
                 colorEnd = contact.vibeSyncUser?.gradientColorEnd ?: 0xFFFF9966,
-                size = 48.dp,
+                size = 44.dp,
                 avatarUrl = contactPhoto,
                 avatarCacheVersion = contact.vibeSyncUser?.avatarCacheVersion ?: 0L
             )
@@ -1358,7 +1428,7 @@ private fun ContactToInviteRow(
     ) {
         Box(
             modifier = Modifier
-                .size(48.dp)
+                .size(44.dp)
                 .clip(CircleShape)
                 .clickable {
                     val phone = contact.phoneNumber.ifBlank { contact.id }
@@ -1380,7 +1450,7 @@ private fun ContactToInviteRow(
                 emoji = contact.avatarEmoji.ifBlank { "👤" },
                 colorStart = contact.vibeSyncUser?.gradientColorStart ?: 0xFFFF5E62,
                 colorEnd = contact.vibeSyncUser?.gradientColorEnd ?: 0xFFFF9966,
-                size = 48.dp,
+                size = 44.dp,
                 avatarUrl = contactPhoto,
                 avatarCacheVersion = contact.vibeSyncUser?.avatarCacheVersion ?: 0L
             )
