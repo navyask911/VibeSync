@@ -36,6 +36,8 @@ data class ChatMessageEntity(
     val isDeletedForEveryone: Boolean = false,
     val isDeletedForMe: Boolean = false,
     val isForwarded: Boolean = false,
+    @ColumnInfo(name = "forward_count", defaultValue = "0")
+    val forwardCount: Int = 0,
     /** PENDING -> SENT_TO_SERVER -> DELIVERED -> READ. Existing rows migrate to SENT_TO_SERVER. */
     @ColumnInfo(defaultValue = "'SENT_TO_SERVER'")
     val deliveryState: String = "SENT_TO_SERVER",
