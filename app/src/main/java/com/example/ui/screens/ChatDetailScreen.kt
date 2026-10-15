@@ -307,6 +307,11 @@ fun ChatDetailScreen(
     onDeleteForMe: (messageId: String) -> Unit = {},
     onDeleteForEveryone: (messageId: String) -> Unit = {},
     onForwardMessage: (targetMatchId: String, message: ChatMessageEntity) -> Unit = { _, _ -> },
+    onForwardMessages: (
+        message: ChatMessageEntity,
+        directTargets: List<Pair<String, String>>,
+        targetGroupIds: List<String>
+    ) -> Unit = { message, directTargets, _ -> directTargets.forEach { (targetId, _) -> onForwardMessage(targetId, message) } },
     otherMatches: List<Pair<MatchEntity, ProfileEntity>> = emptyList(),
     currentUserId: String? = null,
     onStartRealtime: () -> Unit = {},
@@ -339,6 +344,7 @@ fun ChatDetailScreen(
             onDeleteForMe = onDeleteForMe,
             onDeleteForEveryone = onDeleteForEveryone,
             onForwardMessage = onForwardMessage,
+            onForwardMessages = onForwardMessages,
             otherMatches = otherMatches,
             currentUserId = currentUserId,
             onStartRealtime = onStartRealtime,
@@ -375,6 +381,11 @@ private fun ChatDetailScreenContent(
     onDeleteForMe: (messageId: String) -> Unit,
     onDeleteForEveryone: (messageId: String) -> Unit,
     onForwardMessage: (targetMatchId: String, message: ChatMessageEntity) -> Unit,
+    onForwardMessages: (
+        message: ChatMessageEntity,
+        directTargets: List<Pair<String, String>>,
+        targetGroupIds: List<String>
+    ) -> Unit,
     otherMatches: List<Pair<MatchEntity, ProfileEntity>>,
     currentUserId: String?,
     onStartRealtime: () -> Unit,
@@ -776,6 +787,74 @@ private fun ChatDetailScreenContent(
     var editingMessage by remember { mutableStateOf<ChatMessageEntity?>(null) }
     var deletingMessage by remember { mutableStateOf<ChatMessageEntity?>(null) }
     var forwardingMessage by remember { mutableStateOf<ChatMessageEntity?>(null) }
+    var selectedForwardChatIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var selectedForwardGroupIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var forwardingGroupCandidates by remember { mutableStateOf(emptyList<GroupModel>()) }
+    var forwardingGroupLoadError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(forwardingMessage?.messageId) {
+        selectedForwardChatIds = emptySet()
+        selectedForwardGroupIds = emptySet()
+        forwardingGroupLoadError = null
+        if (forwardingMessage == null) {
+            forwardingGroupCandidates = emptyList()
+        } else {
+            try {
+                forwardingGroupCandidates = com.example.util.GroupMessagingManager.fetchMyGroups()
+                    .map { GroupModel.fromRemote(it) }
+                    .distinctBy { it.id }
+            } catch (failure: Throwable) {
+                forwardingGroupCandidates = emptyList()
+                forwardingGroupLoadError = failure.message ?: "Unable to load groups."
+            }
+        }
+    }
+
+    fun forwardingDepth(message: ChatMessageEntity): Int =
+        maxOf(message.forwardCount, if (message.isForwarded) 1 else 0)
+
+    fun showForwardingRuleToast(message: String) {
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    }
+
+    fun toggleForwardChat(targetId: String, message: ChatMessageEntity) {
+        if (targetId in selectedForwardChatIds) {
+            selectedForwardChatIds = selectedForwardChatIds - targetId
+            return
+        }
+        val nextCount = selectedForwardChatIds.size + selectedForwardGroupIds.size + 1
+        if (forwardingDepth(message) >= 5 && nextCount > 1) {
+            showForwardingRuleToast("Forwarded many times. You can only forward to 1 chat at a time.")
+            return
+        }
+        if (nextCount > 5) {
+            showForwardingRuleToast("You can only share with up to 5 chats")
+            return
+        }
+        selectedForwardChatIds = selectedForwardChatIds + targetId
+    }
+
+    fun toggleForwardGroup(groupId: String, message: ChatMessageEntity) {
+        if (groupId in selectedForwardGroupIds) {
+            selectedForwardGroupIds = selectedForwardGroupIds - groupId
+            return
+        }
+        val depth = forwardingDepth(message)
+        val nextCount = selectedForwardChatIds.size + selectedForwardGroupIds.size + 1
+        if (depth >= 5 && nextCount > 1) {
+            showForwardingRuleToast("Forwarded many times. You can only forward to 1 chat at a time.")
+            return
+        }
+        if (depth >= 1 && selectedForwardGroupIds.isNotEmpty()) {
+            showForwardingRuleToast("Forwarded messages can only be shared with 1 group at a time.")
+            return
+        }
+        if (nextCount > 5) {
+            showForwardingRuleToast("You can only share with up to 5 chats")
+            return
+        }
+        selectedForwardGroupIds = selectedForwardGroupIds + groupId
+    }
+
     var messageSelectionMode by remember { mutableStateOf(false) }
     val selectedMessageIds = remember { mutableStateListOf<String>() }
     var pinnedMessageId by remember(profile.id, match?.matchId) {
@@ -2906,78 +2985,127 @@ private fun ChatDetailScreenContent(
         )
     }
 
-    // Forward Message Dialog
+    // Multi-select forward picker: one transaction can target up to five chats/groups.
     forwardingMessage?.let { msg ->
+        val directTargets = (if (otherMatches.isNotEmpty()) otherMatches else listOfNotNull(match?.let { it to profile }))
+            .distinctBy { it.first.matchId }
+        val selectedCount = selectedForwardChatIds.size + selectedForwardGroupIds.size
+        val depth = forwardingDepth(msg)
+        val frequentForward = depth >= 5
+
         AlertDialog(
             onDismissRequest = { forwardingMessage = null },
-            title = { Text("Forward Message ↪", fontWeight = FontWeight.Bold) },
+            title = { Text("Forward Message", fontWeight = FontWeight.Bold) },
             text = {
-                Column {
+                Column(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 440.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     Text(
-                        text = "Forward message: \"${msg.text.take(30)}${if (msg.text.length > 30) "..." else ""}\"",
+                        text = "Share with up to ${if (frequentForward) 1 else 5} chats${if (depth >= 1) " • forwarded" else ""}",
                         fontSize = 12.sp,
-                        fontStyle = FontStyle.Italic,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    if (otherMatches.isEmpty()) {
-                        Text("No other active match chats found. You can forward to this chat with a Forwarded mark.", fontSize = 12.sp)
+                    Text(
+                        text = "“${msg.text.take(48)}${if (msg.text.length > 48) "…" else ""}”",
+                        fontSize = 12.sp,
+                        fontStyle = FontStyle.Italic,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2
+                    )
+                    Text("Chats", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    if (directTargets.isEmpty()) {
+                        Text("No direct chats available.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
-                        Text("Select a conversation to forward to:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        Spacer(modifier = Modifier.height(6.dp))
                         LazyColumn(
-                            modifier = Modifier.height(160.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                            modifier = Modifier.heightIn(max = 170.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
-                            items(otherMatches) { (targetMatch, targetProfile) ->
-                                Surface(
-                                    onClick = {
-                                        onForwardMessage(targetMatch.matchId, msg)
-                                        forwardingMessage = null
-                                    },
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            items(directTargets, key = { "chat:${it.first.matchId}" }) { (targetMatch, targetProfile) ->
+                                val isSelected = targetMatch.matchId in selectedForwardChatIds
+                                Row(
                                     modifier = Modifier.fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable { toggleForwardChat(targetMatch.matchId, msg) }
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Row(
-                                        modifier = Modifier.padding(8.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        DatingAvatar(
-                                            name = targetProfile.name,
-                                            emoji = targetProfile.avatarEmoji,
-                                            colorStart = targetProfile.gradientColorStart,
-                                            colorEnd = targetProfile.gradientColorEnd,
-                                            size = 32.dp,
-                                            avatarUrl = targetProfile.avatarUrl,
-                                            avatarCacheVersion = targetProfile.avatarCacheVersion
-                                        )
-                                        Spacer(modifier = Modifier.width(10.dp))
-                                        Text(targetProfile.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                    }
+                                    DatingAvatar(
+                                        name = targetProfile.name,
+                                        emoji = targetProfile.avatarEmoji,
+                                        colorStart = targetProfile.gradientColorStart,
+                                        colorEnd = targetProfile.gradientColorEnd,
+                                        size = 34.dp,
+                                        avatarUrl = targetProfile.avatarUrl,
+                                        avatarCacheVersion = targetProfile.avatarCacheVersion
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(targetProfile.name, fontWeight = FontWeight.Medium, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                                    androidx.compose.material3.Checkbox(checked = isSelected, onCheckedChange = null)
                                 }
                             }
                         }
                     }
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Groups", fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                        Text("${forwardingGroupCandidates.size}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (forwardingGroupLoadError != null) {
+                        Text(forwardingGroupLoadError.orEmpty(), fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+                    }
+                    if (forwardingGroupCandidates.isEmpty()) {
+                        Text("No groups available.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.heightIn(max = 130.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            items(forwardingGroupCandidates, key = { "group:${it.id}" }) { group ->
+                                val isSelected = group.id in selectedForwardGroupIds
+                                Row(
+                                    modifier = Modifier.fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable { toggleForwardGroup(group.id, msg) }
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = MaterialTheme.colorScheme.primaryContainer,
+                                        modifier = Modifier.size(34.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) { Text(group.emoji, fontSize = 18.sp) }
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(group.name, fontWeight = FontWeight.Medium, fontSize = 13.sp, maxLines = 1, modifier = Modifier.weight(1f))
+                                    androidx.compose.material3.Checkbox(checked = isSelected, onCheckedChange = null)
+                                }
+                            }
+                        }
+                    }
+                    Text("$selectedCount selected", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             },
             confirmButton = {
-                if (otherMatches.isEmpty()) {
-                    Button(
-                        onClick = {
-                            match?.matchId?.let { onForwardMessage(it, msg) }
-                            forwardingMessage = null
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = VibeSyncTeal)
-                    ) {
-                        Text("Forward in this Chat")
-                    }
+                Button(
+                    enabled = selectedCount in 1..(if (frequentForward) 1 else 5),
+                    onClick = {
+                        val selectedDirectTargets = directTargets
+                            .filter { it.first.matchId in selectedForwardChatIds }
+                            .map { it.first.matchId to it.second.id }
+                        onForwardMessages(msg, selectedDirectTargets, selectedForwardGroupIds.toList())
+                        forwardingMessage = null
+                        selectedForwardChatIds = emptySet()
+                        selectedForwardGroupIds = emptySet()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = VibeSyncTeal)
+                ) {
+                    Text(if (selectedCount > 0) "Forward ($selectedCount)" else "Forward")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { forwardingMessage = null }) {
-                    Text("Cancel")
-                }
+                TextButton(onClick = { forwardingMessage = null }) { Text("Cancel") }
             }
         )
     }
@@ -4542,21 +4670,14 @@ private fun VibeSyncChatBubble(
                     bottom = 6.dp
                 )
             ) {
-                // Forwarded Tag Indicator
-                if (message.isForwarded) {
+                // Original messages intentionally have no forwarding label.
+                if (message.forwardCount > 0 || message.isForwarded) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(bottom = 3.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Forward,
-                            contentDescription = null,
-                            tint = Color(0xFF64748B),
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Spacer(modifier = Modifier.width(3.dp))
                         Text(
-                            text = "Forwarded",
+                            text = if (message.forwardCount >= 5) "⏩ Forwarded many times" else "↪ Forwarded",
                             fontSize = 10.sp,
                             fontStyle = FontStyle.Italic,
                             fontWeight = FontWeight.Medium,
