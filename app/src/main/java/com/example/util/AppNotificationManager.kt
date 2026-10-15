@@ -188,6 +188,8 @@ object AppNotificationManager {
     // Message History for VibeSync-style MessagingStyle conversation threads
     private val conversationHistory = ConcurrentHashMap<String, MutableList<NotificationCompat.MessagingStyle.Message>>()
     private val seenMessageIds = ConcurrentHashMap<String, MutableSet<String>>()
+    /** Stable IDs aligned with the capped MessagingStyle list, allowing duplicate FCM wakeups to refresh text. */
+    private val conversationMessageIds = ConcurrentHashMap<String, MutableList<String>>()
     private data class ConversationSummary(
         val conversationId: String,
         val title: String,
@@ -652,7 +654,7 @@ object AppNotificationManager {
                     Log.w(TAG, "Notification permission missing: ${securityException.message}")
                 }
             } catch (failure: Throwable) {
-                Log.w(TAG, "Unable to build grouped notification for conversation=$threadId.", failure)
+                Log.w(TAG, "Unable to build grouped notification for conversation=$requestedThreadId.", failure)
             }
         }
     }
@@ -719,6 +721,7 @@ object AppNotificationManager {
                 .takeLast(10)
         }.getOrDefault(emptyList())
         val ids = seenMessageIds.getOrPut(conversationId) { ConcurrentHashMap.newKeySet<String>() }
+        val orderedIds = conversationMessageIds.getOrPut(conversationId) { mutableListOf() }
         synchronized(list) {
             if (list.isEmpty()) {
                 rows.filterNot { it.isDeleted || it.isDeletedForMe || it.isDeletedForEveryone }
@@ -731,9 +734,17 @@ object AppNotificationManager {
                             .apply { senderPerson.icon?.let { setIcon(it) } }
                             .build()
                         list.add(NotificationCompat.MessagingStyle.Message(text, row.timestamp, person))
+                        orderedIds.add(row.messageId)
                         ids.add(row.messageId)
                     }
-                while (list.size > 10) list.removeAt(0)
+                while (list.size > 10) {
+                    list.removeAt(0)
+                    orderedIds.removeAt(0)
+                }
+                if (orderedIds.size != list.size) {
+                    orderedIds.clear()
+                    repeat(list.size) { orderedIds.add("") }
+                }
             }
         }
     }
@@ -745,14 +756,33 @@ object AppNotificationManager {
     ) {
         val list = conversationHistory.getOrPut(conversationId) { mutableListOf() }
         val ids = seenMessageIds.getOrPut(conversationId) { ConcurrentHashMap.newKeySet<String>() }
+        val orderedIds = conversationMessageIds.getOrPut(conversationId) { mutableListOf() }
         synchronized(list) {
-            if (messageId.isNotBlank() && !ids.add(messageId)) return
+            // Targeted FCM may first render a safe "Encrypted message" placeholder and the pull
+            // sync later resolves the same ID to decrypted text. Replace that bubble instead of
+            // dropping the update or appending a duplicate.
+            if (messageId.isNotBlank()) {
+                val existingIndex = orderedIds.indexOf(messageId)
+                if (existingIndex in list.indices) {
+                    list[existingIndex] = message
+                    ids.add(messageId)
+                    return
+                }
+                if (!ids.add(messageId)) return
+            }
             list.add(message)
-            while (list.size > 10) list.removeAt(0)
+            orderedIds.add(messageId)
+            while (list.size > 10) {
+                list.removeAt(0)
+                orderedIds.removeAt(0)
+            }
             if (ids.size > 40) {
                 ids.clear()
-                if (messageId.isNotBlank()) ids.add(messageId)
+                orderedIds.filter { it.isNotBlank() }.forEach { ids.add(it) }
             }
+            // Preserve positional alignment even if a historical Room row has an empty message ID.
+            while (orderedIds.size < list.size) orderedIds.add("")
+            while (orderedIds.size > list.size) orderedIds.removeAt(0)
         }
     }
 
@@ -1350,6 +1380,7 @@ object AppNotificationManager {
     fun clearConversationHistory(senderId: String) {
         conversationHistory.remove(senderId)
         seenMessageIds.remove(senderId)
+        conversationMessageIds.remove(senderId)
         conversationSummaries.remove(senderId)
     }
 
