@@ -840,7 +840,9 @@ private fun ChatDetailScreenContent(
     var messageInfo by remember { mutableStateOf<ChatMessageEntity?>(null) }
     var editingMessage by remember { mutableStateOf<ChatMessageEntity?>(null) }
     var deletingMessage by remember { mutableStateOf<ChatMessageEntity?>(null) }
+    var showBatchDeleteDialog by remember { mutableStateOf(false) }
     var forwardingMessage by remember { mutableStateOf<ChatMessageEntity?>(null) }
+    var forwardingSelectedMessageIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var selectedForwardChatIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var selectedForwardGroupIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var forwardingGroupCandidates by remember { mutableStateOf(emptyList<GroupModel>()) }
@@ -1275,9 +1277,26 @@ private fun ChatDetailScreenContent(
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSecondaryContainer
                     )
+                    TextButton(
+                        onClick = { showBatchDeleteDialog = true },
+                        enabled = selectedMessageIds.isNotEmpty()
+                    ) { Text("Delete") }
+                    TextButton(
+                        onClick = {
+                            val selected = messages.filter { it.messageId in selectedMessageIds && !it.isDeletedForMe }
+                            if (selected.isNotEmpty()) {
+                                forwardingSelectedMessageIds = selected.map { it.messageId }.toSet()
+                                forwardingMessage = selected.first()
+                            } else {
+                                Toast.makeText(context, "Select at least one available message to forward.", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        enabled = selectedMessageIds.isNotEmpty()
+                    ) { Text("Forward") }
                     TextButton(onClick = {
                         messageSelectionMode = false
                         selectedMessageIds.clear()
+                        forwardingSelectedMessageIds = emptySet()
                     }) { Text("Done") }
                 }
             }
@@ -1542,6 +1561,7 @@ private fun ChatDetailScreenContent(
                                         selectedMessageForAction = null
                                     },
                                     onForward = {
+                                        forwardingSelectedMessageIds = emptySet()
                                         forwardingMessage = msg
                                         selectedMessageForAction = null
                                     },
@@ -2854,8 +2874,7 @@ private fun ChatDetailScreenContent(
         )
     }
 
-    // Delivery and read timestamps are not separately persisted on ChatMessageEntity; show only
-    // authoritative local status and the actual message sent timestamp rather than inventing times.
+    // Receipt times are persisted on Room v63 and displayed in the device's local time zone.
     messageInfo?.let { msg ->
         val dateFormat = remember { SimpleDateFormat("MMM d, yyyy 'at' h:mm a", Locale.getDefault()) }
         AlertDialog(
@@ -2885,23 +2904,31 @@ private fun ChatDetailScreenContent(
                             else -> msg.deliveryState.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }
                         }
                     )
+                    if (msg.deliveredAt > 0L) {
+                        MessageInfoLine("Delivered at", dateFormat.format(Date(msg.deliveredAt)))
+                    }
                     MessageInfoLine(
                         "Read receipt",
                         when {
                             !readReceiptsEnabled -> "Hidden — Read Receipts are off"
-                            msg.isRead || msg.deliveryState.equals("READ", true) -> "Read (exact time is not stored)"
+                            msg.isRead || msg.deliveryState.equals("READ", true) -> "Read"
                             else -> "Not marked as read"
                         }
                     )
+                    if (msg.readAt > 0L && readReceiptsEnabled) {
+                        MessageInfoLine("Read at", dateFormat.format(Date(msg.readAt)))
+                    }
                     MessageInfoLine(
                         "Encryption",
                         if (msg.isEncrypted) "End-to-end encrypted · ${msg.encryptionProtocol}" else "Not marked encrypted"
                     )
-                    Text(
-                        text = "Separate delivery and read timestamps are not stored on this local message record.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    if (msg.deliveredAt <= 0L && (msg.readAt <= 0L || !readReceiptsEnabled)) {
+                        Text(
+                            text = "Exact receipt times will appear here when the corresponding receipt is available.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             },
             confirmButton = {
@@ -3021,17 +3048,95 @@ private fun ChatDetailScreenContent(
         )
     }
 
+    if (showBatchDeleteDialog) {
+        val selectedForDelete = messages.filter { it.messageId in selectedMessageIds && !it.isDeletedForMe }
+        val now = System.currentTimeMillis()
+        val canDeleteBatchForEveryone = selectedForDelete.isNotEmpty() && selectedForDelete.all { candidate ->
+            val outgoing = isMessageOutgoing(
+                message = candidate,
+                partnerProfileId = profile.id,
+                partnerPhone = profile.phoneNumber,
+                matchProfileId = match?.matchId,
+                currentUserId = currentUserId
+            )
+            outgoing &&
+                (now - candidate.timestamp) in 0L..(15 * 60 * 1000L) &&
+                !candidate.isDeleted &&
+                !candidate.isDeletedForEveryone
+        }
+
+        AlertDialog(
+            onDismissRequest = { showBatchDeleteDialog = false },
+            title = { Text("Delete ${selectedForDelete.size} messages?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    if (canDeleteBatchForEveryone) {
+                        "Choose whether to remove these messages from this device or send encrypted delete controls to everyone. The 15-minute window applies to all selected messages."
+                    } else {
+                        "These messages will be removed from this device. Delete for everyone is available only when every selected message was sent by you within the last 15 minutes."
+                    },
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    if (canDeleteBatchForEveryone) {
+                        Button(
+                            onClick = {
+                                selectedForDelete.forEach { onDeleteForEveryone(it.messageId) }
+                                showBatchDeleteDialog = false
+                                messageSelectionMode = false
+                                selectedMessageIds.clear()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE53935)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Delete for everyone") }
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            selectedForDelete.forEach { onDeleteForMe(it.messageId) }
+                            showBatchDeleteDialog = false
+                            messageSelectionMode = false
+                            selectedMessageIds.clear()
+                        },
+                        enabled = selectedForDelete.isNotEmpty(),
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Delete for me") }
+                    TextButton(
+                        onClick = { showBatchDeleteDialog = false },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Cancel") }
+                }
+            },
+            dismissButton = null
+        )
+    }
+
     // Multi-select forward picker: one transaction can target up to five chats/groups.
     forwardingMessage?.let { msg ->
         val directTargets = (if (otherMatches.isNotEmpty()) otherMatches else listOfNotNull(match?.let { it to profile }))
             .distinctBy { it.first.matchId }
+        val forwardingBatch = messages.filter { it.messageId in forwardingSelectedMessageIds }
+            .ifEmpty { listOf(msg) }
         val selectedCount = selectedForwardChatIds.size + selectedForwardGroupIds.size
-        val depth = forwardingDepth(msg)
-        val frequentForward = depth >= 5
+        val depth = forwardingBatch.maxOfOrNull { forwardingDepth(it) } ?: forwardingDepth(msg)
+        val frequentForward = forwardingBatch.any { forwardingDepth(it) >= 5 }
 
         AlertDialog(
-            onDismissRequest = { forwardingMessage = null },
-            title = { Text("Forward Message", fontWeight = FontWeight.Bold) },
+            onDismissRequest = {
+                forwardingMessage = null
+                forwardingSelectedMessageIds = emptySet()
+            },
+            title = {
+                Text(
+                    if (forwardingSelectedMessageIds.size > 1) "Forward ${forwardingBatch.size} Messages" else "Forward Message",
+                    fontWeight = FontWeight.Bold
+                )
+            },
             text = {
                 Column(
                     modifier = Modifier.fillMaxWidth().heightIn(max = 440.dp),
@@ -3043,9 +3148,13 @@ private fun ChatDetailScreenContent(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = "“${msg.text.take(48)}${if (msg.text.length > 48) "…" else ""}”",
+                        text = if (forwardingBatch.size > 1) {
+                            "${forwardingBatch.size} selected messages will be forwarded individually."
+                        } else {
+                            "“${msg.text.take(48)}${if (msg.text.length > 48) "…" else ""}”"
+                        },
                         fontSize = 12.sp,
-                        fontStyle = FontStyle.Italic,
+                        fontStyle = if (forwardingBatch.size > 1) FontStyle.Normal else FontStyle.Italic,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2
                     )
@@ -3130,8 +3239,15 @@ private fun ChatDetailScreenContent(
                         val selectedDirectTargets = directTargets
                             .filter { it.first.matchId in selectedForwardChatIds }
                             .map { it.first.matchId to it.second.id }
-                        onForwardMessages(msg, selectedDirectTargets, selectedForwardGroupIds.toList())
+                        forwardingBatch.forEach { selectedMessage ->
+                            onForwardMessages(selectedMessage, selectedDirectTargets, selectedForwardGroupIds.toList())
+                        }
                         forwardingMessage = null
+                        forwardingSelectedMessageIds = emptySet()
+                        if (forwardingBatch.size > 1) {
+                            messageSelectionMode = false
+                            selectedMessageIds.clear()
+                        }
                         selectedForwardChatIds = emptySet()
                         selectedForwardGroupIds = emptySet()
                     },
@@ -3141,7 +3257,10 @@ private fun ChatDetailScreenContent(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { forwardingMessage = null }) { Text("Cancel") }
+                TextButton(onClick = {
+                    forwardingMessage = null
+                    forwardingSelectedMessageIds = emptySet()
+                }) { Text("Cancel") }
             }
         )
     }
