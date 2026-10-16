@@ -726,7 +726,13 @@ private fun ChatDetailScreenContent(
                 Toast.makeText(context, "Files must be 25 MB or smaller.", Toast.LENGTH_LONG).show()
             } else {
                 val fileSize = formatFileSize(fileSizeBytes)
-                onSendMedia("DOCUMENT", "$fileName • $fileSize", uri.toString(), 0)
+                runCatching {
+                                    context.contentResolver.takePersistableUriPermission(
+                                        uri,
+                                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                    )
+                                }
+                                onSendMedia("DOCUMENT", "$fileName • $fileSize", uri.toString(), 0)
                 Toast.makeText(context, "Document selected: $fileName", Toast.LENGTH_SHORT).show()
             }
         }
@@ -4528,6 +4534,31 @@ private fun VibeSyncChatBubble(
     onRetryDelivery: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
+    var resolvedAttachmentUri by remember(message.messageId, message.mediaUrl) {
+        mutableStateOf<String?>(message.mediaUrl.takeIf { it.isNotBlank() })
+    }
+    var isResolvingAttachment by remember(message.messageId, message.mediaUrl) { mutableStateOf(false) }
+    LaunchedEffect(message.messageId, message.mediaUrl) {
+        if (com.example.util.ChatAttachmentCryptoManager.isSupportedMediaType(message.mediaType) &&
+            com.example.util.ChatAttachmentCryptoManager.isLocalReference(message.mediaUrl)
+        ) {
+            resolvedAttachmentUri = null
+            isResolvingAttachment = true
+            val materialized = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.example.util.ChatAttachmentCryptoManager.materializeForDisplay(
+                    context = context,
+                    localReference = message.mediaUrl,
+                    messageId = message.messageId
+                )
+            }
+            resolvedAttachmentUri = materialized?.let { android.net.Uri.fromFile(it).toString() }
+            isResolvingAttachment = false
+        } else {
+            resolvedAttachmentUri = message.mediaUrl.takeIf { it.isNotBlank() }
+            isResolvingAttachment = false
+        }
+    }
+    val displayMediaUri = resolvedAttachmentUri.orEmpty()
     val use24HourClock = android.text.format.DateFormat.is24HourFormat(context)
     val formattedTime = remember(message.timestamp, use24HourClock) {
         com.example.util.ChatDeliveryPresentation.formatLocalTime(message.timestamp, use24HourClock)
