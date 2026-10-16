@@ -329,6 +329,7 @@ fun ChatDetailScreen(
     onUpdateUserPreferences: (com.example.data.model.UserPreferencesEntity) -> Unit = {},
     onTypingStatus: (Boolean) -> Unit = {},
     onSetDisappearingTimer: (Int) -> Unit = {},
+    onMarkMessageRead: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     IncognitoKeyboard {
@@ -362,6 +363,7 @@ fun ChatDetailScreen(
             onUpdateUserPreferences = onUpdateUserPreferences,
             onTypingStatus = onTypingStatus,
             onSetDisappearingTimer = onSetDisappearingTimer,
+            onMarkMessageRead = onMarkMessageRead,
             modifier = modifier
         )
     }
@@ -403,6 +405,7 @@ private fun ChatDetailScreenContent(
     onUpdateUserPreferences: (com.example.data.model.UserPreferencesEntity) -> Unit,
     onTypingStatus: (Boolean) -> Unit,
     onSetDisappearingTimer: (Int) -> Unit,
+    onMarkMessageRead: (String) -> Unit,
     modifier: Modifier
 ) {
     DisposableEffect(profile.id, match?.matchId) {
@@ -1076,6 +1079,28 @@ private fun ChatDetailScreenContent(
         }
     }
 
+    LaunchedEffect(profile.id, match?.matchId, readReceiptsEnabled, visibleMessages) {
+        if (!readReceiptsEnabled) return@LaunchedEffect
+        androidx.compose.runtime.snapshotFlow {
+            listState.layoutInfo.visibleItemsInfo.mapNotNull { it.key as? String }.toSet()
+        }.collect { visibleIds ->
+            visibleMessages.forEach { message ->
+                if (message.messageId !in visibleIds) return@forEach
+                val outgoing = isMessageOutgoing(
+                    message = message,
+                    partnerProfileId = profile.id,
+                    partnerPhone = profile.phoneNumber,
+                    matchProfileId = match?.matchId,
+                    currentUserId = currentUserId
+                )
+                if (com.example.util.ChatReadReceiptPolicy.shouldSendReadReceipt(
+                        readReceiptsEnabled, outgoing, message.isRead, message.deliveryState
+                    )
+                ) onMarkMessageRead(message.messageId)
+            }
+        }
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -1126,7 +1151,9 @@ private fun ChatDetailScreenContent(
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Icon(Icons.Default.Verified, contentDescription = "Verified business", tint = Color(0xFF1DA1F2), modifier = Modifier.size(15.dp))
                                 }
-                                else -> if (profile.isVerified) {
+                                else -> if (com.example.util.VerifiedBadgePolicy.shouldShow(
+                                    profile.isVerified, profile.subscriptionStatus, profile.badgePurchased
+                                )) {
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Icon(
                                         imageVector = Icons.Default.Verified,

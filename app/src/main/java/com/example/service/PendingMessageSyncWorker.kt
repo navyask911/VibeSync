@@ -568,8 +568,8 @@ class PendingMessageInboxSyncWorker(
                     myPhone = session.phoneNumber,
                     partnerPhone = profile?.phoneNumber.orEmpty().ifBlank { peerProfileId },
                     targetMessageId = targetMessageId.takeIf { it.isNotBlank() && isTargetConversation },
-                    notifyTargetMessage = targetMessageId.isNotBlank() && isTargetConversation &&
-                        !com.example.util.AppNotificationManager.isAppInForeground
+                    // Notify from the durable Room target below. Realtime can purge the remote row first.
+                    notifyTargetMessage = false
                 )
                 if (!result.complete) hadIncompleteConversation = true
                 syncedMessages += result.syncedCount
@@ -578,11 +578,50 @@ class PendingMessageInboxSyncWorker(
 
             if (targetMessageId.isNotBlank()) {
                 val target = chatDao.getMessageById(targetMessageId)
-                val targetIsPlaintext = target != null && target.text.isNotBlank() &&
-                    !target.text.startsWith(TinkCryptoManager.TINK_PREFIX)
+                val targetIsPlaintext = target != null &&
+                    !target.text.startsWith(TinkCryptoManager.TINK_PREFIX) &&
+                    (target.text.isNotBlank() || target.mediaUrl.isNotBlank() ||
+                        target.mediaType.uppercase() in setOf("IMAGE", "PHOTO", "AI_IMAGE", "VIDEO", "VOICE", "AUDIO", "DOCUMENT", "LOCATION"))
                 if (!targetIsPlaintext) {
                     Log.w(TAG, "Targeted FCM message is not yet decrypted and persisted; retrying its wakeup.")
                     return@withContext Result.retry()
+                }
+                if (target.senderId.isNotBlank() &&
+                    !target.senderId.equals("USER", ignoreCase = true) &&
+                    !com.example.util.AppNotificationManager.isAppInForeground
+                ) {
+                    val prefs = applicationContext.getSharedPreferences("vibesync_inbox_notification_dedupe", Context.MODE_PRIVATE)
+                    val key = "message_" + java.util.UUID.nameUUIDFromBytes(target.messageId.toByteArray(Charsets.UTF_8)).toString()
+                    val now = System.currentTimeMillis()
+                    if (prefs.getLong(key, 0L) <= now - 7L * 24L * 60L * 60L * 1000L) {
+                        val sender = runCatching { database.profileDao().getProfileByIdSync(target.senderId) }.getOrNull()
+                        val targetMatch = allMatches.firstOrNull { item ->
+                            item.matchId.equals(target.matchId, ignoreCase = true) ||
+                                SupabaseClientManager.canonicalChatMatchId(myProfileId, item.profileId)
+                                    .equals(target.matchId, ignoreCase = true)
+                        }
+                        val senderName = sender?.name?.trim()?.takeIf {
+                            it.isNotBlank() && !it.equals("VibeSync User", true) && !it.equals("VibeSync Contact", true)
+                        } ?: targetMatch?.localContactName?.trim()?.takeIf(String::isNotBlank) ?: "VibeSync Contact"
+                        val body = target.text.trim().takeIf { it.isNotBlank() } ?: when (target.mediaType.uppercase()) {
+                            "IMAGE", "PHOTO", "AI_IMAGE" -> "Photo"
+                            "VIDEO" -> "Video"
+                            "VOICE", "AUDIO" -> "Voice message"
+                            "DOCUMENT" -> "Attachment"
+                            "LOCATION" -> "Location"
+                            else -> "New message"
+                        }
+                        com.example.util.AppNotificationManager.showMessageNotification(
+                            context = applicationContext,
+                            senderId = target.senderId,
+                            senderName = senderName,
+                            messageText = body,
+                            senderPhotoUrl = sender?.avatarUrl.orEmpty().ifBlank { targetMatch?.localPhotoUri.orEmpty() },
+                            mediaType = target.mediaType,
+                            channelId = com.example.util.AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES
+                        )
+                        prefs.edit().putLong(key, now).apply()
+                    }
                 }
             }
             Log.i(TAG, "Inbox delta finished: conversations=$checkedConversations rows=$syncedMessages ackFailures=$ackFailures incomplete=$hadIncompleteConversation.")

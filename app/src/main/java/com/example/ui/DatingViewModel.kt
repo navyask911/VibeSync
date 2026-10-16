@@ -428,6 +428,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     private var typingBroadcastActive = false
     private val _isPartnerTyping = MutableStateFlow(false)
     val isPartnerTyping: StateFlow<Boolean> = _isPartnerTyping.asStateFlow()
+    private val readReceiptRequestsInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     /** Called only by ChatDetailScreen while its 1-on-1 route is resumed. */
     fun startChatRealtime(match: MatchEntity, profile: ProfileEntity) {
@@ -1297,9 +1298,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             val myPhone = prefs?.verifiedMobileNumber ?: ""
             val partnerPhone = resolvedProfile.phoneNumber.ifBlank { match.profileId }
             
-            // Mark all past incoming messages as read both locally and in public.chat_messages
-            repository.markMatchAsRead(match.matchId, myPhone, partnerPhone)
-
             // Reconcile from the monotonic per-chat cursor; never depend on the socket for history.
             try {
                 syncChatMessagesSinceWatermark(match, resolvedProfile)
@@ -1467,7 +1465,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 val isReceiverMe = receiverIdentity.equals(currentProfileId, ignoreCase = true) ||
                     com.example.util.PhonebookHelper.arePhonesMatching(receiverPhone, currentUserPhone)
 
-                val isBelongingToActiveConversation = (activePair != null) && (
                     ((com.example.util.PhonebookHelper.arePhonesMatching(senderPhone, activePartnerPhone) && com.example.util.PhonebookHelper.arePhonesMatching(receiverPhone, currentUserPhone)) ||
                      (com.example.util.PhonebookHelper.arePhonesMatching(senderPhone, currentUserPhone) && com.example.util.PhonebookHelper.arePhonesMatching(receiverPhone, activePartnerPhone))) ||
                     (recordMatchId.isNotBlank() && (recordMatchId == activeMatchId || recordMatchId == canonicalActiveMatchId))
@@ -1683,10 +1680,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         }
                         return@launch
                     }
-
-                    val shouldMarkRead = isBelongingToActiveConversation &&
-                        database.userPreferencesDao().getPreferencesSync()?.readReceiptsEnabled != false
-
                     val receiveCommitAt = System.currentTimeMillis()
                     val entity = ChatMessageEntity(
                         messageId = msgId,
@@ -1696,8 +1689,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         timestamp = timestamp,
                         isDelivered = true,
                         deliveredAt = receiveCommitAt,
-                        isRead = if (shouldMarkRead) true else isRead,
-                        readAt = if (shouldMarkRead || isRead) receiveCommitAt else 0L,
+                        isRead = isRead,
+                        readAt = if (isRead) receiveCommitAt else 0L,
                         mediaType = mediaType,
                         mediaUrl = decodedPayload.mediaUrl ?: mediaUrl,
                         voiceDurationSeconds = voiceSeconds,
@@ -1707,7 +1700,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         isForwarded = isForwarded,
                         forwardCount = forwardCount,
                         isEncrypted = true,
-                        deliveryState = if (shouldMarkRead) "READ" else "DELIVERED",
+                        deliveryState = if (isRead) "READ" else "DELIVERED",
                         senderDisplayName = database.matchDao().getMatchByIdSync(targetMatchId)?.localContactName.orEmpty(),
                         senderPhotoUri = database.matchDao().getMatchByIdSync(targetMatchId)?.localPhotoUri.orEmpty()
                     )
@@ -1738,12 +1731,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         )
                     }
 
-                    // This message is now visible in the active chat. Use its durable receipt ID;
-                    // the ciphertext row has already been purged by the delivery acknowledgement.
-                    if (shouldMarkRead) {
-                        com.example.util.SupabaseBackendManager.markMessageRead(msgId)
-                        repository.markMatchAsRead(targetMatchId, currentUserPhone, senderPhone)
-                    }
                 }
             } catch (e: Exception) {
                 android.util.Log.e("DatingViewModel", "Error handling realtime chat message insert: ${e.message}", e)
@@ -1891,6 +1878,39 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
     fun triggerFaceVerification() {
         _showFaceVerification.value = true
+    }
+
+    fun markMessageReadWhenVisible(messageId: String) {
+        val id = messageId.trim()
+        if (id.isBlank() || !readReceiptRequestsInFlight.add(id)) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val active = _activeChat.value ?: return@launch
+                val local = database.chatMessageDao().getMessageById(id) ?: return@launch
+                val currentProfileId = VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+                if (!local.matchId.equals(active.first.matchId, ignoreCase = true) ||
+                    local.senderId.equals("USER", ignoreCase = true) ||
+                    com.example.util.MessageDecryptionPolicy.isOwnOutgoingMessage(local.senderId, currentProfileId) ||
+                    local.isRead || local.deliveryState.equals("READ", ignoreCase = true)
+                ) return@launch
+                if (repository.userPreferences.firstOrNull()?.readReceiptsEnabled == false) return@launch
+                if (!com.example.util.SupabaseBackendManager.markMessageRead(id)) {
+                    android.util.Log.w("VibeSyncReadReceipt", "READ receipt remains pending for visible message.")
+                    return@launch
+                }
+                database.chatMessageDao().markMessageAsReadWithExpiry(
+                    messageId = id,
+                    readAt = System.currentTimeMillis(),
+                    timerSeconds = active.first.disappearingTimerSeconds
+                )
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                android.util.Log.w("VibeSyncReadReceipt", "Visible-message READ receipt failed: " + failure.javaClass.simpleName)
+            } finally {
+                readReceiptRequestsInFlight.remove(id)
+            }
+        }
     }
 
     fun closeChat() {

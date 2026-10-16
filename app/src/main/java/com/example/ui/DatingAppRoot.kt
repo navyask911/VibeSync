@@ -185,6 +185,30 @@ fun DatingAppRoot(
 
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     val syncContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+
+    LaunchedEffect(activeChat?.first?.matchId) {
+        activeChat?.first?.matchId?.let { matchId ->
+            runCatching { com.example.util.LastActiveRouteStore.saveChat(syncContext, matchId) }
+                .onFailure { android.util.Log.w("VibeSyncNavigation", "Could not persist chat route.") }
+        }
+    }
+    LaunchedEffect(isLoggedIn, isSessionChecking, authState, matches, allProfiles) {
+        if (isSessionChecking || authState == AuthState.INITIALIZING) return@LaunchedEffect
+        if (!isLoggedIn || authState != AuthState.AUTHENTICATED) {
+            runCatching { com.example.util.LastActiveRouteStore.clear(syncContext) }
+            return@LaunchedEffect
+        }
+        val savedMatchId = runCatching {
+            com.example.util.LastActiveRouteStore.readRoute(syncContext)
+                ?.let(com.example.util.LastActiveRoutePolicy::parseChatMatchId)
+        }.getOrNull() ?: return@LaunchedEffect
+        val savedMatch = matches.firstOrNull { it.matchId.equals(savedMatchId, ignoreCase = true) }
+            ?: return@LaunchedEffect
+        val savedProfile = allProfiles.firstOrNull { it.id.equals(savedMatch.profileId, ignoreCase = true) }
+            ?: viewModel.getProfile(savedMatch.profileId) ?: return@LaunchedEffect
+        if (viewModel.activeChat.value == null) viewModel.openChat(savedMatch, savedProfile)
+    }
+
     androidx.compose.runtime.DisposableEffect(lifecycleOwner, isLoggedIn) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
@@ -766,6 +790,7 @@ fun DatingAppRoot(
                 onStopRealtime = { viewModel.stopChatRealtime() },
                 isPartnerTyping = isPartnerTyping,
                 readReceiptsEnabled = preferences?.readReceiptsEnabled ?: true,
+                onMarkMessageRead = { messageId -> viewModel.markMessageReadWhenVisible(messageId) },
                 typingIndicatorsEnabled = preferences?.typingIndicatorsEnabled ?: true,
                 userPreferences = preferences,
                 onUpdateUserPreferences = { updated -> viewModel.updatePreferences(updated) },
