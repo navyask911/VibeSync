@@ -217,7 +217,7 @@ interface ChatMessageDao {
     @Query("UPDATE chat_messages SET deliveryAckPending = 0, deliveryState = 'FAILED', lastSyncError = 'Recipient could not decrypt this message', lastSyncAttemptAt = :failedAt WHERE messageId = :messageId AND senderId = 'USER' AND deliveryState NOT IN ('DELIVERED', 'READ')")
     suspend fun markMessageDeliveryFailed(messageId: String, failedAt: Long = System.currentTimeMillis())
 
-    @Query("UPDATE chat_messages SET deliveryState = 'PENDING', isDelivered = 0, isRead = 0, deliveredAt = 0, readAt = 0, lastSyncError = '', lastSyncAttemptAt = 0 WHERE messageId = :messageId AND senderId = 'USER'")
+    @Query("UPDATE chat_messages SET deliveryState = 'PENDING', isDelivered = 0, isRead = 0, deliveredAt = 0, readAt = 0, lastSyncError = '', lastSyncAttemptAt = 0 WHERE messageId = :messageId AND senderId = 'USER' AND deliveryState = 'FAILED'")
     suspend fun resetFailedMessageForRetry(messageId: String)
 
     @Query("SELECT * FROM chat_messages WHERE matchId = :matchId AND senderId != 'USER' AND deliveryAckPending = 1 ORDER BY timestamp ASC")
