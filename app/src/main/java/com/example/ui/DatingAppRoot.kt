@@ -194,14 +194,12 @@ fun DatingAppRoot(
         }
     }
     LaunchedEffect(restoreChatRouteAfterProcessDeath, isLoggedIn, isSessionChecking, authState, matches, allProfiles) {
-        if (!restoreChatRouteAfterProcessDeath ||
-            isSessionChecking ||
-            authState == AuthState.INITIALIZING
-        ) return@LaunchedEffect
+        if (isSessionChecking || authState == AuthState.INITIALIZING) return@LaunchedEffect
         if (!isLoggedIn || authState != AuthState.AUTHENTICATED) {
             runCatching { com.example.util.LastActiveRouteStore.clear(syncContext) }
             return@LaunchedEffect
         }
+        if (!restoreChatRouteAfterProcessDeath) return@LaunchedEffect
 
         val storedRoute = runCatching {
             com.example.util.LastActiveRouteStore.readRoute(syncContext)
