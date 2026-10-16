@@ -89,6 +89,23 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
             val data = remoteMessage.data
             val type = data["type"] ?: "MESSAGE"
 
+            // Receipts are durable server rows; data-only high-priority pushes bring Room up to
+            // date when Realtime is disconnected in the background.
+            if (type.equals("receipt_update", ignoreCase = true)) {
+                val messageId = data["message_id"]?.trim().orEmpty()
+                val matchId = data["match_id"]?.trim().orEmpty()
+                val status = data["status"]?.trim()?.uppercase().orEmpty()
+                if (messageId.isNotBlank() && matchId.isNotBlank() &&
+                    status in setOf("DELIVERED", "READ", "FAILED")
+                ) {
+                    ChatReceiptUpdateWorker.enqueue(applicationContext, messageId, matchId, status)
+                } else {
+                    Log.w(TAG, "Ignored malformed receipt update wake-up.")
+                }
+                return
+            }
+
+
             // Direct-message pushes are wake-up hints only. Never consume message bodies,
             // ciphertext, sender names, or media URLs from FCM, including legacy message types.
             if (com.example.util.ChatPushPayloadPolicy.requiresInboxSync(type)) {
