@@ -350,6 +350,7 @@ fun ChatDetailScreen(
             onToggleStarMessage = onToggleStarMessage,
             onReactToMessage = onReactToMessage,
             onDeleteForMe = onDeleteForMe,
+            onClearChat = onClearChat,
             onDeleteForEveryone = onDeleteForEveryone,
             onForwardMessage = onForwardMessage,
             onForwardMessages = onForwardMessages,
@@ -388,6 +389,7 @@ private fun ChatDetailScreenContent(
     onToggleStarMessage: (messageId: String) -> Unit,
     onReactToMessage: (messageId: String, emoji: String) -> Unit,
     onDeleteForMe: (messageId: String) -> Unit,
+    onClearChat: (alsoDeleteMedia: Boolean) -> Unit,
     onDeleteForEveryone: (messageId: String) -> Unit,
     onForwardMessage: (targetMatchId: String, message: ChatMessageEntity) -> Unit,
     onForwardMessages: (
