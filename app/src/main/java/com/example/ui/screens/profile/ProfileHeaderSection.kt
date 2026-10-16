@@ -232,7 +232,11 @@ fun ProfileHeaderSection(
                     ),
                     color = MaterialTheme.colorScheme.onSurface
                 )
-                if (preferences.isFaceVerified || preferences.isMobileVerified) {
+                if (com.example.util.VerifiedBadgePolicy.shouldShow(
+                        preferences.isVerified,
+                        preferences.subscriptionStatus,
+                        preferences.badgePurchased
+                    )) {
                     Spacer(modifier = Modifier.width(6.dp))
                     Icon(
                         imageVector = Icons.Default.Verified,

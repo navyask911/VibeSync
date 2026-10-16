@@ -29,6 +29,8 @@ data class ProfileEntity(
     /** Server updated_at epoch millis, used to invalidate avatar image cache when a profile is refreshed. */
     val avatarCacheVersion: Long = 0L,
     val isVerified: Boolean = false,
+    @androidx.room.ColumnInfo(defaultValue = "'inactive'") val subscriptionStatus: String = "inactive",
+    @androidx.room.ColumnInfo(defaultValue = "0") val badgePurchased: Boolean = false,
     val likedMe: Boolean = false, // Has this person already liked current user? (100% Free to view!)
     val isSuperLikedMe: Boolean = false,
     val activityStatus: String = "Active today",

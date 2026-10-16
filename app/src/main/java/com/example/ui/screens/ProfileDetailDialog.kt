@@ -217,7 +217,9 @@ fun ProfileDetailDialog(
                                         colorStart = profile.gradientColorStart,
                                         colorEnd = profile.gradientColorEnd,
                                         size = 120.dp,
-                                        isVerified = profile.isVerified,
+                                        isVerified = com.example.util.VerifiedBadgePolicy.shouldShow(
+                                            profile.isVerified, profile.subscriptionStatus, profile.badgePurchased
+                                        ),
                                         avatarUrl = "",
                                         avatarCacheVersion = profile.avatarCacheVersion
                                     )
@@ -250,7 +252,9 @@ fun ProfileDetailDialog(
                                 colorStart = profile.gradientColorStart,
                                 colorEnd = profile.gradientColorEnd,
                                 size = 120.dp,
-                                isVerified = profile.isVerified,
+                                isVerified = com.example.util.VerifiedBadgePolicy.shouldShow(
+                                            profile.isVerified, profile.subscriptionStatus, profile.badgePurchased
+                                        ),
                                 avatarUrl = "",
                                 avatarCacheVersion = profile.avatarCacheVersion
                             )

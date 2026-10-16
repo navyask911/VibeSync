@@ -1028,6 +1028,8 @@ object SupabaseClientManager {
             email = email,
             publicIdentityKey = publicIdentityKey,
             isVerified = obj.optBoolean("is_verified", false),
+            subscriptionStatus = obj.optSafeString("subscription_status", "inactive"),
+            badgePurchased = obj.optBoolean("badge_purchased", false),
             likedMe = true,
             isSuperLikedMe = true,
             isOpenForDating = true,
@@ -1236,7 +1238,7 @@ object SupabaseClientManager {
         try {
             val safeLimit = limit.coerceIn(1, 50)
             val request = buildRequest(
-                endpoint = "vibesync_profiles_public?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key,latitude,longitude&order=updated_at.desc&limit=$safeLimit",
+                endpoint = "vibesync_profiles_public?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key,latitude,longitude,subscription_status,badge_purchased&order=updated_at.desc&limit=$safeLimit",
                 method = "GET"
             )
 
@@ -1269,7 +1271,7 @@ object SupabaseClientManager {
         try {
             val encodedId = java.net.URLEncoder.encode(profileId, Charsets.UTF_8.name())
             val request = buildRequest(
-                endpoint = "vibesync_profiles_public?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key,latitude,longitude&id=eq.$encodedId&limit=1",
+                endpoint = "vibesync_profiles_public?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key,latitude,longitude,subscription_status,badge_purchased&id=eq.$encodedId&limit=1",
                 method = "GET"
             )
             httpClient.newCall(request).execute().use { response ->

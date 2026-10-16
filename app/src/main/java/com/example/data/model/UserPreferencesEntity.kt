@@ -108,7 +108,10 @@ data class UserPreferencesEntity(
     val matchSoundTone: String = "CELEBRATION", // "CELEBRATION", "COSMIC_MATCH", "SWEET_BELL", "SILENT"
     val callRingtone: String = "STANDARD_RING", // "STANDARD_RING", "DIGITAL_WAVE", "MARIMBA", "SILENT"
     // Stored in the SQLCipher-encrypted Room database. Screenshot capture is opt-in.
-    @androidx.room.ColumnInfo(defaultValue = "0") val screenshotSecurityEnabled: Boolean = false
+    @androidx.room.ColumnInfo(defaultValue = "0") val screenshotSecurityEnabled: Boolean = false,
+    @androidx.room.ColumnInfo(defaultValue = "0") val isVerified: Boolean = false,
+    @androidx.room.ColumnInfo(defaultValue = "'inactive'") val subscriptionStatus: String = "inactive",
+    @androidx.room.ColumnInfo(defaultValue = "0") val badgePurchased: Boolean = false
 ) {
     val remainingSuperLikesToday: Int
         get() {
