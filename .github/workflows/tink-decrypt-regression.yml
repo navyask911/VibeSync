@@ -1,0 +1,105 @@
+name: Tink decrypt regression JVM tests
+
+on:
+  push:
+    branches:
+      - fix/release-startup-icons-ci
+      - investigate/unsigned-tink-key-id-regression
+    paths:
+      - "app/src/main/**"
+      - "app/src/test/**"
+      - "app/build.gradle.kts"
+      - ".github/workflows/tink-decrypt-regression.yml"
+  pull_request:
+    branches:
+      - fix/release-startup-icons-ci
+    paths:
+      - "app/src/main/**"
+      - "app/src/test/**"
+      - "app/build.gradle.kts"
+      - ".github/workflows/tink-decrypt-regression.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tink-jvm-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Prepare ephemeral app config
+        env:
+          SUPABASE_URL_SECRET: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY_SECRET: ${{ secrets.SUPABASE_ANON_KEY }}
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          values = {
+              "SUPABASE_URL": os.environ.get("SUPABASE_URL_SECRET", "").strip(),
+              "SUPABASE_ANON_KEY": os.environ.get("SUPABASE_ANON_KEY_SECRET", "").strip(),
+          }
+          for key, value in values.items():
+              if not value or "\n" in value or "\r" in value:
+                  raise SystemExit(f"Missing/invalid required GitHub secret: {key}")
+          if not values["SUPABASE_URL"].startswith("https://"):
+              raise SystemExit("SUPABASE_URL must use HTTPS")
+          Path(".env").write_text(
+              "# Ephemeral GitHub Actions build config.\n" +
+              "".join(f"{key}={value}\n" for key, value in values.items()),
+              encoding="utf-8",
+          )
+
+          encoded = "".join(os.environ.get("GOOGLE_SERVICES_JSON_BASE64", "").split())
+          if not encoded:
+              raise SystemExit("Missing required GitHub Secret: GOOGLE_SERVICES_JSON_BASE64")
+          try:
+              decoded = base64.b64decode(encoded, validate=True)
+              service_json = json.loads(decoded)
+          except Exception as exc:
+              raise SystemExit("Invalid Google Services secret format") from exc
+          app_id_match = re.search(
+              r'applicationId\s*=\s*"([^"]+)"',
+              Path("app/build.gradle.kts").read_text(encoding="utf-8"),
+          )
+          if not app_id_match:
+              raise SystemExit("Cannot determine applicationId")
+          packages = {
+              client.get("client_info", {}).get("android_client_info", {}).get("package_name")
+              for client in service_json.get("client", [])
+          }
+          if app_id_match.group(1) not in packages:
+              raise SystemExit("Google Services secret package does not match app")
+          Path("app/google-services.json").write_bytes(decoded)
+          PY
+
+      - name: JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Gradle setup
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Ensure wrapper is executable
+        run: chmod +x ./gradlew
+
+      - name: Compile Debug Kotlin
+        run: ./gradlew --no-daemon compileDebugKotlin
+
+      - name: JVM unit and Compose UI tests
+        run: ./gradlew test -Djava.awt.headless=true --no-daemon
