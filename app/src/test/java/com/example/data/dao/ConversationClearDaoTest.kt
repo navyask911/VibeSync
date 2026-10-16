@@ -174,7 +174,7 @@ class ConversationClearDaoTest {
         var message = database.chatMessageDao().getMessageById("message-retry-read")
         assertEquals("READ", message?.deliveryState)
         assertTrue(message?.isRead ?: false)
-        assertEquals(20L, message?.readAt)
+        assertEquals(20L, message?.readAt ?: 0L)
 
         database.chatMessageDao().upsertMessage(
             ChatMessageEntity(
