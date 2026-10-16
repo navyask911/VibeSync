@@ -392,12 +392,17 @@ object MessageDeltaSyncManager {
             // Sender cannot decrypt recipient-key ciphertext, so delivery ticks are reconciled from
             // authoritative metadata as part of each delta sweep.
             val deliveryStates = SupabaseClientManager.fetchMessageDeliveryStatesForMatch(remoteMatchId)
+            // This REST query reads chat_message_receipts; the sender-only RLS policy is the
+            // authorization boundary. Receipt rows do not carry sender_id, so don't discard them
+            // with the legacy chat_messages sender filter.
             for (state in deliveryStates) {
-                if (!state.senderId.equals(ownerId, ignoreCase = true)) continue
-                when {
-                    state.isRead -> database.chatMessageDao().markMessageAsRead(state.messageId)
-                    state.isDelivered -> database.chatMessageDao().markMessageAsDelivered(state.messageId)
-                    else -> database.chatMessageDao().markOutboxSentToServerIfPending(state.messageId, System.currentTimeMillis())
+                when (state.deliveryState.uppercase()) {
+                    "FAILED" -> database.conversationClearDao().markReceiptFailed(state.messageId)
+                    "READ" -> database.conversationClearDao().markReceiptRead(state.messageId)
+                    "DELIVERED" -> database.conversationClearDao().markReceiptDelivered(state.messageId)
+                    "SENT_TO_SERVER" -> database.chatMessageDao().markOutboxSentToServerIfPending(
+                        state.messageId, System.currentTimeMillis()
+                    )
                 }
             }
 
