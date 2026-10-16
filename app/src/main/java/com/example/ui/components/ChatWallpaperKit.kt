@@ -55,7 +55,7 @@ data class ChatWallpaperStyle(
 @Composable
 fun rememberChatWallpaperStyle(state: ChatWallpaperUiState): ChatWallpaperStyle {
     val context = LocalContext.current
-    val lineColor = (if (state.isDarkMode) Color(0xFF303840) else Color(0xFF8A929A)).copy(alpha = state.wallpaperOpacity.coerceIn(0.05f, 0.75f))
+    val lineColor = (if (state.isDarkMode) Color(0xFF303840) else Color(0xFF8A929A)).copy(alpha = state.wallpaperOpacity.coerceIn(0.05f, 0.30f))
     val backgroundColor = if (state.isDarkMode) Color(0xFF151A20) else Color(0xFFF5F6F7)
     val bitmap = remember(context, state.theme, state.isDarkMode, state.wallpaperOpacity) {
         val drawable: Drawable? = context.getDrawable(state.theme.drawableRes)?.mutate()
@@ -94,7 +94,7 @@ fun ChatWallpaperPickerDialog(
 ) {
     var selectedTheme by remember(state) { mutableStateOf(state.theme) }
     var darkMode by remember(state) { mutableStateOf(state.isDarkMode) }
-    var wallpaperOpacity by remember(state) { mutableStateOf(state.wallpaperOpacity.coerceIn(0.05f, 0.75f)) }
+    var wallpaperOpacity by remember(state) { mutableStateOf(state.wallpaperOpacity.coerceIn(0.05f, 0.30f)) }
     val preview = rememberChatWallpaperStyle(ChatWallpaperUiState(selectedTheme, darkMode, wallpaperOpacity))
 
     AlertDialog(
@@ -140,7 +140,7 @@ fun ChatWallpaperPickerDialog(
                         Text("Line opacity", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                         Text("${(wallpaperOpacity * 100).toInt()}%", style = MaterialTheme.typography.labelMedium)
                     }
-                    Slider(value = wallpaperOpacity, onValueChange = { wallpaperOpacity = it }, valueRange = 0.05f..0.75f)
+                    Slider(value = wallpaperOpacity, onValueChange = { wallpaperOpacity = it }, valueRange = 0.05f..0.30f)
                 }
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
