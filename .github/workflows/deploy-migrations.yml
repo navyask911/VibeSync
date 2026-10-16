@@ -9,6 +9,8 @@ on:
       - 'supabase/migrations/**'
       - 'supabase/functions/admin-fcm-broadcast/**'
       - 'supabase/functions/admin-portal-api/**'
+      - 'supabase/functions/vibesync-purge-chat-media/**'
+      - 'supabase/functions/vibesync-ai-image-preview/**'
       - '.github/workflows/deploy-migrations.yml'
   workflow_dispatch:
 
@@ -72,6 +74,30 @@ jobs:
 
       - name: Deploy staff-authorized admin RPC gateway
         run: supabase functions deploy admin-portal-api --project-ref "$SUPABASE_PROJECT_ID"
+
+      - name: Sync optional AI image provider secrets from GitHub Actions
+        env:
+          CHAT_IMAGE_PROVIDER_URL: ${{ secrets.CHAT_IMAGE_PROVIDER_URL }}
+          CHAT_IMAGE_PROVIDER_API_KEY: ${{ secrets.CHAT_IMAGE_PROVIDER_API_KEY }}
+          CHAT_IMAGE_PROVIDER_MODEL: ${{ secrets.CHAT_IMAGE_PROVIDER_MODEL }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${CHAT_IMAGE_PROVIDER_URL:-}" && -n "${CHAT_IMAGE_PROVIDER_API_KEY:-}" ]]; then
+            if [[ -n "${CHAT_IMAGE_PROVIDER_MODEL:-}" ]]; then
+              supabase secrets set CHAT_IMAGE_PROVIDER_URL="$CHAT_IMAGE_PROVIDER_URL" CHAT_IMAGE_PROVIDER_API_KEY="$CHAT_IMAGE_PROVIDER_API_KEY" CHAT_IMAGE_PROVIDER_MODEL="$CHAT_IMAGE_PROVIDER_MODEL" --project-ref "$SUPABASE_PROJECT_ID"
+            else
+              supabase secrets set CHAT_IMAGE_PROVIDER_URL="$CHAT_IMAGE_PROVIDER_URL" CHAT_IMAGE_PROVIDER_API_KEY="$CHAT_IMAGE_PROVIDER_API_KEY" --project-ref "$SUPABASE_PROJECT_ID"
+            fi
+            echo "AI image provider secrets synced from configured GitHub Actions secrets."
+          else
+            echo "AI image provider GitHub Actions secrets are absent; existing Supabase secret values were left unchanged."
+          fi
+
+      - name: Deploy chat media purge Edge Function
+        run: supabase functions deploy vibesync-purge-chat-media --no-verify-jwt --project-ref "$SUPABASE_PROJECT_ID"
+
+      - name: Deploy AI image preview Edge Function
+        run: supabase functions deploy vibesync-ai-image-preview --no-verify-jwt --project-ref "$SUPABASE_PROJECT_ID"
 
       - name: Enable and verify Supabase custom access token hook
         run: |
