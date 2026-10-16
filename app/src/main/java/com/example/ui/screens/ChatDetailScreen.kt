@@ -3330,7 +3330,11 @@ private fun ChatDetailScreenContent(
                 showChatColorDialog = false
                 Toast.makeText(context, "Chat text color updated locally 🎨", Toast.LENGTH_SHORT).show()
             },
-            onDismiss = { showCh    // Fresh, high-accuracy GPS only. Never substitute a demo/default coordinate.
+            onDismiss = { showChatColorDialog = false }
+        )
+    }
+
+    // Fresh GPS only: there is intentionally no default city/coordinate fallback.
     if (showLocationDialog) {
         val currentContext = LocalContext.current
         var detectedLoc by remember { mutableStateOf<DeviceLocationResult?>(null) }
@@ -3345,112 +3349,67 @@ private fun ChatDetailScreenContent(
                 try {
                     detectedLoc = com.example.util.FreshLocationHelper.fetchCurrentLocation(currentContext)
                 } catch (failure: Exception) {
-                    locationError = when (failure) {
-                        is SecurityException -> "Location permission is required to share a fresh GPS fix."
-                        else -> failure.message ?: "A fresh GPS fix is unavailable. Try again outdoors."
+                    locationError = if (failure is SecurityException) {
+                        "Location permission is required to share a fresh GPS fix."
+                    } else {
+                        failure.message ?: "A fresh GPS fix is unavailable. Try again outdoors."
                     }
                 } finally {
                     isFetchingLocation = false
                 }
             }
         }
-        val locationPermissionLauncher = rememberLauncherForActivityResult(
+        val permissionLauncher = rememberLauncherForActivityResult(
             contract = androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
         ) { permissions ->
             if (permissions[android.Manifest.permission.ACCESS_FINE_LOCATION] == true ||
                 permissions[android.Manifest.permission.ACCESS_COARSE_LOCATION] == true
-            ) {
-                performGpsRefresh()
-            } else {
+            ) performGpsRefresh()
+            else {
                 locationError = "Location permission was not granted. No location was shared."
                 isFetchingLocation = false
             }
         }
         val refreshGps: () -> Unit = {
-            val fineGranted = androidx.core.content.ContextCompat.checkSelfPermission(
-                currentContext, android.Manifest.permission.ACCESS_FINE_LOCATION
-            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-            val coarseGranted = androidx.core.content.ContextCompat.checkSelfPermission(
-                currentContext, android.Manifest.permission.ACCESS_COARSE_LOCATION
-            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-            if (fineGranted || coarseGranted) {
-                performGpsRefresh()
-            } else {
-                locationPermissionLauncher.launch(
-                    arrayOf(
-                        android.Manifest.permission.ACCESS_FINE_LOCATION,
-                        android.Manifest.permission.ACCESS_COARSE_LOCATION
-                    )
-                )
-            }
+            val fine = androidx.core.content.ContextCompat.checkSelfPermission(currentContext, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            val coarse = androidx.core.content.ContextCompat.checkSelfPermission(currentContext, android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            if (fine || coarse) performGpsRefresh()
+            else permissionLauncher.launch(arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION))
         }
         LaunchedEffect(Unit) { refreshGps() }
 
         val location = detectedLoc
-        val mapLink = location?.let {
-            "https://www.google.com/maps/search/?api=1&query=${it.latitude},${it.longitude}"
-        }.orEmpty()
+        val mapLink = location?.let { "https://www.google.com/maps/search/?api=1&query=${it.latitude},${it.longitude}" }.orEmpty()
         AlertDialog(
             onDismissRequest = { showLocationDialog = false },
             icon = { Icon(Icons.Default.LocationOn, contentDescription = null, modifier = Modifier.size(30.dp)) },
             title = { Text("Share location") },
             text = {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            if (isFetchingLocation) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            when {
+                                isFetchingLocation -> Row(verticalAlignment = Alignment.CenterVertically) {
+                                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                                     Spacer(Modifier.width(10.dp))
                                     Text("Finding a fresh GPS fix…", style = MaterialTheme.typography.bodyMedium)
                                 }
-                            } else if (location != null) {
-                                Text(location.fullAddress, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    "GPS ${String.format(java.util.Locale.US, "%.5f", location.latitude)}, ${String.format(java.util.Locale.US, "%.5f", location.longitude)}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Text(
-                                    "Accuracy ±${location.accuracyMeters.toInt()} m · refreshed now",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            } else {
-                                Text(
-                                    locationError ?: "Refresh GPS to get a fresh, accurate location before sharing.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error
-                                )
+                                location != null -> {
+                                    Text(location.fullAddress, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                    Text("GPS ${String.format(java.util.Locale.US, "%.5f", location.latitude)}, ${String.format(java.util.Locale.US, "%.5f", location.longitude)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text("Accuracy ±${location.accuracyMeters.toInt()} m · refreshed now", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                else -> Text(locationError ?: "Refresh GPS to get an accurate fix before sharing.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                             }
                         }
                     }
-                    OutlinedButton(
-                        onClick = refreshGps,
-                        enabled = !isFetchingLocation,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
+                    OutlinedButton(onClick = refreshGps, enabled = !isFetchingLocation, modifier = Modifier.fillMaxWidth()) {
                         Icon(Icons.Default.Refresh, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
                         Text(if (isFetchingLocation) "Refreshing GPS…" else "Refresh GPS")
                     }
                     Button(
-                        onClick = {
-                            location?.let { fresh ->
-                                onSendMedia("LOCATION", fresh.fullAddress, mapLink, 0)
-                                showLocationDialog = false
-                            }
-                        },
+                        onClick = { location?.let { fresh -> onSendMedia("LOCATION", fresh.fullAddress, mapLink, 0); showLocationDialog = false } },
                         enabled = location != null && !isFetchingLocation,
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -3460,42 +3419,24 @@ private fun ChatDetailScreenContent(
                     }
                 }
             },
-            confirmButton = {
-                TextButton(onClick = { showLocationDialog = false }) { Text("Cancel") }
-            }
+            confirmButton = { TextButton(onClick = { showLocationDialog = false }) { Text("Cancel") } }
         )
     }
 
-    // Native contact picker. Only the explicitly selected contact is read and shared as vCard.
+    // Choose a real device contact and serialize only that selection as vCard.
     if (showContactDialog) {
         AlertDialog(
             onDismissRequest = { showContactDialog = false },
             icon = { Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(30.dp)) },
             title = { Text("Share a contact") },
-            text = {
-                Text(
-                    "Choose a contact from your device. Its name and phone number will be formatted as a vCard and sent through the encrypted message pipeline.",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            },
+            text = { Text("Choose a contact from your device. Its name and phone number will be formatted as a vCard and sent through the encrypted message pipeline.", style = MaterialTheme.typography.bodyMedium) },
             confirmButton = {
-                Button(
-                    onClick = {
-                        showContactDialog = false
-                        nativeContactPickerLauncher.launch(
-                            Intent(Intent.ACTION_PICK, ContactsContract.Contacts.CONTENT_URI)
-                        )
-                    }
-                ) { Text("Choose contact") }
+                Button(onClick = {
+                    showContactDialog = false
+                    nativeContactPickerLauncher.launch(Intent(Intent.ACTION_PICK, ContactsContract.Contacts.CONTENT_URI))
+                }) { Text("Choose contact") }
             },
-            dismissButton = {
-                TextButton(onClick = { showContactDialog = false }) { Text("Cancel") }
-            }
-        )
-    }
-
-ancel") }
-            }
+            dismissButton = { TextButton(onClick = { showContactDialog = false }) { Text("Cancel") } }
         )
     }
 

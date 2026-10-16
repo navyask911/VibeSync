@@ -30,7 +30,7 @@ object FreshLocationHelper {
         if (!fineGranted && !coarseGranted) throw SecurityException("Location permission is required.")
 
         val cancellation = CancellationTokenSource()
-        val fix: Location? = try {
+        val fix: Location = try {
             LocationServices.getFusedLocationProviderClient(appContext)
                 .getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cancellation.token)
                 .await()

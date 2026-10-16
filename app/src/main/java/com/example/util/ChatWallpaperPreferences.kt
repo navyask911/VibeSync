@@ -17,7 +17,7 @@ object ChatWallpaperPreferences {
         val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val theme = runCatching {
             ChatWallpaperTheme.valueOf(prefs.getString(KEY_THEME + key, ChatWallpaperTheme.BENGALURU.name).orEmpty())
-        }.getOrDefault(ChatWallpaperTheme.LIFESTYLE)
+        }.getOrDefault(ChatWallpaperTheme.BENGALURU)
         return ChatWallpaperUiState(theme, prefs.getBoolean(KEY_DARK + key, false), prefs.getFloat(KEY_OPACITY + key, 0.28f).coerceIn(0.05f, 0.75f))
     }
 
