@@ -10,7 +10,12 @@ import androidx.room.Transaction
  */
 @Dao
 abstract class ConversationClearDao {
-    @Query("SELECT messageId FROM chat_messages WHERE matchId = :matchId")
+    @Query("""
+        SELECT messageId FROM chat_messages WHERE matchId = :matchId
+        UNION
+        SELECT remoteMessageId FROM local_messages
+         WHERE matchId = :matchId AND remoteMessageId IS NOT NULL AND TRIM(remoteMessageId) != ''
+    """)
     abstract suspend fun listConversationMessageIds(matchId: String): List<String>
 
     @Query("DELETE FROM chat_messages WHERE matchId = :matchId")
