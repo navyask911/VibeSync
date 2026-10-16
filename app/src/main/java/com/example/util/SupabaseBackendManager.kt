@@ -923,8 +923,9 @@ object SupabaseBackendManager {
         if (messageId.isBlank()) return@withContext false
         try {
             val accessToken = VibeSyncSessionManager.getToken() ?: return@withContext false
-            val body = JSONObject().put("p_message_id", messageId)
-                .toString().toRequestBody("application/json".toMediaType())
+            val body = JSONObject().apply {
+                ChatDeliveryRpcPayloads.acknowledgeAndPurge(messageId).forEach { (key, value) -> put(key, value) }
+            }.toString().toRequestBody("application/json".toMediaType())
             val request = Request.Builder()
                 .url("$SUPABASE_URL/rest/v1/rpc/acknowledge_and_purge_message")
                 .header("apikey", SUPABASE_ANON_KEY)

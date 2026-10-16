@@ -66,3 +66,12 @@ object ChatDeliveryPresentation {
         return value.toLongOrNull()
     }
 }
+
+/** Exact request contract shared by the delivery RPC and its regression tests. */
+object ChatDeliveryRpcPayloads {
+    fun acknowledgeAndPurge(messageId: String): Map<String, String> {
+        val cleanId = messageId.trim()
+        require(cleanId.isNotBlank()) { "messageId must not be blank" }
+        return linkedMapOf("p_message_id" to cleanId)
+    }
+}
