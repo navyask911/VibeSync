@@ -19,6 +19,17 @@ class ChatReadReceiptPolicyTest {
         )
         assertFalse(
             ChatReadReceiptPolicy.shouldAcknowledgeVisibleMessage(
+                screenResumed = true,
+                messageVisible = true,
+                readReceiptsEnabled = true,
+                isOutgoing = false,
+                isRead = false,
+                deliveryState = "DELIVERED",
+                networkAvailable = false
+            )
+        )
+        assertFalse(
+            ChatReadReceiptPolicy.shouldAcknowledgeVisibleMessage(
                 screenResumed = false,
                 messageVisible = true,
                 readReceiptsEnabled = true,
