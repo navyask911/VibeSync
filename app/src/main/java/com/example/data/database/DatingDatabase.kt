@@ -90,7 +90,7 @@ import com.example.data.dao.ConversationNotificationPreferencesDao
         ApiCredentialRequestEntity::class,
         ConversationNotificationPreferenceEntity::class
     ],
-    version = 61,
+    version = 62,
     exportSchema = false
 )
 abstract class DatingDatabase : RoomDatabase() {
@@ -485,6 +485,19 @@ abstract class DatingDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_61_62 = object : Migration(61, 62) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `chat_messages` ADD COLUMN `encrypted_payload` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `chat_messages` ADD COLUMN `decrypt_state` TEXT NOT NULL DEFAULT 'OK'")
+                db.execSQL("ALTER TABLE `local_messages` ADD COLUMN `encrypted_payload` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `local_messages` ADD COLUMN `decrypt_state` TEXT NOT NULL DEFAULT 'OK'")
+                db.execSQL("UPDATE `chat_messages` SET `encrypted_payload` = `text`, `text` = '', `decrypt_state` = 'FAILED_RETRYABLE' WHERE `text` LIKE 'TINK_ENC:%'")
+                db.execSQL("UPDATE `local_messages` SET `encrypted_payload` = `textContent`, `textContent` = '', `decrypt_state` = 'FAILED_RETRYABLE' WHERE `textContent` LIKE 'TINK_ENC:%'")
+                db.execSQL("UPDATE `chat_messages` SET `text` = '', `decrypt_state` = CASE WHEN `text` = 'Cannot decrypt this message: the required recipient key changed and is no longer available on this device.' THEN 'FAILED_KEY_MISSING' ELSE 'FAILED_RETRYABLE' END WHERE `text` IN ('Message could not be decrypted - keys updated', 'Cannot decrypt this message: the required recipient key changed and is no longer available on this device.')")
+                db.execSQL("UPDATE `local_messages` SET `textContent` = '', `decrypt_state` = CASE WHEN `textContent` = 'Cannot decrypt this message: the required recipient key changed and is no longer available on this device.' THEN 'FAILED_KEY_MISSING' ELSE 'FAILED_RETRYABLE' END WHERE `textContent` IN ('Message could not be decrypted - keys updated', 'Cannot decrypt this message: the required recipient key changed and is no longer available on this device.')")
+            }
+        }
+
         fun getDatabase(context: Context): DatingDatabase {
             val appContext = context.applicationContext
             return INSTANCE ?: synchronized(this) {
@@ -540,7 +553,8 @@ abstract class DatingDatabase : RoomDatabase() {
                                 MIGRATION_57_58,
                                 MIGRATION_58_59,
                                 MIGRATION_59_60,
-                                MIGRATION_60_61
+                                MIGRATION_60_61,
+                                MIGRATION_61_62
                             )
                             // Fail closed instead of recreating a database that contains local history.
                             .build()

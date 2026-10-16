@@ -281,7 +281,8 @@ internal object PendingMessageOutboxSender {
                             recipientPublicKeysetJson = recipientPublicKey,
                             rawText = payloadForEncryption,
                             senderPhone = senderProfileId,
-                            receiverPhone = recipientProfileId
+                            receiverPhone = recipientProfileId,
+                            messageId = safeMessageId
                         )
                     } catch (missing: com.example.util.RecipientKeyNotFoundException) {
                         Log.w(TAG, "RecipientKeyNotFoundException for message_id=$safeMessageId: ${missing.message}", missing)

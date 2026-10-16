@@ -5,6 +5,9 @@ package com.example.util
  * ciphertext as chat content. A later decrypted delivery replaces the tombstone by server ID.
  */
 internal object MessageLocalRetentionPolicy {
+    const val DECRYPT_STATE_OK = "OK"
+    const val FAILED_RETRYABLE = "FAILED_RETRYABLE"
+    const val FAILED_KEY_MISSING = "FAILED_KEY_MISSING"
     const val DECRYPTION_TOMBSTONE_TEXT = "Message could not be decrypted - keys updated"
     const val KEY_CHANGED_TOMBSTONE_TEXT = "Cannot decrypt this message: the required recipient key changed and is no longer available on this device."
     const val OUTGOING_PLAINTEXT_UNAVAILABLE_TEXT = "Sent from another device. The original message is not available on this device."
@@ -25,6 +28,21 @@ internal object MessageLocalRetentionPolicy {
             !candidate.startsWith(MessageHandler.PROTOCOL_PREFIX_V2) &&
             !candidate.startsWith("V1_ENC:", ignoreCase = true) &&
             !candidate.startsWith("ENC:", ignoreCase = true)
+    }
+
+    /** UI-only placeholder generation; synthetic text must not be persisted in message rows. */
+    fun displayText(storedText: String, decryptState: String, isOutgoing: Boolean): String {
+        if (decryptState == DECRYPT_STATE_OK) {
+            return storedText.takeUnless {
+                it == DECRYPTION_TOMBSTONE_TEXT || it == KEY_CHANGED_TOMBSTONE_TEXT ||
+                    it == OUTGOING_PLAINTEXT_UNAVAILABLE_TEXT
+            }.orEmpty()
+        }
+        return when {
+            isOutgoing -> OUTGOING_PLAINTEXT_UNAVAILABLE_TEXT
+            decryptState == FAILED_KEY_MISSING -> KEY_CHANGED_TOMBSTONE_TEXT
+            else -> DECRYPTION_TOMBSTONE_TEXT
+        }
     }
 
     fun displayText(incomingText: String, existingText: String?): String {

@@ -122,6 +122,9 @@ object MessageDeltaSyncManager {
                             readAt + timerSeconds.toLong() * 1000L
                         } else existing.expiresAt
                         dao.upsertMessage(existing.copy(
+                            encryptedPayload = remote.encryptedPayload,
+                            decryptState = if (MessageLocalRetentionPolicy.isRenderableText(existing.text)) MessageLocalRetentionPolicy.DECRYPT_STATE_OK else MessageLocalRetentionPolicy.FAILED_RETRYABLE,
+                            text = existing.text.takeIf { MessageLocalRetentionPolicy.isRenderableText(it) }.orEmpty(),
                             serverCreatedAt = maxOf(existing.serverCreatedAt, remote.serverCreatedAt),
                             isDelivered = existing.isDelivered || remote.isDelivered,
                             isRead = existing.isRead || remote.isRead,
@@ -138,13 +141,18 @@ object MessageDeltaSyncManager {
                         // rather than silently omitting the server row from local synchronization.
                         // Messages sent from another device can be encrypted for the recipient's key.
                         // Persist a tombstone instead of putting ciphertext into the chat UI.
-                        val senderText = decryptedPlaintext ?: existingPlaintext
-                            ?: MessageLocalRetentionPolicy.OUTGOING_PLAINTEXT_UNAVAILABLE_TEXT
+                        val senderStored = MessageDecryptionPolicy.storageForIncoming(
+                            ciphertext = remote.encryptedPayload.ifBlank { remote.text },
+                            decryptedText = decryptedPlaintext,
+                            existingPlaintext = existingPlaintext
+                        )
                         val senderMessage = remote.copy(
                             senderId = "USER",
-                            text = senderText,
+                            text = senderStored.text,
+                            encryptedPayload = senderStored.encryptedPayload,
+                            decryptState = senderStored.decryptState,
                             deliveryAckPending = false,
-                            deliveryState = if (MessageLocalRetentionPolicy.isRenderableText(senderText)) {
+                            deliveryState = if (senderStored.decryptState == MessageLocalRetentionPolicy.DECRYPT_STATE_OK) {
                                 remote.deliveryState
                             } else {
                                 "PENDING_DECRYPTION"
@@ -221,14 +229,25 @@ object MessageDeltaSyncManager {
                 }
 
                 if (!canRenderPlaintext) complete = false
-                val localText = decodedPayload?.text ?: existingPlaintext
-                    ?: record.decryptionFailureReason.takeIf { it.isNotBlank() }
-                    ?: MessageLocalRetentionPolicy.DECRYPTION_TOMBSTONE_TEXT
+                val originalCiphertext = remote.encryptedPayload.ifBlank {
+                    remote.text.takeIf { it.startsWith(TinkCryptoManager.TINK_PREFIX) }.orEmpty()
+                }
+                val failureState = if (record.decryptionFailureReason == MessageLocalRetentionPolicy.KEY_CHANGED_TOMBSTONE_TEXT) {
+                    MessageLocalRetentionPolicy.FAILED_KEY_MISSING
+                } else MessageLocalRetentionPolicy.FAILED_RETRYABLE
+                val storedIncoming = MessageDecryptionPolicy.storageForIncoming(
+                    ciphertext = originalCiphertext,
+                    decryptedText = decodedPayload?.text ?: decryptedPlaintext,
+                    existingPlaintext = existingPlaintext,
+                    failureState = failureState
+                )
                 val needsAck = canRenderPlaintext && !remote.isDelivered && !remote.isRead
                 val local = remote.copy(
                     matchId = match.matchId,
                     senderId = remote.senderId,
-                    text = localText,
+                    text = storedIncoming.text,
+                    encryptedPayload = storedIncoming.encryptedPayload,
+                    decryptState = storedIncoming.decryptState,
                     mediaUrl = decodedPayload?.mediaUrl ?: remote.mediaUrl,
                     isDelivered = remote.isDelivered,
                     isRead = remote.isRead,
@@ -260,6 +279,8 @@ object MessageDeltaSyncManager {
                         isDeleted = existing.isDeleted || fresh.isDeleted,
                         isDeletedForEveryone = existing.isDeletedForEveryone || fresh.isDeletedForEveryone,
                         text = if (existing.isDeleted || existing.isDeletedForEveryone) "" else fresh.text,
+                        encryptedPayload = if (existing.isDeleted || existing.isDeletedForEveryone) "" else fresh.encryptedPayload,
+                        decryptState = if (existing.isDeleted || existing.isDeletedForEveryone) MessageLocalRetentionPolicy.DECRYPT_STATE_OK else fresh.decryptState,
                         mediaUrl = if (existing.isDeleted || existing.isDeletedForEveryone) "" else fresh.mediaUrl,
                         reactionsJson = existing.reactionsJson,
                         isForwarded = existing.isForwarded || fresh.isForwarded,

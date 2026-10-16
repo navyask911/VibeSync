@@ -4662,6 +4662,9 @@ private fun VibeSyncChatBubble(
     onMediaClick: (String, String) -> Unit
 ) {
     val formattedTime = remember(message.timestamp) { formatRelativeMessageTime(message.timestamp) }
+    val bubbleTextForDisplay = com.example.util.MessageLocalRetentionPolicy.displayText(
+        storedText = message.text, decryptState = message.decryptState, isOutgoing = isOutgoing
+    )
     val bubbleTextColor = if (isOutgoing) MaterialTheme.colorScheme.onPrimary else chatTextColor
 
     if (message.senderId.equals("SYSTEM", ignoreCase = true)) {
@@ -5347,8 +5350,8 @@ private fun VibeSyncChatBubble(
                             }
                         }
                         else -> {
-                            val resolvedText = remember(message.text) {
-                                var txt = message.text
+                            val resolvedText = remember(bubbleTextForDisplay, message.text, message.decryptState) {
+                                var txt = if (message.decryptState == com.example.util.MessageLocalRetentionPolicy.DECRYPT_STATE_OK) message.text else bubbleTextForDisplay
                                 if (txt.startsWith("V2_SIG:") ||
                                     txt.startsWith("V1_ENC:") ||
                                     txt.startsWith("ENC:")
@@ -5368,7 +5371,7 @@ private fun VibeSyncChatBubble(
                                 }
                                 txt
                             }
-                            val displayText = remember(resolvedText, message.text, message.mediaType) {
+                            val displayText = remember(resolvedText, message.text, message.mediaType, message.decryptState) {
                                 val raw = resolvedText.trim()
                                 if (raw.isNotBlank() && !raw.equals("Message", ignoreCase = true)) {
                                     raw

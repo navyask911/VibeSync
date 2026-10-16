@@ -323,7 +323,8 @@ object MessageHandler {
         peerProfileId: String = "",
         fallbackPhoneNumber: String = "",
         onPeerPublicKeyRefreshed: (suspend (String, String) -> Unit)? = null,
-        onMismatchedKey: (() -> Unit)? = null
+        onMismatchedKey: (() -> Unit)? = null,
+        messageId: String = ""
     ): String {
         if (!rawPayload.startsWith(TinkCryptoManager.TINK_PREFIX)) {
             return verifyAndDecryptPayload(
@@ -334,13 +335,14 @@ object MessageHandler {
                 receiverPhone = receiverPhone,
                 onMismatchedKey = onMismatchedKey,
                 matchId = matchId,
-                inboundEventPayload = inboundEventPayload
+                inboundEventPayload = inboundEventPayload,
+                messageId = messageId
             )
         }
 
         val effectiveContext = context ?: appContext
         if (effectiveContext == null) {
-            Log.e(TAG, "Realtime Tink retry unavailable: app context is missing.")
+            Log.w(TAG, "Realtime Tink retry deferred: app context is missing.")
             return ""
         }
 
@@ -352,7 +354,7 @@ object MessageHandler {
                 currentProfileId = VibeSyncSessionManager.getProfileId().orEmpty()
             )
         if (participants == null) {
-            Log.e(TAG, "Realtime Tink retry withheld: canonical participant context could not be resolved.")
+            Log.w(TAG, "Realtime Tink retry deferred: canonical participant context could not be resolved.")
             return ""
         }
 
@@ -369,6 +371,17 @@ object MessageHandler {
             else -> ""
         }
 
+        val resolvedMessageId = messageId.ifBlank {
+            inboundEventPayload?.let { firstPayloadValue(it, "message_id", "id", "messageId") }.orEmpty()
+        }
+        val directionSender = inboundEventPayload?.let { firstPayloadValue(it, "sender_id", "sender_profile_id", "senderId") }
+            .orEmpty().ifBlank { senderUid }
+        val directionRecipient = inboundEventPayload?.let { firstPayloadValue(it, "receiver_id", "recipient_id", "recipient_profile_id", "receiverId", "recipientId") }
+            .orEmpty().ifBlank { receiverPhone }
+        val peerPublicKeysetJson = runCatching {
+            com.example.data.database.DatingDatabase.getDatabase(effectiveContext).profileDao()
+                .getProfileByIdSync(directionSender)?.publicIdentityKey.orEmpty()
+        }.getOrDefault("")
         return TinkCryptoManager.decryptPayloadWithImmediateIdentityRefresh(
             context = effectiveContext,
             payload = rawPayload,
@@ -376,7 +389,11 @@ object MessageHandler {
             receiverPhone = participants.second,
             peerProfileId = resolvedPeerId,
             fallbackPhoneNumber = fallbackPhoneNumber,
-            onPeerPublicKeyRefreshed = onPeerPublicKeyRefreshed
+            onPeerPublicKeyRefreshed = onPeerPublicKeyRefreshed,
+            messageId = resolvedMessageId,
+            directionSenderProfileId = directionSender,
+            directionRecipientProfileId = directionRecipient,
+            peerPublicKeysetJson = peerPublicKeysetJson
         )
     }
 
@@ -388,7 +405,8 @@ object MessageHandler {
         receiverPhone: String = "",
         onMismatchedKey: (() -> Unit)? = null,
         matchId: String = "",
-        inboundEventPayload: JSONObject? = null
+        inboundEventPayload: JSONObject? = null,
+        messageId: String = ""
     ): String {
         if (rawPayload.isBlank()) return ""
 
@@ -409,13 +427,17 @@ object MessageHandler {
                     payload = rawPayload,
                     senderPhone = participants.first,
                     receiverPhone = participants.second,
-                    onMismatchedKey = onMismatchedKey
+                    onMismatchedKey = onMismatchedKey,
+                    messageId = messageId.ifBlank { inboundEventPayload?.let { firstPayloadValue(it, "message_id", "id", "messageId") }.orEmpty() },
+                    directionSenderProfileId = inboundEventPayload?.let { firstPayloadValue(it, "sender_id", "sender_profile_id", "senderId") }.orEmpty().ifBlank { senderUid },
+                    directionRecipientProfileId = inboundEventPayload?.let { firstPayloadValue(it, "receiver_id", "recipient_id", "recipient_profile_id", "receiverId", "recipientId") }.orEmpty().ifBlank { receiverPhone },
+                    peerPublicKeysetJson = inboundEventPayload?.let { firstPayloadValue(it, "sender_public_identity_key", "sender_public_key", "public_identity_key") }.orEmpty()
                 )
                 if (tinkDecrypted.isNotBlank()) return tinkDecrypted
             } else {
-                Log.e(TAG, "Tink decryption failed closed: canonical participant context could not be resolved.")
+                Log.w(TAG, "Tink decryption deferred: canonical participant context could not be resolved.")
             }
-            Log.e(TAG, "Tink decryption failed closed.")
+            Log.w(TAG, "Tink decrypt returned no plaintext; durable retry remains available.")
             return ""
         }
 

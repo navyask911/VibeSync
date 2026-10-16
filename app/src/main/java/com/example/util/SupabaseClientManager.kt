@@ -1197,6 +1197,13 @@ object SupabaseClientManager {
                     Log.w(TAG, "Tink key publication not confirmed: HTTP ${response.code}, status=${returnedStatus.ifBlank { "<missing>" }}, returned_key_id_matches_local=${returnedKeyId == publicKeyId}.")
                     return@use false
                 }
+                val resolvedPublishedKey = fetchPublicIdentityKey(profileId = activeProfileId)
+                if (resolvedPublishedKey.isNullOrBlank() ||
+                    !TinkCryptoManager.verifyPublishedPublicKeyRoundTrip(context, resolvedPublishedKey, activeProfileId)
+                ) {
+                    Log.e(TAG, "Published Tink key failed resolver round-trip self-check; local confirmation withheld.")
+                    return@use false
+                }
                 val stored = TinkCryptoManager.markMyPublicIdentityKeyPublished(context, activeProfileId, publicKeyset)
                 if (!stored) {
                     Log.w(TAG, "Supabase confirmed Tink key_id, but encrypted Room confirmation could not be persisted.")
@@ -2408,15 +2415,10 @@ object SupabaseClientManager {
                         currentProfileId = currentProfileId
                     )
                     val ownMessage = MessageDecryptionPolicy.isOwnOutgoingMessage(senderId, currentProfileId)
-                    val historicalRecipientKeyMissing = context != null && !ownMessage &&
-                        cipherText.startsWith(TinkCryptoManager.TINK_PREFIX) &&
-                        !TinkCryptoManager.hasRetainedRecipientKey(context, cipherText)
+                    if (ownMessage) Log.d(TAG, "Own-message ciphertext retained locally without decrypting: message_id=$id.")
                     val decrypted = if (
-                        context != null &&
-                        !ownMessage &&
-                        !historicalRecipientKeyMissing &&
-                        cipherText.startsWith(TinkCryptoManager.TINK_PREFIX) &&
-                        aad != null
+                        context != null && !ownMessage &&
+                        cipherText.startsWith(TinkCryptoManager.TINK_PREFIX) && aad != null
                     ) {
                         try {
                             MessageHandler.verifyAndDecryptPayloadWithImmediateKeyRefresh(
@@ -2429,7 +2431,8 @@ object SupabaseClientManager {
                                 inboundEventPayload = row,
                                 peerProfileId = senderId,
                                 fallbackPhoneNumber = partnerPhone,
-                                onPeerPublicKeyRefreshed = onPeerPublicKeyRefreshed
+                                onPeerPublicKeyRefreshed = onPeerPublicKeyRefreshed,
+                                messageId = id
                             )
                         } catch (cancelled: kotlinx.coroutines.CancellationException) {
                             throw cancelled
@@ -2439,6 +2442,9 @@ object SupabaseClientManager {
                         }
                     } else ""
                     val decryptionSucceeded = decrypted.isNotBlank()
+                    val historicalRecipientKeyMissing = !decryptionSucceeded && context != null && !ownMessage &&
+                        cipherText.startsWith(TinkCryptoManager.TINK_PREFIX) &&
+                        !TinkCryptoManager.hasRetainedRecipientKey(context, cipherText)
                     // A sender normally cannot decrypt ciphertext encrypted to the recipient's key.
                     // This is expected; the local Room outbox owns its plaintext copy.
                     if (!decryptionSucceeded && !ownMessage) complete = false
@@ -2448,6 +2454,7 @@ object SupabaseClientManager {
                             matchId = remoteMatch,
                             senderId = senderId,
                             text = if (decryptionSucceeded) decrypted else cipherText,
+                            encryptedPayload = cipherText,
                             timestamp = timestamp,
                             isDelivered = row.optBoolean("is_delivered", false),
                             isRead = row.optBoolean("is_read", false),
@@ -2524,25 +2531,36 @@ object SupabaseClientManager {
                         localPlaintext = localPlaintext
                     ) { body ->
                         if (context != null && body.startsWith(TinkCryptoManager.TINK_PREFIX) && aad != null) {
-                            TinkCryptoManager.decryptPayload(context, body, aad.first, aad.second)
+                            TinkCryptoManager.decryptPayload(
+                                context = context, payload = body, senderPhone = aad.first, receiverPhone = aad.second,
+                                messageId = messageId, directionSenderProfileId = senderId,
+                                directionRecipientProfileId = receiverId
+                            )
                         } else ""
                     }
                     val mediaType = row.optSafeString("media_type", "TEXT")
                     val forwardCount = row.optInt("forward_count", 0).coerceAtLeast(0)
                     val isForwarded = row.optBoolean("is_forwarded", false)
                     val mediaUrl = row.optSafeString("media_url", "")
+                    val rendered = MessageLocalRetentionPolicy.isRenderableText(displayedText)
+                    val storedText = if (rendered) displayedText else ""
                     val timestamp = row.optLong("timestamp", 0L).takeIf { it > 0L } ?: System.currentTimeMillis()
                     val localMessage = existingLocal?.takeIf { ownMessage }?.let { existing ->
                         existing.copy(
                             isDelivered = row.optBoolean("is_delivered", false) || existing.isDelivered,
-                            isRead = row.optBoolean("is_read", false) || existing.isRead
+                            isRead = row.optBoolean("is_read", false) || existing.isRead,
+                            text = existing.text.takeIf { MessageLocalRetentionPolicy.isRenderableText(it) }.orEmpty(),
+                            encryptedPayload = ciphertext,
+                            decryptState = if (MessageLocalRetentionPolicy.isRenderableText(existing.text)) MessageLocalRetentionPolicy.DECRYPT_STATE_OK else MessageLocalRetentionPolicy.FAILED_RETRYABLE
                         )
                     }
                     list.add(localMessage ?: ChatMessageEntity(
                         messageId = messageId,
                         matchId = remoteMatchId,
                         senderId = senderId,
-                        text = displayedText,
+                        text = storedText,
+                        encryptedPayload = ciphertext,
+                        decryptState = if (rendered) MessageLocalRetentionPolicy.DECRYPT_STATE_OK else MessageLocalRetentionPolicy.FAILED_RETRYABLE,
                         timestamp = timestamp,
                         isDelivered = row.optBoolean("is_delivered", false),
                         isRead = row.optBoolean("is_read", false),
