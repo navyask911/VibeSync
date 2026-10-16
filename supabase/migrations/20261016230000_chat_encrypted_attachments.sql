@@ -78,6 +78,22 @@ with check (
     and (storage.foldername(name))[2] = 'attachments'
 );
 
+drop policy if exists vibesync_chat_attachments_owner_update on storage.objects;
+create policy vibesync_chat_attachments_owner_update on storage.objects
+for update to authenticated
+using (
+    bucket_id = 'chat-attachments'
+    and public.vibesync_jwt_session_active()
+    and (storage.foldername(name))[1] = public.vibesync_jwt_profile_id()
+    and (storage.foldername(name))[2] = 'attachments'
+)
+with check (
+    bucket_id = 'chat-attachments'
+    and public.vibesync_jwt_session_active()
+    and (storage.foldername(name))[1] = public.vibesync_jwt_profile_id()
+    and (storage.foldername(name))[2] = 'attachments'
+);
+
 drop policy if exists vibesync_chat_attachments_participant_select on storage.objects;
 create policy vibesync_chat_attachments_participant_select on storage.objects
 for select to authenticated
@@ -91,6 +107,23 @@ using (
     and public.vibesync_jwt_session_active()
     and (storage.foldername(name))[1] = public.vibesync_jwt_profile_id()
     and (storage.foldername(name))[2] = 'attachments'
+);
+
+-- Upsert permission is scoped to an active sender and only their private voice-note folder.
+drop policy if exists vibesync_voice_notes_owner_update on storage.objects;
+create policy vibesync_voice_notes_owner_update on storage.objects
+for update to authenticated
+using (
+    bucket_id = 'chat-voice-notes'
+    and public.vibesync_jwt_session_active()
+    and (storage.foldername(name))[1] = public.vibesync_jwt_profile_id()
+    and (storage.foldername(name))[2] = 'voice-notes'
+)
+with check (
+    bucket_id = 'chat-voice-notes'
+    and public.vibesync_jwt_session_active()
+    and (storage.foldername(name))[1] = public.vibesync_jwt_profile_id()
+    and (storage.foldername(name))[2] = 'voice-notes'
 );
 
 -- New voice objects will be match/message scoped. Keep the original policy for legacy objects.
