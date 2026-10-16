@@ -417,17 +417,22 @@ private fun ChatDetailScreenContent(
     }
 
     val chatLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    var chatScreenResumed by remember(profile.id, match?.matchId) {
+        mutableStateOf(chatLifecycleOwner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED))
+    }
     DisposableEffect(chatLifecycleOwner, profile.id, match?.matchId) {
         var socketRequested = false
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             when (event) {
                 androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
+                    chatScreenResumed = true
                     if (!socketRequested) {
                         socketRequested = true
                         onStartRealtime()
                     }
                 }
                 androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> {
+                    chatScreenResumed = false
                     if (socketRequested) {
                         socketRequested = false
                         onStopRealtime()
@@ -1082,8 +1087,8 @@ private fun ChatDetailScreenContent(
         }
     }
 
-    LaunchedEffect(profile.id, match?.matchId, readReceiptsEnabled, visibleMessages) {
-        if (!readReceiptsEnabled) return@LaunchedEffect
+    LaunchedEffect(profile.id, match?.matchId, readReceiptsEnabled, visibleMessages, chatScreenResumed) {
+        if (!chatScreenResumed || !readReceiptsEnabled) return@LaunchedEffect
         androidx.compose.runtime.snapshotFlow {
             listState.layoutInfo.visibleItemsInfo.mapNotNull { it.key as? String }.toSet()
         }.collect { visibleIds ->
