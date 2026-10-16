@@ -901,6 +901,7 @@ object AppNotificationManager {
     }
 
     private suspend fun postChatGroupSummary(context: Context) {
+        if (!hasNotificationPermission(context)) return
         val database = runCatching { DatingDatabase.getDatabase(context.applicationContext) }.getOrNull()
         if (database != null) {
             runCatching {
