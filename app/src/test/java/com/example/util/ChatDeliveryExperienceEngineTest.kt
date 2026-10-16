@@ -105,4 +105,32 @@ class ChatDeliveryExperienceEngineTest {
         ContactVCardFormatter.toVCard("", "")
     }
 
+
+    @Test
+    fun aiImagePreviewParserAcceptsOnlyDistinctHttpsOptionsAndLimitsToFour() {
+        val body = """{"preview_urls":[
+            "https://images.example/a.png",
+            "http://images.example/insecure.png",
+            "https://images.example/b.png",
+            "https://images.example/a.png",
+            "https://images.example/c.png",
+            "https://images.example/d.png",
+            "https://images.example/e.png"
+        ]}"""
+        assertEquals(
+            listOf(
+                "https://images.example/a.png",
+                "https://images.example/b.png",
+                "https://images.example/c.png",
+                "https://images.example/d.png"
+            ),
+            ChatAiImagePreviewClient.parsePreviewUrls(body)
+        )
+    }
+
+    @Test
+    fun aiImagePreviewParserRejectsMissingOptions() {
+        assertTrue(ChatAiImagePreviewClient.parsePreviewUrls("{\"status\":\"ok\"}").isEmpty())
+    }
+
 }
