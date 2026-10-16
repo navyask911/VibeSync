@@ -577,6 +577,8 @@ private fun ChatDetailScreenContent(
     var fingerprintVerificationStatus by remember(profile.id, match?.matchId) { mutableStateOf("UNVERIFIED") }
     var safetyFingerprintText by remember(profile.id, match?.matchId) { mutableStateOf("") }
     var safetyFingerprintError by remember(profile.id, match?.matchId) { mutableStateOf("") }
+    var peerPublicKeyForVerification by remember(profile.id, match?.matchId) { mutableStateOf("") }
+    var securityCodeChangedWarning by remember(profile.id, match?.matchId) { mutableStateOf(false) }
     var showAttachmentSheet by remember { mutableStateOf(false) }
     var showEmojiPicker by remember { mutableStateOf(false) }
     var showAllMedia by remember { mutableStateOf(false) }
@@ -599,6 +601,7 @@ private fun ChatDetailScreenContent(
             ) {
                 throw IllegalStateException("This device's Google Tink public keyset is missing or invalid.")
             }
+            com.example.util.TinkCryptoManager.logPublicKeyDiagnostics("local", ownPublicKey)
             val ownKeyPublished = com.example.util.SupabaseClientManager.publishMyPublicIdentityKey(
                 context,
                 expectedProfileId = ownProfileId
@@ -608,6 +611,7 @@ private fun ChatDetailScreenContent(
             }
 
             // Fetch the peer key from the server rather than treating a stale Room cache as current.
+            val cachedPeerKey = profile.publicIdentityKey.trim()
             val peerPublicKey = com.example.util.SupabaseClientManager.fetchPublicIdentityKey(
                 profileId = profile.id,
                 fallbackPhoneNumber = profile.phoneNumber
@@ -620,6 +624,12 @@ private fun ChatDetailScreenContent(
                         "Keep VibeSync online on both devices and retry key sync."
                 )
             }
+            com.example.util.TinkCryptoManager.logPublicKeyDiagnostics("peer", peerPublicKey)
+            if (cachedPeerKey.isNotBlank() && com.example.util.TinkCryptoManager.validatePublicKeysetJson(cachedPeerKey)) {
+                com.example.util.PeerKeySafetyStore.recordIfChanged(context, profile.id, cachedPeerKey, peerPublicKey)
+            }
+            peerPublicKeyForVerification = peerPublicKey
+            securityCodeChangedWarning = com.example.util.PeerKeySafetyStore.hasPendingChange(context, profile.id)
 
             safetyFingerprintText = com.example.util.TinkCryptoManager.createSafetyFingerprint(
                 profileAId = ownProfileId,
@@ -2606,6 +2616,14 @@ private fun ChatDetailScreenContent(
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                if (securityCodeChangedWarning) {
+                                    Text(
+                                        text = "SECURITY CODE CHANGED. Sending is paused until you compare this current fingerprint with the other device and confirm it in person.",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.error,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                                 if (safetyFingerprintText.isNotBlank()) {
                                     Surface(
                                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -2667,7 +2685,19 @@ private fun ChatDetailScreenContent(
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                         Button(
-                                            onClick = { fingerprintVerificationStatus = "VERIFIED" },
+                                            onClick = {
+                                                coroutineScope.launch {
+                                                    val currentKey = peerPublicKeyForVerification
+                                                    val acknowledged = currentKey.isNotBlank() && com.example.util.PeerKeySafetyStore.acknowledgeChange(context, profile.id, currentKey)
+                                                    if (!acknowledged) {
+                                                        safetyFingerprintError = "The peer key changed again or confirmation could not be saved. Fetch the current key and compare again."
+                                                        fingerprintVerificationStatus = "ERROR"
+                                                    } else {
+                                                        securityCodeChangedWarning = false
+                                                        fingerprintVerificationStatus = "VERIFIED"
+                                                    }
+                                                }
+                                            },
                                             colors = ButtonDefaults.buttonColors(containerColor = VibeSyncTeal),
                                             modifier = Modifier.height(34.dp),
                                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)

@@ -200,16 +200,20 @@ internal object PendingMessageOutboxSender {
                 }
 
                 val localRecipient = db.profileDao().getProfileByIdSync(recipientProfileId)
-                val fallbackPhone = localRecipient?.phoneNumber.orEmpty().ifBlank {
-                    recipientPhoneIdentity.orEmpty()
-                }
-                val fetchedRecipientKey = SupabaseClientManager.fetchPublicIdentityKey(
-                    profileId = recipientProfileId,
-                    fallbackPhoneNumber = fallbackPhone
-                )
+                val fallbackPhone = localRecipient?.phoneNumber.orEmpty().ifBlank { recipientPhoneIdentity.orEmpty() }
                 val cachedRecipientKey = localRecipient?.publicIdentityKey.orEmpty().trim()
                     .takeIf { TinkCryptoManager.validatePublicKeysetJson(it) }
-                val recipientPublicKey = fetchedRecipientKey ?: cachedRecipientKey.orEmpty()
+                val fetchedRecipientKey = SupabaseClientManager.fetchPublicIdentityKey(
+                    profileId = recipientProfileId, fallbackPhoneNumber = fallbackPhone
+                )
+                if (!fetchedRecipientKey.isNullOrBlank() && !cachedRecipientKey.isNullOrBlank()) {
+                    com.example.util.PeerKeySafetyStore.recordIfChanged(context.applicationContext, recipientProfileId, cachedRecipientKey, fetchedRecipientKey)
+                }
+                if (com.example.util.PeerKeySafetyStore.hasPendingChange(context.applicationContext, recipientProfileId)) {
+                    return@withContext PendingOutboxAttempt.Retryable("Recipient security code changed. Verify the fingerprint in chat before sending with the new key.")
+                }
+                // Never send using a stale cached key when the authoritative live lookup is unavailable.
+                val recipientPublicKey = fetchedRecipientKey.orEmpty()
                 if (recipientPublicKey.isBlank()) {
                     val missing = com.example.util.RecipientKeyNotFoundException(
                         "No published Tink public key resolved for canonical recipient profile_id=$recipientProfileId."

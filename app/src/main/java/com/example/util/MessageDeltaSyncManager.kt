@@ -60,7 +60,15 @@ object MessageDeltaSyncManager {
                 val peerProfile = database.profileDao().getProfileByIdSync(refreshedProfileId)
                     ?: SupabaseClientManager.fetchProfileById(refreshedProfileId)
                 if (peerProfile != null && newKey.isNotBlank()) {
-                    database.profileDao().insertProfile(peerProfile.copy(publicIdentityKey = newKey))
+                    val rotated = PeerKeySafetyStore.recordIfChanged(
+                        context = context.applicationContext,
+                        profileId = refreshedProfileId,
+                        previousPublicKeyset = peerProfile.publicIdentityKey,
+                        currentPublicKeyset = newKey
+                    )
+                    if (!rotated && !PeerKeySafetyStore.hasPendingChange(context.applicationContext, refreshedProfileId)) {
+                        database.profileDao().insertProfile(peerProfile.copy(publicIdentityKey = newKey))
+                    }
                 }
             }
         )
@@ -87,7 +95,7 @@ object MessageDeltaSyncManager {
                     synced++
                     continue
                 }
-                val isFromMe = remote.senderId.equals(ownerId, ignoreCase = true)
+                val isFromMe = MessageDecryptionPolicy.isOwnOutgoingMessage(remote.senderId, ownerId)
                 val existing = dao.getMessageById(remote.messageId)
                 val existingPlaintext = existing?.text?.takeIf {
                     MessageLocalRetentionPolicy.isRenderableText(it)
@@ -131,7 +139,7 @@ object MessageDeltaSyncManager {
                         // Messages sent from another device can be encrypted for the recipient's key.
                         // Persist a tombstone instead of putting ciphertext into the chat UI.
                         val senderText = decryptedPlaintext ?: existingPlaintext
-                            ?: MessageLocalRetentionPolicy.DECRYPTION_TOMBSTONE_TEXT
+                            ?: MessageLocalRetentionPolicy.OUTGOING_PLAINTEXT_UNAVAILABLE_TEXT
                         val senderMessage = remote.copy(
                             senderId = "USER",
                             text = senderText,
@@ -214,6 +222,7 @@ object MessageDeltaSyncManager {
 
                 if (!canRenderPlaintext) complete = false
                 val localText = decodedPayload?.text ?: existingPlaintext
+                    ?: record.decryptionFailureReason.takeIf { it.isNotBlank() }
                     ?: MessageLocalRetentionPolicy.DECRYPTION_TOMBSTONE_TEXT
                 val needsAck = canRenderPlaintext && !remote.isDelivered && !remote.isRead
                 val local = remote.copy(

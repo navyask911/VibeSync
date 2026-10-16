@@ -15,6 +15,9 @@ import com.google.crypto.tink.KeysetHandle
 import com.google.crypto.tink.aead.AeadConfig
 import com.google.crypto.tink.hybrid.HybridConfig
 import com.google.crypto.tink.integration.android.AndroidKeysetManager
+import com.google.crypto.tink.proto.HpkePublicKey
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import java.util.Locale
@@ -37,6 +40,9 @@ object TinkCryptoManager {
     private const val TAG = "TinkCryptoManager"
     private const val PREF_FILE_NAME = "vibesync_tink_keyset_prefs"
     private const val KEYSET_NAME = "vibesync_private_keyset"
+    private const val KEYSET_PROVISIONED_MARKER = "vibesync_private_keyset_provisioned_v1"
+    private const val FINGERPRINT_DOMAIN = "VibeSync-Fingerprint-v1"
+    private const val ECIES_KEY_TEMPLATE = "ECIES_P256_HKDF_HMAC_SHA256_AES128_GCM"
     private const val MASTER_KEY_URI = "android-keystore://vibesync_master_key"
     const val TINK_PREFIX = "TINK_ENC:"
     private const val CIPHERTEXT_ENVELOPE_V2_PREFIX = "V2:"
@@ -93,27 +99,80 @@ object TinkCryptoManager {
      * Gets or creates hardware-backed ECIES KeysetHandle using AndroidKeysetManager.
      */
     fun getOrCreateMyKeysetHandle(context: Context): KeysetHandle? {
-        applicationContext = context.applicationContext
+        val app = context.applicationContext
+        applicationContext = app
         initTink()
-        cachedKeysetHandle?.let { return it }
-
-        return try {
-            val builder = AndroidKeysetManager.Builder()
-                .withSharedPref(context.applicationContext, KEYSET_NAME, PREF_FILE_NAME)
-                .withKeyTemplate(KeyTemplates.get("ECIES_P256_HKDF_HMAC_SHA256_AES128_GCM"))
-
-            builder.withMasterKeyUri(MASTER_KEY_URI)
-
-            val keysetManager = builder.build()
-            val handle = keysetManager.keysetHandle
-            cachedKeysetHandle = handle
-            handle
-        } catch (e: Throwable) {
-            Log.e(TAG, "Error obtaining Android Keystore protected Tink KeysetHandle: ${e.message}", e)
-            null
+        synchronized(this) {
+            cachedKeysetHandle?.let { return it }
+            val preferences = app.getSharedPreferences(PREF_FILE_NAME, Context.MODE_PRIVATE)
+            val persistedKeyset = preferences.getString(KEYSET_NAME, null)
+            val wasProvisioned = preferences.getBoolean(KEYSET_PROVISIONED_MARKER, false)
+            if (persistedKeyset.isNullOrBlank() && wasProvisioned) {
+                Log.e(TAG, "Refusing to regenerate a previously provisioned Tink identity because its protected keyset is missing.")
+                return null
+            }
+            return try {
+                val manager = AndroidKeysetManager.Builder()
+                    .withSharedPref(app, KEYSET_NAME, PREF_FILE_NAME)
+                    .withKeyTemplate(KeyTemplates.get(ECIES_KEY_TEMPLATE))
+                    .withMasterKeyUri(MASTER_KEY_URI)
+                    .build()
+                val handle = manager.keysetHandle
+                if (preferences.getString(KEYSET_NAME, null).isNullOrBlank()) {
+                    Log.e(TAG, "AndroidKeysetManager returned a handle but did not persist its protected keyset.")
+                    return null
+                }
+                if (!preferences.getBoolean(KEYSET_PROVISIONED_MARKER, false) &&
+                    !preferences.edit().putBoolean(KEYSET_PROVISIONED_MARKER, true).commit()
+                ) {
+                    Log.e(TAG, "Could not persist Tink identity continuity marker; failing closed.")
+                    return null
+                }
+                cachedKeysetHandle = handle
+                handle
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error obtaining Android Keystore protected Tink KeysetHandle: ${e.javaClass.simpleName}", e)
+                null
+            }
         }
     }
 
+    /**
+     * Append a new ECIES key and promote it without deleting any enabled historical keys.
+     * The complete multi-key private keyset remains encrypted by AndroidKeysetManager with Android Keystore.
+     * Rotation is explicit; startup and publication never rotate keys.
+     */
+    fun rotateMyPrimaryKeyKeepingHistory(context: Context): String? = synchronized(this) {
+        val app = context.applicationContext
+        val current = getOrCreateMyKeysetHandle(app) ?: return@synchronized null
+        val manager = try {
+            AndroidKeysetManager.Builder()
+                .withSharedPref(app, KEYSET_NAME, PREF_FILE_NAME)
+                .withKeyTemplate(KeyTemplates.get(ECIES_KEY_TEMPLATE))
+                .withMasterKeyUri(MASTER_KEY_URI)
+                .build()
+        } catch (failure: Throwable) {
+            Log.e(TAG, "Unable to open protected Tink keyset for append-only rotation: ${failure.javaClass.simpleName}")
+            return@synchronized null
+        }
+        val oldIds = manager.keysetHandle.keysetInfo.keyInfoList.map { it.keyId }.toSet()
+        try {
+            manager.add(KeyTemplates.get(ECIES_KEY_TEMPLATE))
+            val expanded = manager.keysetHandle
+            val newId = expanded.keysetInfo.keyInfoList.map { it.keyId }.firstOrNull { it !in oldIds }
+                ?: return@synchronized null
+            manager.setPrimary(newId)
+            val rotatedHandle = manager.keysetHandle
+            val afterIds = rotatedHandle.keysetInfo.keyInfoList.map { it.keyId }.toSet()
+            check(afterIds.containsAll(oldIds)) { "Tink rotation unexpectedly dropped an existing key ID." }
+            cachedKeysetHandle = rotatedHandle
+            logPublicKeyDiagnostics("local", serializePublicKeysetJson(rotatedHandle))
+            newId.toString()
+        } catch (failure: Throwable) {
+            Log.e(TAG, "Append-only Tink key rotation failed: ${failure.javaClass.simpleName}")
+            null
+        }
+    }
     /**
      * Serializes public keyset handle to JSON string for profile distribution.
      */
@@ -133,30 +192,37 @@ object TinkCryptoManager {
         }
     }
 
-    /** Public Tink key ID plus a stable fingerprint of the exact keyset used for encryption. */
+    /** Primary Tink key ID and SHA-256 of type_url plus raw public key material, independent of envelope metadata. */
     fun getPublicKeyMetadata(publicKeysetJson: String): PublicKeyMetadata {
-        require(publicKeysetJson.isNotBlank()) { "A public Tink keyset is required for metadata." }
-        val root = JSONTokener(publicKeysetJson.trim()).nextValue()
-        require(root is JSONObject) { "Public Tink keyset metadata is not a JSON object." }
-        val objectRoot = root as JSONObject
-        var keyId = objectRoot.optString("primaryKeyId", "").trim()
-        if (keyId.isBlank()) {
-            val keys = objectRoot.optJSONArray("key")
-            for (i in 0 until (keys?.length() ?: 0)) {
-                val key = keys?.optJSONObject(i) ?: continue
-                if (key.optString("status", "").equals("ENABLED", ignoreCase = true)) {
-                    keyId = key.optString("keyId", "").trim()
-                    if (keyId.isNotBlank()) break
-                }
-            }
-        }
-        require(keyId.isNotBlank()) { "Public Tink keyset has no primary/enabled key ID." }
+        val root = parsePublicKeyset(publicKeysetJson)
+        val keyId = primaryKeyId(root)
         return PublicKeyMetadata(keyId, publicKeyFingerprint(publicKeysetJson))
     }
 
     fun publicKeyFingerprint(publicKeysetJson: String): String =
-        MessageDigest.getInstance("SHA-256").digest(canonicalPublicKeyBytes(publicKeysetJson))
-            .joinToString("") { "%02x".format(it) }
+        MessageDigest.getInstance("SHA-256").digest(primaryPublicKeyMaterial(publicKeysetJson))
+            .joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+
+    /** Log only public identifiers and a short public-material digest; never keyset JSON. */
+    fun logPublicKeyDiagnostics(role: String, publicKeysetJson: String) {
+        try {
+            val metadata = getPublicKeyMetadata(publicKeysetJson)
+            val shortHash = metadata.fingerprint.take(8).uppercase(Locale.ROOT)
+            Log.i("TinkE2EE", "Public-key diagnostic: role=$role key_id=${metadata.keyId} key_sha256=$shortHash")
+        } catch (failure: Throwable) {
+            Log.w("TinkE2EE", "Public-key diagnostic unavailable for role=$role: ${failure.javaClass.simpleName}")
+        }
+    }
+
+    internal fun compareUnsignedKeyMaterial(left: ByteArray, right: ByteArray): Int {
+        val length = minOf(left.size, right.size)
+        for (index in 0 until length) {
+            val a = left[index].toInt() and 0xFF
+            val b = right[index].toInt() and 0xFF
+            if (a != b) return a.compareTo(b)
+        }
+        return left.size.compareTo(right.size)
+    }
 
     /** True only when Room records a server-confirmed publication of this exact local key ID/fingerprint. */
     suspend fun isMyPublicIdentityKeyPublished(
@@ -275,81 +341,107 @@ object TinkCryptoManager {
             handle.getPrimitive(HybridEncrypt::class.java)
             true
         } catch (e: Throwable) {
-            Log.e(TAG, "Public Tink keyset validation failed: ${e.javaClass.simpleName}: ${e.message}; returned_keyset=${publicKeysetJson}", e)
+            Log.e(TAG, "Public Tink keyset validation failed: ${e.javaClass.simpleName}: ${e.message}")
             false
         }
     }
 
-    private fun canonicalJsonValue(value: Any?): String {
-        if (value == null || value === JSONObject.NULL) return "null"
-        return when (value) {
-            is JSONObject -> value.keys().asSequence().toList().sorted().joinToString(prefix = "{", postfix = "}", separator = ",") {
-                key -> JSONObject.quote(key) + ":" + canonicalJsonValue(value.get(key))
-            }
-            is JSONArray -> (0 until value.length()).joinToString(prefix = "[", postfix = "]", separator = ",") {
-                index -> canonicalJsonValue(value.get(index))
-            }
-            is String -> JSONObject.quote(value)
-            is Number, is Boolean -> value.toString()
-            else -> JSONObject.quote(value.toString())
-        }
-    }
-
-    private fun canonicalPublicKeyBytes(publicKeysetJson: String): ByteArray {
+    private fun parsePublicKeyset(publicKeysetJson: String): JSONObject {
         require(publicKeysetJson.isNotBlank()) { "A public Tink keyset is required for fingerprint calculation." }
         val parsed = JSONTokener(publicKeysetJson.trim()).nextValue()
         require(parsed is JSONObject) { "The published Tink public keyset is not a JSON object." }
-        return canonicalJsonValue(parsed).toByteArray(Charsets.UTF_8)
+        return parsed
     }
 
-    private fun compareUnsignedBytes(left: ByteArray, right: ByteArray): Int {
-        val length = minOf(left.size, right.size)
-        for (index in 0 until length) {
-            val a = left[index].toInt() and 0xFF
-            val b = right[index].toInt() and 0xFF
-            if (a != b) return a.compareTo(b)
+    private fun primaryKeyId(root: JSONObject): String {
+        val configured = root.optString("primaryKeyId", "").trim()
+        val keys = root.optJSONArray("key") ?: throw IllegalArgumentException("Tink keyset has no key array.")
+        if (configured.isNotBlank()) {
+            require((0 until keys.length()).any { keys.optJSONObject(it)?.optString("keyId", "").orEmpty() == configured }) {
+                "Tink primaryKeyId does not refer to a key in this keyset."
+            }
+            return configured
         }
-        return left.size.compareTo(right.size)
+        for (index in 0 until keys.length()) {
+            val key = keys.optJSONObject(index) ?: continue
+            if (key.optString("status", "").equals("ENABLED", ignoreCase = true)) {
+                key.optString("keyId", "").trim().takeIf { it.isNotBlank() }?.let { return it }
+            }
+        }
+        throw IllegalArgumentException("Public Tink keyset has no primary/enabled key ID.")
     }
 
     /**
-     * Computes a device-independent safety fingerprint over both participants' published
-     * public Tink keysets. Both sides sort the same profile-ID/key pairs and get the same value.
-     * This fingerprint is for manual comparison; loading it alone does not mark a peer verified.
+     * ECIES hashes the serialized public-key proto bytes in KeyData.value. HPKE hashes the
+     * raw public_key bytes parsed from HpkePublicKey. Both bind the type_url into the result.
+     * Key ID, key status, output prefix and other JSON envelope metadata are deliberately ignored.
      */
+    private fun primaryPublicKeyMaterial(publicKeysetJson: String): ByteArray {
+        val root = parsePublicKeyset(publicKeysetJson)
+        val keyId = primaryKeyId(root)
+        val keys = root.getJSONArray("key")
+        val primary = (0 until keys.length()).mapNotNull { keys.optJSONObject(it) }
+            .first { it.optString("keyId", "") == keyId }
+        val keyData = primary.optJSONObject("keyData")
+            ?: throw IllegalArgumentException("Tink primary key has no KeyData.")
+        val materialType = keyData.optString("keyMaterialType", "")
+        require(materialType.equals("ASYMMETRIC_PUBLIC", ignoreCase = true)) {
+            "Safety fingerprints and diagnostics accept public asymmetric key material only."
+        }
+        val typeUrl = keyData.optString("typeUrl", "").trim()
+        require(typeUrl.isNotBlank()) { "Tink public key has no type_url." }
+        val encodedValue = keyData.optString("value", "")
+        require(encodedValue.isNotBlank()) { "Tink public key has no KeyData.value." }
+        val keyDataProtoBytes = Base64.decode(encodedValue, Base64.DEFAULT)
+        val rawPublicBytes = when {
+            typeUrl.endsWith("EciesAeadHkdfPublicKey") -> keyDataProtoBytes
+            typeUrl.endsWith("HpkePublicKey") -> HpkePublicKey.parseFrom(keyDataProtoBytes).publicKey.toByteArray()
+            else -> throw IllegalArgumentException("Unsupported public Tink key type_url: $typeUrl")
+        }
+        val typeBytes = typeUrl.toByteArray(Charsets.UTF_8)
+        return ByteBuffer.allocate(4 + typeBytes.size + rawPublicBytes.size)
+            .order(ByteOrder.BIG_ENDIAN)
+            .putInt(typeBytes.size)
+            .put(typeBytes)
+            .put(rawPublicBytes)
+            .array()
+    }
+
+    /** Compatibility overload for the fingerprint screen: participant identity affects validation, not ordering. */
     fun createSafetyFingerprint(
         profileAId: String,
         publicKeyAJson: String,
         profileBId: String,
         publicKeyBJson: String
     ): String {
-        val aId = profileAId.trim().lowercase(java.util.Locale.ROOT)
-        val bId = profileBId.trim().lowercase(java.util.Locale.ROOT)
+        val aId = profileAId.trim().lowercase(Locale.ROOT)
+        val bId = profileBId.trim().lowercase(Locale.ROOT)
         require(aId.isNotBlank() && bId.isNotBlank() && aId != bId) {
             "Two distinct VibeSync profile IDs are required to calculate a safety fingerprint."
         }
         return createSafetyFingerprint(publicKeyAJson, publicKeyBJson)
     }
 
-    /** Canonicalize both keysets, sort bytes lexicographically, then hash in the same order on each device. */
+    /** SHA-256(domain || len(lo) || lo || len(hi) || hi), using 4-byte big-endian lengths. */
     fun createSafetyFingerprint(publicKeyAJson: String, publicKeyBJson: String): String {
-        val sortedKeys = listOf(canonicalPublicKeyBytes(publicKeyAJson), canonicalPublicKeyBytes(publicKeyBJson))
-            .sortedWith(Comparator { left, right -> compareUnsignedBytes(left, right) })
+        val materials = listOf(primaryPublicKeyMaterial(publicKeyAJson), primaryPublicKeyMaterial(publicKeyBJson))
+            .sortedWith(Comparator { left, right -> compareUnsignedKeyMaterial(left, right) })
         val digest = MessageDigest.getInstance("SHA-256")
-        digest.update(sortedKeys[0])
-        digest.update(sortedKeys[1])
-        val hash = digest.digest()
-        val hexDigits = "0123456789ABCDEF"
-        val hex = buildString(hash.size * 2) {
-            hash.forEach { byte ->
+        digest.update(FINGERPRINT_DOMAIN.toByteArray(Charsets.UTF_8))
+        materials.forEach { material ->
+            digest.update(ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(material.size).array())
+            digest.update(material)
+        }
+        val bytes = digest.digest()
+        val hex = buildString(bytes.size * 2) {
+            bytes.forEach { byte ->
                 val value = byte.toInt() and 0xFF
-                append(hexDigits[value ushr 4])
-                append(hexDigits[value and 0x0F])
+                append("0123456789ABCDEF"[value ushr 4])
+                append("0123456789ABCDEF"[value and 0x0F])
             }
         }
         return hex.chunked(8).joinToString(" ")
     }
-
     /**
      * Creates the exact same authenticated context on either participant device.
      * AAD is the UTF-8 bytes of the canonical pair match ID: smaller profile ID first.
@@ -494,6 +586,15 @@ object TinkCryptoManager {
         return getOrCreateMyKeysetHandle(app)
     }
 
+    /** True when this device still has an enabled private key matching the ciphertext recipient key ID. */
+    fun hasRetainedRecipientKey(context: Context, payload: String): Boolean {
+        val recipientKeyId = runCatching { parseCiphertextEnvelope(payload).recipientKeyId }.getOrDefault("")
+        if (recipientKeyId.isBlank()) return true
+        val handle = getOrCreateMyKeysetHandle(context) ?: return false
+        return handle.keysetInfo.keyInfoList.any { info ->
+            info.keyId.toString() == recipientKeyId && info.status.name == "ENABLED"
+        }
+    }
     /**
      * Realtime fast-recovery path. Try decryption once; on failure refresh the sender's
      * published profile key, persist that refreshed peer identity through the callback,
@@ -602,18 +703,25 @@ object TinkCryptoManager {
         }
         val cipherBytes = parsedCiphertext.ciphertextBytes
         if (parsedCiphertext.recipientKeyId.isNotBlank()) {
-            val localMetadata = try {
-                getPublicKeyMetadata(getMyPublicKeysetJson(context))
-            } catch (_: Throwable) {
-                null
+            val matchingRetainedKey = myHandle.keysetInfo.keyInfoList.any { info ->
+                info.keyId.toString() == parsedCiphertext.recipientKeyId && info.status.name == "ENABLED"
             }
-            if (localMetadata != null &&
-                (!localMetadata.keyId.equals(parsedCiphertext.recipientKeyId, ignoreCase = true) ||
-                    (parsedCiphertext.recipientKeyFingerprint.isNotBlank() &&
-                        !localMetadata.fingerprint.equals(parsedCiphertext.recipientKeyFingerprint, ignoreCase = true)))
+            if (!matchingRetainedKey) {
+                Log.w("TinkE2EE", "Cannot decrypt message: recipient key_id=${parsedCiphertext.recipientKeyId} is not retained; security code changed or historical key unavailable.")
+                onMismatchedKey?.invoke()
+                return ""
+            }
+            val localMetadata = runCatching { getPublicKeyMetadata(getMyPublicKeysetJson(context)) }.getOrNull()
+            if (localMetadata != null && localMetadata.keyId != parsedCiphertext.recipientKeyId) {
+                // The serialized Tink primitive dispatches by the ciphertext key ID, so an enabled
+                // historical key in the same managed keyset is tried without replacing the primary.
+                Log.d("TinkE2EE", "Ciphertext matches retained historical key_id=${parsedCiphertext.recipientKeyId}; current_primary_key_id=${localMetadata.keyId}.")
+            }
+            if (parsedCiphertext.recipientKeyFingerprint.isNotBlank() && localMetadata != null &&
+                !localMetadata.fingerprint.equals(parsedCiphertext.recipientKeyFingerprint, ignoreCase = true) &&
+                localMetadata.keyId == parsedCiphertext.recipientKeyId
             ) {
-                // Retained keysets may include older enabled keys, so still allow Tink to try.
-                Log.w("TinkE2EE", "Ciphertext recipient key metadata differs from current local primary key; retrying with retained local keys.")
+                Log.w("TinkE2EE", "Key ID matches local key, but public-material fingerprint differs; decryption will still be authenticated by Tink.")
             }
         }
 

@@ -22,6 +22,7 @@ import com.example.data.model.MatchEntity
 import com.example.data.model.ProfileEntity
 import com.example.data.model.PeerProfileKeyEntity
 import com.example.data.model.TinkKeyPublicationEntity
+import com.example.data.model.PeerKeyChangeEntity
 import com.example.data.model.RegisteredAccountEntity
 import com.example.data.model.StatusStoryEntity
 import com.example.data.model.SwipeEntity
@@ -49,6 +50,7 @@ import com.example.data.model.ReportEntity
 import com.example.data.dao.MatchedContactDao
 import com.example.data.dao.PeerProfileKeyDao
 import com.example.data.dao.TinkKeyPublicationDao
+import com.example.data.dao.PeerKeyChangeDao
 import com.example.data.model.MatchedContactEntity
 import com.example.data.dao.LocalBusinessAnalyticsDao
 import com.example.data.dao.ApiCredentialRequestDao
@@ -63,6 +65,7 @@ import com.example.data.dao.ConversationNotificationPreferencesDao
         ProfileEntity::class,
         PeerProfileKeyEntity::class,
         TinkKeyPublicationEntity::class,
+        PeerKeyChangeEntity::class,
         SwipeEntity::class,
         MatchEntity::class,
         ChatMessageEntity::class,
@@ -87,13 +90,14 @@ import com.example.data.dao.ConversationNotificationPreferencesDao
         ApiCredentialRequestEntity::class,
         ConversationNotificationPreferenceEntity::class
     ],
-    version = 60,
+    version = 61,
     exportSchema = false
 )
 abstract class DatingDatabase : RoomDatabase() {
     abstract fun profileDao(): ProfileDao
     abstract fun peerProfileKeyDao(): PeerProfileKeyDao
     abstract fun tinkKeyPublicationDao(): TinkKeyPublicationDao
+    abstract fun peerKeyChangeDao(): PeerKeyChangeDao
     abstract fun swipeDao(): SwipeDao
     abstract fun matchDao(): MatchDao
     abstract fun chatMessageDao(): ChatMessageDao
@@ -468,6 +472,19 @@ abstract class DatingDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_60_61 = object : Migration(60, 61) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `peer_key_changes` (" +
+                        "`profileId` TEXT NOT NULL PRIMARY KEY, " +
+                        "`previousKeyId` TEXT NOT NULL, " +
+                        "`newKeyId` TEXT NOT NULL, " +
+                        "`detectedAtEpochMillis` INTEGER NOT NULL, " +
+                        "`acknowledged` INTEGER NOT NULL DEFAULT 0)"
+                )
+            }
+        }
+
         fun getDatabase(context: Context): DatingDatabase {
             val appContext = context.applicationContext
             return INSTANCE ?: synchronized(this) {
@@ -522,7 +539,8 @@ abstract class DatingDatabase : RoomDatabase() {
                                 MIGRATION_56_57,
                                 MIGRATION_57_58,
                                 MIGRATION_58_59,
-                                MIGRATION_59_60
+                                MIGRATION_59_60,
+                                MIGRATION_60_61
                             )
                             // Fail closed instead of recreating a database that contains local history.
                             .build()

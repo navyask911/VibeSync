@@ -1117,6 +1117,30 @@ object SupabaseClientManager {
      * Publishes only the local public Tink keyset through the single owner-bound RPC.
      * The private keyset never leaves this device; direct key-table writes are not used.
      */
+    private fun serverPublishedTinkKeyIdMatches(profileId: String, expectedKeyId: String): Boolean {
+        val safeId = java.net.URLEncoder.encode(profileId.trim(), "UTF-8")
+        return try {
+            val request = buildRequest(
+                endpoint = "user_public_keys?select=key_id&profile_id=eq.$safeId&limit=1",
+                method = "GET"
+            )
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use false
+                val row = runCatching { JSONArray(response.body?.string().orEmpty()).optJSONObject(0) }.getOrNull()
+                row?.optSafeString("key_id", "") == expectedKeyId
+            }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            Log.d(TAG, "Published Tink key ID check deferred: ${failure.javaClass.simpleName}.")
+            false
+        }
+    }
+
+    /**
+     * Publish through one RPC. Startup avoids a redundant write only when Room confirms the
+     * exact local key and the live key registry independently reports the same active key ID.
+     */
     suspend fun publishDevicePublicKey(
         context: Context,
         expectedProfileId: String? = null
@@ -1136,73 +1160,55 @@ object SupabaseClientManager {
             Log.w(TAG, "Cannot publish Tink public key: local public keyset is blank or invalid.")
             return@withContext false
         }
-        val publicKeyId = runCatching {
-            TinkCryptoManager.getPublicKeyMetadata(publicKeyset).keyId
-        }.getOrElse { failure ->
-            Log.w(TAG, "Cannot publish Tink public key without a valid primary key ID: ${failure.message}")
-            return@withContext false
+        val publicKeyId = runCatching { TinkCryptoManager.getPublicKeyMetadata(publicKeyset).keyId }
+            .getOrElse { failure ->
+                Log.w(TAG, "Cannot publish Tink public key without a valid primary key ID: ${failure.javaClass.simpleName}")
+                return@withContext false
+            }
+        TinkCryptoManager.logPublicKeyDiagnostics("local", publicKeyset)
+
+        val locallyConfirmed = runCatching {
+            TinkCryptoManager.isMyPublicIdentityKeyPublished(context, activeProfileId, publicKeyset)
+        }.getOrDefault(false)
+        val liveRowMatches = serverPublishedTinkKeyIdMatches(activeProfileId, publicKeyId)
+        if (locallyConfirmed && liveRowMatches) {
+            Log.d(TAG, "Tink key publication already confirmed in Room and matches live key_id=$publicKeyId; skipping redundant publish.")
+            return@withContext true
         }
 
         try {
-            // This RPC is the only network write for Tink public-key publication. Keep PostgREST
-            // parameter names and JSON types aligned with publish_my_tink_public_key(text, text).
             val request = buildRequest(
                 endpoint = "rpc/publish_my_tink_public_key",
                 method = "POST",
-                bodyJson = JSONObject()
-                    .put("p_public_key", publicKeyset)
-                    .put("p_key_id", publicKeyId)
-                    .toString()
+                bodyJson = JSONObject().put("p_public_key", publicKeyset).put("p_key_id", publicKeyId).toString()
             )
             httpClient.newCall(request).execute().use { response ->
                 val responseBody = response.body?.string().orEmpty()
                 val result = runCatching { JSONObject(responseBody) }.getOrNull()
                 val returnedStatus = result?.optString("status", "").orEmpty()
                 val returnedKeyId = result?.optString("key_id", "").orEmpty()
-
-                // The local key may be marked confirmed only when both server assertions match
-                // this exact public keyset. A legacy {ok:true}, boolean, or status-only response
-                // is deliberately insufficient.
                 val serverConfirmed = response.isSuccessful &&
-                    returnedStatus.equals("ok", ignoreCase = true) &&
-                    returnedKeyId == publicKeyId
-
+                    returnedStatus.equals("ok", ignoreCase = true) && returnedKeyId == publicKeyId
                 if (!serverConfirmed) {
-                    // Log the complete HTTP error body in small chunks so Logcat does not
-                    // truncate the PostgreSQL message. Never log the outgoing keyset/token.
-                    val responseChunks = responseBody.chunked(800).ifEmpty { listOf("<empty response body>") }
-                    responseChunks.forEachIndexed { index, chunk ->
-                        Log.w(
-                            TAG,
-                            "Dual-store Tink key publish response chunk ${index + 1}/${responseChunks.size} " +
-                                "(HTTP ${response.code}): ${chunk}"
-                        )
+                    val chunks = responseBody.chunked(800).ifEmpty { listOf("<empty response body>") }
+                    chunks.forEachIndexed { index, chunk ->
+                        Log.w(TAG, "Tink key publish response chunk ${index + 1}/${chunks.size} (HTTP ${response.code}): $chunk")
                     }
-                    Log.w(
-                        TAG,
-                        "Tink key publication not confirmed: HTTP ${response.code}, " +
-                            "status=${returnedStatus.ifBlank { "<missing>" }}, " +
-                            "returned_key_id_matches_local=${returnedKeyId == publicKeyId}."
-                    )
+                    Log.w(TAG, "Tink key publication not confirmed: HTTP ${response.code}, status=${returnedStatus.ifBlank { "<missing>" }}, returned_key_id_matches_local=${returnedKeyId == publicKeyId}.")
                     return@use false
                 }
-
-                // Persist the Room/local confirmation marker only after status and key_id match.
-                val locallyMarked = TinkCryptoManager.markMyPublicIdentityKeyPublished(
-                    context,
-                    activeProfileId,
-                    publicKeyset
-                )
-                if (!locallyMarked) {
-                    Log.w(TAG, "Supabase confirmed Tink key_id, but local publication confirmation could not be persisted.")
+                val stored = TinkCryptoManager.markMyPublicIdentityKeyPublished(context, activeProfileId, publicKeyset)
+                if (!stored) {
+                    Log.w(TAG, "Supabase confirmed Tink key_id, but encrypted Room confirmation could not be persisted.")
                     return@use false
                 }
-
                 Log.i(TAG, "Tink public key publication confirmed by Supabase; returned key_id matches local key.")
                 true
             }
-        } catch (t: Throwable) {
-            Log.w(TAG, "Tink public key publication failed: ${t.javaClass.simpleName}: ${t.message}")
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Tink public key publication failed: ${failure.javaClass.simpleName}: ${failure.message}")
             false
         }
     }
@@ -1357,14 +1363,50 @@ object SupabaseClientManager {
         fallbackPhoneNumber: String = ""
     ): String? = withContext(Dispatchers.IO) {
         val safeProfileId = profileId.trim()
-        if (safeProfileId.isBlank() || safeProfileId.startsWith("match_", ignoreCase = true) ||
-            isPhoneNumberCandidate(safeProfileId)
-        ) {
+        if (safeProfileId.isBlank() || safeProfileId.startsWith("match_", ignoreCase = true) || isPhoneNumberCandidate(safeProfileId)) {
             Log.w(TAG, "Rejecting invalid recipient profile ID for key lookup.")
             return@withContext null
         }
 
-        // Fast path: current public-profile view, where legacy profile IDs normally resolve directly.
+        // The authenticated RPC is authoritative: it only returns a registry row whose key_id
+        // matches the profile active key ID. Do not prefer a potentially stale profile view.
+        try {
+            val payload = JSONObject().put("p_profile_id", safeProfileId).put("p_phone_e164", fallbackPhoneNumber.trim())
+            val request = buildRequest(endpoint = "rpc/resolve_public_tink_key", method = "POST", bodyJson = payload.toString())
+            httpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (response.isSuccessful && body.isNotBlank()) {
+                    val result = runCatching { JSONObject(body) }.getOrNull()
+                    val rawKey = result?.optSafeString("public_key", "").orEmpty()
+                    val serverKeyId = result?.optSafeString("key_id", "").orEmpty()
+                    if (result?.has("key_id") == true && rawKey.isBlank()) {
+                        Log.w(TAG, "Peer active key registry has no row matching the current profile key_id; refusing stale profile fallback.")
+                        return@withContext null
+                    }
+                    if (rawKey.isNotBlank()) {
+                        val decoded = TinkCryptoManager.decodePostgrestTextValue(rawKey)
+                        if (TinkCryptoManager.validatePublicKeysetJson(decoded)) {
+                            val keysetId = TinkCryptoManager.getPublicKeyMetadata(decoded).keyId
+                            if (serverKeyId.isBlank() || serverKeyId == keysetId) {
+                                TinkCryptoManager.logPublicKeyDiagnostics("peer", decoded)
+                                Log.d(TAG, "Resolved peer Tink key from active user_public_keys key_id=$keysetId.")
+                                return@withContext decoded
+                            }
+                            Log.w(TAG, "Rejected peer key because registry key_id and public key primaryKeyId differ.")
+                        }
+                    }
+                    Log.d(TAG, "Active key registry did not return a valid key for the requested peer.")
+                } else {
+                    Log.w(TAG, "Active peer-key resolution RPC returned HTTP ${response.code}.")
+                }
+            }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Active peer-key resolution deferred: ${failure.javaClass.simpleName}.")
+        }
+
+        // Compatibility fallback for a legacy profile with no key-registry row.
         try {
             val safeId = java.net.URLEncoder.encode(safeProfileId, "UTF-8")
             val request = buildRequest(
@@ -1373,59 +1415,19 @@ object SupabaseClientManager {
             )
             httpClient.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
-                if (response.isSuccessful) {
-                    val row = runCatching { JSONArray(body).optJSONObject(0) }.getOrNull()
-                    val rawKey = row?.optSafeString("public_identity_key", "").orEmpty()
-                    if (rawKey.isNotBlank()) {
-                        val decoded = TinkCryptoManager.decodePostgrestTextValue(rawKey)
-                        if (TinkCryptoManager.validatePublicKeysetJson(decoded)) {
-                            Log.d(TAG, "Resolved published Tink key through the public profile view.")
-                            return@withContext decoded
-                        }
+                val rawKey = if (response.isSuccessful) runCatching { JSONArray(body).optJSONObject(0)?.optSafeString("public_identity_key", "").orEmpty() }.getOrDefault("") else ""
+                if (rawKey.isNotBlank()) {
+                    val decoded = TinkCryptoManager.decodePostgrestTextValue(rawKey)
+                    if (TinkCryptoManager.validatePublicKeysetJson(decoded)) {
+                        TinkCryptoManager.logPublicKeyDiagnostics("peer-legacy-fallback", decoded)
+                        return@withContext decoded
                     }
-                } else {
-                    Log.w(TAG, "Public profile key lookup returned HTTP ${response.code}.")
                 }
             }
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (failure: Throwable) {
-            Log.w(TAG, "Direct public-key lookup deferred: ${failure.javaClass.simpleName}.")
-        }
-
-        // Slow path: resolves UUID-v5 subject -> legacy profile ID, then checks all supported
-        // publication stores. The server function is the only client-accessible path to the private map.
-        try {
-            val payload = JSONObject()
-                .put("p_profile_id", safeProfileId)
-                .put("p_phone_e164", fallbackPhoneNumber.trim())
-            val request = buildRequest(
-                endpoint = "rpc/resolve_public_tink_key",
-                method = "POST",
-                bodyJson = payload.toString()
-            )
-            httpClient.newCall(request).execute().use { response ->
-                val body = response.body?.string().orEmpty()
-                if (response.isSuccessful && body.isNotBlank()) {
-                    val result = runCatching { JSONObject(body) }.getOrNull()
-                    val rawKey = result?.optSafeString("public_key", "").orEmpty()
-                        .ifBlank { result?.optSafeString("public_identity_key", "").orEmpty() }
-                    if (rawKey.isNotBlank()) {
-                        val decoded = TinkCryptoManager.decodePostgrestTextValue(rawKey)
-                        if (TinkCryptoManager.validatePublicKeysetJson(decoded)) {
-                            Log.i(TAG, "Resolved published Tink key through canonical identity mapping.")
-                            return@withContext decoded
-                        }
-                    }
-                    Log.d(TAG, "Identity-map key resolution found no valid key for the requested peer.")
-                } else {
-                    Log.w(TAG, "Identity-map key resolution returned HTTP ${response.code}.")
-                }
-            }
-        } catch (cancelled: kotlinx.coroutines.CancellationException) {
-            throw cancelled
-        } catch (failure: Throwable) {
-            Log.w(TAG, "Identity-map key lookup deferred: ${failure.javaClass.simpleName}.")
+            Log.w(TAG, "Legacy public profile key fallback deferred: ${failure.javaClass.simpleName}.")
         }
 
         val phone = fallbackPhoneNumber.trim()
@@ -1434,6 +1436,7 @@ object SupabaseClientManager {
                 .onFailure { Log.w(TAG, "Recipient phone key fallback deferred: ${it.javaClass.simpleName}.") }
                 .getOrNull()
             if (!keyByPhone.isNullOrBlank() && TinkCryptoManager.validatePublicKeysetJson(keyByPhone)) {
+                TinkCryptoManager.logPublicKeyDiagnostics("peer-phone-fallback", keyByPhone)
                 return@withContext keyByPhone
             }
         }
@@ -2248,7 +2251,8 @@ object SupabaseClientManager {
         val message: ChatMessageEntity,
         val decryptionSucceeded: Boolean,
         val deleted: Boolean = false,
-        val createdAtRaw: String = ""
+        val createdAtRaw: String = "",
+        val decryptionFailureReason: String = ""
     )
 
     data class MessageDeltaBatch(
@@ -2313,7 +2317,7 @@ object SupabaseClientManager {
         var offset = 0
         val pageSize = 500
         val maxPages = 20
-        val currentProfileId = VibeSyncSessionManager.getProfileId().orEmpty()
+        val currentProfileId = VibeSyncSessionManager.getProfileId().orEmpty().trim()
         val context = AppNotificationManager.appContext ?: MessageHandler.appContext
         val safeMatch = java.net.URLEncoder.encode(matchId, "UTF-8")
         val afterFilter = when {
@@ -2403,10 +2407,14 @@ object SupabaseClientManager {
                         matchId = remoteMatch,
                         currentProfileId = currentProfileId
                     )
-                    val ownMessage = senderId.equals(currentProfileId, ignoreCase = true)
+                    val ownMessage = MessageDecryptionPolicy.isOwnOutgoingMessage(senderId, currentProfileId)
+                    val historicalRecipientKeyMissing = context != null && !ownMessage &&
+                        cipherText.startsWith(TinkCryptoManager.TINK_PREFIX) &&
+                        !TinkCryptoManager.hasRetainedRecipientKey(context, cipherText)
                     val decrypted = if (
                         context != null &&
                         !ownMessage &&
+                        !historicalRecipientKeyMissing &&
                         cipherText.startsWith(TinkCryptoManager.TINK_PREFIX) &&
                         aad != null
                     ) {
@@ -2452,7 +2460,8 @@ object SupabaseClientManager {
                             serverCreatedAt = createdAt
                         ),
                         decryptionSucceeded = decryptionSucceeded,
-                        createdAtRaw = createdAtRaw
+                        createdAtRaw = createdAtRaw,
+                        decryptionFailureReason = if (historicalRecipientKeyMissing) MessageLocalRetentionPolicy.KEY_CHANGED_TOMBSTONE_TEXT else ""
                     )
                 }
                 if (page.length() < pageSize) return@withContext MessageDeltaBatch(records, latestCreatedAt, complete, latestCreatedAtRaw, latestMessageId)
@@ -2485,60 +2494,72 @@ object SupabaseClientManager {
             )
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext list
-                val arr = JSONArray(response.body?.string() ?: "[]")
+                val rows = JSONArray(response.body?.string() ?: "[]")
                 val context = AppNotificationManager.appContext ?: MessageHandler.appContext
-                for (i in 0 until arr.length()) {
-                    val obj = arr.optJSONObject(i) ?: continue
-                    val msgId = obj.optSafeString("message_id", obj.optSafeString("id", ""))
-                    val senderId = obj.optSafeString("sender_id", "")
-                    val receiverId = obj.optSafeString("receiver_id", "")
-                    val ciphertext = obj.optSafeString("ciphertext", "")
-                    val remoteMatchId = obj.optSafeString("match_id", matchId)
-                    if (msgId.isBlank() || ciphertext.isBlank()) continue
-                    val aadParticipants = TinkCryptoManager.resolveAadParticipantIds(
+                val localProfileId = VibeSyncSessionManager.getProfileId().orEmpty().trim()
+                val database = context?.let { runCatching { com.example.data.database.DatingDatabase.getDatabase(it) }.getOrNull() }
+                for (index in 0 until rows.length()) {
+                    val row = rows.optJSONObject(index) ?: continue
+                    val messageId = row.optSafeString("message_id", row.optSafeString("id", ""))
+                    val senderId = row.optSafeString("sender_id", "")
+                    val receiverId = row.optSafeString("receiver_id", "")
+                    val ciphertext = row.optSafeString("ciphertext", "")
+                    val remoteMatchId = row.optSafeString("match_id", matchId)
+                    if (messageId.isBlank() || ciphertext.isBlank()) continue
+                    val ownMessage = MessageDecryptionPolicy.isOwnOutgoingMessage(senderId, localProfileId)
+                    val existingLocal = if (ownMessage && database != null) {
+                        runCatching { database.chatMessageDao().getMessageById(messageId) }.getOrNull()
+                    } else null
+                    val localPlaintext = existingLocal?.text?.takeIf { MessageLocalRetentionPolicy.isRenderableText(it) }
+                    val aad = TinkCryptoManager.resolveAadParticipantIds(
                         senderProfileId = senderId,
                         receiverProfileId = receiverId,
                         matchId = remoteMatchId,
-                        currentProfileId = VibeSyncSessionManager.getProfileId().orEmpty()
+                        currentProfileId = localProfileId
                     )
-                    val decrypted = if (
-                        context != null &&
-                        ciphertext.startsWith(TinkCryptoManager.TINK_PREFIX) &&
-                        aadParticipants != null
-                    ) {
-                        TinkCryptoManager.decryptPayload(
-                            context = context,
-                            payload = ciphertext,
-                            senderPhone = aadParticipants.first,
-                            receiverPhone = aadParticipants.second
+                    val displayedText = MessageDecryptionPolicy.resolveMessageText(
+                        senderProfileId = senderId,
+                        localProfileId = localProfileId,
+                        ciphertext = ciphertext,
+                        localPlaintext = localPlaintext
+                    ) { body ->
+                        if (context != null && body.startsWith(TinkCryptoManager.TINK_PREFIX) && aad != null) {
+                            TinkCryptoManager.decryptPayload(context, body, aad.first, aad.second)
+                        } else ""
+                    }
+                    val mediaType = row.optSafeString("media_type", "TEXT")
+                    val forwardCount = row.optInt("forward_count", 0).coerceAtLeast(0)
+                    val isForwarded = row.optBoolean("is_forwarded", false)
+                    val mediaUrl = row.optSafeString("media_url", "")
+                    val timestamp = row.optLong("timestamp", 0L).takeIf { it > 0L } ?: System.currentTimeMillis()
+                    val localMessage = existingLocal?.takeIf { ownMessage }?.let { existing ->
+                        existing.copy(
+                            isDelivered = row.optBoolean("is_delivered", false) || existing.isDelivered,
+                            isRead = row.optBoolean("is_read", false) || existing.isRead
                         )
-                    } else ""
-                    if (decrypted.isBlank()) continue
-                    val resolvedSenderId = senderId.ifBlank { aadParticipants?.first.orEmpty() }
-                    val mediaType = obj.optSafeString("media_type", "TEXT")
-                    val forwardCount = obj.optInt("forward_count", 0).coerceAtLeast(0)
-                    val isForwarded = obj.optBoolean("is_forwarded", false)
-                    val rawMedia = obj.optSafeString("media_url", "")
-                    val ts = obj.optLong("timestamp", 0L).takeIf { it > 0 } ?: System.currentTimeMillis()
-                    list.add(ChatMessageEntity(
-                        messageId = msgId,
+                    }
+                    list.add(localMessage ?: ChatMessageEntity(
+                        messageId = messageId,
                         matchId = remoteMatchId,
-                        senderId = resolvedSenderId,
-                        text = decrypted,
-                        timestamp = ts,
-                        isDelivered = obj.optBoolean("is_delivered", false),
-                        isRead = obj.optBoolean("is_read", false),
-                        mediaUrl = rawMedia,
+                        senderId = senderId,
+                        text = displayedText,
+                        timestamp = timestamp,
+                        isDelivered = row.optBoolean("is_delivered", false),
+                        isRead = row.optBoolean("is_read", false),
+                        mediaUrl = mediaUrl,
                         mediaType = mediaType,
                         isForwarded = isForwarded,
                         forwardCount = forwardCount,
-                        voiceDurationSeconds = obj.optInt("voice_duration_seconds", 0),
-                        isEncrypted = true
+                        voiceDurationSeconds = row.optInt("voice_duration_seconds", 0),
+                        isEncrypted = true,
+                        deliveryState = if (ownMessage && !MessageLocalRetentionPolicy.isRenderableText(displayedText)) "PENDING_DECRYPTION" else "SENT_TO_SERVER"
                     ))
                 }
             }
-        } catch (e: Throwable) {
-            Log.w(TAG, "Encrypted chat fetch notice: ${e.message}")
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Encrypted chat fetch deferred: ${failure.javaClass.simpleName}.")
         }
         list.sortBy { it.timestamp }
         list
