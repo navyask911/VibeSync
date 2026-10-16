@@ -1152,7 +1152,11 @@ object SupabaseClientManager {
                 val body = response.body?.string().orEmpty().trim().trim('"')
                 val result = runCatching { JSONObject(body) }.getOrNull()
                 val updated = response.isSuccessful &&
-                    (body.equals("true", ignoreCase = true) || result?.optBoolean("ok", false) == true)
+                    (
+                        body.equals("true", ignoreCase = true) ||
+                            result?.optBoolean("ok", false) == true ||
+                            result?.optString("status")?.equals("ok", ignoreCase = true) == true
+                        )
                 if (updated) {
                     TinkCryptoManager.markMyPublicIdentityKeyPublished(context, activeProfileId, publicKeyset)
                     Log.i(TAG, "Published Tink public identity key to profiles and user_public_keys.")
