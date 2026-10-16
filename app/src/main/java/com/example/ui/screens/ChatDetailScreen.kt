@@ -1313,7 +1313,7 @@ private fun ChatDetailScreenContent(
         if (showClearChatDialog) {
             AlertDialog(
                 onDismissRequest = { showClearChatDialog = false },
-                title = { Text("Clear this chat?") },
+                title = { Text("Clear chat") },
                 text = {
                     Column {
                         Text("Clear this chat? Messages will be deleted from this device.")
