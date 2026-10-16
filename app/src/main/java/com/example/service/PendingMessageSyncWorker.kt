@@ -222,30 +222,85 @@ internal object PendingMessageOutboxSender {
                     return@withContext PendingOutboxAttempt.Retryable("RecipientKeyNotFoundException: ${missing.message}")
                 }
 
+                // Both devices use the canonical server match id for message and media authorization.
+                val canonicalMatchId = SupabaseClientManager.canonicalChatMatchId(senderProfileId, recipientProfileId)
+                if (canonicalMatchId.isBlank()) {
+                    return@withContext PendingOutboxAttempt.Retryable("Could not build a canonical match_id.")
+                }
+
                 var voicePayloadForEncryption: String? = null
                 if (message.mediaType.equals("VOICE", ignoreCase = true) ||
                     message.mediaType.equals("AUDIO", ignoreCase = true)
                 ) {
-                    val localReference = if (message.mediaUrl.startsWith(com.example.util.VoiceNoteCryptoManager.LOCAL_REFERENCE_PREFIX)) {
+                    val hasLocalReference = message.mediaUrl.startsWith(com.example.util.VoiceNoteCryptoManager.LOCAL_REFERENCE_PREFIX)
+                    if (!hasLocalReference) {
+                        message = message.copy(lastSyncError = com.example.util.ChatAttachmentCryptoManager.UPLOAD_PROGRESS_SENTINEL)
+                        dao.upsertMessage(message)
+                    }
+                    val localReference = if (hasLocalReference) {
                         message.mediaUrl
                     } else {
                         com.example.util.VoiceNoteCryptoManager.prepareReferenceForOutbox(
                             context = context.applicationContext,
                             messageId = message.messageId,
-                            mediaUrl = message.mediaUrl
-                        ) ?: return@withContext PendingOutboxAttempt.Retryable(
-                            "Voice-note encryption/upload is not complete; the message remains queued."
-                        )
+                            mediaUrl = message.mediaUrl,
+                            matchId = canonicalMatchId
+                        ) ?: run {
+                            dao.upsertMessage(message.copy(lastSyncError = ""))
+                            return@withContext PendingOutboxAttempt.Retryable(
+                                "Voice-note encryption/upload is not complete; the message remains queued."
+                            )
+                        }
                     }
                     voicePayloadForEncryption =
                         com.example.util.VoiceNoteCryptoManager.payloadFromLocalReference(localReference)
-                            ?: return@withContext PendingOutboxAttempt.Retryable(
-                                "Voice-note reference is invalid; retrying outbox preparation."
-                            )
-                    if (message.mediaUrl != localReference) {
-                        // Persist stable object/key metadata before the server write, so retries don't
-                        // upload again and the sender can also stream/decrypt from local cache.
-                        message = message.copy(mediaUrl = localReference)
+                            ?: run {
+                                dao.upsertMessage(message.copy(lastSyncError = ""))
+                                return@withContext PendingOutboxAttempt.Retryable(
+                                    "Voice-note reference is invalid; retrying outbox preparation."
+                                )
+                            }
+                    val updatedMessage = message.copy(mediaUrl = localReference, lastSyncError = "")
+                    if (updatedMessage != message) {
+                        message = updatedMessage
+                        dao.upsertMessage(message)
+                        db.messageDao().insertMessage(
+                            message.toLocalMessage().copy(remoteMessageId = message.messageId)
+                        )
+                    }
+                }
+
+                var attachmentPayloadForEncryption: String? = null
+                if (com.example.util.ChatAttachmentCryptoManager.isSupportedMediaType(message.mediaType)) {
+                    val hasLocalReference = com.example.util.ChatAttachmentCryptoManager.isLocalReference(message.mediaUrl)
+                    if (!hasLocalReference) {
+                        message = message.copy(lastSyncError = com.example.util.ChatAttachmentCryptoManager.UPLOAD_PROGRESS_SENTINEL)
+                        dao.upsertMessage(message)
+                    }
+                    val localReference = com.example.util.ChatAttachmentCryptoManager.prepareReferenceForOutbox(
+                        context = context.applicationContext,
+                        messageId = message.messageId,
+                        matchId = canonicalMatchId,
+                        mediaType = message.mediaType,
+                        mediaUrl = message.mediaUrl,
+                        displayText = message.text
+                    ) ?: run {
+                        dao.upsertMessage(message.copy(lastSyncError = ""))
+                        return@withContext PendingOutboxAttempt.Retryable(
+                            "Encrypted attachment upload is not complete; the message remains queued."
+                        )
+                    }
+                    attachmentPayloadForEncryption =
+                        com.example.util.ChatAttachmentCryptoManager.payloadFromLocalReference(localReference)
+                            ?: run {
+                                dao.upsertMessage(message.copy(lastSyncError = ""))
+                                return@withContext PendingOutboxAttempt.Retryable(
+                                    "Encrypted attachment reference is invalid; retrying outbox preparation."
+                                )
+                            }
+                    val updatedMessage = message.copy(mediaUrl = localReference, lastSyncError = "")
+                    if (updatedMessage != message) {
+                        message = updatedMessage
                         dao.upsertMessage(message)
                         db.messageDao().insertMessage(
                             message.toLocalMessage().copy(remoteMessageId = message.messageId)
@@ -269,6 +324,7 @@ internal object PendingMessageOutboxSender {
                 }
 
                 val payloadForEncryption = voicePayloadForEncryption
+                    ?: attachmentPayloadForEncryption
                     ?: com.example.util.ChatMessageEventCodec.encodeForEncryption(
                         message = message,
                         fallbackBody = rawText
@@ -303,16 +359,21 @@ internal object PendingMessageOutboxSender {
                     return@withContext PendingOutboxAttempt.Retryable("TinkEncryptionException: ${failure.message}")
                 }
 
-                // Both devices use the same sorted profile-ID pair, independent of local Room match IDs.
-                val canonicalMatchId = SupabaseClientManager.canonicalChatMatchId(senderProfileId, recipientProfileId)
-                if (canonicalMatchId.isBlank()) {
-                    return@withContext PendingOutboxAttempt.Retryable("Could not build a canonical match_id.")
+                val remoteMediaLocator = when {
+                    voicePayloadForEncryption != null ->
+                        com.example.util.VoiceNoteCryptoManager.objectPathFromReference(message.mediaUrl)
+                            ?.let { "chat-voice-notes://" + it }.orEmpty()
+                    attachmentPayloadForEncryption != null ->
+                        com.example.util.ChatAttachmentCryptoManager.objectPathFromLocalReference(message.mediaUrl)
+                            ?.let { "chat-attachments://" + it }.orEmpty()
+                    com.example.util.ChatMessageEventCodec.shouldEncryptMediaUrl(message) -> ""
+                    else -> message.mediaUrl
                 }
                 val remoteMessage = message.copy(
                     matchId = canonicalMatchId,
                     text = ciphertext,
-                    // Voice object paths/keysets live only inside the encrypted message payload.
-                    mediaUrl = if (voicePayloadForEncryption != null) "" else message.mediaUrl,
+                    // Storage locators carry no content. Bytes, caption/name and keyset are Tink encrypted.
+                    mediaUrl = remoteMediaLocator,
                     isEncrypted = true,
                     isDelivered = false,
                     isRead = false
