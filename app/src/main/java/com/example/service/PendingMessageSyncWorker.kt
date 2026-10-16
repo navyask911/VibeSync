@@ -233,6 +233,7 @@ internal object PendingMessageOutboxSender {
                     message.mediaType.equals("AUDIO", ignoreCase = true)
                 ) {
                     val hasLocalReference = message.mediaUrl.startsWith(com.example.util.VoiceNoteCryptoManager.LOCAL_REFERENCE_PREFIX)
+                    val voiceSourcePathToDelete = if (hasLocalReference) null else message.mediaUrl
                     if (!hasLocalReference) {
                         message = message.copy(lastSyncError = com.example.util.ChatAttachmentCryptoManager.UPLOAD_PROGRESS_SENTINEL)
                         dao.upsertMessage(message)
@@ -267,6 +268,9 @@ internal object PendingMessageOutboxSender {
                         db.messageDao().insertMessage(
                             message.toLocalMessage().copy(remoteMessageId = message.messageId)
                         )
+                    }
+                    voiceSourcePathToDelete?.let { sourcePath ->
+                        runCatching { java.io.File(sourcePath).takeIf { it.isFile }?.delete() }
                     }
                 }
 
