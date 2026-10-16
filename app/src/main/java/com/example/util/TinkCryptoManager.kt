@@ -19,7 +19,9 @@ import com.google.crypto.tink.proto.HpkePublicKey
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.io.ByteArrayOutputStream
+import java.security.GeneralSecurityException
 import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.Locale
 import org.json.JSONArray
 import org.json.JSONObject
@@ -48,6 +50,19 @@ object TinkCryptoManager {
     private const val CIPHERTEXT_ENVELOPE_V2_PREFIX = "V2:"
 
     data class PublicKeyMetadata(val keyId: String, val fingerprint: String)
+
+    internal fun unsignedTinkKeyId(keyId: Int): String = java.lang.Integer.toUnsignedLong(keyId).toString()
+
+    /** Normalize key-ID strings from JSON/wire metadata, accepting legacy signed Int formatting. */
+    internal fun normalizeTinkKeyId(rawKeyId: String): String {
+        val normalized = rawKeyId.trim()
+        val value = normalized.toLongOrNull() ?: return normalized
+        return when {
+            value < 0L && value >= -2147483648L -> (value + 4294967296L).toString()
+            value in 0L..4294967295L -> value.toString()
+            else -> normalized
+        }
+    }
 
     private data class ParsedCiphertext(
         val ciphertextBytes: ByteArray,
@@ -167,7 +182,7 @@ object TinkCryptoManager {
             check(afterIds.containsAll(oldIds)) { "Tink rotation unexpectedly dropped an existing key ID." }
             cachedKeysetHandle = rotatedHandle
             logPublicKeyDiagnostics("local", serializePublicKeysetJson(rotatedHandle))
-            newId.toString()
+            unsignedTinkKeyId(newId)
         } catch (failure: Throwable) {
             Log.e(TAG, "Append-only Tink key rotation failed: ${failure.javaClass.simpleName}")
             null
@@ -211,6 +226,57 @@ object TinkCryptoManager {
             Log.i("TinkE2EE", "Public-key diagnostic: role=$role key_id=${metadata.keyId} key_sha256=$shortHash")
         } catch (failure: Throwable) {
             Log.w("TinkE2EE", "Public-key diagnostic unavailable for role=$role: ${failure.javaClass.simpleName}")
+        }
+    }
+
+    private fun keyIdFromCiphertext(ciphertext: ByteArray, envelopeKeyId: String): String {
+        if (ciphertext.size >= 5 && ciphertext[0] == 1.toByte()) {
+            return unsignedTinkKeyId(ByteBuffer.wrap(ciphertext, 1, 4).order(ByteOrder.BIG_ENDIAN).int)
+        }
+        return envelopeKeyId.ifBlank { "unknown" }
+    }
+
+    private fun shortSha256(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).take(4)
+            .joinToString("") { "%02X".format(it.toInt() and 0xFF) }
+
+    private fun publicKeyHash(publicKeysetJson: String): String =
+        runCatching { publicKeyFingerprint(publicKeysetJson).take(8).uppercase(Locale.ROOT) }
+            .getOrDefault("unavailable")
+
+    private fun logCryptoDiagnostics(
+        operation: String, messageId: String, senderProfileId: String, recipientProfileId: String,
+        contextInfo: ByteArray, keyIdUsed: String, ciphertextLength: Int, localHandle: KeysetHandle?,
+        localPublicKeysetJson: String, peerPublicKeysetJson: String
+    ) {
+        val localPrimary = localHandle?.let { unsignedTinkKeyId(it.keysetInfo.primaryKeyId) }
+            ?: runCatching { getPublicKeyMetadata(localPublicKeysetJson).keyId }.getOrDefault("unavailable")
+        val retained = localHandle?.keysetInfo?.keyInfoList?.filter { it.status.name == "ENABLED" }
+            ?.map { unsignedTinkKeyId(it.keyId) }?.distinct()?.sorted()?.joinToString(",").orEmpty()
+        Log.i("TinkE2EE", "crypto=$operation message_id=${messageId.ifBlank { "unknown" }} direction=$senderProfileId->$recipientProfileId context_sha256=${shortSha256(contextInfo)} key_id_used_unsigned=$keyIdUsed local_primary_key_id_unsigned=$localPrimary retained_key_ids_unsigned=[$retained] ciphertext_bytes=$ciphertextLength role=local key_sha256=${publicKeyHash(localPublicKeysetJson)} role=peer key_sha256=${publicKeyHash(peerPublicKeysetJson)}")
+    }
+
+    /** Random challenge bytes are temporary; only a boolean result leaves this method. */
+    fun verifyPublishedPublicKeyRoundTrip(context: Context, resolvedPublicKeysetJson: String, profileId: String): Boolean {
+        if (profileId.isBlank() || !validatePublicKeysetJson(resolvedPublicKeysetJson)) return false
+        val challenge = ByteArray(16)
+        var recovered: ByteArray? = null
+        return try {
+            SecureRandom().nextBytes(challenge)
+            val privateHandle = getOrCreateMyKeysetHandle(context) ?: return false
+            val publicHandle = CleartextKeysetHandle.read(JsonKeysetReader.withString(resolvedPublicKeysetJson.trim()))
+            val metadata = getPublicKeyMetadata(resolvedPublicKeysetJson)
+            val aad = createDeterministicContext(profileId, "vibesync-publish-self-check-recipient")
+            val cipher = publicHandle.getPrimitive(HybridEncrypt::class.java).encrypt(challenge, aad)
+            val parsed = parseCiphertextEnvelope("$TINK_PREFIX${encodeCiphertextEnvelope(cipher, metadata)}")
+            recovered = privateHandle.getPrimitive(HybridDecrypt::class.java).decrypt(parsed.ciphertextBytes, aad)
+            recovered?.let { MessageDigest.isEqual(challenge, it) } == true
+        } catch (failure: Throwable) {
+            Log.w("TinkE2EE", "Published-key self-check failed: ${failure.javaClass.simpleName}")
+            false
+        } finally {
+            challenge.fill(0)
+            recovered?.fill(0)
         }
     }
 
@@ -311,7 +377,7 @@ object TinkCryptoManager {
         require(cipher.isNotEmpty()) { "Encrypted payload envelope contains no ciphertext." }
         return ParsedCiphertext(
             ciphertextBytes = cipher,
-            recipientKeyId = envelope.optString("recipient_key_id", "").trim(),
+            recipientKeyId = normalizeTinkKeyId(envelope.optString("recipient_key_id", "")),
             recipientKeyFingerprint = envelope.optString("recipient_key_fingerprint", "").trim()
         )
     }
@@ -354,10 +420,12 @@ object TinkCryptoManager {
     }
 
     private fun primaryKeyId(root: JSONObject): String {
-        val configured = root.optString("primaryKeyId", "").trim()
+        val configured = normalizeTinkKeyId(root.optString("primaryKeyId", ""))
         val keys = root.optJSONArray("key") ?: throw IllegalArgumentException("Tink keyset has no key array.")
         if (configured.isNotBlank()) {
-            require((0 until keys.length()).any { keys.optJSONObject(it)?.optString("keyId", "").orEmpty() == configured }) {
+            require((0 until keys.length()).any {
+                normalizeTinkKeyId(keys.optJSONObject(it)?.optString("keyId", "").orEmpty()) == configured
+            }) {
                 "Tink primaryKeyId does not refer to a key in this keyset."
             }
             return configured
@@ -365,7 +433,7 @@ object TinkCryptoManager {
         for (index in 0 until keys.length()) {
             val key = keys.optJSONObject(index) ?: continue
             if (key.optString("status", "").equals("ENABLED", ignoreCase = true)) {
-                key.optString("keyId", "").trim().takeIf { it.isNotBlank() }?.let { return it }
+                normalizeTinkKeyId(key.optString("keyId", "")).takeIf { it.isNotBlank() }?.let { return it }
             }
         }
         throw IllegalArgumentException("Public Tink keyset has no primary/enabled key ID.")
@@ -381,7 +449,7 @@ object TinkCryptoManager {
         val keyId = primaryKeyId(root)
         val keys = root.getJSONArray("key")
         val primary = (0 until keys.length()).mapNotNull { keys.optJSONObject(it) }
-            .first { it.optString("keyId", "") == keyId }
+            .first { normalizeTinkKeyId(it.optString("keyId", "")) == keyId }
         val keyData = primary.optJSONObject("keyData")
             ?: throw IllegalArgumentException("Tink primary key has no KeyData.")
         val materialType = keyData.optString("keyMaterialType", "")
@@ -508,7 +576,8 @@ object TinkCryptoManager {
         recipientPublicKeysetJson: String,
         rawText: String,
         senderPhone: String = "",
-        receiverPhone: String = ""
+        receiverPhone: String = "",
+        messageId: String = ""
     ): String {
         if (recipientPublicKeysetJson.isBlank()) throw RecipientKeyNotFoundException("Recipient Tink public key is missing or blank.")
         require(rawText.isNotBlank()) { "Cannot encrypt an empty message payload." }
@@ -521,6 +590,15 @@ object TinkCryptoManager {
             val contextInfo = createDeterministicContext(senderPhone, receiverPhone)
             val cipherBytes = encryptor.encrypt(rawText.toByteArray(Charsets.UTF_8), contextInfo)
             check(cipherBytes.isNotEmpty()) { "Tink HybridEncrypt returned zero ciphertext bytes." }
+            val localPublicKeyset = applicationContext?.let { getMyPublicKeysetJson(it) }.orEmpty()
+            val localHandle = applicationContext?.let { getOrCreateMyKeysetHandle(it) }
+            logCryptoDiagnostics(
+                operation = "encrypt", messageId = messageId,
+                senderProfileId = senderPhone, recipientProfileId = receiverPhone,
+                contextInfo = contextInfo, keyIdUsed = keyIdFromCiphertext(cipherBytes, metadata.keyId),
+                ciphertextLength = cipherBytes.size, localHandle = localHandle,
+                localPublicKeysetJson = localPublicKeyset, peerPublicKeysetJson = recipientPublicKeysetJson
+            )
             // Every message, including media placeholders, carries the recipient Tink key ID and
             // fingerprint actually used for encryption. Keep the prefix stable for old callers.
             return "$TINK_PREFIX${encodeCiphertextEnvelope(cipherBytes, metadata)}"
@@ -537,9 +615,10 @@ object TinkCryptoManager {
         recipientPublicKeysetJson: String,
         rawText: String,
         senderPhone: String = "",
-        receiverPhone: String = ""
+        receiverPhone: String = "",
+        messageId: String = ""
     ): String = try {
-        encryptForRecipientOrThrow(recipientPublicKeysetJson, rawText, senderPhone, receiverPhone)
+        encryptForRecipientOrThrow(recipientPublicKeysetJson, rawText, senderPhone, receiverPhone, messageId)
     } catch (e: Throwable) {
         Log.e(TAG, "Tink encryption failed closed: ${e.javaClass.simpleName}: ${e.message}", e)
         ""
@@ -550,13 +629,22 @@ object TinkCryptoManager {
         privateKeysetHandle: KeysetHandle,
         payload: String,
         senderPhone: String,
-        receiverPhone: String
+        receiverPhone: String,
+        messageId: String = ""
     ): String {
         require(payload.startsWith(TINK_PREFIX)) { "Only Tink-prefixed ciphertext can be decrypted." }
         require(senderPhone.isNotBlank() && receiverPhone.isNotBlank()) { "Sender/receiver binding context is required." }
         val parsed = parseCiphertextEnvelope(payload)
+        val aad = getAssociatedData(senderPhone, receiverPhone)
+        logCryptoDiagnostics(
+            operation = "decrypt-test-seam", messageId = messageId,
+            senderProfileId = senderPhone, recipientProfileId = receiverPhone,
+            contextInfo = aad, keyIdUsed = keyIdFromCiphertext(parsed.ciphertextBytes, parsed.recipientKeyId),
+            ciphertextLength = parsed.ciphertextBytes.size, localHandle = privateKeysetHandle,
+            localPublicKeysetJson = serializePublicKeysetJson(privateKeysetHandle), peerPublicKeysetJson = ""
+        )
         val decryptor = privateKeysetHandle.getPrimitive(HybridDecrypt::class.java)
-        return String(decryptor.decrypt(parsed.ciphertextBytes, getAssociatedData(senderPhone, receiverPhone)), Charsets.UTF_8)
+        return String(decryptor.decrypt(parsed.ciphertextBytes, aad), Charsets.UTF_8)
     }
 
     /**
@@ -592,7 +680,7 @@ object TinkCryptoManager {
         if (recipientKeyId.isBlank()) return true
         val handle = getOrCreateMyKeysetHandle(context) ?: return false
         return handle.keysetInfo.keyInfoList.any { info ->
-            info.keyId.toString() == recipientKeyId && info.status.name == "ENABLED"
+            unsignedTinkKeyId(info.keyId) == recipientKeyId && info.status.name == "ENABLED"
         }
     }
     /**
@@ -611,15 +699,21 @@ object TinkCryptoManager {
         receiverPhone: String,
         peerProfileId: String,
         fallbackPhoneNumber: String = "",
-        onPeerPublicKeyRefreshed: (suspend (String, String) -> Unit)? = null
+        onPeerPublicKeyRefreshed: (suspend (String, String) -> Unit)? = null,
+        messageId: String = "",
+        directionSenderProfileId: String = senderPhone,
+        directionRecipientProfileId: String = receiverPhone,
+        peerPublicKeysetJson: String = ""
     ): String {
         if (!payload.startsWith(TINK_PREFIX)) return payload
 
         val firstAttempt = decryptPayload(
             context = context,
             payload = payload,
-            senderPhone = senderPhone,
-            receiverPhone = receiverPhone
+            senderPhone = senderPhone, receiverPhone = receiverPhone,
+            messageId = messageId, directionSenderProfileId = directionSenderProfileId,
+            directionRecipientProfileId = directionRecipientProfileId,
+            peerPublicKeysetJson = peerPublicKeysetJson
         )
         if (firstAttempt.isNotBlank()) return firstAttempt
 
@@ -665,8 +759,10 @@ object TinkCryptoManager {
         val retry = decryptPayload(
             context = context,
             payload = payload,
-            senderPhone = senderPhone,
-            receiverPhone = receiverPhone
+            senderPhone = senderPhone, receiverPhone = receiverPhone,
+            messageId = messageId, directionSenderProfileId = directionSenderProfileId,
+            directionRecipientProfileId = directionRecipientProfileId,
+            peerPublicKeysetJson = peerPublicKeysetJson
         )
         if (retry.isBlank()) {
             Log.w(TAG, "Immediate inbound Tink retry still failed; Realtime delivery will remain unacknowledged for recovery.")
@@ -684,33 +780,30 @@ object TinkCryptoManager {
         payload: String,
         senderPhone: String = "",
         receiverPhone: String = "",
-        onMismatchedKey: (() -> Unit)? = null
+        onMismatchedKey: (() -> Unit)? = null,
+        messageId: String = "",
+        directionSenderProfileId: String = senderPhone,
+        directionRecipientProfileId: String = receiverPhone,
+        peerPublicKeysetJson: String = ""
     ): String {
         if (!payload.startsWith(TINK_PREFIX)) return payload
         initTink()
 
         val myHandle = getOrCreateMyKeysetHandle(context)
         if (myHandle == null) {
-            Log.e("TinkE2EE", "Decryption failed: Local private KeysetHandle is null")
+            Log.w("TinkE2EE", "Decryption deferred: local private KeysetHandle is unavailable.")
             return ""
         }
 
         val parsedCiphertext = try {
             parseCiphertextEnvelope(payload)
         } catch (e: Exception) {
-            Log.e("TinkE2EE", "Decryption failed: invalid Tink ciphertext/envelope: ${e.message}", e)
+            Log.w("TinkE2EE", "Decryption deferred: invalid Tink ciphertext/envelope (${e.javaClass.simpleName}).")
             return ""
         }
         val cipherBytes = parsedCiphertext.ciphertextBytes
         if (parsedCiphertext.recipientKeyId.isNotBlank()) {
-            val matchingRetainedKey = myHandle.keysetInfo.keyInfoList.any { info ->
-                info.keyId.toString() == parsedCiphertext.recipientKeyId && info.status.name == "ENABLED"
-            }
-            if (!matchingRetainedKey) {
-                Log.w("TinkE2EE", "Cannot decrypt message: recipient key_id=${parsedCiphertext.recipientKeyId} is not retained; security code changed or historical key unavailable.")
-                onMismatchedKey?.invoke()
-                return ""
-            }
+            // Metadata is diagnostic only; HybridDecrypt authenticates with its retained keyset.
             val localMetadata = runCatching { getPublicKeyMetadata(getMyPublicKeysetJson(context)) }.getOrNull()
             if (localMetadata != null && localMetadata.keyId != parsedCiphertext.recipientKeyId) {
                 // The serialized Tink primitive dispatches by the ciphertext key ID, so an enabled
@@ -728,26 +821,38 @@ object TinkCryptoManager {
         val decryptor = try {
             myHandle.getPrimitive(HybridDecrypt::class.java)
         } catch (e: Throwable) {
-            Log.e("TinkE2EE", "Decryption failed: Cannot acquire HybridDecrypt primitive: ${e.message}", e)
+            Log.w("TinkE2EE", "Decryption deferred: cannot acquire HybridDecrypt primitive (${e.javaClass.simpleName}).")
             return ""
         }
 
         // Production decryption requires the same associated-data binding used at encryption time.
         if (senderPhone.isBlank() || receiverPhone.isBlank()) {
-            Log.e("TinkE2EE", "Decryption failed closed: sender/receiver binding context is missing.")
+            Log.w("TinkE2EE", "Decryption deferred: sender/receiver binding context is missing.")
             onMismatchedKey?.invoke()
             return ""
         }
 
-        return try {
-            val contextInfo = getAssociatedData(senderPhone, receiverPhone)
-            val plainBytes = decryptor.decrypt(cipherBytes, contextInfo)
-            String(plainBytes, Charsets.UTF_8)
-        } catch (e: Throwable) {
-            Log.e("TinkE2EE", "Tink hybrid decryption failed closed: ${e.message}. Possible mismatched keys.", e)
+        val contextInfo = getAssociatedData(senderPhone, receiverPhone)
+        val localPublicKeyset = getMyPublicKeysetJson(context)
+        logCryptoDiagnostics(
+            operation = "decrypt", messageId = messageId,
+            senderProfileId = directionSenderProfileId, recipientProfileId = directionRecipientProfileId,
+            contextInfo = contextInfo, keyIdUsed = keyIdFromCiphertext(cipherBytes, parsedCiphertext.recipientKeyId),
+            ciphertextLength = cipherBytes.size, localHandle = myHandle,
+            localPublicKeysetJson = localPublicKeyset, peerPublicKeysetJson = peerPublicKeysetJson
+        )
+        val decryptResult = runCatching { decryptor.decrypt(cipherBytes, contextInfo) }
+        val decryptFailure = decryptResult.exceptionOrNull()
+        if (decryptFailure != null) {
+            if (decryptFailure is GeneralSecurityException) {
+                Log.e("TinkE2EE", "Incoming Tink decrypt failed after HybridDecrypt attempt: message_id=${messageId.ifBlank { "unknown" }} context_sha256=${shortSha256(contextInfo)} ciphertext_bytes=${cipherBytes.size} cause=${decryptFailure.javaClass.simpleName}")
+            } else {
+                Log.w("TinkE2EE", "Tink decrypt attempt deferred: message_id=${messageId.ifBlank { "unknown" }} cause=${decryptFailure.javaClass.simpleName}")
+            }
             onMismatchedKey?.invoke()
-            ""
+            return ""
         }
+        return String(decryptResult.getOrThrow(), Charsets.UTF_8)
     }
 
 

@@ -70,7 +70,11 @@ data class ChatMessageEntity(
     val isDeleted: Boolean = false,
     /** Local retention deadline; 0 means the conversation has disappearing messages disabled or not yet read. */
     @ColumnInfo(defaultValue = "0")
-    val expiresAt: Long = 0L
+    val expiresAt: Long = 0L,
+    @ColumnInfo(name = "encrypted_payload", defaultValue = "''")
+    val encryptedPayload: String = "",
+    @ColumnInfo(name = "decrypt_state", defaultValue = "'OK'")
+    val decryptState: String = "OK"
 ) {
     @androidx.room.Ignore
     val senderUid: String = senderId
@@ -84,6 +88,8 @@ data class ChatMessageEntity(
     fun toLocalMessage(): LocalMessage = LocalMessage(
         senderUid = senderId,
         textContent = text,
+        encryptedPayload = encryptedPayload,
+        decryptState = decryptState,
         timestamp = timestamp,
         isSentByMe = (senderId == "USER"),
         matchId = matchId

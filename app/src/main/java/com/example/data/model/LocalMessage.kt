@@ -1,6 +1,7 @@
 package com.example.data.model
 
 import androidx.compose.runtime.Immutable
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -20,7 +21,11 @@ data class LocalMessage(
     val isSentByMe: Boolean,
     val matchId: String = "",
     /** Stable Supabase message_id; null remains permitted for legacy/local-only rows. */
-    val remoteMessageId: String? = null
+    val remoteMessageId: String? = null,
+    @ColumnInfo(name = "encrypted_payload", defaultValue = "''")
+    val encryptedPayload: String = "",
+    @ColumnInfo(name = "decrypt_state", defaultValue = "'OK'")
+    val decryptState: String = "OK"
 ) {
     fun toChatMessageEntity(defaultMatchId: String = ""): ChatMessageEntity {
         val targetMatch = if (matchId.isNotBlank()) matchId else defaultMatchId
@@ -29,6 +34,8 @@ data class LocalMessage(
             matchId = targetMatch,
             senderId = if (isSentByMe) "USER" else senderUid,
             text = textContent,
+            encryptedPayload = encryptedPayload,
+            decryptState = decryptState,
             timestamp = timestamp,
             isDelivered = true,
             isRead = true,

@@ -1,7 +1,28 @@
 package com.example.util
 
-/** Shared origin policy for every inbox path; own-sent ciphertext belongs to the peer key. */
+/** Shared origin policy and state-only storage contract for inbox messages. */
 internal object MessageDecryptionPolicy {
+    data class StoredIncomingMessage(val text: String, val encryptedPayload: String, val decryptState: String)
+
+    fun storageForIncoming(
+        ciphertext: String,
+        decryptedText: String?,
+        existingPlaintext: String? = null,
+        failureState: String = MessageLocalRetentionPolicy.FAILED_RETRYABLE
+    ): StoredIncomingMessage {
+        val plaintext = decryptedText?.takeIf { MessageLocalRetentionPolicy.isRenderableText(it) }
+            ?: existingPlaintext?.takeIf { MessageLocalRetentionPolicy.isRenderableText(it) }
+        val payload = ciphertext.takeIf { it.startsWith(TinkCryptoManager.TINK_PREFIX) }.orEmpty()
+        return if (plaintext != null) {
+            StoredIncomingMessage(plaintext, payload, MessageLocalRetentionPolicy.DECRYPT_STATE_OK)
+        } else {
+            StoredIncomingMessage(
+                text = "", encryptedPayload = payload,
+                decryptState = if (failureState == MessageLocalRetentionPolicy.FAILED_KEY_MISSING)
+                    MessageLocalRetentionPolicy.FAILED_KEY_MISSING else MessageLocalRetentionPolicy.FAILED_RETRYABLE
+            )
+        }
+    }
     fun isOwnOutgoingMessage(senderProfileId: String, localProfileId: String): Boolean =
         localProfileId.isNotBlank() && senderProfileId.trim().equals(localProfileId.trim(), ignoreCase = true)
 
@@ -17,6 +38,7 @@ internal object MessageDecryptionPolicy {
         decryptIncoming: (String) -> String
     ): String {
         if (isOwnOutgoingMessage(senderProfileId, localProfileId)) {
+            android.util.Log.d("TinkE2EE", "Own-message decrypt skipped in favor of the local outbox copy.")
             return localPlaintext?.takeIf { MessageLocalRetentionPolicy.isRenderableText(it) }
                 ?: MessageLocalRetentionPolicy.OUTGOING_PLAINTEXT_UNAVAILABLE_TEXT
         }
