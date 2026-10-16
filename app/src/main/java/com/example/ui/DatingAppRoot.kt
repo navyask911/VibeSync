@@ -833,16 +833,39 @@ fun DatingAppRoot(
                 },
                 onClearChat = { alsoDeleteMedia ->
                     coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                        val database = com.example.data.database.DatingDatabase.getDatabase(context)
-                        val messageIds = database.conversationClearDao().clearConversation(match.matchId)
-                        if (alsoDeleteMedia) {
-                            com.example.util.ChatAttachmentCryptoManager.purgeLocalCachedMediaForMessageIds(
+                        val previousCutoff = com.example.util.LocalConversationClearStore
+                            .readClearTimestamp(context, match.matchId)
+                        try {
+                            // Persist the cutoff first to keep an overlapping FCM delta from restoring
+                            // old history in the gap before the Room transaction commits.
+                            com.example.util.LocalConversationClearStore.writeClearTimestamp(
                                 context = context,
-                                messageIds = messageIds
+                                matchId = match.matchId,
+                                timestampMs = System.currentTimeMillis()
                             )
-                        }
-                        android.os.Handler(android.os.Looper.getMainLooper()).post {
-                            Toast.makeText(context, "Chat cleared on this device", Toast.LENGTH_SHORT).show()
+                            val database = com.example.data.database.DatingDatabase.getDatabase(context)
+                            val messageIds = database.conversationClearDao().clearConversation(match.matchId)
+                            if (alsoDeleteMedia) {
+                                com.example.util.ChatAttachmentCryptoManager.purgeLocalCachedMediaForMessageIds(
+                                    context = context,
+                                    messageIds = messageIds
+                                )
+                            }
+                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                Toast.makeText(context, "Chat cleared on this device", Toast.LENGTH_SHORT).show()
+                            }
+                        } catch (failure: Throwable) {
+                            runCatching {
+                                com.example.util.LocalConversationClearStore.restoreClearTimestamp(
+                                    context = context,
+                                    matchId = match.matchId,
+                                    previousTimestampMs = previousCutoff
+                                )
+                            }
+                            android.util.Log.e("VibeSyncClearChat", "Clear Chat failed", failure)
+                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                Toast.makeText(context, "Could not clear this chat. Try again.", Toast.LENGTH_LONG).show()
+                            }
                         }
                     }
                 },
