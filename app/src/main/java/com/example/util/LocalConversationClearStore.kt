@@ -15,9 +15,14 @@ object LocalConversationClearStore {
     fun readClearTimestamp(context: Context, matchId: String): Long {
         val safeId = matchId.trim()
         if (safeId.isBlank()) return 0L
-        return context.applicationContext
-            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getLong(keyFor(safeId), 0L)
+        val preferences = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val raw = preferences.all[keyFor(safeId)] ?: return 0L
+        return when (raw) {
+            is Long -> raw.takeIf { it > 0L } ?: 0L
+            is Int -> raw.toLong().takeIf { it > 0L } ?: 0L
+            is String -> raw.toLongOrNull()?.takeIf { it > 0L } ?: Long.MAX_VALUE
+            else -> Long.MAX_VALUE
+        }
     }
 
     /** Writes synchronously before the Room purge so concurrent sync cannot render old history. */
@@ -25,9 +30,11 @@ object LocalConversationClearStore {
         val safeId = matchId.trim()
         require(safeId.isNotBlank()) { "matchId is required" }
         require(timestampMs > 0L) { "clear timestamp must be positive" }
+        val previous = readClearTimestamp(context, safeId)
+        val monotonic = if (previous == Long.MAX_VALUE) timestampMs else maxOf(timestampMs, previous)
         check(
             context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit().putLong(keyFor(safeId), timestampMs).commit()
+                .edit().putLong(keyFor(safeId), monotonic).commit()
         ) { "Could not persist local Clear Chat history cutoff" }
     }
 

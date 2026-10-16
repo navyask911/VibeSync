@@ -311,7 +311,7 @@ fun ChatDetailScreen(
     onToggleStarMessage: (messageId: String) -> Unit = {},
     onReactToMessage: (messageId: String, emoji: String) -> Unit = { _, _ -> },
     onDeleteForMe: (messageId: String) -> Unit = {},
-    onClearChat: (alsoDeleteMedia: Boolean) -> Unit = {},
+    onClearChat: (alsoDeleteMedia: Boolean, onFinished: (finished: Boolean, failedFiles: Int, keepBlocked: Boolean) -> Unit) -> Unit = { _, done -> done(true, 0, false) },
     onDeleteForEveryone: (messageId: String) -> Unit = {},
     onForwardMessage: (targetMatchId: String, message: ChatMessageEntity) -> Unit = { _, _ -> },
     onForwardMessages: (
@@ -389,7 +389,7 @@ private fun ChatDetailScreenContent(
     onToggleStarMessage: (messageId: String) -> Unit,
     onReactToMessage: (messageId: String, emoji: String) -> Unit,
     onDeleteForMe: (messageId: String) -> Unit,
-    onClearChat: (alsoDeleteMedia: Boolean) -> Unit,
+    onClearChat: (alsoDeleteMedia: Boolean, onFinished: (finished: Boolean, failedFiles: Int, keepBlocked: Boolean) -> Unit) -> Unit,
     onDeleteForEveryone: (messageId: String) -> Unit,
     onForwardMessage: (targetMatchId: String, message: ChatMessageEntity) -> Unit,
     onForwardMessages: (
@@ -497,15 +497,19 @@ private fun ChatDetailScreenContent(
     var inputText by remember { mutableStateOf("") }
     val coroutineScope = rememberCoroutineScope()
     var isNetworkOnline by remember { mutableStateOf(true) }
-    val offlineOutbox = remember { mutableStateListOf<QueuedMessage>() }
-    val localMessageStatuses = remember { mutableStateMapOf<String, String>() }
+    var isClearOperationInProgress by remember(match?.matchId) { mutableStateOf(false) }
+    var clearQueueGeneration by remember(match?.matchId) { mutableIntStateOf(0) }
+    val offlineOutbox = remember(match?.matchId) { mutableStateListOf<QueuedMessage>() }
+    val localMessageStatuses = remember(match?.matchId) { mutableStateMapOf<String, String>() }
     var presenceStatus by remember { mutableStateOf("Online") }
     
     val parentSendMessageWithReply = onSendMessageWithReply
     val parentSendMedia = onSendMedia
 
     val onSendMessageWithReply = { text: String, replyToId: String?, replyToText: String?, replyToSender: String? ->
-        if (isNetworkOnline) {
+        if (isClearOperationInProgress) {
+            Toast.makeText(context, "Chat cleanup is still finishing. Sending is paused for safety.", Toast.LENGTH_SHORT).show()
+        } else if (isNetworkOnline) {
             parentSendMessageWithReply(text, replyToId, replyToText, replyToSender)
         } else {
             val qMsg = QueuedMessage(
@@ -521,7 +525,9 @@ private fun ChatDetailScreenContent(
     }
 
     val onSendMedia = { mediaType: String, text: String, mediaUrl: String, voiceSeconds: Int ->
-        if (isNetworkOnline) {
+        if (isClearOperationInProgress) {
+            Toast.makeText(context, "Chat cleanup is still finishing. Sending is paused for safety.", Toast.LENGTH_SHORT).show()
+        } else if (isNetworkOnline) {
             // The parent owns the encrypted outbox and any configured media transport. Avoid a
             // fake modal/progress timer that reports upload progress without observing real work.
             parentSendMedia(mediaType, text, mediaUrl, voiceSeconds)
@@ -659,7 +665,8 @@ private fun ChatDetailScreenContent(
         }
     }
 
-    LaunchedEffect(isNetworkOnline) {
+    LaunchedEffect(isNetworkOnline, clearQueueGeneration, match?.matchId) {
+        if (isClearOperationInProgress) return@LaunchedEffect
         if (isNetworkOnline && offlineOutbox.isNotEmpty()) {
             val outboxCopy = offlineOutbox.toList()
             offlineOutbox.clear()
@@ -1103,8 +1110,13 @@ private fun ChatDetailScreenContent(
                     matchProfileId = match?.matchId,
                     currentUserId = currentUserId
                 )
-                if (com.example.util.ChatReadReceiptPolicy.shouldSendReadReceipt(
-                        readReceiptsEnabled, outgoing, message.isRead, message.deliveryState
+                if (com.example.util.ChatReadReceiptPolicy.shouldAcknowledgeVisibleMessage(
+                        screenResumed = chatScreenResumed,
+                        messageVisible = message.messageId in visibleIds,
+                        readReceiptsEnabled = readReceiptsEnabled,
+                        isOutgoing = outgoing,
+                        isRead = message.isRead,
+                        deliveryState = message.deliveryState
                     )
                 ) onMarkMessageRead(message.messageId)
             }
@@ -1318,7 +1330,9 @@ private fun ChatDetailScreenContent(
                 title = { Text("Clear chat") },
                 text = {
                     Column {
-                        Text("Clear this chat? Messages will be deleted from this device.")
+                        Text(
+                            "This permanently removes this phone's local chat history. It does not clear the other participant's phone or guarantee server-side erasure."
+                        )
                         Row(
                             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth().clickable { alsoDeleteChatMedia = !alsoDeleteChatMedia }
@@ -1332,10 +1346,25 @@ private fun ChatDetailScreenContent(
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = {
-                        showClearChatDialog = false
-                        onClearChat(alsoDeleteChatMedia)
-                    }) { Text("Clear chat") }
+                    TextButton(
+                        enabled = !isClearOperationInProgress,
+                        onClick = {
+                            showClearChatDialog = false
+                            isClearOperationInProgress = true
+                            // Invalidate an already-copied offline queue as well as emptying the list.
+                            // The keyed LaunchedEffect is cancelled before any subsequent item dispatch.
+                            clearQueueGeneration++
+                            offlineOutbox.clear()
+                            localMessageStatuses.clear()
+                            onClearChat(alsoDeleteChatMedia) { finished, _, keepBlocked ->
+                                isClearOperationInProgress = keepBlocked
+                                if (finished) {
+                                    offlineOutbox.clear()
+                                    localMessageStatuses.clear()
+                                }
+                            }
+                        }
+                    ) { Text(if (isClearOperationInProgress) "Clearing…" else "Clear chat") }
                 },
                 dismissButton = {
                     TextButton(onClick = { showClearChatDialog = false }) { Text("Cancel") }
@@ -5451,7 +5480,12 @@ private fun VibeSyncChatBubble(
                         )
                     } else if (isOutgoing && !message.isDeleted && !message.isDeletedForEveryone) {
                         Spacer(modifier = Modifier.width(3.dp))
-                        val status = localMessageStatuses[message.messageId] ?: message.deliveryState
+                        // The durable Room READ state outranks any stale in-memory optimistic status.
+                        val status = if (message.isRead || message.deliveryState.equals("READ", ignoreCase = true)) {
+                            "READ"
+                        } else {
+                            localMessageStatuses[message.messageId] ?: message.deliveryState
+                        }
                         val tick = com.example.util.ChatDeliveryPresentation.tick(status)
                         val isFailed = tick.state == com.example.util.ChatDeliveryPresentation.State.FAILED
                         val isRead = readReceiptsEnabled &&

@@ -54,8 +54,6 @@ import com.example.util.VibeSyncSessionManager
 
 class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
   private lateinit var truecallerActivityResultLauncher: ActivityResultLauncher<Intent>
-  private lateinit var notificationPermissionLauncher: ActivityResultLauncher<String>
-  private var notificationPermissionRequestedThisLaunch = false
   private var restoreChatRouteAfterProcessDeath = false
   private var privacyPreferences: SharedPreferences? = null
   private val isAppLocked = mutableStateOf(false)
@@ -91,15 +89,6 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
     restoreChatRouteAfterProcessDeath =
       !restoredProcessMarker.isNullOrBlank() && restoredProcessMarker != AppProcessIdentity.id
 
-
-    notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-      if (granted) {
-        safeInit("notification channels after permission") { AppNotificationManager.initChannels(applicationContext) }
-      } else {
-        Log.i("VibeSyncNotifications", "POST_NOTIFICATIONS was not granted; local notifications remain disabled.")
-      }
-      safeInit("background delivery guidance") { maybeShowBackgroundRestrictionHelp() }
-    }
 
     privacyPreferences = getSharedPreferences(BiometricAuthManager.PREFS_NAME, MODE_PRIVATE)
     privacyPreferences?.registerOnSharedPreferenceChangeListener(privacyPreferencesListener)
@@ -239,10 +228,11 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
     }
     safeInit("authenticated FCM token refresh") {
       if (VibeSyncSessionManager.getSession(applicationContext) != null) {
+        // Token registration and silent/background message handling never depend on notification display permission.
         com.example.service.AppFirebaseMessagingService.refreshAndRegisterToken(applicationContext)
-        if (!requestNotificationPermissionIfNeeded()) {
-          maybeShowBackgroundRestrictionHelp()
-        }
+        val displayPermissionGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+          ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        if (displayPermissionGranted) maybeShowBackgroundRestrictionHelp()
       }
     }
   }
@@ -280,22 +270,6 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
       if (active) forcedSecureSurfaceTokens.add(token) else forcedSecureSurfaceTokens.remove(token)
     }
     applyScreenSecurityFlag()
-  }
-
-  /** Called when the authenticated dashboard is entered after an in-app sign-in. */
-  fun requestNotificationPermissionFromDashboard() {
-    safeInit("dashboard notification permission") {
-      if (!requestNotificationPermissionIfNeeded()) maybeShowBackgroundRestrictionHelp()
-    }
-  }
-
-  private fun requestNotificationPermissionIfNeeded(): Boolean {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
-    if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return false
-    if (notificationPermissionRequestedThisLaunch) return true
-    notificationPermissionRequestedThisLaunch = true
-    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-    return true
   }
 
   /**

@@ -190,8 +190,8 @@ fun DatingAppRoot(
 
     LaunchedEffect(isLoggedIn, authState) {
         if (isLoggedIn && authState == AuthState.AUTHENTICATED) {
+            // FCM token lifecycle is independent of the optional visible-notification permission.
             com.example.service.AppFirebaseMessagingService.refreshAndRegisterToken(rootContext)
-            (rootContext as? com.example.MainActivity)?.requestNotificationPermissionFromDashboard()
         }
     }
 
@@ -356,6 +356,78 @@ fun DatingAppRoot(
         com.example.util.ContactResolver.init(context)
     }
 
+    // Android 13+ notification permission is a separate, optional onboarding step. Token
+    // registration and silent/data-only message processing do not depend on this display permission.
+    val notificationPermissionPrefs = remember(context) {
+        context.getSharedPreferences("vibesync_notification_permission_prompt", android.content.Context.MODE_PRIVATE)
+    }
+    var showNotificationPermissionExplanation by remember { mutableStateOf(false) }
+    val notificationPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        notificationPermissionPrefs.edit().putBoolean("requested", true).commit()
+        if (granted) {
+            runCatching { com.example.util.AppNotificationManager.initChannels(context.applicationContext) }
+        } else {
+            coroutineScope.launch {
+                snackbarHostState.showSnackbar(
+                    "Notifications are off. VibeSync can still receive messages; enable notifications in system Settings when convenient."
+                )
+            }
+        }
+    }
+
+    LaunchedEffect(preferences?.isLoggedIn, preferences?.isProfileCompleted) {
+        val apiLevel = android.os.Build.VERSION.SDK_INT
+        val notificationGranted = if (apiLevel >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.POST_NOTIFICATIONS
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        } else true
+        if (com.example.util.NotificationPermissionPolicy.shouldPrompt(
+                apiLevel = apiLevel,
+                isLoggedIn = preferences?.isLoggedIn == true,
+                isProfileCompleted = preferences?.isProfileCompleted == true,
+                permissionGranted = notificationGranted,
+                alreadyRequested = notificationPermissionPrefs.getBoolean("requested", false)
+            )
+        ) {
+            showNotificationPermissionExplanation = true
+        }
+    }
+
+    if (showNotificationPermissionExplanation) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = {
+                notificationPermissionPrefs.edit().putBoolean("requested", true).commit()
+                showNotificationPermissionExplanation = false
+            },
+            title = { androidx.compose.material3.Text("Enable notifications?") },
+            text = {
+                androidx.compose.material3.Text(
+                    "Allow notifications to see incoming message alerts when VibeSync is in the background. " +
+                        "You can keep using VibeSync and receiving messages if you decline."
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    notificationPermissionPrefs.edit().putBoolean("requested", true).commit()
+                    showNotificationPermissionExplanation = false
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                        notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }) { androidx.compose.material3.Text("Continue") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    notificationPermissionPrefs.edit().putBoolean("requested", true).commit()
+                    showNotificationPermissionExplanation = false
+                }) { androidx.compose.material3.Text("Not now") }
+            }
+        )
+    }
+
     // Listen for toast/snackbar events
     LaunchedEffect(Unit) {
         viewModel.toastMessage.collect { msg ->
@@ -372,9 +444,6 @@ fun DatingAppRoot(
                 android.Manifest.permission.CAMERA,
                 android.Manifest.permission.READ_CONTACTS
             )
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                permissionsToRequest.add(android.Manifest.permission.POST_NOTIFICATIONS)
-            }
             try {
                 systemPermissionLauncher.launch(permissionsToRequest.toTypedArray())
             } catch (e: Exception) {
@@ -831,62 +900,46 @@ fun DatingAppRoot(
                         runCatching { com.example.util.LastActiveRouteStore.clear(syncContext) }
                     }
                 },
-                onClearChat = { alsoDeleteMedia ->
+                onClearChat = { alsoDeleteMedia, onFinished ->
                     coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                        val previousCutoff = com.example.util.LocalConversationClearStore
-                            .readClearTimestamp(context, match.matchId)
-                        var roomClearCommitted = false
-                        try {
-                            com.example.util.LocalConversationClearStore.writeClearTimestamp(
+                        val database = com.example.data.database.DatingDatabase.getDatabase(context)
+                        val outcome = runCatching {
+                            com.example.util.ConversationClearCoordinator.clear(
                                 context = context,
+                                database = database,
                                 matchId = match.matchId,
-                                timestampMs = System.currentTimeMillis()
+                                deleteMedia = alsoDeleteMedia
                             )
-                            val database = com.example.data.database.DatingDatabase.getDatabase(context)
-                            val messageIds = database.conversationClearDao().clearConversation(match.matchId)
-                            roomClearCommitted = true
-
-                            // Filesystem deletion is outside the Room transaction and its failures are surfaced.
-                            val mediaResult = if (alsoDeleteMedia) {
-                                com.example.util.ChatAttachmentCryptoManager.purgeLocalCachedMediaForMessageIds(
-                                    context = context,
-                                    messageIds = messageIds
-                                )
-                            } else null
-
-                            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                val failedFiles = mediaResult?.failedFiles ?: 0
-                                val message = if (failedFiles > 0) {
-                                    "Chat cleared, but $failedFiles media file(s) could not be removed."
-                                } else {
-                                    "Chat cleared on this device"
-                                }
-                                Toast.makeText(
-                                    context,
-                                    message,
-                                    if (failedFiles > 0) Toast.LENGTH_LONG else Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        } catch (failure: Throwable) {
-                            // Restoring cutoff after a committed database clear could resurrect deleted history.
-                            if (!roomClearCommitted) {
-                                runCatching {
-                                    com.example.util.LocalConversationClearStore.restoreClearTimestamp(
-                                        context = context,
-                                        matchId = match.matchId,
-                                        previousTimestampMs = previousCutoff
-                                    )
-                                }
-                            }
+                        }.getOrElse { failure ->
                             android.util.Log.e("VibeSyncClearChat", "Clear Chat operation failed", failure)
-                            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                val message = if (roomClearCommitted) {
-                                    "Chat cleared, but some local media could not be removed."
-                                } else {
-                                    "Could not clear this chat. Try again."
-                                }
-                                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                            com.example.util.ConversationClearOutcome(
+                                finished = false,
+                                barrierStarted = false,
+                                detail = failure.javaClass.simpleName
+                            )
+                        }
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            val message = when {
+                                outcome.finished && outcome.failedMediaFiles > 0 ->
+                                    "Chat history cleared on this phone; some media files could not be removed."
+                                outcome.finished -> "Chat history cleared on this phone."
+                                outcome.barrierStarted && outcome.failedMediaFiles > 0 ->
+                                    "Chat history is cleared. Media cleanup is pending; sending remains paused."
+                                outcome.barrierStarted ->
+                                    "Chat history is cleared locally. Cleanup is pending; sending remains paused."
+                                else -> "Could not clear this chat. Try again."
                             }
+                            Toast.makeText(
+                                context,
+                                message,
+                                if (outcome.finished) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
+                            ).show()
+                            // Keep the composer blocked while a durable clear barrier remains active.
+                            onFinished(
+                                outcome.finished,
+                                outcome.failedMediaFiles,
+                                outcome.barrierStarted && !outcome.finished
+                            )
                         }
                     }
                 },

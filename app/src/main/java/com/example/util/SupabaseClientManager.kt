@@ -2609,7 +2609,13 @@ object SupabaseClientManager {
                     val mediaUrl = row.optSafeString("media_url", "")
                     val rendered = MessageLocalRetentionPolicy.isRenderableText(displayedText)
                     val storedText = if (rendered) displayedText else ""
-                    val timestamp = row.optLong("timestamp", 0L).takeIf { it > 0L } ?: System.currentTimeMillis()
+                    // created_at is authoritative server ordering metadata. Keep unknown timestamps
+                    // unknown in serverCreatedAt rather than making an old row look newly created
+                    // by substituting this device's clock before the clear-history barrier runs.
+                    val authoritativeCreatedAtMs = MessageHistoryClearBarrier.parseServerTimestampMillis(row)
+                    val timestamp = authoritativeCreatedAtMs
+                        ?: row.optLong("timestamp", 0L).takeIf { it > 0L }
+                        ?: System.currentTimeMillis()
                     val localMessage = existingLocal?.takeIf { ownMessage }?.let { existing ->
                         existing.copy(
                             isDelivered = row.optBoolean("is_delivered", false) || existing.isDelivered,
@@ -2627,6 +2633,7 @@ object SupabaseClientManager {
                         encryptedPayload = ciphertext,
                         decryptState = if (rendered) MessageLocalRetentionPolicy.DECRYPT_STATE_OK else MessageLocalRetentionPolicy.FAILED_RETRYABLE,
                         timestamp = timestamp,
+                        serverCreatedAt = authoritativeCreatedAtMs ?: 0L,
                         isDelivered = row.optBoolean("is_delivered", false),
                         isRead = row.optBoolean("is_read", false),
                         mediaUrl = mediaUrl,

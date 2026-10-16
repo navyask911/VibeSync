@@ -214,51 +214,70 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     val database = com.example.data.database.DatingDatabase.getDatabase(applicationContext)
                     val cleanSenderId = senderOrMatchId.filter { it.isDigit() }.ifBlank { senderOrMatchId }
                     val fixedMessageId = "join_$cleanSenderId"
-                    val timestamp = data["timestamp"]?.toLongOrNull() ?: System.currentTimeMillis()
+                    val joinMetadata = org.json.JSONObject().apply { data.forEach { (key, value) -> put(key, value) } }
+                    val joinAuthoritativeCreatedAtMs = com.example.util.MessageHistoryClearBarrier.parseServerTimestampMillis(joinMetadata)
+                    val timestamp = joinAuthoritativeCreatedAtMs
+                        ?: data["timestamp"]?.toLongOrNull()?.takeIf { it > 0L }
+                        ?: System.currentTimeMillis()
                     val joinMessageText = "👋 $name joined VibeSync! Let's Chat Together 💬"
 
                     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                         try {
                             val matchId = if (senderOrMatchId.startsWith("match_")) senderOrMatchId else "match_$cleanSenderId"
                             
-                            // Guard 1: Check by deterministic static messageId
-                            val existingMsg = database.chatMessageDao().getMessageById(fixedMessageId)
-                            if (existingMsg != null) {
-                                Log.i(TAG, "Join message already recorded for $cleanSenderId, skipping duplicate.")
-                                return@launch
-                            }
-
-                            // Guard 2: Check if any existing message in this chat contains "joined VibeSync"
-                            val allMatchMsgs = database.chatMessageDao().getMessagesForMatchSync(matchId)
-                            if (allMatchMsgs.any { it.text.contains("joined VibeSync", ignoreCase = true) }) {
-                                Log.i(TAG, "Join alert already present in match $matchId, skipping duplicate.")
-                                return@launch
-                            }
-
-                            val systemMsg = com.example.data.model.ChatMessageEntity(
-                                messageId = fixedMessageId,
-                                matchId = matchId,
-                                senderId = cleanSenderId,
-                                text = joinMessageText,
-                                mediaType = "SYSTEM",
-                                mediaUrl = photoUrl,
-                                timestamp = timestamp,
-                                isEncrypted = true
-                            )
-                            database.chatMessageDao().insertMessage(systemMsg)
-
-                            val existingMatch = database.matchDao().getMatchByIdSync(matchId)
-                            if (existingMatch == null) {
-                                val newMatch = com.example.data.model.MatchEntity(
-                                    matchId = matchId,
-                                    profileId = cleanSenderId,
-                                    matchedAt = timestamp,
-                                    lastMessage = joinMessageText,
-                                    lastMessageTime = timestamp,
-                                    hasUnread = true
+                            if (com.example.util.MessageHistoryClearBarrier.shouldSuppress(
+                                    applicationContext, database, matchId, joinAuthoritativeCreatedAtMs
                                 )
-                                database.matchDao().insertMatch(newMatch)
+                            ) return@launch
+
+                            val persisted = com.example.util.ConversationClearCoordinator.withConversationLock(matchId) {
+                                if (com.example.util.MessageHistoryClearBarrier.shouldSuppress(
+                                        applicationContext, database, matchId, joinAuthoritativeCreatedAtMs
+                                    )
+                                ) {
+                                    false
+                                } else {
+                                    database.withTransaction {
+                                        if (database.conversationClearDao().isConversationClearInProgress(matchId)) {
+                                            false
+                                        } else {
+                                            val existingMsg = database.chatMessageDao().getMessageById(fixedMessageId)
+                                            val duplicateJoinNotice = database.chatMessageDao().getMessagesForMatchSync(matchId)
+                                                .any { it.text.contains("joined VibeSync", ignoreCase = true) }
+                                            if (existingMsg != null || duplicateJoinNotice) {
+                                                false
+                                            } else {
+                                                val systemMsg = com.example.data.model.ChatMessageEntity(
+                                                    messageId = fixedMessageId,
+                                                    matchId = matchId,
+                                                    senderId = cleanSenderId,
+                                                    text = joinMessageText,
+                                                    mediaType = "SYSTEM",
+                                                    mediaUrl = photoUrl,
+                                                    timestamp = timestamp,
+                                                    serverCreatedAt = joinAuthoritativeCreatedAtMs ?: 0L,
+                                                    isEncrypted = true
+                                                )
+                                                database.chatMessageDao().insertMessage(systemMsg)
+                                                if (database.matchDao().getMatchByIdSync(matchId) == null) {
+                                                    database.matchDao().insertMatch(
+                                                        com.example.data.model.MatchEntity(
+                                                            matchId = matchId,
+                                                            profileId = cleanSenderId,
+                                                            matchedAt = timestamp,
+                                                            lastMessage = joinMessageText,
+                                                            lastMessageTime = timestamp,
+                                                            hasUnread = true
+                                                        )
+                                                    )
+                                                }
+                                                true
+                                            }
+                                        }
+                                    }
+                                }
                             }
+                            if (!persisted) return@launch
                         } catch (e: Exception) {
                             Log.w(TAG, "Error recording new user join alert in chat DB: ${e.message}")
                         }
@@ -303,6 +322,7 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     val pushMatchId = sequenceOf("match_id", "matchId").map { data[it]?.trim().orEmpty() }.firstOrNull { it.isNotBlank() }.orEmpty()
                     val currentProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
                     val inboundMetadata = org.json.JSONObject().apply { data.forEach { (key, value) -> put(key, value) } }
+                    val authoritativeCreatedAtMs = com.example.util.MessageHistoryClearBarrier.parseServerTimestampMillis(inboundMetadata)
                     val aadParticipants = com.example.util.MessageHandler.resolveAadParticipantsFromPayload(inboundMetadata, currentProfileId)
                         ?: com.example.util.TinkCryptoManager.resolveAadParticipantIds(senderProfileId, receiverProfileId, pushMatchId, currentProfileId)
                     val senderPhoneFallback = data["sender_phone"]?.trim().orEmpty().ifBlank { senderOrMatchId }
@@ -330,7 +350,9 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                             ?.takeIf { it.isNotBlank() }
                             ?: senderOrMatchId
                     }
-                    val timestamp = data["timestamp"]?.toLongOrNull() ?: System.currentTimeMillis()
+                    val timestamp = authoritativeCreatedAtMs
+                        ?: data["timestamp"]?.toLongOrNull()?.takeIf { it > 0L }
+                        ?: System.currentTimeMillis()
 
                     if (messageId.isBlank() || ciphertext.isBlank()) {
                         Log.w(TAG, "Ignored encrypted-message push without required identifiers or payload.")
@@ -345,6 +367,20 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                         var decryptionSucceeded = false
                         var resolvedLocalMatchId = pushMatchId
                         try {
+                            val matchedLocalConversation = database.matchDao().getMatchByProfileId(senderRoomIdentity)
+                            val fallbackMatchId = pushMatchId.ifBlank {
+                                if (senderRoomIdentity.isNotBlank() && currentProfileId.isNotBlank()) {
+                                    com.example.util.SupabaseClientManager.canonicalChatMatchId(currentProfileId, senderRoomIdentity)
+                                } else if (senderRoomIdentity.isNotBlank()) "match_$senderRoomIdentity" else senderOrMatchId
+                            }
+                            resolvedLocalMatchId = matchedLocalConversation?.matchId ?: fallbackMatchId
+                            if (com.example.util.MessageHistoryClearBarrier.shouldSuppress(
+                                    applicationContext, database, resolvedLocalMatchId, authoritativeCreatedAtMs
+                                )
+                            ) {
+                                Log.d(TAG, "FCM message suppressed by the local Clear Chat history barrier.")
+                                return@launch
+                            }
                             if (!ciphertext.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
                                 throw SecurityException("Rejected non-Tink message payload")
                             }
@@ -362,13 +398,6 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                             }
                             decryptionSucceeded = true
 
-                            val matchedLocalConversation = database.matchDao().getMatchByProfileId(senderRoomIdentity)
-                            val fallbackMatchId = pushMatchId.ifBlank {
-                                if (senderRoomIdentity.isNotBlank() && currentProfileId.isNotBlank()) {
-                                    com.example.util.SupabaseClientManager.canonicalChatMatchId(currentProfileId, senderRoomIdentity)
-                                } else if (senderRoomIdentity.isNotBlank()) "match_$senderRoomIdentity" else senderOrMatchId
-                            }
-                            resolvedLocalMatchId = matchedLocalConversation?.matchId ?: fallbackMatchId
                             val existingMsg = database.chatMessageDao().getMessageById(messageId)
                             // Older FCM rows could say DELIVERED before the RPC confirmed it. Trust the
                             // durable local ACK timestamp (or a completed READ) rather than that flag alone.
@@ -396,6 +425,7 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                                     mediaType = mediaType,
                                     mediaUrl = localMediaUrl,
                                     timestamp = timestamp,
+                                    serverCreatedAt = authoritativeCreatedAtMs ?: 0L,
                                     isEncrypted = true,
                                     isDelivered = alreadyAcknowledged,
                                     isRead = existingMsg?.isRead == true,
@@ -414,37 +444,58 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                                 )
                             }
 
-                            // Both Room representations and the conversation preview must commit before ACK.
-                            database.withTransaction {
-                                database.chatMessageDao().upsertMessage(incomingEntity)
-                                database.messageDao().insertMessage(
-                                    incomingEntity.toLocalMessage().copy(remoteMessageId = messageId)
-                                )
-                                val existingMatch = database.matchDao().getMatchByIdSync(incomingEntity.matchId)
-                                    ?: database.matchDao().getMatchByProfileId(senderRoomIdentity)
-                                if (existingMatch == null) {
-                                    database.matchDao().insertMatch(
-                                        com.example.data.model.MatchEntity(
-                                            matchId = incomingEntity.matchId,
-                                            profileId = senderRoomIdentity,
-                                            matchedAt = timestamp,
-                                            lastMessage = decryptedText.ifBlank {
-                                                if (mediaType == "VOICE") "Voice message" else "Photo"
-                                            },
-                                            lastMessageTime = timestamp,
-                                            hasUnread = true
-                                        )
+                            // Both Room representations and the conversation preview commit atomically,
+                            // under the per-match lock and with a final durable guard check.
+                            val persisted = com.example.util.ConversationClearCoordinator.withConversationLock(incomingEntity.matchId) {
+                                if (com.example.util.MessageHistoryClearBarrier.shouldSuppress(
+                                        applicationContext, database, incomingEntity.matchId, authoritativeCreatedAtMs
                                     )
-                                } else if (timestamp >= existingMatch.lastMessageTime) {
-                                    database.matchDao().updateLastMessage(
-                                        matchId = existingMatch.matchId,
-                                        text = decryptedText.ifBlank {
-                                            if (mediaType == "VOICE") "Voice message" else "Photo"
-                                        },
-                                        timestamp = timestamp,
-                                        hasUnread = existingMsg?.isRead != true
-                                    )
+                                ) {
+                                    false
+                                } else {
+                                    database.withTransaction {
+                                        if (database.conversationClearDao().isConversationClearInProgress(incomingEntity.matchId)) {
+                                            false
+                                        } else {
+                                            database.chatMessageDao().upsertMessage(incomingEntity.copy(
+                                                serverCreatedAt = authoritativeCreatedAtMs ?: 0L
+                                            ))
+                                            database.messageDao().insertMessage(
+                                                incomingEntity.toLocalMessage().copy(remoteMessageId = messageId)
+                                            )
+                                            val existingMatch = database.matchDao().getMatchByIdSync(incomingEntity.matchId)
+                                                ?: database.matchDao().getMatchByProfileId(senderRoomIdentity)
+                                            if (existingMatch == null) {
+                                                database.matchDao().insertMatch(
+                                                    com.example.data.model.MatchEntity(
+                                                        matchId = incomingEntity.matchId,
+                                                        profileId = senderRoomIdentity,
+                                                        matchedAt = timestamp,
+                                                        lastMessage = decryptedText.ifBlank {
+                                                            if (mediaType == "VOICE") "Voice message" else "Photo"
+                                                        },
+                                                        lastMessageTime = timestamp,
+                                                        hasUnread = true
+                                                    )
+                                                )
+                                            } else if (timestamp >= existingMatch.lastMessageTime) {
+                                                database.matchDao().updateLastMessage(
+                                                    matchId = existingMatch.matchId,
+                                                    text = decryptedText.ifBlank {
+                                                        if (mediaType == "VOICE") "Voice message" else "Photo"
+                                                    },
+                                                    timestamp = timestamp,
+                                                    hasUnread = existingMsg?.isRead != true
+                                                )
+                                            }
+                                            true
+                                        }
+                                    }
                                 }
+                            }
+                            if (!persisted) {
+                                Log.d(TAG, "FCM delivery ACK withheld because Clear Chat blocked persistence.")
+                                return@launch
                             }
 
                             if (needsAck) {
@@ -479,6 +530,29 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                                     Log.w(TAG, "Delivery acknowledgment deferred until attachment cache is complete.")
                                 }
                             }
+
+                            // Only create a visible alert after barrier-aware local persistence.
+                            // Delayed pushes for cleared history must not post a stale notification.
+                            runCatching {
+                                val suppressForActiveChat = com.example.util.UserPresenceManager
+                                    .getInstance().shouldSuppressPushNotification(senderOrMatchId)
+                                if (shouldPersistPlaintext && !suppressForActiveChat) {
+                                    AppNotificationManager.showMessageNotification(
+                                        context = applicationContext,
+                                        senderId = senderOrMatchId,
+                                        senderName = name,
+                                        messageText = decryptedText.ifBlank { "New message" },
+                                        senderPhotoUrl = photoUrl,
+                                        mediaType = mediaType,
+                                        channelId = AppNotificationManager.CHANNEL_ID_CHAT_MESSAGES,
+                                        conversationId = resolvedLocalMatchId,
+                                        messageId = messageId,
+                                        messageTimestamp = timestamp
+                                    )
+                                }
+                            }.onFailure {
+                                Log.w(TAG, "Could not display the persisted message notification.")
+                            }
                         } catch (failure: Exception) {
                             if (!decryptionSucceeded) {
                                 val nackRecorded = runCatching {
@@ -510,76 +584,81 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                         }
                     }
 
-                    // Check if user is currently online/in-app session using UserPresenceManager
-                    val isOnlineSessionActive = com.example.util.UserPresenceManager.getInstance().shouldSuppressPushNotification(senderOrMatchId)
-                    if (isOnlineSessionActive) {
-                        Log.d(TAG, "User is currently ONLINE in-app session. System push notification suppressed.")
-                    } else {
-                        val displayBody = if (ciphertext.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
-                            try {
-                                com.example.util.TinkCryptoManager.decryptPayload(applicationContext, ciphertext, senderIdentity, receiverIdentity)
-                            } catch (_: Exception) {
-                                "Encrypted message"
-                            }
-                        } else {
-                            "Encrypted message"
-                        }
-                        AppNotificationManager.showMessageNotification(
-                            context = applicationContext,
-                            senderId = senderOrMatchId,
-                            senderName = name,
-                            messageText = displayBody,
-                            senderPhotoUrl = photoUrl,
-                            mediaType = mediaType,
-                            channelId = AppNotificationManager.CHANNEL_ID_CHAT_MESSAGES,
-                            conversationId = pushMatchId.ifBlank {
-                                if (senderOrMatchId.startsWith("match_", ignoreCase = true)) senderOrMatchId
-                                else "match_$senderOrMatchId"
-                            },
-                            messageId = messageId,
-                            messageTimestamp = timestamp
-                        )
-                    }
+                    // Notification is posted after successful guarded persistence above.
                 }
                 else -> {
-                    // Persist default message
+                    // Legacy/default data pushes may carry a message as well. Parse server
+                    // creation time separately from the UI fallback so missing timestamps cannot
+                    // bypass a prior Clear Chat cutoff.
                     val database = com.example.data.database.DatingDatabase.getDatabase(applicationContext)
                     val messageId = data["message_id"] ?: data["msg_id"] ?: java.util.UUID.randomUUID().toString()
-                    val timestamp = data["timestamp"]?.toLongOrNull() ?: System.currentTimeMillis()
-                    
+                    val legacyMetadata = org.json.JSONObject().apply { data.forEach { (key, value) -> put(key, value) } }
+                    val authoritativeCreatedAtMs = com.example.util.MessageHistoryClearBarrier.parseServerTimestampMillis(legacyMetadata)
+                    val timestamp = authoritativeCreatedAtMs
+                        ?: data["timestamp"]?.toLongOrNull()?.takeIf { it > 0L }
+                        ?: System.currentTimeMillis()
+
                     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                         try {
-                            val existingMsg = database.chatMessageDao().getMessageById(messageId)
-                            if (existingMsg == null) {
-                                val matchId = if (senderOrMatchId.startsWith("match_")) senderOrMatchId else "match_$senderOrMatchId"
-                                val incomingEntity = com.example.data.model.ChatMessageEntity(
-                                    messageId = messageId,
-                                    matchId = matchId,
-                                    senderId = senderOrMatchId,
-                                    text = text,
-                                    mediaType = mediaType,
-                                    mediaUrl = photoUrl,
-                                    timestamp = timestamp,
-                                    isEncrypted = true
+                            val matchId = if (senderOrMatchId.startsWith("match_")) senderOrMatchId else "match_$senderOrMatchId"
+                            if (com.example.util.MessageHistoryClearBarrier.shouldSuppress(
+                                    applicationContext, database, matchId, authoritativeCreatedAtMs
                                 )
-                                database.chatMessageDao().insertMessage(incomingEntity)
+                            ) {
+                                Log.d(TAG, "Legacy FCM notification suppressed by the local Clear Chat barrier.")
+                                return@launch
                             }
-                        } catch (_: Exception) {}
-                    }
-
-                    if (!AppNotificationManager.isAppInForeground) {
-                        AppNotificationManager.showMessageNotification(
-                            context = applicationContext,
-                            senderId = senderOrMatchId,
-                            senderName = name,
-                            messageText = text,
-                            senderPhotoUrl = photoUrl,
-                            mediaType = mediaType,
-                            channelId = AppNotificationManager.CHANNEL_ID_CHAT_MESSAGES,
-                            conversationId = if (senderOrMatchId.startsWith("match_", ignoreCase = true)) senderOrMatchId else "match_$senderOrMatchId",
-                            messageId = messageId,
-                            messageTimestamp = timestamp
-                        )
+                            val existingMsg = database.chatMessageDao().getMessageById(messageId)
+                            if (existingMsg != null) return@launch
+                            val incomingEntity = com.example.data.model.ChatMessageEntity(
+                                messageId = messageId,
+                                matchId = matchId,
+                                senderId = senderOrMatchId,
+                                text = text,
+                                mediaType = mediaType,
+                                mediaUrl = photoUrl,
+                                timestamp = timestamp,
+                                serverCreatedAt = authoritativeCreatedAtMs ?: 0L,
+                                isEncrypted = true
+                            )
+                            val persisted = com.example.util.ConversationClearCoordinator.withConversationLock(matchId) {
+                                if (com.example.util.MessageHistoryClearBarrier.shouldSuppress(
+                                        applicationContext, database, matchId, authoritativeCreatedAtMs
+                                    )
+                                ) {
+                                    false
+                                } else {
+                                    database.withTransaction {
+                                        if (database.conversationClearDao().isConversationClearInProgress(matchId)) {
+                                            false
+                                        } else {
+                                            database.chatMessageDao().insertMessage(incomingEntity)
+                                            true
+                                        }
+                                    }
+                                }
+                            }
+                            if (!persisted) {
+                                Log.d(TAG, "Legacy FCM message was not persisted because Clear Chat blocked it.")
+                                return@launch
+                            }
+                            if (!AppNotificationManager.isAppInForeground) {
+                                AppNotificationManager.showMessageNotification(
+                                    context = applicationContext,
+                                    senderId = senderOrMatchId,
+                                    senderName = name,
+                                    messageText = text,
+                                    senderPhotoUrl = photoUrl,
+                                    mediaType = mediaType,
+                                    channelId = AppNotificationManager.CHANNEL_ID_CHAT_MESSAGES,
+                                    conversationId = matchId,
+                                    messageId = messageId,
+                                    messageTimestamp = timestamp
+                                )
+                            }
+                        } catch (failure: Throwable) {
+                            Log.w(TAG, "Legacy/default FCM message processing failed: ${failure.javaClass.simpleName}")
+                        }
                     }
                 }
             }

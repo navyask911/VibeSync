@@ -17,6 +17,7 @@ import androidx.work.workDataOf
 import com.example.data.database.DatingDatabase
 import com.example.data.repository.SocialConnectRepository
 import com.example.util.SupabaseBackendManager
+import com.example.util.ConversationClearCoordinator
 import com.example.util.SupabaseClientManager
 import com.example.util.TinkCryptoManager
 import com.example.util.VibeSyncSessionManager
@@ -55,6 +56,28 @@ internal object PendingMessageOutboxSender {
     private const val TAG = "VibeSyncOutbox"
 
     suspend fun attempt(context: Context, messageId: String): PendingOutboxAttempt =
+        withContext(Dispatchers.IO) {
+            val safeId = messageId.trim()
+            if (safeId.isBlank()) return@withContext PendingOutboxAttempt.Rejected("Missing message_id.")
+            val database = DatingDatabase.getDatabase(context.applicationContext)
+            val first = database.chatMessageDao().getMessageById(safeId)
+                ?: return@withContext PendingOutboxAttempt.NoOp("local Room row no longer exists")
+            val conversationId = first.matchId.trim()
+            if (conversationId.isBlank()) return@withContext PendingOutboxAttempt.Rejected("Pending message has no conversation ID.")
+            ConversationClearCoordinator.withConversationLock(conversationId) {
+                val latest = database.chatMessageDao().getMessageById(safeId)
+                    ?: return@withConversationLock PendingOutboxAttempt.NoOp("local Room row no longer exists")
+                if (!latest.matchId.equals(conversationId, ignoreCase = false) ||
+                    database.conversationClearDao().isConversationClearInProgress(conversationId) ||
+                    !database.conversationClearDao().isConversationSendAllowed(conversationId)
+                ) {
+                    return@withConversationLock PendingOutboxAttempt.NoOp("conversation clear barrier is active")
+                }
+                attemptUnlocked(context, safeId)
+            }
+        }
+
+    private suspend fun attemptUnlocked(context: Context, messageId: String): PendingOutboxAttempt =
         withContext(Dispatchers.IO) {
             val safeMessageId = messageId.trim()
             Log.i(TAG, "Outbox attempt entered: message_id=$safeMessageId.")
@@ -229,6 +252,9 @@ internal object PendingMessageOutboxSender {
                 }
 
                 var voicePayloadForEncryption: String? = null
+                if (db.conversationClearDao().isConversationClearInProgress(message.matchId)) {
+                    return@withContext PendingOutboxAttempt.NoOp("conversation clear barrier is active before voice preparation")
+                }
                 if (message.mediaType.equals("VOICE", ignoreCase = true) ||
                     message.mediaType.equals("AUDIO", ignoreCase = true)
                 ) {
@@ -275,6 +301,9 @@ internal object PendingMessageOutboxSender {
                 }
 
                 var attachmentPayloadForEncryption: String? = null
+                if (db.conversationClearDao().isConversationClearInProgress(message.matchId)) {
+                    return@withContext PendingOutboxAttempt.NoOp("conversation clear barrier is active before attachment preparation")
+                }
                 if (com.example.util.ChatAttachmentCryptoManager.isSupportedMediaType(message.mediaType)) {
                     val hasLocalReference = com.example.util.ChatAttachmentCryptoManager.isLocalReference(message.mediaUrl)
                     if (!hasLocalReference) {
@@ -392,6 +421,11 @@ internal object PendingMessageOutboxSender {
                         "ciphertext_chars=${ciphertext.length}, media_url_present=${message.mediaUrl.isNotBlank()}, " +
                         "voice_duration_seconds=${message.voiceDurationSeconds}."
                 )
+                if (db.conversationClearDao().isConversationClearInProgress(message.matchId) ||
+                    !db.conversationClearDao().isConversationSendAllowed(message.matchId)
+                ) {
+                    return@withContext PendingOutboxAttempt.NoOp("conversation clear barrier is active before send RPC")
+                }
                 val committed = SupabaseClientManager.upsertChatMessage(
                     msg = remoteMessage,
                     senderIdentity = senderProfileId,
@@ -655,6 +689,32 @@ object PendingMessageSyncScheduler {
     fun enqueueNow(context: Context, messageId: String) =
         enqueueInternal(context, messageId, replaceExisting = true)
 
+    /** Cancel queued sends and match-targeted inbox pulls; the Room guard remains authoritative. */
+    fun cancelConversationWork(
+        context: Context,
+        localMatchId: String,
+        remoteMatchIds: Collection<String>,
+        messageIds: Collection<String>
+    ) {
+        runCatching {
+            val work = WorkManager.getInstance(context.applicationContext)
+            messageIds.map(String::trim).filter(String::isNotBlank).distinct().forEach { id ->
+                work.cancelUniqueWork(UNIQUE_PREFIX + id)
+                work.cancelUniqueWork("vibesync-chat-inbox-message-" + id)
+            }
+            (remoteMatchIds + localMatchId).map(::tagToken).filter(String::isNotBlank).distinct().forEach { token ->
+                work.cancelAllWorkByTag(INBOX_MATCH_TAG_PREFIX + token)
+            }
+        }.onFailure {
+            Log.w(TAG, "Clear Chat could not cancel every work request; the durable Room barrier remains active.")
+        }
+    }
+
+    private fun tagToken(value: String): String =
+        value.filter { it.isLetterOrDigit() || it == '_' || it == '-' }.take(180)
+
+    private const val INBOX_MATCH_TAG_PREFIX = "vibesync-chat-inbox-match-"
+
     private fun enqueueInternal(context: Context, messageId: String, replaceExisting: Boolean) {
         val safeId = messageId.trim()
         if (safeId.isBlank()) {
@@ -732,6 +792,9 @@ object PendingMessageSyncScheduler {
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30L, TimeUnit.SECONDS)
                 .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
                 .addTag("VibeSyncInbox")
+                .apply {
+                    if (cleanMatchId.isNotBlank()) addTag(INBOX_MATCH_TAG_PREFIX + tagToken(cleanMatchId))
+                }
                 .build()
             val uniqueName = if (cleanMessageId.isNotBlank()) {
                 "vibesync-chat-inbox-message-$cleanMessageId"

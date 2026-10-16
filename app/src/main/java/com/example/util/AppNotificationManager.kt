@@ -2,6 +2,7 @@ package com.example.util
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -388,8 +389,9 @@ object AppNotificationManager {
                 .setDefaults(NotificationCompat.DEFAULT_ALL)
                 .build()
 
-            NotificationManagerCompat.from(context).notify(99001, notification)
-            Log.d(TAG, "Dispatched OTP push notification for $mobileNumber: $otpCode")
+            if (postNotificationIfAllowed(context, 99001, notification)) {
+                Log.d(TAG, "Dispatched OTP notification for the active session.")
+            }
         } catch (e: Exception) {
             Log.w(TAG, "OTP notification dispatch notice: ${e.message}")
         }
@@ -547,7 +549,6 @@ object AppNotificationManager {
         messageId: String = "",
         messageTimestamp: Long = System.currentTimeMillis()
     ) {
-        if (!hasNotificationPermission(context)) return
         val appContext = context.applicationContext
         val requestedThreadId = conversationId.trim().ifBlank { defaultConversationId(senderId) }
         if (ChatThreadPreferences.isMuted(appContext, senderId) ||
@@ -646,12 +647,9 @@ object AppNotificationManager {
                     channelId = effectiveChannelId,
                     latestText = displayBody
                 )
-                try {
-                    NotificationManagerCompat.from(appContext).notify(notificationId, notification)
+                if (postNotificationIfAllowed(appContext, notificationId, notification)) {
                     postChatGroupSummary(appContext)
                     AlertSoundAndVibrationManager.triggerChatAlert(appContext)
-                } catch (securityException: SecurityException) {
-                    Log.w(TAG, "Notification permission missing: ${securityException.message}")
                 }
             } catch (failure: Throwable) {
                 Log.w(TAG, "Unable to build grouped notification for conversation=$requestedThreadId.", failure)
@@ -964,7 +962,7 @@ object AppNotificationManager {
             .setContentIntent(summaryIntent)
             .build()
         try {
-            manager.notify(CHAT_GROUP_SUMMARY_NOTIFICATION_ID, summaryNotification)
+            postNotificationIfAllowed(context, CHAT_GROUP_SUMMARY_NOTIFICATION_ID, summaryNotification)
         } catch (securityException: SecurityException) {
             Log.w(TAG, "Unable to post grouped notification summary: ${securityException.message}")
         }
@@ -1058,7 +1056,7 @@ object AppNotificationManager {
 
             val notificationManager = NotificationManagerCompat.from(context)
             try {
-                notificationManager.notify(notificationId, notificationBuilder.build())
+                postNotificationIfAllowed(context, notificationId, notificationBuilder.build())
             } catch (e: SecurityException) {
                 Log.w(TAG, "Notification permission missing: ${e.message}")
             }
@@ -1135,7 +1133,7 @@ object AppNotificationManager {
 
             val notificationManager = NotificationManagerCompat.from(context)
             try {
-                notificationManager.notify(notificationId, notificationBuilder.build())
+                postNotificationIfAllowed(context, notificationId, notificationBuilder.build())
             } catch (e: SecurityException) {
                 Log.w(TAG, "Notification permission missing: ${e.message}")
             }
@@ -1212,7 +1210,7 @@ object AppNotificationManager {
 
             val notificationManager = NotificationManagerCompat.from(context)
             try {
-                notificationManager.notify(notificationId, notificationBuilder.build())
+                postNotificationIfAllowed(context, notificationId, notificationBuilder.build())
             } catch (e: SecurityException) {
                 Log.w(TAG, "Notification permission missing: ${e.message}")
             }
@@ -1289,7 +1287,7 @@ object AppNotificationManager {
 
             val notificationManager = NotificationManagerCompat.from(context)
             try {
-                notificationManager.notify(notificationId, notificationBuilder.build())
+                postNotificationIfAllowed(context, notificationId, notificationBuilder.build())
             } catch (e: SecurityException) {
                 Log.w(TAG, "Notification permission missing: ${e.message}")
             }
@@ -1350,7 +1348,7 @@ object AppNotificationManager {
                     channelId = channelId,
                     latestText = "You: $replyText"
                 )
-                NotificationManagerCompat.from(appContext).notify(notificationId, notification)
+                postNotificationIfAllowed(appContext, notificationId, notification)
                 postChatGroupSummary(appContext)
             } catch (failure: Throwable) {
                 Log.w(TAG, "Unable to refresh notification after inline reply.", failure)
@@ -1375,6 +1373,53 @@ object AppNotificationManager {
         CoroutineScope(Dispatchers.IO).launch {
             runCatching { postChatGroupSummary(context.applicationContext) }
                 .onFailure { Log.w(TAG, "Could not refresh conversation notification summary.") }
+        }
+    }
+
+    /**
+     * Cancel a single conversation's notification and clear only its notification history.
+     * Cancellation is independent of POST_NOTIFICATIONS permission and is safe to retry.
+     */
+    fun cancelConversationNotification(context: Context, conversationId: String): Boolean {
+        val safeId = conversationId.trim()
+        if (safeId.isBlank()) return false
+        return try {
+            NotificationManagerCompat.from(context.applicationContext)
+                .cancel(notificationIdForConversation(safeId))
+            clearConversationHistory(safeId)
+            CoroutineScope(Dispatchers.IO).launch {
+                runCatching { postChatGroupSummary(context.applicationContext) }
+                    .onFailure { Log.w(TAG, "Could not refresh chat notification summary after Clear Chat.") }
+            }
+            true
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Could not cancel the conversation notification.", failure)
+            false
+        }
+    }
+
+    /**
+     * Central last-mile permission check for every OS notification post. FCM token registration,
+     * silent inbox work and in-app alert events are intentionally independent of this method.
+     */
+    private fun postNotificationIfAllowed(
+        context: Context,
+        notificationId: Int,
+        notification: Notification
+    ): Boolean {
+        if (!hasNotificationPermission(context)) {
+            Log.d(TAG, "Suppressed system notification because display permission is unavailable.")
+            return false
+        }
+        return try {
+            NotificationManagerCompat.from(context.applicationContext).notify(notificationId, notification)
+            true
+        } catch (_: SecurityException) {
+            Log.w(TAG, "Platform denied a notification post despite the prior permission check.")
+            false
+        } catch (failure: Throwable) {
+            Log.w(TAG, "System notification post failed: ${failure.javaClass.simpleName}")
+            false
         }
     }
 
@@ -1485,7 +1530,7 @@ object AppNotificationManager {
             updatedAt = messageTimestamp
         )
         try {
-            NotificationManagerCompat.from(appContext).notify(notificationId, notification)
+            postNotificationIfAllowed(appContext, notificationId, notification)
             CoroutineScope(Dispatchers.IO).launch { runCatching { postChatGroupSummary(appContext) } }
         } catch (failure: SecurityException) {
             Log.w(TAG, "Group notification permission was revoked.", failure)

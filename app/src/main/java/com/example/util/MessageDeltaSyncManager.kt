@@ -6,6 +6,8 @@ import androidx.room.withTransaction
 import com.example.data.database.DatingDatabase
 import com.example.data.model.ChatMessageEntity
 import com.example.data.model.MatchEntity
+import com.example.util.ConversationClearCoordinator
+import com.example.util.MessageHistoryClearBarrier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -26,6 +28,29 @@ object MessageDeltaSyncManager {
     private const val TAG = "VibeSyncDelta"
 
     suspend fun syncConversation(
+        context: Context,
+        database: DatingDatabase,
+        match: MatchEntity,
+        myProfileId: String,
+        myPhone: String,
+        partnerPhone: String,
+        targetMessageId: String? = null,
+        notifyTargetMessage: Boolean = false
+    ): MessageDeltaSyncResult = withContext(Dispatchers.IO) {
+        val localMatchId = match.matchId.trim()
+        if (localMatchId.isBlank()) {
+            return@withContext MessageDeltaSyncResult(false, 0, 0L, reason = "missing local conversation ID")
+        }
+        // Do not hold the per-match mutex while doing network pagination. Each result is
+        // serialized through the final commit lock below, so Clear Chat can raise its durable
+        // barrier immediately and old fetched rows are rejected before each Room write.
+        syncConversationUnlocked(
+            context, database, match, myProfileId, myPhone, partnerPhone,
+            targetMessageId, notifyTargetMessage
+        )
+    }
+
+    private suspend fun syncConversationUnlocked(
         context: Context,
         database: DatingDatabase,
         match: MatchEntity,
@@ -95,16 +120,15 @@ object MessageDeltaSyncManager {
                     synced++
                     continue
                 }
-                val clearCutoffMs = LocalConversationClearStore.readClearTimestamp(
-                    context = context,
-                    matchId = match.matchId
+                val authoritativeCreatedAt = remote.serverCreatedAt.takeIf { it > 0L }
+                val suppressForClearedHistory = MessageHistoryClearBarrier.shouldSuppress(
+                    context, database, match.matchId, authoritativeCreatedAt
                 )
-                val suppressForClearedHistory = clearCutoffMs > 0L && remote.timestamp <= clearCutoffMs
                 val isFromMe = MessageDecryptionPolicy.isOwnOutgoingMessage(remote.senderId, ownerId)
                 val existing = dao.getMessageById(remote.messageId)
-                if (suppressForClearedHistory && isFromMe) {
-                    // Clearing this device must not resurrect the sender's removed readable copy
-                    // from a still-undelivered server row. Leave server delivery to the recipient.
+                if (suppressForClearedHistory) {
+                    // Apply the barrier to incoming and outgoing history alike. Never ACK or display
+                    // an old record after Clear Chat; undelivered server ciphertext is left for TTL.
                     if (existing != null) {
                         database.withTransaction {
                             dao.deleteMessageById(remote.messageId)
@@ -328,11 +352,30 @@ object MessageDeltaSyncManager {
                 }
 
                 // Room is the durable inbox commit. ACK is only attempted after this REPLACE succeeds.
-                database.withTransaction {
-                    dao.upsertMessage(local)
-                    messageDao.insertMessage(
-                        local.toLocalMessage().copy(remoteMessageId = local.messageId)
-                    )
+                val commitAllowed = ConversationClearCoordinator.withConversationLock(match.matchId) {
+                    if (MessageHistoryClearBarrier.shouldSuppress(
+                            context, database, match.matchId, authoritativeCreatedAt
+                        )
+                    ) {
+                        false
+                    } else {
+                        val committed = database.withTransaction {
+                            if (database.conversationClearDao().isConversationClearInProgress(match.matchId)) {
+                                false
+                            } else {
+                                dao.upsertMessage(local.copy(serverCreatedAt = authoritativeCreatedAt ?: 0L))
+                                messageDao.insertMessage(
+                                    local.toLocalMessage().copy(remoteMessageId = local.messageId)
+                                )
+                                true
+                            }
+                        }
+                        committed
+                    }
+                }
+                if (!commitAllowed) {
+                    synced++
+                    continue
                 }
                 synced++
 

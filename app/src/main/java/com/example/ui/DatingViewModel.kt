@@ -479,6 +479,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 return@launch
             }
 
+
             if (activeRealtimeRemoteMatchId != null && activeRealtimeRemoteMatchId != remoteMatchId) {
                 activeRealtimeRemoteMatchId = null
                 realtimeStatusSyncJob?.cancel()
@@ -496,6 +497,29 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 match
             } else {
                 match.copy(profileId = canonicalPeerId)
+            }
+
+            suspend fun reconcileDurableReceipts() {
+                runCatching {
+                    val receipts = com.example.util.SupabaseClientManager.fetchMessageDeliveryStatesForMatch(remoteMatchId)
+                    for (receipt in receipts) {
+                        val local = database.chatMessageDao().getMessageById(receipt.messageId) ?: continue
+                        if (!local.senderId.equals("USER", ignoreCase = true)) continue
+                        if (local.outboxOwnerProfileId.isNotBlank() &&
+                            !local.outboxOwnerProfileId.equals(ownProfileId, ignoreCase = true)
+                        ) continue
+                        val receiptAt = receipt.timestamp.takeIf { it > 0L } ?: System.currentTimeMillis()
+                        when (receipt.deliveryState) {
+                            "READ" -> database.conversationClearDao().markReceiptRead(receipt.messageId, receiptAt)
+                            "DELIVERED" -> database.conversationClearDao().markReceiptDelivered(receipt.messageId, receiptAt)
+                            "FAILED" -> database.conversationClearDao().markReceiptFailed(receipt.messageId, receiptAt)
+                            "SENT_TO_SERVER" -> database.chatMessageDao()
+                                .markOutboxSentToServerIfPending(receipt.messageId, receiptAt)
+                        }
+                    }
+                }.onFailure {
+                    android.util.Log.w("VibeSyncReadReceipt", "Durable receipt reconciliation will retry on the next chat resume or reconnect.")
+                }
             }
 
             fun belongsToActiveChat(record: org.json.JSONObject): Boolean {
@@ -533,11 +557,13 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     // SUBSCRIBED is emitted only after the chat_messages postgres_changes join is accepted.
                     // Resync on each accepted join/reconnect to recover any receipts missed while offline.
                     if (state == "SUBSCRIBED" && activeRealtimeRemoteMatchId == remoteMatchId) {
+                        reconcileDurableReceipts()
                         syncChatMessagesSinceWatermark(resolvedMatch, resolvedProfile)
                     }
                 }
             }
             // Catch up immediately too; the subscribed-state collector covers reconnects.
+            reconcileDurableReceipts()
             syncChatMessagesSinceWatermark(resolvedMatch, resolvedProfile)
         }
     }
@@ -1425,7 +1451,10 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 val receiverPhone = record.optString("receiver_phone", "").trim()
                 val recordMatchId = sequenceOf("match_id", "matchId").map { record.optString(it, "").trim() }.firstOrNull { it.isNotBlank() && !it.equals("null", true) }.orEmpty()
                 val voiceSeconds = record.optInt("voice_duration_seconds", 0)
-                val timestamp = record.optLong("timestamp", System.currentTimeMillis())
+                val authoritativeCreatedAtMs = com.example.util.MessageHistoryClearBarrier.parseServerTimestampMillis(record)
+                val timestamp = authoritativeCreatedAtMs
+                    ?: record.optLong("timestamp", 0L).takeIf { it > 0L }
+                    ?: System.currentTimeMillis()
                 val isRead = record.optBoolean("is_read", false)
                 val replyToId = record.optString("reply_to_message_id", "").ifBlank { null }
                 val replyToText = record.optString("reply_to_text", "").ifBlank { null }
@@ -1494,6 +1523,16 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         else -> "match_$senderPhone"
                     }
 
+                    // Filter before decryption, writes, side effects, and ACK. Missing or ambiguous
+                    // authoritative time is conservatively suppressed after a local clear cutoff.
+                    if (com.example.util.MessageHistoryClearBarrier.shouldSuppress(
+                            getApplication(), database, targetMatchId, authoritativeCreatedAtMs
+                        )
+                    ) {
+                        android.util.Log.d("VibeSyncClearChat", "Suppressed a pre-clear or timestamp-ambiguous Realtime row.")
+                        return@launch
+                    }
+
                     // Await a single immediate key refresh + decrypt retry on this IO coroutine.
                     // Successful plaintext is then upserted via insertReceivedChatMessage, which
                     // emits through ChatMessageDao Flow and updates the active bubble without polling.
@@ -1552,6 +1591,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                             senderId = fallbackSenderId,
                             text = fallbackText,
                             timestamp = timestamp,
+                            serverCreatedAt = authoritativeCreatedAtMs ?: 0L,
                             mediaType = mediaType.ifBlank { "TEXT" },
                             mediaUrl = mediaUrl,
                             voiceDurationSeconds = voiceSeconds,
@@ -1566,6 +1606,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                             senderId = fallbackSenderId,
                             text = fallbackText,
                             timestamp = prior?.timestamp?.takeIf { it > 0L } ?: timestamp,
+                            serverCreatedAt = authoritativeCreatedAtMs ?: prior?.serverCreatedAt ?: 0L,
                             isDelivered = prior?.isDelivered ?: false,
                             isRead = prior?.isRead ?: false,
                             mediaType = mediaType.ifBlank { prior?.mediaType ?: "TEXT" },
@@ -1690,6 +1731,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         senderId = senderProfileId.ifBlank { aadParticipants?.first ?: normSender.ifBlank { senderPhone } },
                         text = decodedPayload.text,
                         timestamp = timestamp,
+                        serverCreatedAt = authoritativeCreatedAtMs ?: 0L,
                         isDelivered = true,
                         deliveredAt = receiveCommitAt,
                         isRead = isRead,
@@ -1719,9 +1761,15 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     }
 
                     // Persist plaintext immediately so the Room chat Flow emits without a polling sweep.
-                    repository.insertReceivedChatMessage(entity, normSender, normReceiver)
+                    val persisted = repository.insertReceivedChatMessage(
+                        entity, normSender, normReceiver, authoritativeCreatedAtMs
+                    )
+                    if (!persisted) {
+                        android.util.Log.d("VibeSyncClearChat", "Delivery ACK withheld because Room persistence was blocked by Clear Chat.")
+                        return@launch
+                    }
 
-                    // Immediately execute delivery ACK back to Supabase: UPDATE public.chat_messages SET is_delivered = true WHERE id = :messageId
+                    // ACK only after the guarded Room transaction succeeds.
                     val ackCommitted = com.example.util.SupabaseBackendManager.markMessageDelivered(
                         msgId,
                         senderIdentity,
@@ -1747,6 +1795,28 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 val msgId = com.example.util.MessageHandler.extractMessageId(record)
                 val isDeleted = com.example.util.MessageHandler.isMessageDeletion(record)
                 if (msgId.isNotBlank() && database.expiredChatMessageDao().isExpiredMessage(msgId)) {
+                    return@launch
+                }
+
+                // Receipt table events are durable facts. Apply them only to sender-owned
+                // messages, and preserve monotonic READ/DELIVERED state when events arrive out of order.
+                val receiptStatus = record.optString("status", "").trim().uppercase()
+                if (receiptStatus in setOf("SENT_TO_SERVER", "DELIVERED", "READ", "FAILED") && msgId.isNotBlank()) {
+                    val local = database.chatMessageDao().getMessageById(msgId) ?: return@launch
+                    if (!local.senderId.equals("USER", ignoreCase = true)) return@launch
+                    val activeOwner = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+                    if (local.outboxOwnerProfileId.isNotBlank() &&
+                        !local.outboxOwnerProfileId.equals(activeOwner, ignoreCase = true)
+                    ) return@launch
+                    val receiptAt = com.example.util.ChatDeliveryPresentation.parseTimestampMillis(
+                        record.optString("timestamp")
+                    ) ?: System.currentTimeMillis()
+                    when (receiptStatus) {
+                        "READ" -> database.conversationClearDao().markReceiptRead(msgId, receiptAt)
+                        "DELIVERED" -> database.conversationClearDao().markReceiptDelivered(msgId, receiptAt)
+                        "FAILED" -> database.conversationClearDao().markReceiptFailed(msgId, receiptAt)
+                        "SENT_TO_SERVER" -> database.chatMessageDao().markOutboxSentToServerIfPending(msgId, receiptAt)
+                    }
                     return@launch
                 }
 
