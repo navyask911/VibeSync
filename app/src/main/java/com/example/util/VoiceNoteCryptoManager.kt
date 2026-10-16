@@ -121,8 +121,7 @@ object VoiceNoteCryptoManager {
                 .put("content_type", "audio/mp4")
                 .put("encrypted_bytes", encryptedAudio.size)
                 .toString()
-            // Once ciphertext is durable in private storage, remove the temporary AAC source.
-            file.delete()
+            // The outbox persists this reference into Room before deleting the temporary AAC source.
             localReferenceFromPayload(payload)
         } catch (t: Throwable) {
             Log.w("VoiceNoteCrypto", "Could not encrypt/prepare a voice note: ${t.javaClass.simpleName}")
