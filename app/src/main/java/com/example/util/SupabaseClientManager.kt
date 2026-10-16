@@ -27,6 +27,7 @@ import org.json.JSONObject
 import java.security.MessageDigest
 import java.io.File
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * SupabaseClientManager
@@ -39,6 +40,20 @@ import java.util.concurrent.TimeUnit
 object SupabaseClientManager {
 
     private const val TAG = "SupabaseClientManager"
+    private const val CONTACT_MATCH_LOG_INTERVAL_MS = 5 * 60 * 1000L
+    private val lastContactMatchWarningAt = AtomicLong(0L)
+
+    private fun logContactMatchWarningThrottled(message: String) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        while (true) {
+            val previous = lastContactMatchWarningAt.get()
+            if (previous != 0L && now - previous < CONTACT_MATCH_LOG_INTERVAL_MS) return
+            if (lastContactMatchWarningAt.compareAndSet(previous, now)) {
+                Log.w(TAG, message)
+                return
+            }
+        }
+    }
 
     // The Secrets Gradle Plugin generates these fields from the untracked .env file,
     // falling back only to placeholder values in the tracked .env.example.
@@ -2590,6 +2605,18 @@ object SupabaseClientManager {
                 .toList()
             if (normalized.isEmpty()) return@withContext emptyList()
 
+            // Never send an anonymous-key Bearer token to a session-bound RPC. The signed
+            // access token and the separate VibeSync session token are both required.
+            val accessToken = VibeSyncSessionManager.getAccessToken()?.takeIf { it.isNotBlank() }
+            val sessionToken = VibeSyncSessionManager.getToken()?.takeIf { it.isNotBlank() }
+            val profileId = VibeSyncSessionManager.getProfileId()?.takeIf { it.isNotBlank() }
+            if (accessToken == null || sessionToken == null || profileId == null) {
+                logContactMatchWarningThrottled(
+                    "Contact matching skipped: no complete authenticated VibeSync session is available."
+                )
+                return@withContext emptyList()
+            }
+
             try {
                 val values = JSONArray()
                 normalized.forEach { values.put(it) }
@@ -2601,7 +2628,15 @@ object SupabaseClientManager {
                 httpClient.newCall(request).execute().use { response ->
                     val responseBody = response.body?.string().orEmpty()
                     if (!response.isSuccessful) {
-                        Log.w(TAG, "Direct contact-match RPC failed HTTP ${response.code}.")
+                        if (response.code == 403) {
+                            logContactMatchWarningThrottled(
+                                "Direct contact-match RPC returned HTTP 403; check authenticated-role grants and active session."
+                            )
+                        } else {
+                            logContactMatchWarningThrottled(
+                                "Direct contact-match RPC failed HTTP ${response.code}."
+                            )
+                        }
                         return@withContext emptyList()
                     }
                     val rows = JSONArray(responseBody)
@@ -2629,7 +2664,7 @@ object SupabaseClientManager {
                     matches
                 }
             } catch (t: Throwable) {
-                Log.w(TAG, "Direct contact-match RPC error: ${t.javaClass.simpleName}.")
+                logContactMatchWarningThrottled("Direct contact-match RPC error: ${t.javaClass.simpleName}.")
                 emptyList()
             }
         }
