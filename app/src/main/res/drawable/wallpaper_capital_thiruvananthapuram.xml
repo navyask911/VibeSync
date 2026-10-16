@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="128dp"
+    android:height="128dp"
+    android:viewportWidth="128"
+    android:viewportHeight="128">
+    <path android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="1.25" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M6 56 V43 H11 V33 H17 V25 H23 V17 H29 V25 H35 V33 H41 V43 H47 V56 Z"/>
+    <path android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="1.25" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M14 56 V45 H39 V56 M20 31 H33 M24 22 H29"/>
+    <path android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="1.25" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M62 18 Q54 22 57 31 Q62 37 67 31 Q70 22 62 18 M57 27 H67 M59 35 V43 M65 35 V43 M56 39 L50 43 M68 39 L74 43"/>
+    <path android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="1.25" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M68 76 Q69 62 83 63 Q97 62 101 74 L106 78 L109 88 L105 92 L101 87 L101 80 M73 78 L72 92 M84 79 L84 92 M95 79 L96 92"/>
+    <path android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="1.25" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M106 78 L112 76 L114 82 L109 86 M70 73 L65 69"/>
+    <path android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="1.25" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M29 120 V100 M29 100 Q12 91 13 82 Q23 85 29 98 Q28 83 34 78 Q40 87 30 99 Q42 88 49 91 Q44 100 29 100"/>
+    <path android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="1.25" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M99 114 Q87 108 94 102 Q100 101 101 109 Q105 97 111 103 Q115 110 105 114 Q115 113 113 120 L102 117 V125"/>
+</vector>

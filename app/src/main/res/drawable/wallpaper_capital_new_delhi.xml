@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="128dp"
+    android:height="128dp"
+    android:viewportWidth="128"
+    android:viewportHeight="128">
+    <path android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="1.25" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M7 56 V34 H14 V27 H22 V34 H29 V56 M12 56 V43 Q20 32 27 43 V56 M3 56 H33"/>
+    <path android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="1.25" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M14 27 Q18 20 22 27 M10 34 H26"/>
+    <path android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="1.25" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M63 18 A11 11 0 1 0 63 17 M63 18 V40 M52 29 H74 M55 21 L71 37 M71 21 L55 37"/>
+    <path android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="1.25" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M67 81 Q73 70 86 72 L98 77 L104 71 L111 75 L108 83 L99 84 L97 92 M77 84 L76 92 M88 84 L89 92"/>
+    <path android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="1.25" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M104 71 L101 61 L97 57 M105 71 L112 60 L116 59 M101 64 L94 60"/>
+    <path android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="1.25" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M29 120 V95 M29 99 Q12 96 14 84 Q26 79 29 95 Q35 77 46 83 Q47 96 29 99"/>
+    <path android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="1.25" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M94 113 Q84 109 90 102 Q92 96 98 101 Q103 94 107 102 Q115 100 112 108 Q118 114 108 116 Q102 123 97 117 Q89 121 94 113 M101 113 V124"/>
+</vector>
