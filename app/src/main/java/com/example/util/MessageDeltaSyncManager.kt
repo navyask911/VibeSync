@@ -311,16 +311,27 @@ object MessageDeltaSyncManager {
                 }
 
                 if (canRenderPlaintext && needsAck) {
-                    val acked = SupabaseBackendManager.markMessageDelivered(
-                        remote.messageId,
-                        remote.senderId,
-                        ownerId
+                    val mediaCached = ChatAttachmentCryptoManager.cacheEncryptedMediaBeforeDeliveryAck(
+                        context = context.applicationContext,
+                        mediaType = local.mediaType,
+                        mediaUrl = local.mediaUrl,
+                        messageId = remote.messageId
                     )
-                    if (acked) {
-                        dao.markMessageAsDelivered(remote.messageId)
-                    } else {
+                    if (!mediaCached) {
                         ackFailures++
-                        Log.w(TAG, "Delivery ACK left in Room outbox for message_id=${remote.messageId}.")
+                        Log.w(TAG, "Delivery ACK deferred until encrypted attachment bytes are cached locally.")
+                    } else {
+                        val acked = SupabaseBackendManager.markMessageDelivered(
+                            remote.messageId,
+                            remote.senderId,
+                            ownerId
+                        )
+                        if (acked) {
+                            dao.markMessageAsDelivered(remote.messageId)
+                        } else {
+                            ackFailures++
+                            Log.w(TAG, "Delivery ACK left in Room outbox for message_id=${remote.messageId}.")
+                        }
                     }
                 } else if (!canRenderPlaintext) {
                     // Retain ciphertext for recovery; NACK changes sender state but never purges it.
@@ -359,6 +370,16 @@ object MessageDeltaSyncManager {
             // than the overlap window. This avoids a successful message sync losing its pending ACK.
             val pendingAcks = database.chatMessageDao().getPendingDeliveryAcksForMatch(match.matchId)
             for (pending in pendingAcks) {
+                val mediaCached = ChatAttachmentCryptoManager.cacheEncryptedMediaBeforeDeliveryAck(
+                    context = context.applicationContext,
+                    mediaType = pending.mediaType,
+                    mediaUrl = pending.mediaUrl,
+                    messageId = pending.messageId
+                )
+                if (!mediaCached) {
+                    ackFailures++
+                    continue
+                }
                 val acked = SupabaseBackendManager.markMessageDelivered(
                     pending.messageId,
                     pending.senderId,
@@ -398,6 +419,16 @@ object MessageDeltaSyncManager {
             // Even if the REST read failed, try old pending delivery ACKs on the next worker/resume.
             val pendingAcks = database.chatMessageDao().getPendingDeliveryAcksForMatch(match.matchId)
             for (pending in pendingAcks) {
+                val mediaCached = ChatAttachmentCryptoManager.cacheEncryptedMediaBeforeDeliveryAck(
+                    context = context.applicationContext,
+                    mediaType = pending.mediaType,
+                    mediaUrl = pending.mediaUrl,
+                    messageId = pending.messageId
+                )
+                if (!mediaCached) {
+                    ackFailures++
+                    continue
+                }
                 val acked = SupabaseBackendManager.markMessageDelivered(pending.messageId, pending.senderId, ownerId)
                 if (acked) database.chatMessageDao().markMessageAsDelivered(pending.messageId) else ackFailures++
             }
