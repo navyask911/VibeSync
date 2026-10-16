@@ -91,19 +91,25 @@ object VoiceNoteCryptoManager {
                 return@withContext null
             }
             val safeMatchId = matchId.trim().trim('/')
-            if (safeMatchId.contains('/') || safeMatchId.contains("..")) {
-                Log.w("VoiceNoteCrypto", "Invalid conversation ID for voice-note storage.")
+            val safeMessageId = messageId.trim()
+            if (safeMatchId.isBlank() || safeMatchId.contains('/') || safeMatchId.contains("..") ||
+                !safeMessageId.matches(Regex("[A-Za-z0-9_-]{1,160}"))
+            ) {
+                Log.w("VoiceNoteCrypto", "Invalid conversation or message ID for voice-note storage.")
                 return@withContext null
             }
-            val objectPath = buildString {
-                append(profileId).append("/voice-notes/")
-                if (safeMatchId.isNotBlank()) append(safeMatchId).append('/')
-                append(UUID.randomUUID().toString()).append(".m4a.enc")
-            }
+            val objectPath = profileId + "/voice-notes/" + safeMatchId + "/" + safeMessageId + ".m4a.enc"
             val uploaded = SupabaseClientManager.uploadEncryptedVoiceNote(objectPath, encryptedAudio)
             if (!uploaded) {
                 Log.w("VoiceNoteCrypto", "Ciphertext upload failed; keeping the outbox item pending.")
                 return@withContext null
+            }
+            runCatching {
+                val encryptedCache = File(context.applicationContext.filesDir, "chat-voice-ciphertext")
+                encryptedCache.mkdirs()
+                File(encryptedCache, safeToken(messageId) + ".enc").writeBytes(encryptedAudio)
+            }.onFailure {
+                Log.w("VoiceNoteCrypto", "Local encrypted voice cache could not be retained.")
             }
 
             val payload = JSONObject()
@@ -121,6 +127,31 @@ object VoiceNoteCryptoManager {
         } catch (t: Throwable) {
             Log.w("VoiceNoteCrypto", "Could not encrypt/prepare a voice note: ${t.javaClass.simpleName}")
             null
+        }
+    }
+
+    /** Cache encrypted voice bytes before sending the DELIVERED receipt that purges server media. */
+    suspend fun cacheCiphertextBeforeDeliveryAck(
+        context: Context,
+        localReference: String,
+        messageId: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        val payload = payloadFromLocalReference(localReference) ?: return@withContext false
+        try {
+            val json = JSONObject(payload)
+            val objectPath = json.optString("object_path").trim()
+            if (messageId.isBlank() || json.optString("aad_message_id") != messageId ||
+                objectPath.isBlank() || objectPath.contains("..")
+            ) return@withContext false
+            val cache = File(File(context.applicationContext.filesDir, "chat-voice-ciphertext"), safeToken(messageId) + ".enc")
+            if (cache.isFile && cache.length() > 0L) return@withContext true
+            val ciphertext = SupabaseClientManager.downloadEncryptedVoiceNote(objectPath) ?: return@withContext false
+            cache.parentFile?.mkdirs()
+            cache.writeBytes(ciphertext)
+            cache.isFile && cache.length() > 0L
+        } catch (failure: Throwable) {
+            Log.w("VoiceNoteCrypto", "Could not cache encrypted voice bytes before receipt: " + failure.javaClass.simpleName)
+            false
         }
     }
 
@@ -143,8 +174,18 @@ object VoiceNoteCryptoManager {
             val cached = File(context.cacheDir, "voice_${safeToken(messageId)}.m4a")
             if (cached.isFile && cached.length() > 0L) return@withContext cached
 
-            val ciphertext = SupabaseClientManager.downloadEncryptedVoiceNote(objectPath)
-                ?: return@withContext null
+            val encryptedCache = File(File(context.applicationContext.filesDir, "chat-voice-ciphertext"), safeToken(messageId) + ".enc")
+            val ciphertext = if (encryptedCache.isFile && encryptedCache.length() > 0L) {
+                encryptedCache.readBytes()
+            } else {
+                val downloaded = SupabaseClientManager.downloadEncryptedVoiceNote(objectPath)
+                    ?: return@withContext null
+                runCatching {
+                    encryptedCache.parentFile?.mkdirs()
+                    encryptedCache.writeBytes(downloaded)
+                }
+                downloaded
+            }
             val keyset = CleartextKeysetHandle.read(JsonKeysetReader.withString(keysetJson))
             val aead = keyset.getPrimitive(Aead::class.java)
             val plaintext = aead.decrypt(ciphertext, aad(messageId))
