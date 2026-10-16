@@ -155,6 +155,43 @@ class ConversationClearDaoTest {
     }
 
     @Test
+    fun retryResetOnlyResetsFailedMessagesAndNeverRegressesReadReceipt() = runBlocking {
+        database.matchDao().insertMatch(MatchEntity(matchId = "match-retry-test", profileId = "peer-retry-test"))
+        database.chatMessageDao().upsertMessage(
+            ChatMessageEntity(
+                messageId = "message-retry-read",
+                matchId = "match-retry-test",
+                senderId = "USER",
+                text = "Already read",
+                isDelivered = true,
+                isRead = true,
+                deliveryState = "READ",
+                deliveredAt = 10L,
+                readAt = 20L
+            )
+        )
+        database.chatMessageDao().resetFailedMessageForRetry("message-retry-read")
+        var message = database.chatMessageDao().getMessageById("message-retry-read")
+        assertEquals("READ", message?.deliveryState)
+        assertTrue(message?.isRead ?: false)
+        assertEquals(20L, message?.readAt)
+
+        database.chatMessageDao().upsertMessage(
+            ChatMessageEntity(
+                messageId = "message-retry-failed",
+                matchId = "match-retry-test",
+                senderId = "USER",
+                text = "Failed send",
+                deliveryState = "FAILED"
+            )
+        )
+        database.chatMessageDao().resetFailedMessageForRetry("message-retry-failed")
+        message = database.chatMessageDao().getMessageById("message-retry-failed")
+        assertEquals("PENDING", message?.deliveryState)
+        assertFalse(message?.isRead ?: true)
+    }
+
+    @Test
     fun failedReceiptCannotRegressDeliveredOrReadState() = runBlocking {
         database.matchDao().insertMatch(MatchEntity(matchId = "match-receipt-test", profileId = "peer-receipt-test"))
         database.chatMessageDao().upsertMessage(
