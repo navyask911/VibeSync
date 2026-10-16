@@ -105,7 +105,8 @@ object ChatAttachmentCryptoManager {
     ): String? = withContext(Dispatchers.IO) {
         payloadFromLocalReference(mediaUrl)?.let { payload ->
             val existing = runCatching { JSONObject(payload) }.getOrNull()
-            if (existing?.optString("aad_message_id") == messageId &&
+            if (existing != null &&
+                existing.optString("aad_message_id") == messageId &&
                 existing.optString("match_id") == matchId &&
                 isSafeObjectPath(existing.optString("object_path"))) return@withContext mediaUrl
         }
