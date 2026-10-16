@@ -81,6 +81,36 @@ function parseStorageObject(mediaUrl: string): { bucket: string; path: string } 
   return { bucket, path: objectPath };
 }
 
+function isReceiptBoundChatObject(
+  object: { bucket: string; path: string },
+  participant: Record<string, unknown>,
+  messageId: string,
+): boolean {
+  if (!["chat-attachments", "chat-voice-notes"].includes(object.bucket)) return false;
+  const parts = object.path.split("/");
+  const senderId = String(participant.sender_id ?? "");
+  const matchId = String(participant.match_id ?? "");
+  if (!senderId || !matchId || parts[0] !== senderId) return false;
+
+  if (object.bucket === "chat-attachments") {
+    return parts.length === 4 &&
+      parts[1] === "attachments" &&
+      parts[2] === matchId &&
+      parts[3] === messageId + ".enc";
+  }
+
+  // New voice objects are deterministic and message-scoped. Permit the former three-segment
+  // layout only for legacy voice messages; it still must belong to this sender and private bucket.
+  if (parts.length === 4) {
+    return parts[1] === "voice-notes" &&
+      parts[2] === matchId &&
+      parts[3] === messageId + ".m4a.enc";
+  }
+  return parts.length === 3 &&
+    parts[1] === "voice-notes" &&
+    /^[A-Za-z0-9_-]{1,160}\\.m4a\\.enc$/.test(parts[2]);
+}
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
   if (!supabaseUrl || !serviceRoleKey) return json({ error: "server_configuration_incomplete" }, 503);
@@ -156,6 +186,9 @@ Deno.serve(async (req) => {
   if (!object) {
     // Do not attempt DELETE against an arbitrary host or unknown bucket/path shape.
     return json({ error: "unsupported_storage_object_url", message_id: messageId }, 422);
+  }
+  if (!isReceiptBoundChatObject(object, participant as Record<string, unknown>, messageId)) {
+    return json({ error: "storage_object_does_not_match_delivery_mapping", message_id: messageId }, 422);
   }
 
   const { error: removalError } = await admin.storage.from(object.bucket).remove([object.path]);
