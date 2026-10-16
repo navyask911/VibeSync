@@ -54,6 +54,7 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
   private lateinit var truecallerActivityResultLauncher: ActivityResultLauncher<Intent>
   private lateinit var notificationPermissionLauncher: ActivityResultLauncher<String>
   private var notificationPermissionRequestedThisLaunch = false
+  private var restoreChatRouteAfterProcessDeath = false
   private var privacyPreferences: SharedPreferences? = null
   private val isAppLocked = mutableStateOf(false)
   private val appLockMessage = mutableStateOf<String?>(null)
@@ -84,6 +85,10 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    val restoredProcessMarker = savedInstanceState?.getString(KEY_PROCESS_INSTANCE_ID)
+    restoreChatRouteAfterProcessDeath =
+      !restoredProcessMarker.isNullOrBlank() && restoredProcessMarker != AppProcessIdentity.id
+
 
     notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
       if (granted) {
@@ -187,7 +192,7 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
               message = appLockMessage.value,
               onUnlock = { requestAppUnlock(fromUser = true) }
             )
-            databaseReady -> DatingAppRoot()
+            databaseReady -> DatingAppRoot(restoreChatRouteAfterProcessDeath = restoreChatRouteAfterProcessDeath)
             else -> DatabaseRecoveryScreen(
               message = databaseFailure ?: "Secure local storage needs recovery.",
               onRetry = { retryCount += 1 }
@@ -196,6 +201,11 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
         }
       }
     }
+  }
+
+  override fun onSaveInstanceState(outState: Bundle) {
+    outState.putString(KEY_PROCESS_INSTANCE_ID, AppProcessIdentity.id)
+    super.onSaveInstanceState(outState)
   }
 
   override fun onNewIntent(intent: Intent) {
@@ -410,4 +420,10 @@ private fun DatabaseRecoveryScreen(
       }
     }
   }
+}
+
+private const val KEY_PROCESS_INSTANCE_ID = "vibesync_process_instance_id"
+
+private object AppProcessIdentity {
+  val id: String = java.util.UUID.randomUUID().toString()
 }
