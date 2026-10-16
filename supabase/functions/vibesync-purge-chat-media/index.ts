@@ -108,7 +108,7 @@ function isReceiptBoundChatObject(
   }
   return parts.length === 3 &&
     parts[1] === "voice-notes" &&
-    /^[A-Za-z0-9_-]{1,160}\\.m4a\\.enc$/.test(parts[2]);
+    /^[A-Za-z0-9_-]{1,160}\.m4a\.enc$/.test(parts[2]);
 }
 
 Deno.serve(async (req) => {
