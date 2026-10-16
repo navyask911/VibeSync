@@ -21,9 +21,11 @@ object ChatReadReceiptPolicy {
         readReceiptsEnabled: Boolean,
         isOutgoing: Boolean,
         isRead: Boolean,
-        deliveryState: String?
+        deliveryState: String?,
+        networkAvailable: Boolean = true
     ): Boolean =
-        screenResumed &&
+        networkAvailable &&
+            screenResumed &&
             messageVisible &&
             shouldSendReadReceipt(readReceiptsEnabled, isOutgoing, isRead, deliveryState)
 
