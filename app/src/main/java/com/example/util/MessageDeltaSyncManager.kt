@@ -354,6 +354,7 @@ object MessageDeltaSyncManager {
                     )
                     if (!mediaCached) {
                         ackFailures++
+                        complete = false
                         Log.w(TAG, "Delivery ACK deferred until encrypted attachment bytes are cached locally.")
                     } else {
                         val acked = SupabaseBackendManager.markMessageDelivered(
