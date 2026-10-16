@@ -18,7 +18,7 @@ object ChatWallpaperPreferences {
         val theme = runCatching {
             ChatWallpaperTheme.valueOf(prefs.getString(KEY_THEME + key, ChatWallpaperTheme.BENGALURU.name).orEmpty())
         }.getOrDefault(ChatWallpaperTheme.BENGALURU)
-        return ChatWallpaperUiState(theme, prefs.getBoolean(KEY_DARK + key, false), prefs.getFloat(KEY_OPACITY + key, 0.11f).coerceIn(0.05f, 0.30f))
+        return ChatWallpaperUiState(theme, prefs.getBoolean(KEY_DARK + key, false), prefs.getFloat(KEY_OPACITY + key, 0.11f).coerceIn(0.05f, 0.12f))
     }
 
     fun setState(context: Context, conversationId: String, state: ChatWallpaperUiState) {
@@ -27,7 +27,7 @@ object ChatWallpaperPreferences {
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString(KEY_THEME + key, state.theme.name)
             .putBoolean(KEY_DARK + key, state.isDarkMode)
-            .putFloat(KEY_OPACITY + key, state.wallpaperOpacity.coerceIn(0.05f, 0.30f))
+            .putFloat(KEY_OPACITY + key, state.wallpaperOpacity.coerceIn(0.05f, 0.12f))
             .apply()
     }
 }

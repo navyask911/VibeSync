@@ -16,6 +16,10 @@ class ChatRuntimeDefectPolicyTest {
         assertFalse(ChatReadReceiptPolicy.shouldSendReadReceipt(true, false, true, "DELIVERED"))
         assertFalse(ChatReadReceiptPolicy.shouldSendReadReceipt(false, false, false, "DELIVERED"))
         assertFalse(ChatReadReceiptPolicy.shouldSendReadReceipt(true, false, false, "READ"))
+        assertEquals(3, ChatReadReceiptPolicy.MAX_SEND_ATTEMPTS)
+        assertEquals(500L, ChatReadReceiptPolicy.retryDelayMillis(1))
+        assertEquals(1_000L, ChatReadReceiptPolicy.retryDelayMillis(2))
+        assertEquals(0L, ChatReadReceiptPolicy.retryDelayMillis(3))
     }
 
     @Test
@@ -40,7 +44,8 @@ class ChatRuntimeDefectPolicyTest {
             "KAVARATTI", "PUDUCHERRY", "LEH", "GAIRSAIN"
         )))
         assertEquals(0.11f, ChatWallpaperUiState().safeOpacity)
-        assertTrue(ChatWallpaperUiState(wallpaperOpacity = 0.75f).safeOpacity <= 0.30f)
+        assertEquals(0.12f, ChatWallpaperUiState(wallpaperOpacity = 0.75f).safeOpacity)
+        assertEquals(0.05f, ChatWallpaperUiState(wallpaperOpacity = 0f).safeOpacity)
         assertTrue(themes.values.filter { it.title != "Plain" && it.title != "Neutral line art" }
             .all { it.drawableRes != 0 })
     }

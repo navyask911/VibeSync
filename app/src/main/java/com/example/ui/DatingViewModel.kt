@@ -1897,8 +1897,26 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     local.isRead || local.deliveryState.equals("READ", ignoreCase = true)
                 ) return@launch
                 if (repository.userPreferences.firstOrNull()?.readReceiptsEnabled == false) return@launch
-                if (!com.example.util.SupabaseBackendManager.markMessageRead(id)) {
-                    android.util.Log.w("VibeSyncReadReceipt", "READ receipt remains pending for visible message.")
+                // Retry transient failures because a still-visible row may not emit visibility again.
+                var acknowledged = false
+                for (attempt in 1..com.example.util.ChatReadReceiptPolicy.MAX_SEND_ATTEMPTS) {
+                    val latestActive = _activeChat.value
+                    if (latestActive?.first?.matchId?.equals(active.first.matchId, ignoreCase = true) != true) {
+                        return@launch
+                    }
+                    val latestLocal = database.chatMessageDao().getMessageById(id) ?: return@launch
+                    if (latestLocal.isRead || latestLocal.deliveryState.equals("READ", ignoreCase = true)) return@launch
+                    if (repository.userPreferences.firstOrNull()?.readReceiptsEnabled == false) return@launch
+                    if (com.example.util.SupabaseBackendManager.markMessageRead(id)) {
+                        acknowledged = true
+                        break
+                    }
+                    if (attempt < com.example.util.ChatReadReceiptPolicy.MAX_SEND_ATTEMPTS) {
+                        delay(com.example.util.ChatReadReceiptPolicy.retryDelayMillis(attempt))
+                    }
+                }
+                if (!acknowledged) {
+                    android.util.Log.w("VibeSyncReadReceipt", "READ receipt still pending after bounded retries for visible message.")
                     return@launch
                 }
                 database.chatMessageDao().markMessageAsReadWithExpiry(

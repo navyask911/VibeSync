@@ -59,5 +59,5 @@ data class ChatWallpaperUiState(
     val isDarkMode: Boolean = false,
     val wallpaperOpacity: Float = 0.11f
 ) {
-    val safeOpacity: Float get() = wallpaperOpacity.coerceIn(0.05f, 0.30f)
+    val safeOpacity: Float get() = wallpaperOpacity.coerceIn(0.05f, 0.12f)
 }
