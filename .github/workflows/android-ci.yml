@@ -8,6 +8,7 @@ on:
       - vibesync-production
       - vibesync-hardening-2026-10-07
       - fix/release-startup-icons-ci
+      - feat/chat-experience-engine
     paths:
       - "app/**"
       - ".env.example"

@@ -32,3 +32,7 @@ verify_jwt = false
 [auth.hook.custom_access_token]
 enabled = true
 uri = "pg-functions://postgres/public/custom_access_token_hook"
+
+# This endpoint validates the app's VibeSync session and applies a per-profile daily quota internally.
+[functions.vibesync-ai-image-preview]
+verify_jwt = false

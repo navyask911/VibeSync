@@ -88,6 +88,41 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
         if (remoteMessage.data.isNotEmpty()) {
             val data = remoteMessage.data
             val type = data["type"] ?: "MESSAGE"
+
+            // Direct-message pushes are wake-up hints only. Never consume message bodies,
+            // ciphertext, sender names, or media URLs from FCM, including legacy message types.
+            if (com.example.util.ChatPushPayloadPolicy.requiresInboxSync(type)) {
+                val messageId = sequenceOf("message_id", "msg_id", "id")
+                    .map { data[it]?.trim().orEmpty() }
+                    .firstOrNull { it.isNotBlank() }
+                    .orEmpty()
+                val matchId = sequenceOf("match_id", "matchId")
+                    .map { data[it]?.trim().orEmpty() }
+                    .firstOrNull { it.isNotBlank() }
+                    .orEmpty()
+                val senderId = sequenceOf("sender_id", "sender_profile_id", "senderId")
+                    .map { data[it]?.trim().orEmpty() }
+                    .firstOrNull { it.isNotBlank() }
+                    .orEmpty()
+
+                // Canonical server pushes require both identifiers. A malformed canonical wake-up
+                // is ignored rather than causing an unbounded inbox scan.
+                if (type.equals("new_message", ignoreCase = true) &&
+                    (messageId.isBlank() || matchId.isBlank())
+                ) {
+                    Log.w(TAG, "Ignored metadata-only message wake-up with missing identifiers.")
+                    return
+                }
+                com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(
+                    context = applicationContext,
+                    remoteMatchId = matchId.takeIf { it.isNotBlank() },
+                    messageId = messageId.takeIf { it.isNotBlank() },
+                    senderId = senderId.takeIf { it.isNotBlank() }
+                )
+                Log.i(TAG, "Direct-chat push wake-up queued for authenticated inbox sync.")
+                return
+            }
+
             if (type.equals("GROUP_CHAT_SYNC_WAKEUP", ignoreCase = true)) {
                 val groupId = data["group_id"].orEmpty().trim()
                 if (groupId.isNotBlank()) {
@@ -102,9 +137,9 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
             val name = data["name"] ?: data["sender_name"] ?: "VibeSync Match"
             val text = data["text"] ?: data["message"] ?: data["body"] ?: "New notification"
             val photoUrl = data["photo_url"] ?: data["avatar_url"] ?: ""
-            val age = data["age"]?.toIntOrNull() ?: 24
-            val city = data["city"] ?: "Bengaluru"
-            val score = data["score"]?.toIntOrNull() ?: 94
+            val age = data["age"]?.toIntOrNull() ?: 0
+            val city = data["city"].orEmpty()
+            val score = data["score"]?.toIntOrNull() ?: 0
             val mediaType = data["media_type"] ?: "TEXT"
             val wakeMatchId = data["match_id"].orEmpty().trim()
             val wakeMessageId = data["message_id"].orEmpty().trim()
@@ -441,9 +476,9 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     matchId = "remote_match",
                     matchName = title.substringAfter("with ", "Your New Match"),
                     matchPhotoUrl = imageUri,
-                    age = 24,
-                    city = "Bengaluru",
-                    score = 95
+                    age = 0,
+                    city = "",
+                    score = 0
                 )
             } else {
                 AppNotificationManager.showMessageNotification(

@@ -4,16 +4,18 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.CalendarContract
+import android.provider.ContactsContract
 import android.provider.OpenableColumns
 import androidx.activity.result.PickVisualMediaRequest
 import com.example.util.LocationHelper
-import com.example.util.GeminiImageHelper
+import com.example.util.ChatAiImagePreviewClient
 import com.example.util.DeviceLocationResult
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.ui.input.pointer.pointerInput
@@ -40,6 +42,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -113,6 +118,7 @@ import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Poll
@@ -503,39 +509,11 @@ private fun ChatDetailScreenContent(
         }
     }
 
-    var showMediaPipeline by remember { mutableStateOf(false) }
-    var pipelineProgress by remember { mutableStateOf(0f) }
-    var pipelineStepText by remember { mutableStateOf("") }
-
     val onSendMedia = { mediaType: String, text: String, mediaUrl: String, voiceSeconds: Int ->
         if (isNetworkOnline) {
-            coroutineScope.launch {
-                showMediaPipeline = true
-                pipelineStepText = "Compressing $mediaType via WebP (saving ~85% bandwidth)..."
-                pipelineProgress = 0.12f
-                delay(700)
-                
-                pipelineStepText = "Sealing payload with Google Tink protected message key..."
-                pipelineProgress = 0.38f
-                delay(600)
-                
-                pipelineStepText = "Uploading encrypted chunks to Cloudflare R2 (₹0 Egress CDN)..."
-                var p = 0.38f
-                while (p < 0.82f) {
-                    p += 0.15f
-                    pipelineProgress = p
-                    delay(250)
-                }
-                
-                pipelineStepText = "Verifying SHA256 integrity & signaling recipient..."
-                pipelineProgress = 0.95f
-                delay(400)
-                
-                parentSendMedia(mediaType, text, mediaUrl, voiceSeconds)
-                pipelineProgress = 1.0f
-                delay(200)
-                showMediaPipeline = false
-            }
+            // The parent owns the encrypted outbox and any configured media transport. Avoid a
+            // fake modal/progress timer that reports upload progress without observing real work.
+            parentSendMedia(mediaType, text, mediaUrl, voiceSeconds)
         } else {
             val qMsg = QueuedMessage(
                 type = mediaType,
@@ -738,11 +716,78 @@ private fun ChatDetailScreenContent(
     ) { uri ->
         if (uri != null) {
             val fileName = getFileNameFromUri(context, uri) ?: "Attachment_Document"
-            val fileSize = getFileSizeFromUri(context, uri) ?: "1.2 MB"
-            onSendMedia("DOCUMENT", "$fileName • $fileSize", uri.toString(), 0)
-            Toast.makeText(context, "Document selected: $fileName 📄", Toast.LENGTH_SHORT).show()
+            val fileSizeBytes = getFileSizeBytesFromUri(context, uri)
+            val extension = fileName.substringAfterLast('.', "").lowercase(java.util.Locale.ROOT)
+            if (extension in com.example.util.MediaTransferLimitsHelper.RESTRICTED_EXTENSIONS) {
+                Toast.makeText(context, "This file type is blocked for safety.", Toast.LENGTH_LONG).show()
+            } else if (fileSizeBytes == null || fileSizeBytes < 0L) {
+                Toast.makeText(context, "Could not verify file size. Choose a file with an available size.", Toast.LENGTH_LONG).show()
+            } else if (fileSizeBytes > 25L * 1024L * 1024L) {
+                Toast.makeText(context, "Files must be 25 MB or smaller.", Toast.LENGTH_LONG).show()
+            } else {
+                val fileSize = formatFileSize(fileSizeBytes)
+                runCatching {
+                                    context.contentResolver.takePersistableUriPermission(
+                                        uri,
+                                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                    )
+                                }
+                                onSendMedia("DOCUMENT", "$fileName • $fileSize", uri.toString(), 0)
+                Toast.makeText(context, "Document selected: $fileName", Toast.LENGTH_SHORT).show()
+            }
         }
     }
+    val nativeContactPickerLauncher = rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val selectedUri = result.data?.data
+            if (selectedUri == null) {
+                Toast.makeText(context, "No contact was selected.", Toast.LENGTH_SHORT).show()
+            } else {
+                try {
+                    val selected = context.contentResolver.query(
+                        selectedUri,
+                        arrayOf(ContactsContract.Contacts._ID, ContactsContract.Contacts.DISPLAY_NAME),
+                        null,
+                        null,
+                        null
+                    )?.use { cursor ->
+                        if (!cursor.moveToFirst()) null else {
+                            val idColumn = cursor.getColumnIndex(ContactsContract.Contacts._ID)
+                            val nameColumn = cursor.getColumnIndex(ContactsContract.Contacts.DISPLAY_NAME)
+                            if (idColumn < 0 || nameColumn < 0) null
+                            else cursor.getString(idColumn) to cursor.getString(nameColumn).orEmpty()
+                        }
+                    }
+                    if (selected == null) {
+                        Toast.makeText(context, "Could not read the selected contact.", Toast.LENGTH_LONG).show()
+                    } else {
+                        val phone = context.contentResolver.query(
+                            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                            arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
+                            "${ContactsContract.CommonDataKinds.Phone.CONTACT_ID} = ?",
+                            arrayOf(selected.first),
+                            null
+                        )?.use { cursor ->
+                            if (cursor.moveToFirst()) cursor.getString(0).orEmpty() else ""
+                        }.orEmpty()
+                        if (phone.isBlank()) {
+                            Toast.makeText(context, "That contact has no phone number to share.", Toast.LENGTH_LONG).show()
+                        } else {
+                            val vCard = com.example.util.ContactVCardFormatter.toVCard(selected.second, phone)
+                            onSendMedia("CONTACT", vCard, "", 0)
+                        }
+                    }
+                } catch (failure: SecurityException) {
+                    Toast.makeText(context, "Contacts access was not granted for the selected contact.", Toast.LENGTH_LONG).show()
+                } catch (failure: Exception) {
+                    Toast.makeText(context, "Could not share that contact.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
     val chatWallpaperPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
@@ -801,7 +846,9 @@ private fun ChatDetailScreenContent(
     var messageInfo by remember { mutableStateOf<ChatMessageEntity?>(null) }
     var editingMessage by remember { mutableStateOf<ChatMessageEntity?>(null) }
     var deletingMessage by remember { mutableStateOf<ChatMessageEntity?>(null) }
+    var showBatchDeleteDialog by remember { mutableStateOf(false) }
     var forwardingMessage by remember { mutableStateOf<ChatMessageEntity?>(null) }
+    var forwardingSelectedMessageIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var selectedForwardChatIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var selectedForwardGroupIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var forwardingGroupCandidates by remember { mutableStateOf(emptyList<GroupModel>()) }
@@ -909,8 +956,6 @@ private fun ChatDetailScreenContent(
             editingMessage = null
         } else if (replyingToMessage != null) {
             replyingToMessage = null
-        } else if (showMediaPipeline) {
-            showMediaPipeline = false
         } else if (showLocationDialog) {
             showLocationDialog = false
         } else if (showContactDialog) {
@@ -1012,7 +1057,7 @@ private fun ChatDetailScreenContent(
     }
 
     fun lazyIndexForMessage(messageId: String): Int {
-        var index = 1 // the intro header card
+        var index = 0
         groupedMessages.forEach { (_, dayMessages) ->
             index += 1 // sticky date separator
             val localIndex = dayMessages.indexOfFirst { it.messageId == messageId }
@@ -1026,8 +1071,8 @@ private fun ChatDetailScreenContent(
 
     LaunchedEffect(visibleMessages.size) {
         if (visibleMessages.isNotEmpty()) {
-            // Index 0 is the recipient intro card, so the last message is at index size.
-            listState.animateScrollToItem((visibleMessages.size + groupedMessages.size).coerceAtLeast(0))
+            // Only sticky date separators and message rows are part of the scrollable timeline.
+            listState.animateScrollToItem((visibleMessages.size + groupedMessages.size - 1).coerceAtLeast(0))
         }
     }
 
@@ -1238,9 +1283,26 @@ private fun ChatDetailScreenContent(
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSecondaryContainer
                     )
+                    TextButton(
+                        onClick = { showBatchDeleteDialog = true },
+                        enabled = selectedMessageIds.isNotEmpty()
+                    ) { Text("Delete") }
+                    TextButton(
+                        onClick = {
+                            val selected = messages.filter { it.messageId in selectedMessageIds && !it.isDeletedForMe }
+                            if (selected.isNotEmpty()) {
+                                forwardingSelectedMessageIds = selected.map { it.messageId }.toSet()
+                                forwardingMessage = selected.first()
+                            } else {
+                                Toast.makeText(context, "Select at least one available message to forward.", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        enabled = selectedMessageIds.isNotEmpty()
+                    ) { Text("Forward") }
                     TextButton(onClick = {
                         messageSelectionMode = false
                         selectedMessageIds.clear()
+                        forwardingSelectedMessageIds = emptySet()
                     }) { Text("Done") }
                 }
             }
@@ -1463,14 +1525,6 @@ private fun ChatDetailScreenContent(
                     contentPadding = PaddingValues(vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    item(key = "recipient_header_card") {
-                        RecipientHeaderCard(
-                            profile = profile,
-                            displayName = resolvedPartnerName,
-                            onClick = onViewProfile
-                        )
-                    }
-
                     groupedMessages.forEach { (messageDate, dayMessages) ->
                     stickyHeader(key = "date-" + messageDate.toString()) {
                         DateSeparatorPill(dateSeparatorLabel(messageDate))
@@ -1513,6 +1567,7 @@ private fun ChatDetailScreenContent(
                                         selectedMessageForAction = null
                                     },
                                     onForward = {
+                                        forwardingSelectedMessageIds = emptySet()
                                         forwardingMessage = msg
                                         selectedMessageForAction = null
                                     },
@@ -1573,6 +1628,16 @@ private fun ChatDetailScreenContent(
                                 onMediaClick = { url, type ->
                                     fullScreenMediaUrl = url
                                     fullScreenMediaType = type
+                                },
+                                onRetryDelivery = { failedMessageId ->
+                                    coroutineScope.launch {
+                                        val retried = com.example.util.SupabaseClientManager.dispatchEncryptedMessagePush(failedMessageId)
+                                        if (retried) {
+                                            localMessageStatuses[failedMessageId] = "SENT_TO_SERVER"
+                                        } else {
+                                            Toast.makeText(context, "Retry could not be queued. Check your connection and try again.", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
                                 }
                             )
                         }
@@ -2243,52 +2308,6 @@ private fun ChatDetailScreenContent(
             }
         }
 
-        // Animated Media Transmission Pipeline Banner (VibeSync System Design parity)
-        AnimatedVisibility(visible = showMediaPipeline) {
-            Surface(
-                color = VibeSyncTeal.copy(alpha = 0.08f),
-                border = BorderStroke(1.dp, VibeSyncTeal.copy(alpha = 0.2f)),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(
-                        progress = pipelineProgress,
-                        color = VibeSyncTeal,
-                        trackColor = VibeSyncTeal.copy(alpha = 0.15f),
-                        strokeWidth = 3.dp,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Secure Media Journey Pipeline",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = VibeSyncTeal
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = pipelineStepText,
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Text(
-                        text = "${(pipelineProgress * 100).toInt()}%",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = VibeSyncTeal
-                    )
-                }
-            }
-        }
-
         // Clean Bottom Input Bar
         if (isRecordingVoice && !voiceRecordGestureActive) {
             Row(
@@ -2861,8 +2880,7 @@ private fun ChatDetailScreenContent(
         )
     }
 
-    // Delivery and read timestamps are not separately persisted on ChatMessageEntity; show only
-    // authoritative local status and the actual message sent timestamp rather than inventing times.
+    // Receipt times are persisted on Room v63 and displayed in the device's local time zone.
     messageInfo?.let { msg ->
         val dateFormat = remember { SimpleDateFormat("MMM d, yyyy 'at' h:mm a", Locale.getDefault()) }
         AlertDialog(
@@ -2892,23 +2910,31 @@ private fun ChatDetailScreenContent(
                             else -> msg.deliveryState.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }
                         }
                     )
+                    if (msg.deliveredAt > 0L) {
+                        MessageInfoLine("Delivered at", dateFormat.format(Date(msg.deliveredAt)))
+                    }
                     MessageInfoLine(
                         "Read receipt",
                         when {
                             !readReceiptsEnabled -> "Hidden — Read Receipts are off"
-                            msg.isRead || msg.deliveryState.equals("READ", true) -> "Read (exact time is not stored)"
+                            msg.isRead || msg.deliveryState.equals("READ", true) -> "Read"
                             else -> "Not marked as read"
                         }
                     )
+                    if (msg.readAt > 0L && readReceiptsEnabled) {
+                        MessageInfoLine("Read at", dateFormat.format(Date(msg.readAt)))
+                    }
                     MessageInfoLine(
                         "Encryption",
                         if (msg.isEncrypted) "End-to-end encrypted · ${msg.encryptionProtocol}" else "Not marked encrypted"
                     )
-                    Text(
-                        text = "Separate delivery and read timestamps are not stored on this local message record.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    if (msg.deliveredAt <= 0L && (msg.readAt <= 0L || !readReceiptsEnabled)) {
+                        Text(
+                            text = "Exact receipt times will appear here when the corresponding receipt is available.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             },
             confirmButton = {
@@ -3028,17 +3054,95 @@ private fun ChatDetailScreenContent(
         )
     }
 
+    if (showBatchDeleteDialog) {
+        val selectedForDelete = messages.filter { it.messageId in selectedMessageIds && !it.isDeletedForMe }
+        val now = System.currentTimeMillis()
+        val canDeleteBatchForEveryone = selectedForDelete.isNotEmpty() && selectedForDelete.all { candidate ->
+            val outgoing = isMessageOutgoing(
+                message = candidate,
+                partnerProfileId = profile.id,
+                partnerPhone = profile.phoneNumber,
+                matchProfileId = match?.matchId,
+                currentUserId = currentUserId
+            )
+            outgoing &&
+                (now - candidate.timestamp) in 0L..(15 * 60 * 1000L) &&
+                !candidate.isDeleted &&
+                !candidate.isDeletedForEveryone
+        }
+
+        AlertDialog(
+            onDismissRequest = { showBatchDeleteDialog = false },
+            title = { Text("Delete ${selectedForDelete.size} messages?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    if (canDeleteBatchForEveryone) {
+                        "Choose whether to remove these messages from this device or send encrypted delete controls to everyone. The 15-minute window applies to all selected messages."
+                    } else {
+                        "These messages will be removed from this device. Delete for everyone is available only when every selected message was sent by you within the last 15 minutes."
+                    },
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    if (canDeleteBatchForEveryone) {
+                        Button(
+                            onClick = {
+                                selectedForDelete.forEach { onDeleteForEveryone(it.messageId) }
+                                showBatchDeleteDialog = false
+                                messageSelectionMode = false
+                                selectedMessageIds.clear()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE53935)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Delete for everyone") }
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            selectedForDelete.forEach { onDeleteForMe(it.messageId) }
+                            showBatchDeleteDialog = false
+                            messageSelectionMode = false
+                            selectedMessageIds.clear()
+                        },
+                        enabled = selectedForDelete.isNotEmpty(),
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Delete for me") }
+                    TextButton(
+                        onClick = { showBatchDeleteDialog = false },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Cancel") }
+                }
+            },
+            dismissButton = null
+        )
+    }
+
     // Multi-select forward picker: one transaction can target up to five chats/groups.
     forwardingMessage?.let { msg ->
         val directTargets = (if (otherMatches.isNotEmpty()) otherMatches else listOfNotNull(match?.let { it to profile }))
             .distinctBy { it.first.matchId }
+        val forwardingBatch = messages.filter { it.messageId in forwardingSelectedMessageIds }
+            .ifEmpty { listOf(msg) }
         val selectedCount = selectedForwardChatIds.size + selectedForwardGroupIds.size
-        val depth = forwardingDepth(msg)
-        val frequentForward = depth >= 5
+        val depth = forwardingBatch.maxOfOrNull { forwardingDepth(it) } ?: forwardingDepth(msg)
+        val frequentForward = forwardingBatch.any { forwardingDepth(it) >= 5 }
 
         AlertDialog(
-            onDismissRequest = { forwardingMessage = null },
-            title = { Text("Forward Message", fontWeight = FontWeight.Bold) },
+            onDismissRequest = {
+                forwardingMessage = null
+                forwardingSelectedMessageIds = emptySet()
+            },
+            title = {
+                Text(
+                    if (forwardingSelectedMessageIds.size > 1) "Forward ${forwardingBatch.size} Messages" else "Forward Message",
+                    fontWeight = FontWeight.Bold
+                )
+            },
             text = {
                 Column(
                     modifier = Modifier.fillMaxWidth().heightIn(max = 440.dp),
@@ -3050,9 +3154,13 @@ private fun ChatDetailScreenContent(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = "“${msg.text.take(48)}${if (msg.text.length > 48) "…" else ""}”",
+                        text = if (forwardingBatch.size > 1) {
+                            "${forwardingBatch.size} selected messages will be forwarded individually."
+                        } else {
+                            "“${msg.text.take(48)}${if (msg.text.length > 48) "…" else ""}”"
+                        },
                         fontSize = 12.sp,
-                        fontStyle = FontStyle.Italic,
+                        fontStyle = if (forwardingBatch.size > 1) FontStyle.Normal else FontStyle.Italic,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2
                     )
@@ -3137,8 +3245,15 @@ private fun ChatDetailScreenContent(
                         val selectedDirectTargets = directTargets
                             .filter { it.first.matchId in selectedForwardChatIds }
                             .map { it.first.matchId to it.second.id }
-                        onForwardMessages(msg, selectedDirectTargets, selectedForwardGroupIds.toList())
+                        forwardingBatch.forEach { selectedMessage ->
+                            onForwardMessages(selectedMessage, selectedDirectTargets, selectedForwardGroupIds.toList())
+                        }
                         forwardingMessage = null
+                        forwardingSelectedMessageIds = emptySet()
+                        if (forwardingBatch.size > 1) {
+                            messageSelectionMode = false
+                            selectedMessageIds.clear()
+                        }
                         selectedForwardChatIds = emptySet()
                         selectedForwardGroupIds = emptySet()
                     },
@@ -3148,7 +3263,10 @@ private fun ChatDetailScreenContent(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { forwardingMessage = null }) { Text("Cancel") }
+                TextButton(onClick = {
+                    forwardingMessage = null
+                    forwardingSelectedMessageIds = emptySet()
+                }) { Text("Cancel") }
             }
         )
     }
@@ -3348,326 +3466,141 @@ private fun ChatDetailScreenContent(
         )
     }
 
-    // 1. Location Dialog (Live GPS & Google Maps Places Utility)
+    // Fresh GPS only: there is intentionally no default city/coordinate fallback.
     if (showLocationDialog) {
         val currentContext = LocalContext.current
-        var isLiveSelected by remember { mutableStateOf(false) }
-        var selectedDuration by remember { mutableStateOf("1 hour") }
         var detectedLoc by remember { mutableStateOf<DeviceLocationResult?>(null) }
-        var isFetchingLocation by remember { mutableStateOf(true) }
+        var isFetchingLocation by remember { mutableStateOf(false) }
+        var locationError by remember { mutableStateOf<String?>(null) }
 
-        LaunchedEffect(Unit) {
+        val performGpsRefresh: () -> Unit = {
+            detectedLoc = null
+            locationError = null
             isFetchingLocation = true
-            try {
-                detectedLoc = LocationHelper.fetchCurrentLocation(
-                    context = currentContext,
-                    fallbackPlace = profile.city.ifBlank { "MG Road" },
-                    fallbackCity = profile.city.ifBlank { "Bengaluru" },
-                    fallbackCountry = profile.country.ifBlank { "India" }
-                )
-            } catch (_: Exception) {
-                // Graceful fallback
-            } finally {
+            coroutineScope.launch {
+                try {
+                    detectedLoc = com.example.util.FreshLocationHelper.fetchCurrentLocation(currentContext)
+                } catch (failure: Exception) {
+                    locationError = if (failure is SecurityException) {
+                        "Location permission is required to share a fresh GPS fix."
+                    } else {
+                        failure.message ?: "A fresh GPS fix is unavailable. Try again outdoors."
+                    }
+                } finally {
+                    isFetchingLocation = false
+                }
+            }
+        }
+        val permissionLauncher = rememberLauncherForActivityResult(
+            contract = androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+        ) { permissions ->
+            if (permissions[android.Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                permissions[android.Manifest.permission.ACCESS_COARSE_LOCATION] == true
+            ) performGpsRefresh()
+            else {
+                locationError = "Location permission was not granted. No location was shared."
                 isFetchingLocation = false
             }
         }
-
-        val lat = detectedLoc?.latitude ?: 12.9716
-        val lng = detectedLoc?.longitude ?: 77.5946
-        val locAddress = detectedLoc?.fullAddress ?: "MG Road, Bengaluru, Karnataka"
-        val mapLink = "https://www.google.com/maps/search/?api=1&query=$lat,$lng"
-        val nearbyPlaces = remember(lat, lng, locAddress) {
-            LocationHelper.getNearbyPlaces(lat, lng, locAddress)
+        val refreshGps: () -> Unit = {
+            val fine = androidx.core.content.ContextCompat.checkSelfPermission(currentContext, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            val coarse = androidx.core.content.ContextCompat.checkSelfPermission(currentContext, android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            if (fine || coarse) performGpsRefresh()
+            else permissionLauncher.launch(arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION))
         }
+        LaunchedEffect(Unit) { refreshGps() }
 
+        val location = detectedLoc
+        val mapLink = location?.let { "https://www.google.com/maps/search/?api=1&query=${it.latitude},${it.longitude}" }.orEmpty()
         AlertDialog(
             onDismissRequest = { showLocationDialog = false },
-            icon = {
-                Icon(Icons.Default.LocationOn, contentDescription = null, tint = VibeSyncTeal, modifier = Modifier.size(32.dp))
-            },
-            title = {
-                Text("Share Location 📍", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            },
+            icon = { Icon(Icons.Default.LocationOn, contentDescription = null, modifier = Modifier.size(30.dp)) },
+            title = { Text("Share location") },
             text = {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    // Visual Google Maps Preview Banner with Drop Pin
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(110.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFFE8F5E9)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.LocationOn,
-                                contentDescription = "Current Pin",
-                                tint = Color(0xFFE53935),
-                                modifier = Modifier.size(38.dp)
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = Color.White.copy(alpha = 0.9f),
-                                shadowElevation = 1.dp
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Default.MyLocation, contentDescription = null, tint = Color(0xFF0F9D58), modifier = Modifier.size(12.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Accurate to 12 meters • Read-Only GPS", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2E7D32))
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            when {
+                                isFetchingLocation -> Row(verticalAlignment = Alignment.CenterVertically) {
+                                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                    Spacer(Modifier.width(10.dp))
+                                    Text("Finding a fresh GPS fix…", style = MaterialTheme.typography.bodyMedium)
                                 }
+                                location != null -> {
+                                    Text(location.fullAddress, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                    Text("GPS ${String.format(java.util.Locale.US, "%.5f", location.latitude)}, ${String.format(java.util.Locale.US, "%.5f", location.longitude)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text("Accuracy ±${location.accuracyMeters.toInt()} m · refreshed now", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                else -> Text(locationError ?: "Refresh GPS to get an accurate fix before sharing.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                             }
                         }
                     }
-
-                    // Current Address Display Card (Read-Only)
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(modifier = Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                            if (isFetchingLocation) {
-                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = VibeSyncTeal)
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Text("Detecting real GPS satellite coordinates...", fontSize = 12.sp)
-                            } else {
-                                Icon(Icons.Default.Lock, contentDescription = "Verified Read-Only Location", tint = Color(0xFF667781), modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Column {
-                                    Text(locAddress, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-                                    Text("GPS: ${String.format(java.util.Locale.US, "%.4f", lat)}° N, ${String.format(java.util.Locale.US, "%.4f", lng)}° E", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                            }
-                        }
+                    OutlinedButton(onClick = refreshGps, enabled = !isFetchingLocation, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Refresh, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (isFetchingLocation) "Refreshing GPS…" else "Refresh GPS")
                     }
-
-                    // Primary Option 1: Send Your Current Location
-                    Surface(
-                        onClick = {
-                            onSendMedia("LOCATION", locAddress, mapLink, 0)
-                            showLocationDialog = false
-                            Toast.makeText(currentContext, "Location shared via Google Maps 📍", Toast.LENGTH_SHORT).show()
-                        },
-                        shape = RoundedCornerShape(12.dp),
-                        color = VibeSyncTeal.copy(alpha = 0.12f),
-                        border = BorderStroke(1.dp, VibeSyncTeal.copy(alpha = 0.4f)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.MyLocation, contentDescription = null, tint = VibeSyncTeal, modifier = Modifier.size(24.dp))
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column {
-                                Text("Send your current location 📍", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = VibeSyncTeal)
-                                Text("Sends verified GPS location link", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-
-                    // Primary Option 2: Share Live Location
-                    Surface(
-                        onClick = { isLiveSelected = !isLiveSelected },
-                        shape = RoundedCornerShape(12.dp),
-                        color = if (isLiveSelected) Color(0xFF00A884).copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
-                        border = BorderStroke(1.dp, if (isLiveSelected) Color(0xFF00A884) else Color.Transparent),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.ShareLocation, contentDescription = null, tint = Color(0xFF00A884), modifier = Modifier.size(24.dp))
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column {
-                                    Text("Share live location ⚡", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                    Text("Updates position in real-time", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                            }
-                            if (isLiveSelected) {
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text("Sharing duration:", fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
-                                    listOf("15 mins", "1 hour", "8 hours").forEach { dur ->
-                                        FilterChip(
-                                            selected = selectedDuration == dur,
-                                            onClick = { selectedDuration = dur },
-                                            label = { Text(dur, fontSize = 11.sp) }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Section 3: Nearby Places on Google Maps
-                    Text("Nearby Places (Google Maps)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
-
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        nearbyPlaces.forEach { place ->
-                            val placeMapUrl = "https://www.google.com/maps/search/?api=1&query=${place.latitude},${place.longitude}"
-                            Surface(
-                                onClick = {
-                                    onSendMedia("LOCATION", "${place.name}\n${place.address}", placeMapUrl, 0)
-                                    showLocationDialog = false
-                                    Toast.makeText(currentContext, "Shared venue: ${place.name} 🏢", Toast.LENGTH_SHORT).show()
-                                },
-                                shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.LocationOn,
-                                        contentDescription = null,
-                                        tint = VibeSyncTeal,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(place.name, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                                        Text("${place.address} • ${place.distanceMeters}m away", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    }
-                                    Icon(Icons.AutoMirrored.Filled.Forward, contentDescription = null, tint = Color(0xFF667781), modifier = Modifier.size(16.dp))
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                if (isLiveSelected) {
                     Button(
-                        onClick = {
-                            onSendMedia("LIVE_LOCATION", "$locAddress • Active for $selectedDuration", mapLink, 0)
-                            showLocationDialog = false
-                            Toast.makeText(currentContext, "Live Location sharing started ⚡", Toast.LENGTH_SHORT).show()
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = VibeSyncTeal)
+                        onClick = { location?.let { fresh -> onSendMedia("LOCATION", fresh.fullAddress, mapLink, 0); showLocationDialog = false } },
+                        enabled = location != null && !isFetchingLocation,
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Start Live Sharing ⚡")
+                        Icon(Icons.Default.MyLocation, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Share current location")
                     }
                 }
             },
-            dismissButton = {
-                TextButton(onClick = { showLocationDialog = false }) { Text("Cancel") }
-            }
+            confirmButton = { TextButton(onClick = { showLocationDialog = false }) { Text("Cancel") } }
         )
     }
 
-    // 2. Contact Dialog
+    // Choose a real device contact and serialize only that selection as vCard.
     if (showContactDialog) {
-        var contactName by remember { mutableStateOf("Kiran Kumar") }
-        var contactPhone by remember { mutableStateOf("+91 98765 43210") }
         AlertDialog(
             onDismissRequest = { showContactDialog = false },
-            icon = { Icon(Icons.Default.Person, contentDescription = null, tint = Color(0xFF1B72E8), modifier = Modifier.size(36.dp)) },
-            title = { Text("Share Contact 👤", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = contactName,
-                        onValueChange = { contactName = it },
-                        label = { Text("Contact Name") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = contactPhone,
-                        onValueChange = { contactPhone = it },
-                        label = { Text("Phone Number") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
+            icon = { Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(30.dp)) },
+            title = { Text("Share a contact") },
+            text = { Text("Choose a contact from your device. Its name and phone number will be formatted as a vCard and sent through the encrypted message pipeline.", style = MaterialTheme.typography.bodyMedium) },
             confirmButton = {
-                Button(
-                    onClick = {
-                        onSendMedia("CONTACT", "$contactName\n$contactPhone", "", 0)
-                        showContactDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B72E8))
-                ) {
-                    Text("Send Contact")
-                }
+                Button(onClick = {
+                    showContactDialog = false
+                    nativeContactPickerLauncher.launch(Intent(Intent.ACTION_PICK, ContactsContract.Contacts.CONTENT_URI))
+                }) { Text("Choose contact") }
             },
-            dismissButton = {
-                TextButton(onClick = { showContactDialog = false }) { Text("Cancel") }
-            }
+            dismissButton = { TextButton(onClick = { showContactDialog = false }) { Text("Cancel") } }
         )
     }
 
-    // 3. Document Dialog (Phone Storage & Format Selector)
+    // Document attachments use the system document picker; never send a synthetic template.
     if (showDocumentDialog) {
-        var docName by remember { mutableStateOf("Project_Proposal_v2.pdf") }
-        var docType by remember { mutableStateOf("PDF") }
         AlertDialog(
             onDismissRequest = { showDocumentDialog = false },
-            icon = { Icon(Icons.Default.Description, contentDescription = null, tint = Color(0xFF5E35B1), modifier = Modifier.size(36.dp)) },
-            title = { Text("Send Document 📄", fontWeight = FontWeight.Bold) },
+            icon = { Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(32.dp)) },
+            title = { Text("Send a file") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    // Direct Phone Storage Picker Button
-                    Button(
-                        onClick = {
-                            showDocumentDialog = false
-                            try {
-                                documentPickerLauncher.launch(arrayOf("*/*"))
-                            } catch (_: Exception) {
-                                Toast.makeText(context, "Opening Phone Storage...", Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF5E35B1)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Browse Phone Storage 📁")
-                    }
-
-                    Text("Or choose a document template:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf("PDF", "DOCX", "XLSX", "TXT").forEach { type ->
-                            FilterChip(
-                                selected = docType == type,
-                                onClick = {
-                                    docType = type
-                                    docName = "Attachment_File.$type".lowercase()
-                                },
-                                label = { Text(type, fontSize = 11.sp) }
-                            )
-                        }
-                    }
-                    OutlinedTextField(
-                        value = docName,
-                        onValueChange = { docName = it },
-                        label = { Text("Document Name") },
-                        modifier = Modifier.fillMaxWidth()
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Choose a real file from your device. Files up to 25 MB are supported. The selected file name and URI are passed to the existing encrypted message pipeline.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        "Executable and script files are not supported.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        onSendMedia("DOCUMENT", "$docName • 2.4 MB • $docType", "", 0)
                         showDocumentDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF5E35B1))
+                        documentPickerLauncher.launch(arrayOf("*/*"))
+                    }
                 ) {
-                    Text("Send Document")
+                    Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Choose file")
                 }
             },
             dismissButton = {
@@ -3676,56 +3609,83 @@ private fun ChatDetailScreenContent(
         )
     }
 
-    // 4. Poll Dialog
+    // 4. Dynamic Poll Dialog
     if (showPollDialog) {
-        var question by remember { mutableStateOf("Where should we meet up this weekend?") }
-        var option1 by remember { mutableStateOf("Coffee Shop ☕") }
-        var option2 by remember { mutableStateOf("Park Walk 🌿") }
-        var option3 by remember { mutableStateOf("Dinner & Drinks 🍷") }
+        var question by remember { mutableStateOf("") }
+        val pollOptions = remember { mutableStateListOf("", "") }
+        var allowMultipleAnswers by remember { mutableStateOf(false) }
+        val validOptions = pollOptions.map { it.trim() }.filter { it.isNotBlank() }.distinct()
 
         AlertDialog(
             onDismissRequest = { showPollDialog = false },
-            icon = { Icon(Icons.Default.Poll, contentDescription = null, tint = Color(0xFFFFA000), modifier = Modifier.size(36.dp)) },
-            title = { Text("Create Poll 📊", fontWeight = FontWeight.Bold) },
+            icon = { Icon(Icons.Default.Poll, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp)) },
+            title = { Text("Create poll", fontWeight = FontWeight.SemiBold) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     OutlinedTextField(
                         value = question,
-                        onValueChange = { question = it },
+                        onValueChange = { question = it.take(240) },
                         label = { Text("Question") },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = false
                     )
-                    OutlinedTextField(
-                        value = option1,
-                        onValueChange = { option1 = it },
-                        label = { Text("Option 1") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = option2,
-                        onValueChange = { option2 = it },
-                        label = { Text("Option 2") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = option3,
-                        onValueChange = { option3 = it },
-                        label = { Text("Option 3 (Optional)") },
-                        modifier = Modifier.fillMaxWidth()
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Allow multiple answers", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                        androidx.compose.material3.Switch(
+                            checked = allowMultipleAnswers,
+                            onCheckedChange = { allowMultipleAnswers = it }
+                        )
+                    }
+                    pollOptions.forEachIndexed { index, option ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = option,
+                                onValueChange = { value -> pollOptions[index] = value.take(120) },
+                                label = { Text("Option ${index + 1}") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (pollOptions.size > 2) {
+                                TextButton(onClick = { pollOptions.removeAt(index) }) {
+                                    Text("Remove")
+                                }
+                            }
+                        }
+                    }
+                    if (pollOptions.size < 12) {
+                        TextButton(
+                            onClick = { pollOptions.add("") },
+                            modifier = Modifier.align(Alignment.Start)
+                        ) { Text("+ Add option (${pollOptions.size}/12)") }
+                    }
+                    Text(
+                        text = "${validOptions.size} valid options · at least 2 required",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             },
             confirmButton = {
                 Button(
+                    enabled = question.isNotBlank() && validOptions.size >= 2 && validOptions.size <= 12,
                     onClick = {
-                        val pollData = "$question\n1. $option1\n2. $option2" + if (option3.isNotBlank()) "\n3. $option3" else ""
-                        onSendMedia("POLL", pollData, "", 0)
+                        val pollPayload = org.json.JSONObject()
+                            .put("type", "POLL")
+                            .put("question", question.trim())
+                            .put("options", org.json.JSONArray(validOptions))
+                            .put("allowMultipleAnswers", allowMultipleAnswers)
+                            .toString()
+                        onSendMedia("POLL", pollPayload, "", 0)
                         showPollDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFA000))
-                ) {
-                    Text("Create Poll")
-                }
+                    }
+                ) { Text("Create poll") }
             },
             dismissButton = {
                 TextButton(onClick = { showPollDialog = false }) { Text("Cancel") }
@@ -3733,154 +3693,17 @@ private fun ChatDetailScreenContent(
         )
     }
 
-    // 5. Payment Dialog (Exclusive NPCI UPI Integration for Indian Registered Users)
+    // 5. Neutral payment-provider placeholder
     if (showPaymentDialog) {
-        var amount by remember { mutableStateOf("500") }
-        var note by remember { mutableStateOf("Lunch split via UPI") }
-        var selectedUpiApp by remember { mutableStateOf<String?>(null) }
-        val context = LocalContext.current
-
-        // Check if recipient / user is an Indian Registered User
-        val isIndianUser = UpiPaymentManager.isIndianRegisteredUser(profile.country, profile.countryFlag)
-        val installedApps = remember(context) { UpiPaymentManager.getInstalledUpiApps(context) }
-
         AlertDialog(
             onDismissRequest = { showPaymentDialog = false },
-            icon = { Icon(Icons.Default.CurrencyRupee, contentDescription = null, tint = Color(0xFF00897B), modifier = Modifier.size(36.dp)) },
-            title = {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("BHIM UPI Payment 🪙", fontWeight = FontWeight.Bold)
-                    Text("NPCI Unified Payments Interface", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (isIndianUser) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = Color(0xFF00897B).copy(alpha = 0.12f),
-                            border = BorderStroke(1.dp, Color(0xFF00897B).copy(alpha = 0.3f)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("🇮🇳", fontSize = 20.sp)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Column {
-                                    Text("Verified Indian Registered User", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00897B))
-                                    Text("VPA: ${profile.name.lowercase().replace(" ", "")}@icici", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                            }
-                        }
-
-                        OutlinedTextField(
-                            value = amount,
-                            onValueChange = { amount = it },
-                            label = { Text("Amount (₹ INR)") },
-                            prefix = { Text("₹ ") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = note,
-                            onValueChange = { note = it },
-                            label = { Text("Payment Note") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Text("Select Installed UPI App:", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            installedApps.take(4).forEach { app ->
-                                Surface(
-                                    onClick = { selectedUpiApp = app.packageName },
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = if (selectedUpiApp == app.packageName) Color(0xFF00897B).copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant,
-                                    border = BorderStroke(1.dp, if (selectedUpiApp == app.packageName) Color(0xFF00897B) else Color.Transparent),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally
-                                    ) {
-                                        Text(app.badge, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                        Text(app.name, fontSize = 9.sp, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        // Non-Indian user regional restriction
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("⚠️", fontSize = 20.sp)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("UPI Regional Limitation", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
-                                }
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    "BHIM UPI is exclusively available for Indian registered users (+91 / 🇮🇳).",
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    "Current profile region: ${profile.country} ${profile.countryFlag}. Please use International Card.",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
-            },
+            title = { Text("Payments") },
+            text = { Text(com.example.util.ComingSoonPaymentProvider.availabilityMessage()) },
             confirmButton = {
-                if (isIndianUser) {
-                    Button(
-                        onClick = {
-                            val upiUri = UpiPaymentManager.generateUpiPayUri(
-                                vpa = "${profile.name.lowercase().replace(" ", "")}@icici",
-                                payeeName = profile.name,
-                                amount = amount,
-                                note = note
-                            )
-                            try {
-                                val intent = UpiPaymentManager.launchUpiAppIntent(context, selectedUpiApp, upiUri)
-                                context.startActivity(intent)
-                            } catch (e: Exception) {
-                                // Graceful fallback
-                            }
-                            onSendMedia("PAYMENT", "₹$amount • ${note.ifBlank { "UPI Transaction" }} (NPCI 🇮🇳)", "", 0)
-                            showPaymentDialog = false
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00897B))
-                    ) {
-                        Text("Pay ₹$amount via UPI 🇮🇳")
-                    }
-                } else {
-                    Button(
-                        onClick = {
-                            onSendMedia("PAYMENT", "₹$amount • ${note.ifBlank { "Card Transaction" }} (International Card)", "", 0)
-                            showPaymentDialog = false
-                        }
-                    ) {
-                        Text("Process International Card")
-                    }
-                }
+                TextButton(onClick = { showPaymentDialog = false }) { Text("Got it") }
             },
             dismissButton = {
-                TextButton(onClick = { showPaymentDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { showPaymentDialog = false }) { Text("Close") }
             }
         )
     }
@@ -3927,99 +3750,147 @@ private fun ChatDetailScreenContent(
         )
     }
 
-    // 7. AI Image Dialog (Google Gemini Free API & AI Art Generator)
+    // AI image preview picker: nothing is sent until the user chooses an option.
     if (showAiImageDialog) {
-        var promptText by remember { mutableStateOf("A beautiful serene sunset over Bangalore city skyline") }
-        val promptSuggestions = listOf(
-            "🌅 Sunset Beach Date",
-            "☕ Cozy Candlelight Cafe",
-            "🗼 Paris Eiffel Tower Dinner",
-            "✨ Cyberpunk Night Romance",
-            "🎨 Impressionist Oil Painting"
-        )
+        var promptText by remember { mutableStateOf("") }
+        var previewOptions by remember { mutableStateOf<List<String>>(emptyList()) }
+        var selectedPreview by remember { mutableStateOf<String?>(null) }
+        var generationError by remember { mutableStateOf<String?>(null) }
+
+        val generatePreviews: () -> Unit = {
+            if (promptText.isNotBlank() && !isGeneratingAiImage) {
+                isGeneratingAiImage = true
+                generationError = null
+                selectedPreview = null
+                coroutineScope.launch {
+                    try {
+                        val result = ChatAiImagePreviewClient.generateAiImage(promptText, context)
+                        previewOptions = result.previewUrls
+                        promptText = result.originalPrompt
+                        if (result.previewUrls.isEmpty()) {
+                            generationError = "No image previews were returned. Try another description."
+                        }
+                    } catch (failure: Exception) {
+                        generationError = failure.message ?: "Image previews could not be generated. Please try again."
+                    } finally {
+                        isGeneratingAiImage = false
+                    }
+                }
+            }
+        }
 
         AlertDialog(
             onDismissRequest = {
                 if (!isGeneratingAiImage) showAiImageDialog = false
             },
-            icon = { Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Color(0xFF00ACC1), modifier = Modifier.size(36.dp)) },
-            title = { Text("Google Gemini AI Images ✨", fontWeight = FontWeight.Bold) },
+            icon = { Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(30.dp)) },
+            title = { Text("AI image options", fontWeight = FontWeight.SemiBold) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 500.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
                     Text(
-                        "Describe any scene and Google Gemini will enhance and generate a custom high-definition artwork directly in your chat:",
-                        fontSize = 12.sp,
+                        "Describe the image you want. Preview choices are generated by a server-side service with a daily request limit.",
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-
                     OutlinedTextField(
                         value = promptText,
-                        onValueChange = { promptText = it },
-                        label = { Text("AI Image Prompt") },
+                        onValueChange = {
+                            promptText = it
+                            previewOptions = emptyList()
+                            selectedPreview = null
+                            generationError = null
+                        },
+                        label = { Text("Image description") },
                         modifier = Modifier.fillMaxWidth(),
                         maxLines = 3,
                         enabled = !isGeneratingAiImage
                     )
-
-                    Text("Quick Suggestions:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    Button(
+                        onClick = generatePreviews,
+                        enabled = !isGeneratingAiImage && promptText.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        promptSuggestions.take(2).forEach { sug ->
-                            FilterChip(
-                                selected = false,
-                                onClick = { promptText = sug.substringAfter(" ") },
-                                label = { Text(sug, fontSize = 10.sp) },
-                                enabled = !isGeneratingAiImage
-                            )
+                        if (isGeneratingAiImage) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Generating previews…")
+                        } else {
+                            Icon(Icons.Default.AutoAwesome, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(if (previewOptions.isEmpty()) "Generate preview options" else "Generate new options")
                         }
                     }
-
-                    if (isGeneratingAiImage) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
+                    if (!generationError.isNullOrBlank()) {
+                        Text(generationError.orEmpty(), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (previewOptions.isNotEmpty()) {
+                        Text(
+                            if (selectedPreview == null) "Choose one preview to continue" else "Preview selected",
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(2),
+                            modifier = Modifier.fillMaxWidth().height(252.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp, color = Color(0xFF00ACC1))
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text("Gemini is creating artwork...", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = Color(0xFF00ACC1))
+                            gridItems(previewOptions) { imageUrl ->
+                                val isSelected = selectedPreview == imageUrl
+                                Surface(
+                                    onClick = { selectedPreview = imageUrl },
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(
+                                        if (isSelected) 2.dp else 1.dp,
+                                        if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                                    ),
+                                    color = MaterialTheme.colorScheme.surfaceVariant
+                                ) {
+                                    Column {
+                                        AsyncImage(
+                                            model = imageUrl,
+                                            contentDescription = "Generated image preview",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxWidth().height(112.dp)
+                                        )
+                                        Text(
+                                            if (isSelected) "Selected" else "Select preview",
+                                            modifier = Modifier.padding(8.dp),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
                         }
+                        Text(
+                            "Only your selected option continues through the existing encrypted message send path.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        if (promptText.isNotBlank()) {
-                            isGeneratingAiImage = true
-                            coroutineScope.launch {
-                                try {
-                                    val result = GeminiImageHelper.generateAiImage(promptText)
-                                    onSendMedia("AI_IMAGE", result.originalPrompt.trim(), result.imageUrl, 0)
-                                    showAiImageDialog = false
-                                    Toast.makeText(context, "AI Image created with Gemini ✨", Toast.LENGTH_SHORT).show()
-                                } catch (e: Exception) {
-                                    Toast.makeText(context, "Error generating AI image: ${e.message}", Toast.LENGTH_SHORT).show()
-                                } finally {
-                                    isGeneratingAiImage = false
-                                }
-                            }
+                        val chosen = selectedPreview
+                        if (chosen != null && !isGeneratingAiImage) {
+                            onSendMedia("AI_IMAGE", promptText.trim(), chosen, 0)
+                            showAiImageDialog = false
+                            Toast.makeText(context, "Selected image queued for encrypted sending.", Toast.LENGTH_SHORT).show()
                         }
                     },
-                    enabled = !isGeneratingAiImage && promptText.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00ACC1))
-                ) {
-                    Text(if (isGeneratingAiImage) "Generating..." else "Generate & Send ✨")
-                }
+                    enabled = selectedPreview != null && !isGeneratingAiImage
+                ) { Text("Send selected") }
             },
             dismissButton = {
-                if (!isGeneratingAiImage) {
-                    TextButton(onClick = { showAiImageDialog = false }) { Text("Cancel") }
-                }
+                TextButton(
+                    onClick = { showAiImageDialog = false },
+                    enabled = !isGeneratingAiImage
+                ) { Text("Cancel") }
             }
         )
     }
@@ -4659,13 +4530,46 @@ private fun VibeSyncChatBubble(
     onToggleSelected: () -> Unit = {},
     onReactToMessage: (messageId: String, emoji: String) -> Unit,
     onActionClick: () -> Unit,
-    onMediaClick: (String, String) -> Unit
+    onMediaClick: (String, String) -> Unit,
+    onRetryDelivery: (String) -> Unit = {}
 ) {
-    val formattedTime = remember(message.timestamp) { formatRelativeMessageTime(message.timestamp) }
+    val context = LocalContext.current
+    var resolvedAttachmentUri by remember(message.messageId, message.mediaUrl) {
+        mutableStateOf<String?>(message.mediaUrl.takeIf { it.isNotBlank() })
+    }
+    var isResolvingAttachment by remember(message.messageId, message.mediaUrl) { mutableStateOf(false) }
+    LaunchedEffect(message.messageId, message.mediaUrl) {
+        if (com.example.util.ChatAttachmentCryptoManager.isSupportedMediaType(message.mediaType) &&
+            com.example.util.ChatAttachmentCryptoManager.isLocalReference(message.mediaUrl)
+        ) {
+            resolvedAttachmentUri = null
+            isResolvingAttachment = true
+            val materialized = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.example.util.ChatAttachmentCryptoManager.materializeForDisplay(
+                    context = context,
+                    localReference = message.mediaUrl,
+                    messageId = message.messageId
+                )
+            }
+            resolvedAttachmentUri = materialized?.let { android.net.Uri.fromFile(it).toString() }
+            isResolvingAttachment = false
+        } else {
+            resolvedAttachmentUri = message.mediaUrl.takeIf { it.isNotBlank() }
+            isResolvingAttachment = false
+        }
+    }
+    val displayMediaUri = resolvedAttachmentUri.orEmpty()
+    val use24HourClock = android.text.format.DateFormat.is24HourFormat(context)
+    val formattedTime = remember(message.timestamp, use24HourClock) {
+        com.example.util.ChatDeliveryPresentation.formatLocalTime(message.timestamp, use24HourClock)
+    }
     val bubbleTextForDisplay = com.example.util.MessageLocalRetentionPolicy.displayText(
         storedText = message.text, decryptState = message.decryptState, isOutgoing = isOutgoing
     )
-    val bubbleTextColor = if (isOutgoing) MaterialTheme.colorScheme.onPrimary else chatTextColor
+    val darkChatTheme = isSystemInDarkTheme()
+    val bubbleTextColor = if (darkChatTheme) Color(0xFFF4F7FA) else Color(0xFF17212B)
+    val outgoingBubbleColor = if (darkChatTheme) Color(0xFF242F3D) else Color(0xFFF0F4F8)
+    val incomingBubbleColor = if (darkChatTheme) Color(0xFF1E242B) else Color(0xFFFFFFFF)
 
     if (message.senderId.equals("SYSTEM", ignoreCase = true)) {
         Box(
@@ -4711,7 +4615,7 @@ private fun VibeSyncChatBubble(
             } else {
                 RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 4.dp, bottomEnd = 18.dp)
             },
-            color = if (isOutgoing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+            color = if (isOutgoing) outgoingBubbleColor else incomingBubbleColor,
             shadowElevation = if (isOutgoing) 0.5.dp else 1.dp,
             border = if (isOutgoing) null else BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
             modifier = Modifier
@@ -4817,16 +4721,26 @@ private fun VibeSyncChatBubble(
                                             .background(Color.Black.copy(alpha = 0.04f))
                                             .combinedClickable(
                                                 onClick = {
-                                                    if (message.mediaUrl.isNotBlank()) {
-                                                        onMediaClick(message.mediaUrl, "IMAGE")
+                                                    if (displayMediaUri.isNotBlank()) {
+                                                        onMediaClick(displayMediaUri, "IMAGE")
+                                                    } else if (!isResolvingAttachment) {
+                                                        Toast.makeText(context, "Attachment is unavailable on this device.", Toast.LENGTH_SHORT).show()
                                                     }
                                                 },
                                                 onLongClick = onActionClick
                                             )
                                     ) {
-                                        if (message.mediaUrl.startsWith("IMG_B64:")) {
-                                            val bitmap = remember(message.mediaUrl) {
-                                                com.example.util.ImageCompressorHelper.decodeBase64ToBitmap(message.mediaUrl)
+                                        if (isResolvingAttachment || displayMediaUri.isBlank()) {
+                                            Box(
+                                                modifier = Modifier.fillMaxWidth().height(160.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                if (isResolvingAttachment) CircularProgressIndicator()
+                                                else Text("Attachment unavailable", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            }
+                                        } else if (displayMediaUri.startsWith("IMG_B64:")) {
+                                            val bitmap = remember(displayMediaUri) {
+                                                com.example.util.ImageCompressorHelper.decodeBase64ToBitmap(displayMediaUri)
                                             }
                                             if (bitmap != null) {
                                                 Image(
@@ -4851,7 +4765,7 @@ private fun VibeSyncChatBubble(
                                                 }
                                             }
                                         } else {
-                                            val cleanUrl = message.mediaUrl.removePrefix("IMG_URL:")
+                                            val cleanUrl = displayMediaUri.removePrefix("IMG_URL:")
                                             AsyncImage(
                                                 model = cleanUrl,
                                                 contentDescription = userCaption.ifBlank { "Received Photo" },
@@ -4922,17 +4836,21 @@ private fun VibeSyncChatBubble(
                                         .background(Color.Black)
                                         .combinedClickable(
                                             onClick = {
-                                                if (message.mediaUrl.isNotBlank()) {
-                                                    onMediaClick(message.mediaUrl, "VIDEO")
+                                                if (displayMediaUri.isNotBlank()) {
+                                                    onMediaClick(displayMediaUri, "VIDEO")
+                                                } else if (!isResolvingAttachment) {
+                                                    Toast.makeText(context, "Video attachment is unavailable.", Toast.LENGTH_SHORT).show()
                                                 }
                                             },
                                             onLongClick = onActionClick
                                         ),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    if (message.mediaUrl.isNotBlank()) {
+                                    if (isResolvingAttachment) {
+                                        CircularProgressIndicator(color = Color.White)
+                                    } else if (displayMediaUri.isNotBlank()) {
                                         AsyncImage(
-                                            model = message.mediaUrl,
+                                            model = displayMediaUri,
                                             contentDescription = "Video Thumbnail",
                                             contentScale = ContentScale.Crop,
                                             modifier = Modifier.fillMaxSize()
@@ -5156,15 +5074,30 @@ private fun VibeSyncChatBubble(
                                 }
                                 IconButton(
                                     onClick = {
-                                        if (message.mediaUrl.isNotBlank()) {
-                                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(message.mediaUrl))
+                                        if (displayMediaUri.isNotBlank()) {
                                             try {
-                                                context.startActivity(intent)
+                                                val parsed = Uri.parse(displayMediaUri)
+                                                val viewUri = if (parsed.scheme == "file") {
+                                                    androidx.core.content.FileProvider.getUriForFile(
+                                                        context,
+                                                        context.packageName + ".fileprovider",
+                                                        java.io.File(parsed.path.orEmpty())
+                                                    )
+                                                } else parsed
+                                                val extension = parsed.lastPathSegment?.substringAfterLast('.', "")?.lowercase().orEmpty()
+                                                val mimeType = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: "*/*"
+                                                val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                                                    setDataAndType(viewUri, mimeType)
+                                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                }
+                                                context.startActivity(viewIntent)
                                             } catch (_: Exception) {
-                                                Toast.makeText(context, "Opening file...", Toast.LENGTH_SHORT).show()
+                                                Toast.makeText(context, "This attachment could not be opened by an installed app.", Toast.LENGTH_SHORT).show()
                                             }
+                                        } else if (isResolvingAttachment) {
+                                            Toast.makeText(context, "Decrypting attachment. Try again shortly.", Toast.LENGTH_SHORT).show()
                                         } else {
-                                            Toast.makeText(context, "Document downloaded 📄", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "Attachment is unavailable on this device.", Toast.LENGTH_SHORT).show()
                                         }
                                     },
                                     modifier = Modifier.size(32.dp)
@@ -5427,17 +5360,29 @@ private fun VibeSyncChatBubble(
                     Text(
                         text = formattedTime,
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (isOutgoing) Color.White.copy(alpha = 0.74f) else MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (darkChatTheme) Color(0xFFCBD5E1) else Color(0xFF52606D),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium
                     )
-                    if (isOutgoing && !message.isDeleted && !message.isDeletedForEveryone) {
+                    if (isOutgoing && !message.isDeleted && !message.isDeletedForEveryone &&
+                        message.lastSyncError == com.example.util.ChatAttachmentCryptoManager.UPLOAD_PROGRESS_SENTINEL
+                    ) {
                         Spacer(modifier = Modifier.width(3.dp))
-                        val status = localMessageStatuses[message.messageId]
-                        val isFailed = status == "FAILED"
-                        val isRead = readReceiptsEnabled && (status == "READ" || message.isRead)
-                        val isDelivered = status == "DELIVERED" || message.isDelivered
-                        val isWaitingForRecipientKey = message.deliveryState.equals("PENDING", ignoreCase = true) &&
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(13.dp),
+                            strokeWidth = 2.dp,
+                            color = if (darkChatTheme) Color(0xFFCBD5E1) else Color(0xFF64748B)
+                        )
+                    } else if (isOutgoing && !message.isDeleted && !message.isDeletedForEveryone) {
+                        Spacer(modifier = Modifier.width(3.dp))
+                        val status = localMessageStatuses[message.messageId] ?: message.deliveryState
+                        val tick = com.example.util.ChatDeliveryPresentation.tick(status)
+                        val isFailed = tick.state == com.example.util.ChatDeliveryPresentation.State.FAILED
+                        val isRead = readReceiptsEnabled &&
+                            (tick.state == com.example.util.ChatDeliveryPresentation.State.READ || message.isRead)
+                        val isDelivered = tick.state == com.example.util.ChatDeliveryPresentation.State.DELIVERED || message.isDelivered
+                        val isPending = tick.state == com.example.util.ChatDeliveryPresentation.State.PENDING
+                        val isWaitingForRecipientKey = isPending &&
                             message.lastSyncError.contains("RecipientKeyNotFoundException", ignoreCase = true)
 
                         if (isWaitingForRecipientKey) {
@@ -5453,29 +5398,39 @@ private fun VibeSyncChatBubble(
                                 Icon(
                                     imageVector = Icons.Default.Schedule,
                                     contentDescription = "Waiting for recipient to register security keys",
-                                    tint = if (isOutgoing) Color.White.copy(alpha = 0.72f)
-                                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
+                                    tint = Color(0xFF9E9E9E),
                                     modifier = Modifier.size(14.dp)
                                 )
                             }
                         } else {
-                            // Neutral grey for sent/delivered; electric blue only for read receipts.
-                            val (icon, tint) = when {
-                                isRead -> Icons.Default.DoneAll to VibeSyncReadTickBlue
-                                isDelivered -> Icons.Default.DoneAll to VibeSyncMetadataDark
-                                else -> Icons.Default.Check to VibeSyncMetadataDark
+                            when (tick.glyph) {
+                                com.example.util.ChatDeliveryPresentation.Glyph.CLOCK -> Icon(
+                                    imageVector = Icons.Default.Schedule,
+                                    contentDescription = tick.contentDescription,
+                                    tint = Color(tick.colorArgb),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                com.example.util.ChatDeliveryPresentation.Glyph.SINGLE_CHECK -> Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = tick.contentDescription,
+                                    tint = Color(tick.colorArgb),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                com.example.util.ChatDeliveryPresentation.Glyph.DOUBLE_CHECK -> Icon(
+                                    imageVector = Icons.Default.DoneAll,
+                                    contentDescription = if (isRead) "Read" else if (isDelivered) "Delivered" else tick.contentDescription,
+                                    tint = Color(tick.colorArgb),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                com.example.util.ChatDeliveryPresentation.Glyph.EXCLAMATION -> Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.clickable { onRetryDelivery(message.messageId) }
+                                ) {
+                                    Text("!", color = Color(0xFFE53935), fontSize = 14.sp, fontWeight = FontWeight.ExtraBold)
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    Text("Retry", color = Color(0xFFE53935), fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                                }
                             }
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = when {
-                                    isFailed -> "Failed"
-                                    isRead -> "Read"
-                                    isDelivered -> "Delivered"
-                                    else -> "Sent"
-                                },
-                                tint = tint,
-                                modifier = Modifier.size(14.dp)
-                            )
                         }
                     }
                 }
@@ -5797,6 +5752,20 @@ private fun getFileNameFromUri(context: Context, uri: Uri): String? {
         }
     }
     return result
+}
+
+private fun getFileSizeBytesFromUri(context: Context, uri: Uri): Long? {
+    if (uri.scheme != "content") return null
+    return context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+        val index = cursor.getColumnIndex(OpenableColumns.SIZE)
+        if (index >= 0 && cursor.moveToFirst()) cursor.getLong(index).takeIf { it >= 0L } else null
+    }
+}
+
+private fun formatFileSize(sizeBytes: Long): String = when {
+    sizeBytes >= 1024L * 1024L -> String.format(Locale.US, "%.1f MB", sizeBytes / (1024.0 * 1024.0))
+    sizeBytes >= 1024L -> String.format(Locale.US, "%.1f KB", sizeBytes / 1024.0)
+    else -> "$sizeBytes B"
 }
 
 private fun getFileSizeFromUri(context: Context, uri: Uri): String? {

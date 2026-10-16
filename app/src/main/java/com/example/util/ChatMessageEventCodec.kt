@@ -13,6 +13,7 @@ object ChatMessageEventCodec {
     const val MEDIA_TYPE_EDIT = "MESSAGE_EDIT"
     const val MEDIA_TYPE_DISAPPEARING_TIMER = "DISAPPEARING_TIMER"
     private const val PAYLOAD_VERSION = "vibesync_payload_v1"
+    private const val MEDIA_URL_PAYLOAD_VERSION = "vibesync_media_payload_v1"
     private const val REACTION_EVENT = "vibesync_reaction_v1"
     private const val DELETE_EVENT = "vibesync_delete_v1"
     private const val EDIT_EVENT = "vibesync_edit_v1"
@@ -45,6 +46,22 @@ object ChatMessageEventCodec {
         ) {
             return VoiceNoteCryptoManager.payloadFromLocalReference(message.mediaUrl) ?: fallbackBody
         }
+        if (ChatAttachmentCryptoManager.isSupportedMediaType(message.mediaType) &&
+            ChatAttachmentCryptoManager.isLocalReference(message.mediaUrl)
+        ) {
+            return ChatAttachmentCryptoManager.payloadFromLocalReference(message.mediaUrl) ?: fallbackBody
+        }
+        if (shouldEncryptMediaUrl(message)) {
+            return JSONObject().apply {
+                put("vibesync_media_payload", MEDIA_URL_PAYLOAD_VERSION)
+                put("media_type", message.mediaType)
+                put("message_text", fallbackBody)
+                put("media_url", message.mediaUrl)
+                put("reply_to_message_id", message.replyToMessageId.orEmpty())
+                put("reply_to_text", message.replyToText.orEmpty())
+                put("reply_to_sender", message.replyToSender.orEmpty())
+            }.toString()
+        }
         if (message.replyToMessageId.isNullOrBlank()) return fallbackBody
 
         return JSONObject().apply {
@@ -55,6 +72,9 @@ object ChatMessageEventCodec {
             put("reply_to_sender", message.replyToSender.orEmpty())
         }.toString()
     }
+
+    fun shouldEncryptMediaUrl(message: ChatMessageEntity): Boolean =
+        message.mediaType.equals("LOCATION", ignoreCase = true) && message.mediaUrl.isNotBlank()
 
     fun createReactionEvent(targetId: String, emoji: String): String =
         JSONObject().apply {
@@ -131,6 +151,29 @@ object ChatMessageEventCodec {
                     return Decoded(
                         text = "Voice note",
                         mediaUrl = VoiceNoteCryptoManager.localReferenceFromPayload(plaintext)
+                    )
+                }
+                ChatAttachmentCryptoManager.isSupportedMediaType(mediaType) &&
+                    ChatAttachmentCryptoManager.isAttachmentPayload(plaintext) -> {
+                    val attachmentJson = JSONObject(plaintext)
+                    Decoded(
+                        text = attachmentJson.optString("message_text").ifBlank {
+                            attachmentJson.optString("file_name").ifBlank { "Attachment" }
+                        },
+                        mediaUrl = ChatAttachmentCryptoManager.localReferenceFromPayload(plaintext),
+                        replyToMessageId = attachmentJson.optString("reply_to_message_id").ifBlank { null },
+                        replyToText = attachmentJson.optString("reply_to_text").ifBlank { null },
+                        replyToSender = attachmentJson.optString("reply_to_sender").ifBlank { null }
+                    )
+                }
+                json.optString("vibesync_media_payload") == MEDIA_URL_PAYLOAD_VERSION &&
+                    mediaType.equals("LOCATION", ignoreCase = true) -> {
+                    Decoded(
+                        text = json.optString("message_text"),
+                        mediaUrl = json.optString("media_url").ifBlank { null },
+                        replyToMessageId = json.optString("reply_to_message_id").ifBlank { null },
+                        replyToText = json.optString("reply_to_text").ifBlank { null },
+                        replyToSender = json.optString("reply_to_sender").ifBlank { null }
                     )
                 }
                 json.optString("vibesync_payload") == PAYLOAD_VERSION -> {

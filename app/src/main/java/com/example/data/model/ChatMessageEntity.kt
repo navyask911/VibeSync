@@ -58,6 +58,12 @@ data class ChatMessageEntity(
     /** Server-side created_at epoch millis used by the monotonic delta-sync watermark. */
     @ColumnInfo(defaultValue = "0")
     val serverCreatedAt: Long = 0L,
+    /** Local epoch-millis when the recipient confirmed this message was stored and decrypted. */
+    @ColumnInfo(defaultValue = "0")
+    val deliveredAt: Long = 0L,
+    /** Local epoch-millis when the message became read in the active conversation. */
+    @ColumnInfo(defaultValue = "0")
+    val readAt: Long = 0L,
     /** Durable delivery ACK outbox; cleared only after Supabase confirms the ACK RPC. */
     @ColumnInfo(defaultValue = "0")
     val deliveryAckPending: Boolean = false,

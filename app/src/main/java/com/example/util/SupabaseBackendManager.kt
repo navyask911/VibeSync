@@ -375,6 +375,26 @@ object SupabaseBackendManager {
                             val data = payload.optJSONObject("data") ?: JSONObject()
                             val changeType = data.optString("type").uppercase()
                             val record = data.optJSONObject("record") ?: data.optJSONObject("new") ?: JSONObject()
+                            if (data.optString("schema") == "public" &&
+                                data.optString("table") == "chat_message_receipts" &&
+                                changeType == "INSERT"
+                            ) {
+                                val messageId = record.optString("message_id").trim()
+                                val matchId = record.optString("match_id").trim()
+                                val status = record.optString("status").trim().uppercase()
+                                val timestamp = record.optString("timestamp").trim()
+                                if (messageId.isNotBlank() && matchId.isNotBlank() &&
+                                    status in setOf("SENT_TO_SERVER", "DELIVERED", "READ", "FAILED")
+                                ) {
+                                    onUpdateCallback?.invoke(JSONObject().apply {
+                                        put("message_id", messageId)
+                                        put("match_id", matchId)
+                                        put("status", status)
+                                        put("timestamp", timestamp)
+                                    })
+                                }
+                                return
+                            }
 
                             if (changeType == "DELETE") {
                                 val oldRecord = data.optJSONObject("old") ?: record
@@ -582,9 +602,14 @@ object SupabaseBackendManager {
                             put("event", "UPDATE")
                             put("schema", "public")
                             put("table", "chat_messages")
-                            // Delivery/read ticks belong to rows sent by this profile. Filtering them
-                            // by sender_id avoids dropping receipts because a legacy match_id differs.
                             put("filter", "sender_id=eq.$profileId")
+                        })
+                        put(JSONObject().apply {
+                            put("event", "INSERT")
+                            put("schema", "public")
+                            put("table", "chat_message_receipts")
+                            val activeMatch = realtimeRequestedMatchId?.trim().orEmpty()
+                            if (activeMatch.isNotBlank()) put("filter", "match_id=eq.$activeMatch")
                         })
                     }
                     put("postgres_changes", changes)
@@ -839,7 +864,7 @@ object SupabaseBackendManager {
             val body = JSONObject().put("p_message_id", messageId)
                 .toString().toRequestBody("application/json".toMediaType())
             val request = Request.Builder()
-                .url("$SUPABASE_URL/rest/v1/rpc/ack_message_read")
+                .url("$SUPABASE_URL/rest/v1/rpc/acknowledge_chat_message_read")
                 .header("apikey", SUPABASE_ANON_KEY)
                 .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_ANON_KEY)}")
                 .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
@@ -853,11 +878,34 @@ object SupabaseBackendManager {
         }
     }
 
-    /**
-     * Executes delivery ACK back to Supabase:
-     * UPDATE public.chat_messages SET is_delivered = true WHERE id = :messageId
-     * Broadcasts real-time update to turn single tick into double grey ticks on sender's device.
-     */
+    /** Requests authorized server-side object removal; the media URL is never sent by the client. */
+    private fun deletePurgedMediaObject(messageId: String): Boolean {
+        if (messageId.isBlank()) return false
+        return try {
+            val accessToken = VibeSyncSessionManager.getToken() ?: return false
+            val body = JSONObject().put("message_id", messageId)
+                .toString().toRequestBody("application/json".toMediaType())
+            val request = Request.Builder()
+                .url("$SUPABASE_URL/functions/v1/vibesync-purge-chat-media")
+                .header("apikey", SUPABASE_ANON_KEY)
+                .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_ANON_KEY)}")
+                .header("x-vibesync-session", accessToken)
+                .header("Content-Type", "application/json")
+                .post(body)
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Server-side media purge is pending for message_id=$messageId (HTTP ${response.code}).")
+                }
+                response.isSuccessful
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Server-side media purge remains pending for message_id=$messageId (${e.javaClass.simpleName}).")
+            false
+        }
+    }
+
+    /** Purge ciphertext only after decrypted content has been safely committed to Room. */
     suspend fun markMessageDelivered(
         messageId: String,
         senderPhone: String? = null,
@@ -866,10 +914,11 @@ object SupabaseBackendManager {
         if (messageId.isBlank()) return@withContext false
         try {
             val accessToken = VibeSyncSessionManager.getToken() ?: return@withContext false
-            val body = JSONObject().apply { put("p_message_id", messageId) }
-                .toString().toRequestBody("application/json".toMediaType())
+            val body = JSONObject().apply {
+                ChatDeliveryRpcPayloads.acknowledgeAndPurge(messageId).forEach { (key, value) -> put(key, value) }
+            }.toString().toRequestBody("application/json".toMediaType())
             val request = Request.Builder()
-                .url("$SUPABASE_URL/rest/v1/rpc/ack_message_delivery")
+                .url("$SUPABASE_URL/rest/v1/rpc/acknowledge_and_purge_message")
                 .header("apikey", SUPABASE_ANON_KEY)
                 .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_ANON_KEY)}")
                 .header("x-vibesync-session", accessToken)
@@ -877,23 +926,57 @@ object SupabaseBackendManager {
                 .post(body)
                 .build()
             httpClient.newCall(request).execute().use { response ->
-                val success = response.isSuccessful
-                if (success) {
-                    val updateBc = JSONObject().apply {
-                        put("id", messageId)
-                        put("message_id", messageId)
-                        put("is_delivered", true)
-                        put("status", "DELIVERED")
-                        put("type", "UPDATE")
-                    }
-                    broadcastUpdateStatus(updateBc)
-                } else {
-                    Log.w(TAG, "Delivery ACK RPC failed HTTP ${response.code}")
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Delivery purge acknowledgement failed HTTP ${response.code}")
+                    return@withContext false
                 }
-                success
+                val ack = runCatching { JSONObject(response.body?.string().orEmpty()) }.getOrNull()
+                    ?: return@withContext false
+                if (!ack.optBoolean("ok", false)) return@withContext false
+
+                // Call only when an object was attached. The server re-reads its private media URL,
+                // validates this recipient, and deletes it with the service role (not this device's token).
+                val mediaUrl = ack.optString("media_url").orEmpty()
+                if (mediaUrl.isNotBlank() && !deletePurgedMediaObject(messageId)) {
+                    Log.w(TAG, "Ciphertext was purged; media object removal will be retried by server cleanup.")
+                }
+                broadcastUpdateStatus(JSONObject().apply {
+                    put("message_id", ack.optString("message_id", messageId))
+                    put("match_id", ack.optString("match_id", ""))
+                    put("status", "DELIVERED")
+                    put("timestamp", ack.optString("timestamp", ""))
+                })
+                true
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Delivery ACK RPC error: ${e.message}")
+            Log.w(TAG, "Delivery purge acknowledgement failed: ${e.javaClass.simpleName}")
+            false
+        }
+    }
+
+    /** Decryption NACK updates the sender's receipt state and leaves ciphertext available for retry. */
+    suspend fun markMessageDecryptionFailed(messageId: String): Boolean = withContext(Dispatchers.IO) {
+        if (messageId.isBlank()) return@withContext false
+        try {
+            val accessToken = VibeSyncSessionManager.getToken() ?: return@withContext false
+            val body = JSONObject().put("p_message_id", messageId)
+                .toString().toRequestBody("application/json".toMediaType())
+            val request = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/rpc/nack_chat_message")
+                .header("apikey", SUPABASE_ANON_KEY)
+                .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_ANON_KEY)}")
+                .header("x-vibesync-session", accessToken)
+                .header("Content-Type", "application/json")
+                .post(body)
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Decryption NACK failed HTTP ${response.code}")
+                    false
+                } else true
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Decryption NACK failed: ${e.javaClass.simpleName}")
             false
         }
     }

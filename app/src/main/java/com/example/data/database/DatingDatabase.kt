@@ -90,7 +90,7 @@ import com.example.data.dao.ConversationNotificationPreferencesDao
         ApiCredentialRequestEntity::class,
         ConversationNotificationPreferenceEntity::class
     ],
-    version = 62,
+    version = 63,
     exportSchema = false
 )
 abstract class DatingDatabase : RoomDatabase() {
@@ -498,6 +498,15 @@ abstract class DatingDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_62_63 = object : Migration(62, 63) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                addColumnIfMissing(db, "chat_messages", "deliveredAt", "INTEGER NOT NULL DEFAULT 0")
+                addColumnIfMissing(db, "chat_messages", "readAt", "INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("UPDATE `chat_messages` SET `deliveredAt` = `timestamp` WHERE `isDelivered` = 1 AND `deliveredAt` = 0")
+                db.execSQL("UPDATE `chat_messages` SET `readAt` = `timestamp` WHERE `isRead` = 1 AND `readAt` = 0")
+            }
+        }
+
         fun getDatabase(context: Context): DatingDatabase {
             val appContext = context.applicationContext
             return INSTANCE ?: synchronized(this) {
@@ -554,7 +563,8 @@ abstract class DatingDatabase : RoomDatabase() {
                                 MIGRATION_58_59,
                                 MIGRATION_59_60,
                                 MIGRATION_60_61,
-                                MIGRATION_61_62
+                                MIGRATION_61_62,
+                                MIGRATION_62_63
                             )
                             // Fail closed instead of recreating a database that contains local history.
                             .build()

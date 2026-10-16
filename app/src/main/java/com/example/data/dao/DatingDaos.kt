@@ -205,14 +205,20 @@ interface ChatMessageDao {
     @Query("UPDATE chat_messages SET senderDisplayName = :displayName, senderPhotoUri = :photoUri WHERE matchId = :matchId AND senderId != 'USER'")
     suspend fun persistIncomingContactMetadata(matchId: String, displayName: String, photoUri: String)
 
-    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryAckPending = 0, deliveryState = 'READ' WHERE messageId = :messageId")
-    suspend fun markMessageAsRead(messageId: String)
+    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryAckPending = 0, deliveryState = 'READ', deliveredAt = CASE WHEN deliveredAt = 0 THEN :readAt ELSE deliveredAt END, readAt = :readAt WHERE messageId = :messageId")
+    suspend fun markMessageAsRead(messageId: String, readAt: Long = System.currentTimeMillis())
 
-    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryAckPending = 0, deliveryState = 'READ', expiresAt = CASE WHEN :timerSeconds > 0 AND expiresAt = 0 THEN :readAt + (:timerSeconds * 1000) ELSE expiresAt END WHERE messageId = :messageId")
+    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryAckPending = 0, deliveryState = 'READ', deliveredAt = CASE WHEN deliveredAt = 0 THEN :readAt ELSE deliveredAt END, readAt = :readAt, expiresAt = CASE WHEN :timerSeconds > 0 AND expiresAt = 0 THEN :readAt + (:timerSeconds * 1000) ELSE expiresAt END WHERE messageId = :messageId")
     suspend fun markMessageAsReadWithExpiry(messageId: String, readAt: Long, timerSeconds: Int)
 
-    @Query("UPDATE chat_messages SET isDelivered = 1, deliveryAckPending = 0, deliveryState = CASE WHEN deliveryState = 'READ' THEN 'READ' ELSE 'DELIVERED' END WHERE messageId = :messageId")
-    suspend fun markMessageAsDelivered(messageId: String)
+    @Query("UPDATE chat_messages SET isDelivered = 1, deliveryAckPending = 0, deliveredAt = CASE WHEN deliveredAt = 0 THEN :deliveredAt ELSE deliveredAt END, deliveryState = CASE WHEN deliveryState = 'READ' THEN 'READ' ELSE 'DELIVERED' END WHERE messageId = :messageId")
+    suspend fun markMessageAsDelivered(messageId: String, deliveredAt: Long = System.currentTimeMillis())
+
+    @Query("UPDATE chat_messages SET deliveryState = 'FAILED', lastSyncError = 'Recipient could not decrypt this message', lastSyncAttemptAt = :failedAt WHERE messageId = :messageId AND senderId = 'USER'")
+    suspend fun markMessageDeliveryFailed(messageId: String, failedAt: Long = System.currentTimeMillis())
+
+    @Query("UPDATE chat_messages SET deliveryState = 'PENDING', isDelivered = 0, isRead = 0, deliveredAt = 0, readAt = 0, lastSyncError = '', lastSyncAttemptAt = 0 WHERE messageId = :messageId AND senderId = 'USER'")
+    suspend fun resetFailedMessageForRetry(messageId: String)
 
     @Query("SELECT * FROM chat_messages WHERE matchId = :matchId AND senderId != 'USER' AND deliveryAckPending = 1 ORDER BY timestamp ASC")
     suspend fun getPendingDeliveryAcksForMatch(matchId: String): List<ChatMessageEntity>
