@@ -878,38 +878,29 @@ object SupabaseBackendManager {
         }
     }
 
-    /** Deletes only a same-project Supabase Storage object returned by the purge RPC. */
-    private fun deletePurgedMediaObject(mediaUrl: String): Boolean {
-        if (mediaUrl.isBlank()) return true
+    /** Requests authorized server-side object removal; the media URL is never sent by the client. */
+    private fun deletePurgedMediaObject(messageId: String): Boolean {
+        if (messageId.isBlank()) return false
         return try {
-            val mediaUri = android.net.Uri.parse(mediaUrl)
-            val supabaseUri = android.net.Uri.parse(SUPABASE_URL)
-            if (mediaUri.host.isNullOrBlank() ||
-                !mediaUri.host.equals(supabaseUri.host, ignoreCase = true)
-            ) return false
-
-            val segments = mediaUri.pathSegments
-            val objectIndex = segments.indexOf("object")
-            if (objectIndex < 0 || objectIndex + 2 >= segments.size) return false
-            val accessMode = segments.getOrNull(objectIndex + 1).orEmpty()
-            val bucketIndex = if (accessMode in setOf("public", "sign", "authenticated")) objectIndex + 2 else objectIndex + 1
-            if (bucketIndex >= segments.size - 1) return false
-            val bucket = segments[bucketIndex]
-            val objectPath = segments.drop(bucketIndex + 1).joinToString("/")
-            if (bucket.isBlank() || objectPath.isBlank() || objectPath.split("/").any { it == ".." }) return false
-            val encodedObjectPath = objectPath.split("/").joinToString("/") { android.net.Uri.encode(it) }
-            val encodedBucket = android.net.Uri.encode(bucket)
             val accessToken = VibeSyncSessionManager.getToken() ?: return false
+            val body = JSONObject().put("message_id", messageId)
+                .toString().toRequestBody("application/json".toMediaType())
             val request = Request.Builder()
-                .url("$SUPABASE_URL/storage/v1/object/$encodedBucket/$encodedObjectPath")
+                .url("$SUPABASE_URL/functions/v1/vibesync-purge-chat-media")
                 .header("apikey", SUPABASE_ANON_KEY)
                 .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_ANON_KEY)}")
                 .header("x-vibesync-session", accessToken)
-                .delete()
+                .header("Content-Type", "application/json")
+                .post(body)
                 .build()
-            httpClient.newCall(request).execute().use { it.isSuccessful }
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Server-side media purge is pending for message_id=$messageId (HTTP ${response.code}).")
+                }
+                response.isSuccessful
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "Storage cleanup after delivery acknowledgement was deferred: ${e.javaClass.simpleName}")
+            Log.w(TAG, "Server-side media purge remains pending for message_id=$messageId (${e.javaClass.simpleName}).")
             false
         }
     }
@@ -942,9 +933,12 @@ object SupabaseBackendManager {
                 val ack = runCatching { JSONObject(response.body?.string().orEmpty()) }.getOrNull()
                     ?: return@withContext false
                 if (!ack.optBoolean("ok", false)) return@withContext false
+
+                // Call only when an object was attached. The server re-reads its private media URL,
+                // validates this recipient, and deletes it with the service role (not this device's token).
                 val mediaUrl = ack.optString("media_url").orEmpty()
-                if (mediaUrl.isNotBlank() && !deletePurgedMediaObject(mediaUrl)) {
-                    Log.w(TAG, "Ciphertext was purged; Storage object removal needs a retry.")
+                if (mediaUrl.isNotBlank() && !deletePurgedMediaObject(messageId)) {
+                    Log.w(TAG, "Ciphertext was purged; media object removal will be retried by server cleanup.")
                 }
                 broadcastUpdateStatus(JSONObject().apply {
                     put("message_id", ack.optString("message_id", messageId))
