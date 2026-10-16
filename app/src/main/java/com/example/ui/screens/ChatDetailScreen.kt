@@ -3444,65 +3444,35 @@ private fun ChatDetailScreenContent(
         )
     }
 
-    // 3. Document Dialog (Phone Storage & Format Selector)
+    // Document attachments use the system document picker; never send a synthetic template.
     if (showDocumentDialog) {
-        var docName by remember { mutableStateOf("Project_Proposal_v2.pdf") }
-        var docType by remember { mutableStateOf("PDF") }
         AlertDialog(
             onDismissRequest = { showDocumentDialog = false },
-            icon = { Icon(Icons.Default.Description, contentDescription = null, tint = Color(0xFF5E35B1), modifier = Modifier.size(36.dp)) },
-            title = { Text("Send Document 📄", fontWeight = FontWeight.Bold) },
+            icon = { Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(32.dp)) },
+            title = { Text("Send a file") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    // Direct Phone Storage Picker Button
-                    Button(
-                        onClick = {
-                            showDocumentDialog = false
-                            try {
-                                documentPickerLauncher.launch(arrayOf("*/*"))
-                            } catch (_: Exception) {
-                                Toast.makeText(context, "Opening Phone Storage...", Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF5E35B1)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Browse Phone Storage 📁")
-                    }
-
-                    Text("Or choose a document template:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf("PDF", "DOCX", "XLSX", "TXT").forEach { type ->
-                            FilterChip(
-                                selected = docType == type,
-                                onClick = {
-                                    docType = type
-                                    docName = "Attachment_File.$type".lowercase()
-                                },
-                                label = { Text(type, fontSize = 11.sp) }
-                            )
-                        }
-                    }
-                    OutlinedTextField(
-                        value = docName,
-                        onValueChange = { docName = it },
-                        label = { Text("Document Name") },
-                        modifier = Modifier.fillMaxWidth()
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Choose a real file from your device. Files up to 25 MB are supported. The selected file name and URI are passed to the existing encrypted message pipeline.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        "Executable and script files are not supported.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        onSendMedia("DOCUMENT", "$docName • 2.4 MB • $docType", "", 0)
                         showDocumentDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF5E35B1))
+                        documentPickerLauncher.launch(arrayOf("*/*"))
+                    }
                 ) {
-                    Text("Send Document")
+                    Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Choose file")
                 }
             },
             dismissButton = {
