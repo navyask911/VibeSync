@@ -88,6 +88,26 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
         if (remoteMessage.data.isNotEmpty()) {
             val data = remoteMessage.data
             val type = data["type"] ?: "MESSAGE"
+
+            // A direct-message push is a data-only wake-up. The server sends exactly these
+            // metadata IDs; all ciphertext retrieval/decryption and notification rendering happen
+            // in the expedited inbox worker after an authenticated fetch and Room commit.
+            if (type.equals("new_message", ignoreCase = true)) {
+                val messageId = data["message_id"].orEmpty().trim()
+                val matchId = data["match_id"].orEmpty().trim()
+                if (messageId.isNotBlank() && matchId.isNotBlank()) {
+                    com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(
+                        context = applicationContext,
+                        remoteMatchId = matchId,
+                        messageId = messageId
+                    )
+                    Log.i(TAG, "Metadata-only message wake-up queued for inbox sync.")
+                } else {
+                    Log.w(TAG, "Ignored message wake-up with missing metadata identifiers.")
+                }
+                return
+            }
+
             if (type.equals("GROUP_CHAT_SYNC_WAKEUP", ignoreCase = true)) {
                 val groupId = data["group_id"].orEmpty().trim()
                 if (groupId.isNotBlank()) {
@@ -102,9 +122,9 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
             val name = data["name"] ?: data["sender_name"] ?: "VibeSync Match"
             val text = data["text"] ?: data["message"] ?: data["body"] ?: "New notification"
             val photoUrl = data["photo_url"] ?: data["avatar_url"] ?: ""
-            val age = data["age"]?.toIntOrNull() ?: 24
-            val city = data["city"] ?: "Bengaluru"
-            val score = data["score"]?.toIntOrNull() ?: 94
+            val age = data["age"]?.toIntOrNull() ?: 0
+            val city = data["city"].orEmpty()
+            val score = data["score"]?.toIntOrNull() ?: 0
             val mediaType = data["media_type"] ?: "TEXT"
             val wakeMatchId = data["match_id"].orEmpty().trim()
             val wakeMessageId = data["message_id"].orEmpty().trim()
@@ -441,9 +461,9 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     matchId = "remote_match",
                     matchName = title.substringAfter("with ", "Your New Match"),
                     matchPhotoUrl = imageUri,
-                    age = 24,
-                    city = "Bengaluru",
-                    score = 95
+                    age = 0,
+                    city = "",
+                    score = 0
                 )
             } else {
                 AppNotificationManager.showMessageNotification(

@@ -122,10 +122,6 @@ async function sendFcm(sa: ServiceAccount, token: string, data: Record<string, s
           token,
           data,
           android: { priority: "HIGH", ttl: "86400s" },
-          apns: {
-            headers: { "apns-priority": "5" },
-            payload: { aps: { "content-available": 1 } },
-          },
         },
       }),
     },
@@ -227,12 +223,9 @@ async function dispatchStoredMessage(
         // FCM is a wake-up signal only. Message ciphertext stays in Supabase and is fetched
         // by the recipient's authenticated sync worker; never put encrypted chat content in push data.
         await sendFcm(sa, row.fcm_token, {
-          type: "CHAT_SYNC_WAKEUP",
+          type: "new_message",
           message_id: String(message.message_id),
           match_id: String(message.match_id ?? ""),
-          sender_id: String(message.sender_id),
-          receiver_id: String(message.receiver_id),
-          media_type: String(message.media_type ?? "TEXT"),
         });
         delivered++;
       } catch (e) {
