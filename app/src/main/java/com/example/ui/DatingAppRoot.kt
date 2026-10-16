@@ -186,6 +186,14 @@ fun DatingAppRoot(
 
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     val syncContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val rootContext = LocalContext.current
+
+    LaunchedEffect(isLoggedIn, authState) {
+        if (isLoggedIn && authState == AuthState.AUTHENTICATED) {
+            com.example.service.AppFirebaseMessagingService.refreshAndRegisterToken(rootContext)
+            (rootContext as? com.example.MainActivity)?.requestNotificationPermissionFromDashboard()
+        }
+    }
 
     LaunchedEffect(activeChat?.first?.matchId) {
         activeChat?.first?.matchId?.let { matchId ->
