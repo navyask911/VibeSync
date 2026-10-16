@@ -1096,8 +1096,10 @@ private fun ChatDetailScreenContent(
         }
     }
 
-    LaunchedEffect(profile.id, match?.matchId, readReceiptsEnabled, visibleMessages, chatScreenResumed) {
-        if (!chatScreenResumed || !readReceiptsEnabled) return@LaunchedEffect
+    // Re-evaluate visible unread messages when connectivity returns so a bounded network
+    // retry failure does not permanently strand READ acknowledgments for rows still on-screen.
+    LaunchedEffect(profile.id, match?.matchId, readReceiptsEnabled, visibleMessages, chatScreenResumed, isNetworkOnline) {
+        if (!chatScreenResumed || !readReceiptsEnabled || !isNetworkOnline) return@LaunchedEffect
         androidx.compose.runtime.snapshotFlow {
             listState.layoutInfo.visibleItemsInfo.mapNotNull { it.key as? String }.toSet()
         }.collect { visibleIds ->
@@ -1116,7 +1118,8 @@ private fun ChatDetailScreenContent(
                         readReceiptsEnabled = readReceiptsEnabled,
                         isOutgoing = outgoing,
                         isRead = message.isRead,
-                        deliveryState = message.deliveryState
+                        deliveryState = message.deliveryState,
+                        networkAvailable = isNetworkOnline
                     )
                 ) onMarkMessageRead(message.messageId)
             }
