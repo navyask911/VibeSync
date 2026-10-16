@@ -4721,16 +4721,26 @@ private fun VibeSyncChatBubble(
                                             .background(Color.Black.copy(alpha = 0.04f))
                                             .combinedClickable(
                                                 onClick = {
-                                                    if (message.mediaUrl.isNotBlank()) {
-                                                        onMediaClick(message.mediaUrl, "IMAGE")
+                                                    if (displayMediaUri.isNotBlank()) {
+                                                        onMediaClick(displayMediaUri, "IMAGE")
+                                                    } else if (!isResolvingAttachment) {
+                                                        Toast.makeText(context, "Attachment is unavailable on this device.", Toast.LENGTH_SHORT).show()
                                                     }
                                                 },
                                                 onLongClick = onActionClick
                                             )
                                     ) {
-                                        if (message.mediaUrl.startsWith("IMG_B64:")) {
-                                            val bitmap = remember(message.mediaUrl) {
-                                                com.example.util.ImageCompressorHelper.decodeBase64ToBitmap(message.mediaUrl)
+                                        if (isResolvingAttachment || displayMediaUri.isBlank()) {
+                                            Box(
+                                                modifier = Modifier.fillMaxWidth().height(160.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                if (isResolvingAttachment) CircularProgressIndicator()
+                                                else Text("Attachment unavailable", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            }
+                                        } else if (displayMediaUri.startsWith("IMG_B64:")) {
+                                            val bitmap = remember(displayMediaUri) {
+                                                com.example.util.ImageCompressorHelper.decodeBase64ToBitmap(displayMediaUri)
                                             }
                                             if (bitmap != null) {
                                                 Image(
@@ -4755,7 +4765,7 @@ private fun VibeSyncChatBubble(
                                                 }
                                             }
                                         } else {
-                                            val cleanUrl = message.mediaUrl.removePrefix("IMG_URL:")
+                                            val cleanUrl = displayMediaUri.removePrefix("IMG_URL:")
                                             AsyncImage(
                                                 model = cleanUrl,
                                                 contentDescription = userCaption.ifBlank { "Received Photo" },
@@ -4826,17 +4836,21 @@ private fun VibeSyncChatBubble(
                                         .background(Color.Black)
                                         .combinedClickable(
                                             onClick = {
-                                                if (message.mediaUrl.isNotBlank()) {
-                                                    onMediaClick(message.mediaUrl, "VIDEO")
+                                                if (displayMediaUri.isNotBlank()) {
+                                                    onMediaClick(displayMediaUri, "VIDEO")
+                                                } else if (!isResolvingAttachment) {
+                                                    Toast.makeText(context, "Video attachment is unavailable.", Toast.LENGTH_SHORT).show()
                                                 }
                                             },
                                             onLongClick = onActionClick
                                         ),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    if (message.mediaUrl.isNotBlank()) {
+                                    if (isResolvingAttachment) {
+                                        CircularProgressIndicator(color = Color.White)
+                                    } else if (displayMediaUri.isNotBlank()) {
                                         AsyncImage(
-                                            model = message.mediaUrl,
+                                            model = displayMediaUri,
                                             contentDescription = "Video Thumbnail",
                                             contentScale = ContentScale.Crop,
                                             modifier = Modifier.fillMaxSize()
@@ -5060,15 +5074,30 @@ private fun VibeSyncChatBubble(
                                 }
                                 IconButton(
                                     onClick = {
-                                        if (message.mediaUrl.isNotBlank()) {
-                                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(message.mediaUrl))
+                                        if (displayMediaUri.isNotBlank()) {
                                             try {
-                                                context.startActivity(intent)
+                                                val parsed = Uri.parse(displayMediaUri)
+                                                val viewUri = if (parsed.scheme == "file") {
+                                                    androidx.core.content.FileProvider.getUriForFile(
+                                                        context,
+                                                        context.packageName + ".fileprovider",
+                                                        java.io.File(parsed.path.orEmpty())
+                                                    )
+                                                } else parsed
+                                                val extension = parsed.lastPathSegment?.substringAfterLast('.', "")?.lowercase().orEmpty()
+                                                val mimeType = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: "*/*"
+                                                val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                                                    setDataAndType(viewUri, mimeType)
+                                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                }
+                                                context.startActivity(viewIntent)
                                             } catch (_: Exception) {
-                                                Toast.makeText(context, "Opening file...", Toast.LENGTH_SHORT).show()
+                                                Toast.makeText(context, "This attachment could not be opened by an installed app.", Toast.LENGTH_SHORT).show()
                                             }
+                                        } else if (isResolvingAttachment) {
+                                            Toast.makeText(context, "Decrypting attachment. Try again shortly.", Toast.LENGTH_SHORT).show()
                                         } else {
-                                            Toast.makeText(context, "Document downloaded 📄", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "Attachment is unavailable on this device.", Toast.LENGTH_SHORT).show()
                                         }
                                     },
                                     modifier = Modifier.size(32.dp)
@@ -5335,7 +5364,16 @@ private fun VibeSyncChatBubble(
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium
                     )
-                    if (isOutgoing && !message.isDeleted && !message.isDeletedForEveryone) {
+                    if (isOutgoing && !message.isDeleted && !message.isDeletedForEveryone &&
+                        message.lastSyncError == com.example.util.ChatAttachmentCryptoManager.UPLOAD_PROGRESS_SENTINEL
+                    ) {
+                        Spacer(modifier = Modifier.width(3.dp))
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(13.dp),
+                            strokeWidth = 2.dp,
+                            color = if (darkChatTheme) Color(0xFFCBD5E1) else Color(0xFF64748B)
+                        )
+                    } else if (isOutgoing && !message.isDeleted && !message.isDeletedForEveryone) {
                         Spacer(modifier = Modifier.width(3.dp))
                         val status = localMessageStatuses[message.messageId] ?: message.deliveryState
                         val tick = com.example.util.ChatDeliveryPresentation.tick(status)
