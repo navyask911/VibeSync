@@ -1465,6 +1465,9 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 val isReceiverMe = receiverIdentity.equals(currentProfileId, ignoreCase = true) ||
                     com.example.util.PhonebookHelper.arePhonesMatching(receiverPhone, currentUserPhone)
 
+                // Keep the active-conversation membership test for routing incoming rows into Room.
+                // It is deliberately NOT used as a substitute for message-viewport READ visibility.
+                val isBelongingToActiveConversation = (activePair != null) && (
                     ((com.example.util.PhonebookHelper.arePhonesMatching(senderPhone, activePartnerPhone) && com.example.util.PhonebookHelper.arePhonesMatching(receiverPhone, currentUserPhone)) ||
                      (com.example.util.PhonebookHelper.arePhonesMatching(senderPhone, currentUserPhone) && com.example.util.PhonebookHelper.arePhonesMatching(receiverPhone, activePartnerPhone))) ||
                     (recordMatchId.isNotBlank() && (recordMatchId == activeMatchId || recordMatchId == canonicalActiveMatchId))
