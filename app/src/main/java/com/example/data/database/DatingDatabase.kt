@@ -514,6 +514,9 @@ abstract class DatingDatabase : RoomDatabase() {
                 addColumnIfMissing(db, "user_preferences", "isVerified", "INTEGER NOT NULL DEFAULT 0")
                 addColumnIfMissing(db, "user_preferences", "subscriptionStatus", "TEXT NOT NULL DEFAULT 'inactive'")
                 addColumnIfMissing(db, "user_preferences", "badgePurchased", "INTEGER NOT NULL DEFAULT 0")
+                // Never allow a legacy verified boolean to display a free badge after upgrading.
+                db.execSQL("UPDATE profiles SET isVerified = 0 WHERE lower(subscriptionStatus) != 'active' AND badgePurchased = 0")
+                db.execSQL("UPDATE user_preferences SET isVerified = 0 WHERE lower(subscriptionStatus) != 'active' AND badgePurchased = 0")
             }
         }
 

@@ -1027,7 +1027,9 @@ object SupabaseClientManager {
             phoneNumber = phone,
             email = email,
             publicIdentityKey = publicIdentityKey,
-            isVerified = obj.optBoolean("is_verified", false),
+            isVerified = obj.optBoolean("is_verified", false) &&
+                (obj.optSafeString("subscription_status", "inactive").equals("active", ignoreCase = true) ||
+                    obj.optBoolean("badge_purchased", false)),
             subscriptionStatus = obj.optSafeString("subscription_status", "inactive"),
             badgePurchased = obj.optBoolean("badge_purchased", false),
             likedMe = true,
@@ -2792,7 +2794,9 @@ object SupabaseClientManager {
                                     photoUrl = row.optSafeString("profile_photo_url", "").ifBlank { null },
                                     avatarEmoji = row.optSafeString("avatar_emoji", "✨"),
                                     phoneE164 = phone,
-                                    isVerified = row.optBoolean("is_verified", false)
+                                    isVerified = row.optBoolean("is_verified", false) &&
+                                        (row.optString("subscription_status", "inactive").equals("active", ignoreCase = true) ||
+                                            row.optBoolean("badge_purchased", false))
                                 )
                             )
                         }
