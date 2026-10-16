@@ -2,6 +2,8 @@ package com.example
 
 import android.Manifest
 import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import android.content.SharedPreferences
 import android.os.Bundle
 import android.os.Build
@@ -96,6 +98,7 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
       } else {
         Log.i("VibeSyncNotifications", "POST_NOTIFICATIONS was not granted; local notifications remain disabled.")
       }
+      safeInit("background delivery guidance") { maybeShowBackgroundRestrictionHelp() }
     }
 
     privacyPreferences = getSharedPreferences(BiometricAuthManager.PREFS_NAME, MODE_PRIVATE)
@@ -237,7 +240,9 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
     safeInit("authenticated FCM token refresh") {
       if (VibeSyncSessionManager.getSession(applicationContext) != null) {
         com.example.service.AppFirebaseMessagingService.refreshAndRegisterToken(applicationContext)
-        requestNotificationPermissionIfNeeded()
+        if (!requestNotificationPermissionIfNeeded()) {
+          maybeShowBackgroundRestrictionHelp()
+        }
       }
     }
   }
@@ -277,11 +282,50 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
     applyScreenSecurityFlag()
   }
 
-  private fun requestNotificationPermissionIfNeeded() {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || notificationPermissionRequestedThisLaunch) return
-    if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+  private fun requestNotificationPermissionIfNeeded(): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
+    if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return false
+    if (notificationPermissionRequestedThisLaunch) return true
     notificationPermissionRequestedThisLaunch = true
     notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    return true
+  }
+
+  /**
+   * Some OEM battery managers suppress background message processing. Give eligible devices
+   * a one-time, dismissible explanation and deep-link to app settings; never change OS policy
+   * or request battery-optimization exemptions without the user's action.
+   */
+  private fun maybeShowBackgroundRestrictionHelp() {
+    val manufacturer = (Build.MANUFACTURER + " " + Build.BRAND).lowercase(java.util.Locale.ROOT)
+    val restrictiveVendors = listOf(
+      "xiaomi", "redmi", "poco", "oppo", "realme", "vivo", "oneplus",
+      "huawei", "honor", "tecno", "infinix", "itel"
+    )
+    if (restrictiveVendors.none { manufacturer.contains(it) }) return
+
+    val preferences = getSharedPreferences("vibesync_background_delivery_help", MODE_PRIVATE)
+    if (preferences.getBoolean("shown_once", false) || isFinishing || isDestroyed) return
+    preferences.edit().putBoolean("shown_once", true).apply()
+
+    android.app.AlertDialog.Builder(this)
+      .setTitle("Keep messages arriving in the background")
+      .setMessage(
+        "Some phones pause apps in the background to save battery. To receive VibeSync messages " +
+          "reliably, allow background activity or autostart and set battery use to Unrestricted " +
+          "if your phone offers that option."
+      )
+      .setNegativeButton("Not now", null)
+      .setPositiveButton("Open app settings") { _, _ ->
+        runCatching {
+          startActivity(
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+              data = Uri.parse("package:$packageName")
+            }
+          )
+        }.onFailure { Log.w("VibeSyncNotifications", "Could not open app settings for background guidance.", it) }
+      }
+      .show()
   }
 
   private fun applyScreenSecurityFlag() {
