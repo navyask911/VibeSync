@@ -1726,6 +1726,62 @@ object SupabaseClientManager {
         }
     }
 
+    /** Uploads client-side ciphertext only to the private chat attachment bucket. */
+    suspend fun uploadEncryptedChatAttachment(objectPath: String, ciphertext: ByteArray): Boolean =
+        withContext(Dispatchers.IO) {
+            val cleanPath = objectPath.trim().trim('/')
+            if (cleanPath.isBlank() || cleanPath.contains("..") || cleanPath.contains("\\") || ciphertext.isEmpty()) {
+                return@withContext false
+            }
+            try {
+                val encodedPath = cleanPath.split('/').joinToString("/") { Uri.encode(it) }
+                val request = Request.Builder()
+                    .url(SUPABASE_URL + "/storage/v1/object/chat-attachments/" + encodedPath)
+                    .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+                    .header("Authorization", "Bearer " + VibeSyncSessionManager.getAuthorizationToken(SUPABASE_PUBLISHABLE_KEY))
+                    .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
+                    .header("Content-Type", "application/octet-stream")
+                    .header("x-upsert", "false")
+                    .put(ciphertext.toRequestBody("application/octet-stream".toMediaType()))
+                    .build()
+                httpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        Log.w(TAG, "Encrypted attachment upload failed HTTP " + response.code + ": " + response.body?.string().orEmpty().take(180))
+                    }
+                    response.isSuccessful
+                }
+            } catch (failure: Throwable) {
+                Log.w(TAG, "Encrypted attachment upload transport failure: " + failure.javaClass.simpleName)
+                false
+            }
+        }
+
+    /** Downloads ciphertext only; the caller performs AEAD decryption locally. */
+    suspend fun downloadEncryptedChatAttachment(objectPath: String): ByteArray? = withContext(Dispatchers.IO) {
+        val cleanPath = objectPath.trim().trim('/')
+        if (cleanPath.isBlank() || cleanPath.contains("..") || cleanPath.contains("\\")) return@withContext null
+        try {
+            val encodedPath = cleanPath.split('/').joinToString("/") { Uri.encode(it) }
+            val request = Request.Builder()
+                .url(SUPABASE_URL + "/storage/v1/object/chat-attachments/" + encodedPath)
+                .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+                .header("Authorization", "Bearer " + VibeSyncSessionManager.getAuthorizationToken(SUPABASE_PUBLISHABLE_KEY))
+                .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
+                .get()
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Encrypted attachment download failed HTTP " + response.code + ": " + response.body?.string().orEmpty().take(180))
+                    return@withContext null
+                }
+                response.body?.bytes()
+            }
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Encrypted attachment download transport failure: " + failure.javaClass.simpleName)
+            null
+        }
+    }
+
     /**
      * Publish/update a business owned by the current verified profile. The RPC derives ownership
      * from the session, not from the submitted payload.
