@@ -282,6 +282,13 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
     applyScreenSecurityFlag()
   }
 
+  /** Called when the authenticated dashboard is entered after an in-app sign-in. */
+  fun requestNotificationPermissionFromDashboard() {
+    safeInit("dashboard notification permission") {
+      if (!requestNotificationPermissionIfNeeded()) maybeShowBackgroundRestrictionHelp()
+    }
+  }
+
   private fun requestNotificationPermissionIfNeeded(): Boolean {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
     if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return false
