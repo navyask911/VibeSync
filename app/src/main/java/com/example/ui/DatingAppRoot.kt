@@ -209,9 +209,14 @@ fun DatingAppRoot(
         }
         if (!restoreChatRouteAfterProcessDeath) return@LaunchedEffect
 
-        val storedRoute = runCatching {
+        val routeResult = runCatching {
             com.example.util.LastActiveRouteStore.readRoute(syncContext)
-        }.getOrNull() ?: return@LaunchedEffect
+        }
+        if (routeResult.isFailure) {
+            runCatching { com.example.util.LastActiveRouteStore.clear(syncContext) }
+            return@LaunchedEffect
+        }
+        val storedRoute = routeResult.getOrNull() ?: return@LaunchedEffect
         val savedMatchId = com.example.util.LastActiveRoutePolicy.parseChatMatchId(storedRoute)
         if (savedMatchId.isNullOrBlank()) {
             runCatching { com.example.util.LastActiveRouteStore.clear(syncContext) }
@@ -220,9 +225,11 @@ fun DatingAppRoot(
 
         // Validate against Room directly: the Compose StateFlow may still have its initial empty
         // value immediately after process recreation even when this conversation exists on-device.
-        val database = com.example.data.database.DatingDatabase.getDatabase(syncContext)
         val savedMatch = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            runCatching { database.matchDao().getMatchByIdSync(savedMatchId) }.getOrNull()
+            runCatching {
+                com.example.data.database.DatingDatabase.getDatabase(syncContext)
+                    .matchDao().getMatchByIdSync(savedMatchId)
+            }.getOrNull()
         }
         if (savedMatch == null || !savedMatch.matchId.equals(savedMatchId, ignoreCase = true)) {
             runCatching { com.example.util.LastActiveRouteStore.clear(syncContext) }
@@ -231,7 +238,10 @@ fun DatingAppRoot(
         val savedProfile = allProfiles.firstOrNull { it.id.equals(savedMatch.profileId, ignoreCase = true) }
             ?: viewModel.getProfile(savedMatch.profileId)
             ?: kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                runCatching { database.profileDao().getProfileByIdSync(savedMatch.profileId) }.getOrNull()
+                runCatching {
+                    com.example.data.database.DatingDatabase.getDatabase(syncContext)
+                        .profileDao().getProfileByIdSync(savedMatch.profileId)
+                }.getOrNull()
             }
         if (savedProfile == null || !savedProfile.id.equals(savedMatch.profileId, ignoreCase = true)) {
             runCatching { com.example.util.LastActiveRouteStore.clear(syncContext) }
