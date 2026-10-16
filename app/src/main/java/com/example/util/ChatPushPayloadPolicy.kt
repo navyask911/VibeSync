@@ -16,5 +16,5 @@ object ChatPushPayloadPolicy {
     )
 
     fun requiresInboxSync(type: String?): Boolean =
-        type?.trim()?.uppercase(Locale.ROOT) in directMessageTypes
+        type?.trim()?.uppercase(Locale.ROOT)?.let { it in directMessageTypes } ?: false
 }
