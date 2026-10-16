@@ -71,8 +71,21 @@ object ChatAiImagePreviewClient {
      * Keeping this parser independent of android.jar makes its security tests run in local JVM CI.
      */
     internal fun parsePreviewUrls(responseJson: String): List<String> {
-        val arrayMatch = Regex("\\"preview_urls\\"\\s*:\\s*\\[").find(responseJson) ?: return emptyList()
-        var cursor = arrayMatch.range.last + 1
+        val keyName = "preview_urls"
+        var keyStart = responseJson.indexOf(keyName)
+        while (keyStart >= 0) {
+            if (keyStart > 0 && keyStart + keyName.length < responseJson.length &&
+                responseJson[keyStart - 1] == '"' && responseJson[keyStart + keyName.length] == '"'
+            ) break
+            keyStart = responseJson.indexOf(keyName, keyStart + keyName.length)
+        }
+        if (keyStart <= 0) return emptyList()
+        val colonIndex = responseJson.indexOf(':', keyStart + keyName.length + 1)
+        if (colonIndex < 0) return emptyList()
+        var cursor = colonIndex + 1
+        while (cursor < responseJson.length && responseJson[cursor].isWhitespace()) cursor++
+        if (cursor >= responseJson.length || responseJson[cursor] != '[') return emptyList()
+        cursor++
         val accepted = LinkedHashSet<String>()
         while (cursor < responseJson.length && accepted.size < 4) {
             while (cursor < responseJson.length &&
@@ -106,7 +119,7 @@ object ChatAiImagePreviewClient {
                 char == '"' -> return value.toString() to i
                 char == '\\' -> {
                     if (i >= source.length) return null
-                    when (val escape = source[i++]) {
+                    when (source[i++]) {
                         '"' -> value.append('"')
                         '\\' -> value.append('\\')
                         '/' -> value.append('/')
