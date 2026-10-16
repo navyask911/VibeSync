@@ -1683,7 +1683,7 @@ object SupabaseClientManager {
                     .header("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_PUBLISHABLE_KEY)}")
                     .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
                     .header("Content-Type", "application/octet-stream")
-                    .header("x-upsert", "false")
+                    .header("x-upsert", "true")
                     .put(ciphertext.toRequestBody("application/octet-stream".toMediaType()))
                     .build()
                 httpClient.newCall(request).execute().use { response ->
@@ -1741,7 +1741,7 @@ object SupabaseClientManager {
                     .header("Authorization", "Bearer " + VibeSyncSessionManager.getAuthorizationToken(SUPABASE_PUBLISHABLE_KEY))
                     .apply { VibeSyncSessionManager.getToken()?.let { addHeader("x-vibesync-session", it) } }
                     .header("Content-Type", "application/octet-stream")
-                    .header("x-upsert", "false")
+                    .header("x-upsert", "true")
                     .put(ciphertext.toRequestBody("application/octet-stream".toMediaType()))
                     .build()
                 httpClient.newCall(request).execute().use { response ->
