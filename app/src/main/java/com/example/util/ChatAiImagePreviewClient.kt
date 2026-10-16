@@ -66,11 +66,23 @@ object ChatAiImagePreviewClient {
         }
     }
 
+    /**
+     * Extract only the preview_urls JSON string array with a small pure-JVM scanner.
+     * Keeping this parser independent of android.jar makes its security tests run in local JVM CI.
+     */
     internal fun parsePreviewUrls(responseJson: String): List<String> {
-        val options = JSONObject(responseJson).optJSONArray("preview_urls") ?: return emptyList()
+        val arrayMatch = Regex("\\"preview_urls\\"\\s*:\\s*\\[").find(responseJson) ?: return emptyList()
+        var cursor = arrayMatch.range.last + 1
         val accepted = LinkedHashSet<String>()
-        for (index in 0 until options.length()) {
-            val raw = options.optString(index).trim()
+        while (cursor < responseJson.length && accepted.size < 4) {
+            while (cursor < responseJson.length &&
+                (responseJson[cursor].isWhitespace() || responseJson[cursor] == ',')
+            ) cursor++
+            if (cursor >= responseJson.length || responseJson[cursor] == ']') break
+            if (responseJson[cursor] != '"') return emptyList()
+            val parsed = parseJsonString(responseJson, cursor) ?: return emptyList()
+            cursor = parsed.second
+            val raw = parsed.first.trim()
             if (raw.isBlank()) continue
             val safe = runCatching {
                 val uri = URI(raw)
@@ -79,9 +91,44 @@ object ChatAiImagePreviewClient {
                     uri.userInfo == null
             }.getOrDefault(false)
             if (safe) accepted += raw
-            if (accepted.size == 4) break
         }
         return accepted.toList()
+    }
+
+    /** Returns the decoded string and first index after its closing quote. */
+    private fun parseJsonString(source: String, quoteIndex: Int): Pair<String, Int>? {
+        if (quoteIndex >= source.length || source[quoteIndex] != '"') return null
+        val value = StringBuilder()
+        var i = quoteIndex + 1
+        while (i < source.length) {
+            val char = source[i++]
+            when {
+                char == '"' -> return value.toString() to i
+                char == '\\' -> {
+                    if (i >= source.length) return null
+                    when (val escape = source[i++]) {
+                        '"' -> value.append('"')
+                        '\\' -> value.append('\\')
+                        '/' -> value.append('/')
+                        'b' -> value.append('\b')
+                        'f' -> value.append('\u000C')
+                        'n' -> value.append('\n')
+                        'r' -> value.append('\r')
+                        't' -> value.append('\t')
+                        'u' -> {
+                            if (i + 4 > source.length) return null
+                            val code = source.substring(i, i + 4).toIntOrNull(16) ?: return null
+                            value.append(code.toChar())
+                            i += 4
+                        }
+                        else -> return null
+                    }
+                }
+                char.code < 0x20 -> return null
+                else -> value.append(char)
+            }
+        }
+        return null
     }
 
     data class AiImageResult(
