@@ -1,8 +1,11 @@
 package com.example
 
+import android.Manifest
 import android.content.Intent
 import android.content.SharedPreferences
 import android.os.Bundle
+import android.os.Build
+import android.content.pm.PackageManager
 import android.os.SystemClock
 import android.util.Log
 import android.view.WindowManager
@@ -36,6 +39,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import com.example.ui.DatingAppRoot
 import com.razorpay.PaymentData
@@ -48,6 +52,8 @@ import com.example.util.VibeSyncSessionManager
 
 class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
   private lateinit var truecallerActivityResultLauncher: ActivityResultLauncher<Intent>
+  private lateinit var notificationPermissionLauncher: ActivityResultLauncher<String>
+  private var notificationPermissionRequestedThisLaunch = false
   private var privacyPreferences: SharedPreferences? = null
   private val isAppLocked = mutableStateOf(false)
   private val appLockMessage = mutableStateOf<String?>(null)
@@ -78,6 +84,14 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+
+    notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+      if (granted) {
+        safeInit("notification channels after permission") { AppNotificationManager.initChannels(applicationContext) }
+      } else {
+        Log.i("VibeSyncNotifications", "POST_NOTIFICATIONS was not granted; local notifications remain disabled.")
+      }
+    }
 
     privacyPreferences = getSharedPreferences(BiometricAuthManager.PREFS_NAME, MODE_PRIVATE)
     privacyPreferences?.registerOnSharedPreferenceChangeListener(privacyPreferencesListener)
@@ -210,6 +224,12 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
     safeInit("foreground notification state") {
       AppNotificationManager.setAppForegroundState(true)
     }
+    safeInit("authenticated FCM token refresh") {
+      if (VibeSyncSessionManager.getSession(applicationContext) != null) {
+        com.example.service.AppFirebaseMessagingService.refreshAndRegisterToken(applicationContext)
+        requestNotificationPermissionIfNeeded()
+      }
+    }
   }
 
   override fun onPause() {
@@ -245,6 +265,13 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
       if (active) forcedSecureSurfaceTokens.add(token) else forcedSecureSurfaceTokens.remove(token)
     }
     applyScreenSecurityFlag()
+  }
+
+  private fun requestNotificationPermissionIfNeeded() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || notificationPermissionRequestedThisLaunch) return
+    if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+    notificationPermissionRequestedThisLaunch = true
+    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
   }
 
   private fun applyScreenSecurityFlag() {
