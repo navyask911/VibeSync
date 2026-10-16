@@ -133,4 +133,18 @@ class ChatDeliveryExperienceEngineTest {
         assertTrue(ChatAiImagePreviewClient.parsePreviewUrls("{\"status\":\"ok\"}").isEmpty())
     }
 
+
+    @Test
+    fun dangerousDocumentExtensionsAreBlockedAndPdfIsAllowed() {
+        val blocked = com.example.util.MediaTransferLimitsHelper.RESTRICTED_EXTENSIONS
+        listOf("sample.exe", "payload.APK", "run.sh", "setup.msi", "macro.vbs")
+            .forEach { name ->
+                assertTrue(
+                    "$name should be rejected by the picker policy",
+                    name.substringAfterLast('.', "").lowercase(java.util.Locale.ROOT) in blocked
+                )
+            }
+        assertTrue("PDF must remain selectable", "report.pdf".substringAfterLast('.') !in blocked)
+    }
+
 }

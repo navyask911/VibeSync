@@ -717,7 +717,10 @@ private fun ChatDetailScreenContent(
         if (uri != null) {
             val fileName = getFileNameFromUri(context, uri) ?: "Attachment_Document"
             val fileSizeBytes = getFileSizeBytesFromUri(context, uri)
-            if (fileSizeBytes == null) {
+            val extension = fileName.substringAfterLast('.', "").lowercase(java.util.Locale.ROOT)
+            if (extension in com.example.util.MediaTransferLimitsHelper.RESTRICTED_EXTENSIONS) {
+                Toast.makeText(context, "This file type is blocked for safety.", Toast.LENGTH_LONG).show()
+            } else if (fileSizeBytes == null || fileSizeBytes < 0L) {
                 Toast.makeText(context, "Could not verify file size. Choose a file with an available size.", Toast.LENGTH_LONG).show()
             } else if (fileSizeBytes > 25L * 1024L * 1024L) {
                 Toast.makeText(context, "Files must be 25 MB or smaller.", Toast.LENGTH_LONG).show()
