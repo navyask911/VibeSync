@@ -2571,7 +2571,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     "interests" to interests.split(",").map { it.trim() }.filter { it.isNotEmpty() },
                     "maritalStatus" to maritalStatus,
                     "isOpenForDating" to isOpenForDating,
-                    "isRealFaceVerified" to true,
+                    "isRealFaceVerified" to current.isFaceVerified,
                     "biometricHash" to current.biometricHash,
                     "phoneNumber" to current.verifiedMobileNumber,
                     "cleanPhone" to cleanDigits,

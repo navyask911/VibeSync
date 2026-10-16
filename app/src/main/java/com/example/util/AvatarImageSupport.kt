@@ -26,7 +26,25 @@ object AvatarImageSupport {
                 "https", "http" -> {
                     val host = uri.host.orEmpty()
                     val path = uri.path.orEmpty()
-                    if (host.isBlank() || path.contains("/storage/v1/object/sign/avatars/")) "" else reference
+                    if (host.isBlank() || path.contains("/storage/v1/object/sign/avatars/")) {
+                        ""
+                    } else {
+                        val baseUri = Uri.parse(SupabaseClientManager.SUPABASE_URL)
+                        val encryptedAvatarPrefix = "/storage/v1/object/public/avatars/"
+                        val isAvatarObject = host.equals(baseUri.host.orEmpty(), ignoreCase = true) &&
+                            path.startsWith(encryptedAvatarPrefix)
+                        val filename = uri.lastPathSegment.orEmpty()
+                        if (isAvatarObject && filename.endsWith(".enc", ignoreCase = true)) {
+                            // These public URLs point to encrypted bytes, not displayable image data.
+                            // Convert to the logical reference so callers decrypt with Tink in memory.
+                            val stem = filename.removeSuffix(".enc")
+                            val secondary = Regex("^(.*)_([23])$").matchEntire(stem)
+                            val owner = secondary?.groupValues?.get(1) ?: stem
+                            val slot = secondary?.groupValues?.get(2)
+                            if (owner.isBlank() || owner.contains("..") || owner.any { it.isWhitespace() }) "" else
+                                "vibesync-avatar-enc://" + owner + if (slot == null) "" else "/" + slot
+                        } else reference
+                    }
                 }
                 "content", "file" -> reference
                 else -> ""

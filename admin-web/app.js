@@ -3,19 +3,21 @@ import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 const cfg = window.VIBESYNC_CONFIG || {};
 const $ = (id) => document.getElementById(id);
 const permissions = {
-  super_admin: ["telemetry", "moderation", "payments", "compliance", "reengagement", "preservation"],
+  super_admin: ["telemetry", "moderation", "payments", "business-governance", "compliance", "reengagement", "preservation"],
   moderator: ["telemetry", "moderation"],
   finance_manager: ["telemetry", "payments", "preservation"],
   compliance_officer: ["telemetry", "compliance", "preservation"]
 };
 const exportTables = {
-  super_admin: ["profiles", "businesses", "business_payment_orders", "business_wallet_ledger", "admin_audit_logs", "admin_users"],
-  finance_manager: ["business_payment_orders", "business_wallet_ledger"],
-  compliance_officer: ["profiles", "admin_audit_logs"]
+  super_admin: ["profiles", "businesses", "business_followers", "business_payment_orders", "business_wallets", "business_wallet_payment_orders", "business_wallet_ledger", "business_broadcasts", "business_analytics_events", "admin_audit_logs", "admin_users"],
+  finance_manager: ["business_payment_orders", "business_wallets", "business_wallet_payment_orders", "business_wallet_ledger"],
+  compliance_officer: ["profiles", "business_analytics_events", "admin_audit_logs"]
 };
 const titleMap = {
   telemetry: ["Live telemetry", "LIVE TELEMETRY"], moderation: ["User moderation", "USER MODERATION"],
-  payments: ["Payment & ledger", "PAYMENT & LEDGER"], compliance: ["Compliance & LEA", "COMPLIANCE & LEA"],
+  payments: ["Payment & ledger", "PAYMENT & LEDGER"],
+  "business-governance": ["Business governance", "BUSINESS GOVERNANCE"],
+  compliance: ["Compliance & LEA", "COMPLIANCE & LEA"],
   reengagement: ["Re-engagement", "RE-ENGAGEMENT"], preservation: ["Data preservation", "DATA PRESERVATION"]
 };
 let db = null, user = null, staff = null, authBusy = false, authorizedId = null, poller = null, channel = null, toastTimer = 0;
@@ -212,6 +214,7 @@ function showSection(section) {
   $("page-title").textContent = titleMap[section][0]; $("section-breadcrumb").textContent = titleMap[section][1];
   if (section === "telemetry") refreshTelemetry();
   if (section === "payments") refreshPayments().catch(e => toast(e.message, true));
+  if (section === "business-governance") refreshBusinessGovernance().catch(e => toast(e.message, true));
 }
 function startPolling() {
   stopPolling();
@@ -299,6 +302,27 @@ async function searchProfiles() {
   ],rows));
   if(!records.length) toast("No profiles matched that search.");
 }
+function paymentReviewActions(order) {
+  const actions=el("div","table-actions");
+  for (const [label,decision,cls] of [
+    ["Provider recheck","PROVIDER_RECHECK",""],
+    ["Needs info","NEEDS_INFO",""],
+    ["Mark rejected","REJECTED","danger"]
+  ]) {
+    actions.append(actionButton(label,cls,async event=>{
+      const reason=window.prompt("Add a review reason for order "+order.id+":",decision==="PROVIDER_RECHECK"?"Provider reconciliation requested":"Reviewed by finance operations");
+      if(!reason||!reason.trim())return;
+      const button=event.currentTarget;button.disabled=true;
+      try {
+        const {error}=await adminRpc("vibesync_admin_review_payment_order",{p_order_id:order.id,p_decision:decision,p_reason:reason.trim()});
+        if(error)throw error;
+        toast("Review status saved. The payment settlement status was not changed.");
+        await refreshPayments();
+      } catch(error) {toast(error.message||"Payment review failed.",true);button.disabled=false;}
+    }));
+  }
+  return actions;
+}
 async function refreshPayments() {
   requireRole(["super_admin","finance_manager"]);
   empty($("payment-results"),"Loading payment summary…","Server-side finance RPC.");
@@ -306,21 +330,154 @@ async function refreshPayments() {
   const p=data||{};
   renderPaymentCharts(p);
   metricCards($("payment-cards"),[
-    {label:"Paid orders",value:p.paid_orders??0,detail:"Confirmed order state"},
+    {label:"Paid orders",value:p.paid_orders??0,detail:"Confirmed provider settlement"},
     {label:"Pending orders",value:p.pending_orders??0,detail:"Awaiting completion"},
     {label:"Gross paid (INR)",value:p.gross_paid_inr??0,detail:"Server-side sum"},
     {label:"Failed / expired",value:(p.failed_orders??0)+(p.expired_orders??0),detail:"Combined order states"}
   ]);
-  const rows=(p.recent_orders||[]).map(r=>({...r,amount:"₹"+fmt(r.total_amount_inr),created:date(r.created_at),paid:date(r.paid_at),refs:[r.provider_order_id,r.provider_payment_id].filter(Boolean).join(" / ")||"—"}));
+  const rows=(p.recent_orders||[]).map(r=>({...r,amount:"₹"+fmt(r.total_amount_inr),created:date(r.created_at),paid:date(r.paid_at),refs:[r.provider_order_id,r.provider_payment_id].filter(Boolean).join(" / ")||"—",actions:paymentReviewActions(r)}));
   $("payment-results").replaceChildren(table([
     {label:"Order",value:r=>{const c=el("div");c.append(el("strong","",r.id),el("small","",r.refs));return c;}},
     {label:"Provider",value:r=>r.provider},{label:"Type",value:r=>r.purchase_type},{label:"Amount",value:r=>r.amount},
-    {label:"Status",value:r=>r.status},{label:"Created",value:r=>r.created},{label:"Paid",value:r=>r.paid}
+    {label:"Payment status",value:r=>r.status},
+    {label:"Admin review",value:r=>r.admin_review_status||"UNREVIEWED"},
+    {label:"Created",value:r=>r.created},{label:"Paid",value:r=>r.paid},
+    {label:"Review actions",value:r=>r.actions}
   ],rows));
   const wb=p.webhook_observability||{};
   $("webhook-state").textContent=wb.state==="observed"?"Webhook observed":"Webhook telemetry unverified";
   $("webhook-state").className="state-pill "+(wb.state==="observed"?"":"state-warn");
-  $("webhook-note").textContent=wb.message||"Provider delivery events are not persisted by the current schema. Confirm health in the payment provider console.";
+  $("webhook-note").textContent="Review actions only update admin review metadata; only the verified payment webhook may settle an order. "+(wb.message||"Provider delivery events remain unverified until delivery events are persisted.");
+}
+function businessControlActions(business) {
+  const actions=el("div","table-actions");
+  const controls=[
+    ["VERIFY",business.is_verified===true?"Unverify":"Verify",business.is_verified===true],
+    ["PUBLISH",business.is_published===true?"Unpublish":"Publish",business.is_published===true]
+  ];
+  controls.forEach(([action,label,wasEnabled])=>actions.append(actionButton(label,wasEnabled?"":"good",async event=>{
+    const button=event.currentTarget;button.disabled=true;
+    try {
+      const {error}=await adminRpc("vibesync_admin_set_business_control",{
+        p_business_id:String(business.id),p_action:action,p_enabled:!wasEnabled,p_reason:"Admin dashboard governance review"
+      });
+      if(error)throw error;
+      toast(action==="VERIFY"?"Business verification flag updated.":"Business listing publication updated.");
+      await searchBusinesses();
+    } catch(error) {toast(error.message||"Business control failed.",true);button.disabled=false;}
+  })));
+  return actions;
+}
+async function searchBusinesses() {
+  requireRole(["super_admin"]);
+  const query=$("business-query").value.trim();
+  empty($("business-results"),"Searching business listings…","Fetching a role-authorized server projection.");
+  const {data,error}=await adminRpc("vibesync_admin_search_businesses",{p_query:query});
+  if(error)throw error;
+  const records=data?.records||[];
+  $("business-results").replaceChildren(table([
+    {label:"Business",value:r=>{const c=el("div");c.append(el("strong","",r.name||"(unnamed business)"),el("small","",r.id));return c;}},
+    {label:"Category",value:r=>r.category||"—"},
+    {label:"City",value:r=>r.city||"—"},
+    {label:"Verified",value:r=>r.is_verified===true?"Yes":"No"},
+    {label:"Published",value:r=>r.is_published===true?"Yes":"No"},
+    {label:"Wallet points",value:r=>fmt(r.wallet_points||0)},
+    {label:"Tier",value:r=>r.tier_badge||r.subscription_status||"—"},
+    {label:"Actions",value:r=>businessControlActions(r)}
+  ],records));
+  if(!records.length)toast("No business listings matched that query.");
+}
+async function refreshStatusStories() {
+  requireRole(["super_admin","moderator"]);
+  empty($("status-story-results"),"Loading stories…","Server-side moderation projection; story media is not exported.");
+  const {data,error}=await adminRpc("vibesync_admin_list_status_stories",{p_limit:80});
+  if(error)throw error;
+  const records=data?.records||[];
+  const rows=records.map(r=>({...r,created:date(r.createdAt),actions:actionButton(
+    r.moderation_status==="REMOVED"?"Restore":"Hide",
+    r.moderation_status==="REMOVED"?"good":"danger",
+    async event=>{
+      const reason=window.prompt("Reason for "+(r.moderation_status==="REMOVED"?"restoring":"hiding")+" story "+r.id+":","Admin moderation review");
+      if(!reason||!reason.trim())return;
+      const button=event.currentTarget;button.disabled=true;
+      try{
+        const {error}=await adminRpc("vibesync_admin_moderate_status_story",{
+          p_story_id:String(r.id),p_action:r.moderation_status==="REMOVED"?"RESTORE":"HIDE",p_reason:reason.trim()
+        });
+        if(error)throw error;
+        toast("Story moderation decision saved.");
+        await refreshStatusStories();
+      }catch(error){toast(error.message||"Story moderation failed.",true);button.disabled=false;}
+    }
+  )}));
+  $("status-story-results").replaceChildren(table([
+    {label:"Story",value:r=>{const c=el("div");c.append(el("strong","",r.userName||"Unknown user"),el("small","",r.id));return c;}},
+    {label:"Owner ID",value:r=>r.userId||"—"},
+    {label:"Media",value:r=>r.mediaType||"PHOTO"},
+    {label:"Caption",value:r=>r.captionText||"—"},
+    {label:"Created",value:r=>r.created},
+    {label:"Moderation",value:r=>r.moderation_status||"ACTIVE"},
+    {label:"Actions",value:r=>r.actions}
+  ],rows));
+  if(!records.length)empty($("status-story-results"),"No story records","There are no status stories in the current metadata window.");
+}
+async function refreshBusinessGovernance() {
+  requireRole(["super_admin"]);
+  const {data,error}=await adminRpc("vibesync_admin_business_analytics_summary");
+  if(error)throw error;
+  const metrics=data||{};
+  metricCards($("business-metrics"),[
+    {label:"Published listings",value:metrics.published_businesses??0,detail:(metrics.business_count??0)+" total businesses"},
+    {label:"Profile views · 30 days",value:metrics.profile_views_30d??0,detail:"Business directory and profile traffic"},
+    {label:"Impressions · 30 days",value:metrics.impressions_30d??0,detail:"Server-recorded listing impressions"},
+    {label:"Chat inquiries · 30 days",value:metrics.inquiries_30d??0,detail:"Contact-intent events"},
+    {label:"Wallet points",value:fmt(metrics.wallet_points??0),detail:"Across business wallets"},
+    {label:"Dispatched broadcasts",value:metrics.broadcasts_dispatched??0,detail:(metrics.broadcasts_total??0)+" total broadcasts"}
+  ]);
+  await searchBusinesses();
+  await refreshStatusStories();
+}
+async function applyBusinessOperationalSettings(event) {
+  event.preventDefault();requireRole(["super_admin"]);
+  const businessId=$("settings-business-id").value.trim();
+  const openingHours=$("settings-opening-hours").value.trim();
+  const offerSummary=$("settings-active-offer").value.trim();
+  const reason=$("settings-reason").value.trim();
+  if(!businessId||!reason)throw new Error("A business ID and audit reason are required.");
+  const button=event.submitter||$("business-settings-form").querySelector('button[type="submit"]');
+  button.disabled=true;text($("business-settings-status"),"Saving audited operational settings…");
+  try {
+    const {data,error}=await adminRpc("vibesync_admin_update_business_settings",{
+      p_business_id:businessId,p_opening_hours:openingHours,p_active_offer_summary:offerSummary,p_reason:reason
+    });
+    if(error)throw error;
+    text($("business-settings-status"),"Operational settings saved for "+(data?.business_id||businessId)+".");
+    $("settings-reason").value="";
+    await searchBusinesses();
+  } catch(error) {
+    text($("business-settings-status"),error.message||"Could not save operational settings.",true);
+    throw error;
+  } finally {button.disabled=false;}
+}
+async function applyWalletAdjustment(event) {
+  event.preventDefault();requireRole(["super_admin"]);
+  const businessId=$("wallet-business-id").value.trim();
+  const delta=Number($("wallet-points-delta").value);
+  const reason=$("wallet-adjustment-reason").value.trim();
+  if(!businessId||!Number.isInteger(delta)||delta===0||Math.abs(delta)>1000000||!reason)throw new Error("Enter a business ID, non-zero whole-point adjustment and reason.");
+  const button=event.submitter||$("wallet-adjustment-form").querySelector('button[type="submit"]');
+  button.disabled=true;text($("wallet-adjustment-status"),"Applying wallet and ledger update atomically…");
+  try{
+    const {data,error}=await adminRpc("vibesync_admin_adjust_business_wallet",{p_business_id:businessId,p_points_delta:delta,p_reason:reason});
+    if(error)throw error;
+    text($("wallet-adjustment-status"),"Adjustment committed · new balance "+fmt(data?.balance)+" points · ledger reference "+(data?.ledger_reference||"saved"));
+    $("wallet-points-delta").value="";
+    $("wallet-adjustment-reason").value="";
+    await searchBusinesses();
+  }catch(error){
+    text($("wallet-adjustment-status"),error.message||"Wallet adjustment failed.",true);
+    throw error;
+  }finally{button.disabled=false;}
 }
 async function sha256(value) {
   const bytes=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(value));
@@ -428,10 +585,31 @@ document.querySelectorAll(".nav-item").forEach(b=>b.addEventListener("click",()=
 document.querySelectorAll("[data-home]").forEach(a=>a.addEventListener("click",e=>{e.preventDefault();if(staff)showSection("telemetry");}));
 $("refresh-telemetry").addEventListener("click",refreshTelemetry);
 $("refresh-payments").addEventListener("click",()=>refreshPayments().catch(e=>toast(e.message,true)));
+$("refresh-business").addEventListener("click",()=>refreshBusinessGovernance().catch(e=>toast(e.message,true)));
+$("refresh-status-stories").addEventListener("click",()=>refreshStatusStories().catch(e=>toast(e.message,true)));
+$("business-search-form").addEventListener("submit",e=>{e.preventDefault();searchBusinesses().catch(error=>empty($("business-results"),"Search failed",error.message));});
+$("wallet-adjustment-form").addEventListener("submit",e=>applyWalletAdjustment(e).catch(error=>text($("wallet-adjustment-status"),error.message||"Wallet adjustment failed.",true)));
+$("business-settings-form").addEventListener("submit",e=>applyBusinessOperationalSettings(e).catch(error=>text($("business-settings-status"),error.message||"Operational settings update failed.",true)));
 $("profile-search-form").addEventListener("submit",e=>{e.preventDefault();searchProfiles().catch(error=>empty($("profile-results"),"Search failed",error.message));});
 $("lea-form").addEventListener("submit",e=>leaSearch(e).catch(error=>text($("lea-status"),error.message||"Compliance search failed.",true)));
 document.querySelectorAll("[data-broadcast-days]").forEach(b=>b.addEventListener("click",()=>broadcast(Number(b.dataset.broadcastDays)).catch(e=>text($("broadcast-status"),e.message,true))));
 $("export-snapshot").addEventListener("click",()=>snapshot().catch(e=>{text($("export-status"),e.message||"Export failed.",true);toast("Snapshot failed.",true);}));
+
+function applyAdminTheme(theme) {
+  const normalized=theme==="light"?"light":"dark";
+  document.documentElement.dataset.theme=normalized;
+  const button=$("theme-toggle");
+  if(button){
+    button.textContent=normalized==="light"?"☾ Dark theme":"☼ Light theme";
+    button.setAttribute("aria-pressed",String(normalized==="light"));
+  }
+}
+applyAdminTheme(localStorage.getItem("vibesync-admin-theme")||"dark");
+$("theme-toggle").addEventListener("click",()=>{
+  const next=document.documentElement.dataset.theme==="light"?"dark":"light";
+  localStorage.setItem("vibesync-admin-theme",next);
+  applyAdminTheme(next);
+});
 
 if(!configured()){
   $("config-warning").hidden=false;$("login-submit").disabled=true;

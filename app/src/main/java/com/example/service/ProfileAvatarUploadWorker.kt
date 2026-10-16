@@ -29,10 +29,16 @@ class ProfileAvatarUploadWorker(
             return@withContext Result.failure()
         }
 
-        val root = File(applicationContext.cacheDir, "avatars").canonicalFile
+        val allowedRoots = listOf(
+            File(applicationContext.noBackupFilesDir, "avatars").canonicalFile,
+            File(applicationContext.cacheDir, "avatars").canonicalFile // tolerate a job queued by an older app version
+        )
         val localFile = runCatching { File(localPath).canonicalFile }.getOrNull()
             ?: return@withContext Result.failure()
-        if (!localFile.path.startsWith(root.path + File.separator) ||
+        val insidePrivateAvatarRoot = allowedRoots.any { root ->
+            localFile.path.startsWith(root.path + File.separator)
+        }
+        if (!insidePrivateAvatarRoot ||
             !localFile.isFile || localFile.length() !in 1 until MAX_AVATAR_BYTES
         ) {
             Log.w(TAG, "Avatar upload skipped: private staged JPEG is missing or invalid.")

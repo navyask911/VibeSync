@@ -58,7 +58,7 @@ object MatchingManager {
         val avatarUrl: String = "",
         val gender: String = "Female",
         val maritalStatus: String = "Single (Never Married)",
-        val isRealFaceVerified: Boolean = true,
+        val isRealFaceVerified: Boolean = false,
         val isOpenForDating: Boolean = true,
         val phoneNumber: String = "",
         val googleEmail: String = "",

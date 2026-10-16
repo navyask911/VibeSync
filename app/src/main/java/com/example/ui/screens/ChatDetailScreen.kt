@@ -550,6 +550,11 @@ private fun ChatDetailScreenContent(
 
     var showMenu by remember { mutableStateOf(false) }
     var showChatColorDialog by remember { mutableStateOf(false) }
+    var showChatWallpaperDialog by remember { mutableStateOf(false) }
+    var selectedChatWallpaper by remember(profile.id) {
+        mutableStateOf(com.example.util.ChatWallpaperPreferences.getState(context, profile.id))
+    }
+    val chatWallpaperStyle = com.example.ui.components.rememberChatWallpaperStyle(selectedChatWallpaper)
     var showDisappearingTimerDialog by remember { mutableStateOf(false) }
     var voiceRecordGestureActive by remember { mutableStateOf(false) }
     var selectedChatColorHex by remember(profile.id) {
@@ -914,6 +919,8 @@ private fun ChatDetailScreenContent(
             showSafetyProtocolsSheet = false
         } else if (showEmergencyBlockReportDialog) {
             showEmergencyBlockReportDialog = false
+        } else if (showChatWallpaperDialog) {
+            showChatWallpaperDialog = false
         } else if (showChatColorDialog) {
             showChatColorDialog = false
         } else if (showE2eeDetailsDialog) {
@@ -1147,6 +1154,10 @@ private fun ChatDetailScreenContent(
                         DropdownMenuItem(
                             text = { Text("Chat settings") },
                             onClick = { showMenu = false; showChatSettingsSheet = true }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Chat wallpaper") },
+                            onClick = { showMenu = false; showChatWallpaperDialog = true }
                         )
                         DropdownMenuItem(
                             text = { Text("Search") },
@@ -1436,6 +1447,8 @@ private fun ChatDetailScreenContent(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
+                        .background(chatWallpaperStyle.backgroundColor)
+                        .background(chatWallpaperStyle.doodleBrush)
                         .padding(horizontal = 12.dp),
                     contentPadding = PaddingValues(vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -3274,6 +3287,19 @@ private fun ChatDetailScreenContent(
             },
             confirmButton = {
                 TextButton(onClick = { showDisappearingTimerDialog = false }) { Text("Close") }
+            }
+        )
+    }
+
+    if (showChatWallpaperDialog) {
+        com.example.ui.components.ChatWallpaperPickerDialog(
+            state = selectedChatWallpaper,
+            onDismiss = { showChatWallpaperDialog = false },
+            onApply = { nextState ->
+                selectedChatWallpaper = nextState
+                com.example.util.ChatWallpaperPreferences.setState(context, profile.id, nextState)
+                showChatWallpaperDialog = false
+                Toast.makeText(context, "Chat wallpaper updated on this device.", Toast.LENGTH_SHORT).show()
             }
         )
     }

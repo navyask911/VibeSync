@@ -252,7 +252,7 @@ class SocialConnectRepository(
                     userInterests = "",
                     isLoggedIn = false,
                     isProfileCompleted = false,
-                    isFaceVerified = true,
+                    isFaceVerified = false,
                     isMobileVerified = false,
                     biometricHash = "",
                     verifiedMobileNumber = "",
@@ -356,7 +356,7 @@ class SocialConnectRepository(
                 userInterests = "",
                 isLoggedIn = false,
                 isProfileCompleted = false,
-                isFaceVerified = true,
+                isFaceVerified = false,
                 isMobileVerified = false,
                 biometricHash = "",
                 biometricRegisteredTimestamp = 0L,
@@ -1274,7 +1274,7 @@ class SocialConnectRepository(
                     gradientColorEnd = 0xFFFF9966,
                     avatarEmoji = avatarEmoji,
                     avatarUrl = avatarUrl,
-                    isVerified = true,
+                    isVerified = doc.getBoolean("isVerified") ?: false,
                     likedMe = true,
                     isSuperLikedMe = true,
                     trustScore = trustScore,
@@ -1382,7 +1382,7 @@ class SocialConnectRepository(
                             avatarUrl = doc.getString("avatarUrl") ?: "",
                             phoneNumber = phone,
                             email = email,
-                            isVerified = true,
+                            isVerified = doc.getBoolean("isVerified") ?: false,
                             likedMe = true,
                             isSuperLikedMe = true,
                             isOpenForDating = doc.getBoolean("isOpenForDating") ?: false,
@@ -1901,7 +1901,7 @@ class SocialConnectRepository(
                 biometricHash = biometricHash,
                 biometricRegisteredTimestamp = now,
                 mpin = current.userMpin,
-                isVerified = true,
+                isVerified = false,
                 registrationTimestamp = now,
                 recoveryPhone = mobileNumber,
                 recoveryEmail = safeEmail
@@ -2048,13 +2048,13 @@ class SocialConnectRepository(
                 userInterests = effectiveInterests,
                 userGender = effectiveGender,
                 isMobileVerified = true,
-                isFaceVerified = true,
+                isFaceVerified = current.isFaceVerified,
                 biometricHash = account.biometricHash,
                 biometricRegisteredTimestamp = account.biometricRegisteredTimestamp,
                 userMpin = account.mpin,
                 isMpinSet = account.mpin.isNotBlank(),
                 loginTimestamp = System.currentTimeMillis(),
-                trustRating = 100,
+                trustRating = if (current.isFaceVerified && current.isMobileVerified) 100 else 60,
                 isProfileCompleted = hasRealProfile
             )
         )
@@ -2138,7 +2138,7 @@ class SocialConnectRepository(
                                         relationshipGoal = relationshipGoal,
                                         avatarEmoji = "✨",
                                         avatarUrl = avatarUrl,
-                                        isVerified = true,
+                                        isVerified = doc.getBoolean("isVerified") ?: false,
                                         phoneNumber = phone,
                                         isDeleted = false,
                                         accountStatus = "ACTIVE"
@@ -2201,9 +2201,9 @@ class SocialConnectRepository(
                     userCity = effectiveCity,
                     userInterests = effectiveInterests,
                     userGender = effectiveGender,
-                    isFaceVerified = true,
+                    isFaceVerified = current.isFaceVerified,
                     loginTimestamp = System.currentTimeMillis(),
-                    trustRating = 100,
+                    trustRating = if (current.isFaceVerified && current.isMobileVerified) 100 else 60,
                     isProfileCompleted = true
                 )
             )
@@ -2222,7 +2222,7 @@ class SocialConnectRepository(
                 relationshipGoal = finalProfile?.relationshipGoal ?: current.userRelationshipGoal,
                 avatarEmoji = "✨",
                 avatarUrl = effectiveAvatar,
-                isVerified = true,
+                isVerified = finalProfile?.isVerified ?: false,
                 phoneNumber = phone,
                 isDeleted = false,
                 accountStatus = "ACTIVE"
@@ -2242,7 +2242,7 @@ class SocialConnectRepository(
                     userInterestedIn = current.userInterestedIn.ifBlank { "Everyone" },
                     userRelationshipGoal = current.userRelationshipGoal.ifBlank { "Connection" },
                     isProfileCompleted = false, // Directs immediately to onboarding / profile setup
-                    isFaceVerified = true,
+                    isFaceVerified = current.isFaceVerified,
                     loginTimestamp = System.currentTimeMillis()
                 )
             )
@@ -2373,7 +2373,6 @@ class SocialConnectRepository(
                     "isOpenForDating" to updatedPrefs.isOpenForDating,
                     "avatarEmoji" to if (updatedPrefs.avatarUrl.isNotBlank()) "" else "✨",
                     "avatarUrl" to com.example.util.ProfileAvatarStorageManager.serverAvatarReference(userId, updatedPrefs.avatarUrl),
-                    "isVerified" to true,
                     "isRealFaceVerified" to updatedPrefs.isFaceVerified,
                     "trustScore" to updatedPrefs.trustRating,
                     "phoneNumber" to updatedPrefs.verifiedMobileNumber,
@@ -2412,7 +2411,7 @@ class SocialConnectRepository(
                     gradientColorEnd = 0xFFFF9966,
                     avatarEmoji = "✨",
                     avatarUrl = updatedPrefs.avatarUrl,
-                    isVerified = true,
+                    isVerified = false,
                     phoneNumber = updatedPrefs.verifiedMobileNumber,
                     email = updatedPrefs.googleEmail,
                     isDeleted = false,
@@ -2570,7 +2569,7 @@ class SocialConnectRepository(
             verifiedMobileNumber = activePhone,
             googleEmail = activeEmail,
             isMobileVerified = true,
-            isFaceVerified = true,
+            isFaceVerified = current.isFaceVerified,
             userCountry = countryVal,
             userCountryFlag = flagVal,
             userCity = cityVal,
@@ -2592,7 +2591,8 @@ class SocialConnectRepository(
                 biometricHash = current.biometricHash.ifBlank { "BIO_HUMAN_PRIMARY_911" },
                 biometricRegisteredTimestamp = System.currentTimeMillis(),
                 mpin = current.userMpin,
-                isVerified = true,
+                isVerified = (registeredAccountDao.getAccountByPhone(activePhone)
+                    ?: registeredAccountDao.getAccountByEmail(activeEmail))?.isVerified ?: false,
                 registrationTimestamp = System.currentTimeMillis(),
                 recoveryPhone = activePhone,
                 recoveryEmail = activeEmail
@@ -2680,7 +2680,7 @@ class SocialConnectRepository(
                 isLoggedIn = false,
                 isProfileCompleted = false,
                 isMobileVerified = false,
-                isFaceVerified = true,
+                isFaceVerified = false,
                 verifiedMobileNumber = "",
                 googleEmail = "",
                 userName = "",
@@ -2860,7 +2860,7 @@ class SocialConnectRepository(
                 gradientColorEnd = 0xFFFF9966,
                 avatarEmoji = "✨",
                 phoneNumber = if (profileId.filter { it.isDigit() }.length >= 10) profileId else "",
-                isVerified = true
+                isVerified = false
             )
             profileDao.insertProfile(profile)
         }
@@ -3278,7 +3278,7 @@ class SocialConnectRepository(
                 phoneNumber = recipientPhoneNumber.ifBlank {
                     if (targetProfileId.filter { it.isDigit() }.length >= 10) targetProfileId else ""
                 },
-                isVerified = true
+                isVerified = false
             )
             profileDao.insertProfile(newProf)
             profile = newProf
@@ -3519,6 +3519,7 @@ class SocialConnectRepository(
         val cleanDigits = cleanPhone.filter { it.isDigit() }
         val userId = if (cleanDigits.length >= 7) cleanPhone else if (cleanEmail.isNotBlank()) cleanEmail else "current_user"
 
+        val wasAlreadyVerified = profileDao.getProfileByIdSync(userId)?.isVerified ?: false
         val ownProf = ProfileEntity(
             id = userId,
             name = cleanName.ifBlank { "VibeSync Member" },
@@ -3535,7 +3536,7 @@ class SocialConnectRepository(
             gradientColorEnd = 0xFFFF9966,
             avatarEmoji = "✨",
             avatarUrl = preferences.avatarUrl,
-            isVerified = true,
+            isVerified = wasAlreadyVerified,
             phoneNumber = cleanPhone,
             email = cleanEmail,
             isDeleted = false,
@@ -5494,7 +5495,7 @@ class SocialConnectRepository(
                         avatarUrl = doc.getString("avatarUrl") ?: "",
                         phoneNumber = phone,
                         email = doc.getString("googleEmail") ?: "",
-                        isVerified = true,
+                        isVerified = doc.getBoolean("isVerified") ?: false,
                         likedMe = true,
                         isSuperLikedMe = true
                     )

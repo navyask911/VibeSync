@@ -11,7 +11,15 @@ const rolesByOperation:Record<string,string[]> = {
  vibesync_admin_get_payment_summary:["super_admin","finance_manager"],
  vibesync_admin_search_lea_metadata:["super_admin","compliance_officer"],
  vibesync_admin_seal_compliance_export:["super_admin","compliance_officer"],
- vibesync_admin_export_table_page:["super_admin","finance_manager","compliance_officer"]
+ vibesync_admin_export_table_page:["super_admin","finance_manager","compliance_officer"],
+ vibesync_admin_search_businesses:["super_admin"],
+ vibesync_admin_set_business_control:["super_admin"],
+ vibesync_admin_adjust_business_wallet:["super_admin"],
+ vibesync_admin_review_payment_order:["super_admin","finance_manager"],
+ vibesync_admin_list_status_stories:["super_admin","moderator"],
+ vibesync_admin_moderate_status_story:["super_admin","moderator"],
+ vibesync_admin_update_business_settings:["super_admin"],
+ vibesync_admin_business_analytics_summary:["super_admin"]
 };
 const cors={"Access-Control-Allow-Origin":allowedOrigin,"Access-Control-Allow-Headers":"authorization, apikey, content-type, x-client-info","Access-Control-Allow-Methods":"POST, OPTIONS","Vary":"Origin"};
 function reply(status:number,body:Record<string,unknown>):Response{return new Response(JSON.stringify(body),{status,headers:{...cors,"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-store"}});}
@@ -66,10 +74,54 @@ Deno.serve(async(req:Request)=>{
     if(!Number.isInteger(offset)||offset<0||!Number.isInteger(limit)||limit<1||limit>1000)throw new Error("Invalid export page.");
     params={...params,p_table:tableName,p_offset:offset,p_limit:limit};break;
    }
+   case "vibesync_admin_search_businesses":{
+    const query=typeof args.p_query==="string"?args.p_query.slice(0,100).trim():"";
+    params={...params,p_query:query};break;
+   }
+   case "vibesync_admin_set_business_control":{
+    const businessId=textArg(args,"p_business_id",160).trim(),action=textArg(args,"p_action",12),reason=typeof args.p_reason==="string"?args.p_reason.slice(0,500):"Admin dashboard review";
+    if(!businessId||!["VERIFY","PUBLISH"].includes(action)||typeof args.p_enabled!=="boolean")throw new Error("Invalid business-control request.");
+    params={...params,p_business_id:businessId,p_action:action,p_enabled:args.p_enabled,p_reason:reason};break;
+   }
+   case "vibesync_admin_adjust_business_wallet":{
+    const businessId=textArg(args,"p_business_id",160).trim(),delta=Number(args.p_points_delta),reason=textArg(args,"p_reason",500).trim();
+    if(!businessId||!Number.isInteger(delta)||delta===0||Math.abs(delta)>1000000||!reason)throw new Error("Enter a business ID, non-zero whole-point adjustment and reason.");
+    params={...params,p_business_id:businessId,p_points_delta:delta,p_reason:reason};break;
+   }
+   case "vibesync_admin_review_payment_order":{
+    const orderId=textArg(args,"p_order_id",60).trim(),decision=textArg(args,"p_decision",24),reason=textArg(args,"p_reason",500).trim();
+    if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(orderId)||
+       !["PROVIDER_RECHECK","NEEDS_INFO","REJECTED"].includes(decision)||!reason)throw new Error("Invalid payment review request.");
+    params={...params,p_order_id:orderId,p_decision:decision,p_reason:reason};break;
+   }
+   case "vibesync_admin_list_status_stories":{
+    const limit=Number(args.p_limit??60);if(!Number.isInteger(limit)||limit<1||limit>100)throw new Error("Invalid story-list limit.");
+    params={...params,p_limit:limit};break;
+   }
+   case "vibesync_admin_moderate_status_story":{
+    const storyId=textArg(args,"p_story_id",160).trim(),action=textArg(args,"p_action",12),reason=textArg(args,"p_reason",500).trim();
+    if(!storyId||!["HIDE","RESTORE"].includes(action)||!reason)throw new Error("Invalid story moderation request.");
+    params={...params,p_story_id:storyId,p_action:action,p_reason:reason};break;
+   }
+   case "vibesync_admin_update_business_settings":{
+    const businessId=textArg(args,"p_business_id",160).trim();
+    const openingHours=textArg(args,"p_opening_hours",1000);
+    const offerSummary=textArg(args,"p_active_offer_summary",500);
+    const reason=textArg(args,"p_reason",500).trim();
+    if(!businessId||!reason)throw new Error("A business ID and audit reason are required.");
+    params={...params,p_business_id:businessId,p_opening_hours:openingHours,p_active_offer_summary:offerSummary,p_reason:reason};break;
+   }
+   case "vibesync_admin_business_analytics_summary":break;
    default:return reply(400,{error:"Unsupported admin operation."});
   }
   const {data,error}=await service.rpc(operation,params);
-  if(error){console.error("admin-portal-api RPC failure",operation,error.code);return reply(error.code==="42501"?403:400,{error:"The authorized admin operation could not be completed."});}
+  if(error){
+    console.error("admin-portal-api RPC failure",operation,error.code,error.message);
+    const forbidden=error.code==="42501";
+    return reply(forbidden?403:400,{error:forbidden
+      ?"The admin authorization check rejected this request. Confirm that migration 20261016034000 is deployed and the staff membership is active."
+      :"The authorized admin operation could not be completed."});
+  }
   return reply(200,{data});
  }catch(error){return reply(400,{error:error instanceof Error?error.message:"Admin request could not be validated."});}
 });

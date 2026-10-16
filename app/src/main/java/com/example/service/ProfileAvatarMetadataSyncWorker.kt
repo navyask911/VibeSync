@@ -34,6 +34,9 @@ class ProfileAvatarMetadataSyncWorker(
         }.getOrDefault(false)
 
         if (updated) {
+            com.example.util.ProfileAvatarStorageManager.persistPrimaryAvatarReferenceLocally(
+                applicationContext, profileId, avatarReference
+            )
             Log.i(TAG, "Primary avatar metadata synchronized.")
             Result.success()
         } else {

@@ -2520,7 +2520,7 @@ object SupabaseClientManager {
                 phoneNumber = match.phoneE164,
                 avatarUrl = match.photoUrl.orEmpty(),
                 avatarEmoji = match.avatarEmoji,
-                isVerified = true
+                isVerified = match.isVerified
             )
         }
     }
@@ -2571,7 +2571,8 @@ object SupabaseClientManager {
         val name: String,
         val photoUrl: String?,
         val avatarEmoji: String = "✨",
-        val phoneE164: String
+        val phoneE164: String,
+        val isVerified: Boolean = false
     )
 
     /**
@@ -2618,7 +2619,8 @@ object SupabaseClientManager {
                                     name = ContactResolver.sanitizeName(name, "VibeSync Friend"),
                                     photoUrl = row.optSafeString("profile_photo_url", "").ifBlank { null },
                                     avatarEmoji = row.optSafeString("avatar_emoji", "✨"),
-                                    phoneE164 = phone
+                                    phoneE164 = phone,
+                                    isVerified = row.optBoolean("is_verified", false)
                                 )
                             )
                         }

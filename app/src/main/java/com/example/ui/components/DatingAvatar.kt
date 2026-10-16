@@ -101,6 +101,8 @@ fun DatingAvatar(
             else -> null
         }
     }
+    var imageLoadFailed by remember(avatarImageModel) { mutableStateOf(false) }
+    LaunchedEffect(avatarImageModel) { imageLoadFailed = false }
     val fallbackLabel = remember(name, emoji) {
         val cleanEmoji = emoji.trim()
         if (cleanEmoji.isNotBlank() && cleanEmoji !in setOf("✨", "👤", "🙂", "😀")) {
@@ -138,12 +140,13 @@ fun DatingAvatar(
                 fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
             )
-            if (avatarImageModel != null) {
+            if (avatarImageModel != null && !imageLoadFailed) {
                 AsyncImage(
                     model = avatarImageModel,
                     contentDescription = "$name's profile photo",
                     modifier = Modifier.size(size).clip(CircleShape),
-                    contentScale = ContentScale.Crop
+                    contentScale = ContentScale.Crop,
+                    onError = { imageLoadFailed = true }
                 )
             }
         }

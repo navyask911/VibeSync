@@ -49,6 +49,7 @@
         <button class="nav-item is-active" data-section="telemetry"><span class="nav-icon">◉</span>Live telemetry</button>
         <button class="nav-item" data-section="moderation"><span class="nav-icon">◎</span>User moderation</button>
         <button class="nav-item" data-section="payments"><span class="nav-icon">↗</span>Payment & ledger</button>
+        <button class="nav-item" data-section="business-governance"><span class="nav-icon">▦</span>Business governance</button>
         <button class="nav-item" data-section="compliance"><span class="nav-icon">⌁</span>Compliance & LEA</button>
         <button class="nav-item" data-section="reengagement"><span class="nav-icon">◌</span>Re-engagement</button>
         <button class="nav-item" data-section="preservation"><span class="nav-icon">⇩</span>Data preservation</button>
@@ -63,7 +64,7 @@
     <main class="main-panel">
       <header class="topbar">
         <div><p class="eyebrow">OPERATIONS / <span id="section-breadcrumb">LIVE TELEMETRY</span></p><h1 id="page-title">Live telemetry</h1></div>
-        <div class="session-meta"><span class="online-dot"></span><span id="staff-display">Authorized staff</span><span id="role-badge" class="role-badge">staff</span></div>
+        <div class="session-meta"><span class="online-dot"></span><span id="staff-display">Authorized staff</span><span id="role-badge" class="role-badge">staff</span><button id="theme-toggle" class="btn btn-quiet theme-toggle" type="button" aria-pressed="false">☼ Light theme</button></div>
       </header>
       <div id="global-notice" class="global-notice" role="status" aria-live="polite" hidden></div>
 
@@ -95,6 +96,47 @@
           <article class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">GATEWAY OUTCOMES</p><h3>Success vs. failure by gateway</h3></div></div><div class="chart-container"><canvas id="gateway-outcomes-chart" role="img" aria-label="Bar chart of successful and failed payment orders by gateway"></canvas></div></article>
         </div>
         <article class="panel"><div class="panel-heading"><div><p class="eyebrow">TRANSACTION LOG</p><h3>Recent payment orders</h3></div><span id="webhook-state" class="state-pill state-warn">Webhook telemetry unverified</span></div><div id="payment-results" class="results-wrap"><div class="empty-state">Loading payment summary…</div></div><p id="webhook-note" class="footnote">Webhook health is unverified until delivery events are persisted; paid-order state alone is not a webhook health check.</p></article>
+      </section>
+
+      <section id="section-business-governance" class="page-section">
+        <div class="section-intro">
+          <div><p class="eyebrow">MERCHANT OPERATIONS</p><h2>Business governance</h2><p class="muted">Audited administrative controls for listings, points ledger and story moderation. Merchant workflows remain unchanged.</p></div>
+          <button id="refresh-business" class="btn btn-secondary" type="button">↻ Refresh</button>
+        </div>
+        <div id="business-metrics" class="metric-grid" aria-live="polite"></div>
+        <div class="panel-grid">
+          <article class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">DIRECTORY REVIEW</p><h3>Merchant listings</h3></div><span class="state-pill">Server-authorized</span></div>
+            <form id="business-search-form" class="search-row"><div class="search-field"><label for="business-query">Business name, category or ID</label><input id="business-query" type="search" maxlength="100" placeholder="Search all business listings"></div><button class="btn btn-primary" type="submit">Search</button></form>
+            <div id="business-results" class="results-wrap"><div class="empty-state"><strong>Business directory</strong><p>Search for listings, then verify or publish them with an audit record.</p></div></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">BALANCE CONTROL</p><h3>Manual wallet adjustment</h3></div><span class="state-pill state-warn">Audit logged</span></div>
+            <form id="wallet-adjustment-form" class="form-grid">
+              <div class="full-span"><label for="wallet-business-id">Business ID</label><input id="wallet-business-id" name="business_id" required maxlength="160" placeholder="Exact business ID"></div>
+              <div><label for="wallet-points-delta">Points delta (+ / −)</label><input id="wallet-points-delta" name="points_delta" type="number" required step="1" min="-1000000" max="1000000" placeholder="e.g. 500"></div>
+              <div class="full-span"><label for="wallet-adjustment-reason">Reason (required)</label><input id="wallet-adjustment-reason" name="reason" required maxlength="500" placeholder="Support ticket / reconciliation reference"></div>
+              <div class="full-span"><button class="btn btn-primary" type="submit">Apply audited adjustment</button></div>
+            </form>
+            <p id="wallet-adjustment-status" class="notice" role="status" aria-live="polite"></p>
+            <p class="footnote">The balance and ledger change atomically. This is not a payment-settlement action.</p>
+          </article>
+        </div>
+        <article class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">OPERATIONS</p><h3>Business operational settings</h3><p class="muted">Update operating hours and public offer copy, with a required audit reason.</p></div><span class="state-pill state-warn">Audited</span></div>
+          <form id="business-settings-form" class="form-grid">
+            <div class="full-span"><label for="settings-business-id">Business ID</label><input id="settings-business-id" name="business_id" required maxlength="160" placeholder="Exact business ID"></div>
+            <div class="full-span"><label for="settings-opening-hours">Opening hours / service window</label><textarea id="settings-opening-hours" name="opening_hours" required maxlength="1000" rows="3" placeholder="Mon–Fri 09:00–18:00"></textarea></div>
+            <div class="full-span"><label for="settings-active-offer">Public offer summary</label><textarea id="settings-active-offer" name="active_offer_summary" required maxlength="500" rows="2" placeholder="Current offer or service notice"></textarea></div>
+            <div class="full-span"><label for="settings-reason">Audit reason</label><input id="settings-reason" name="reason" required maxlength="500" placeholder="Ticket / compliance reason"></div>
+            <div class="full-span"><button class="btn btn-primary" type="submit">Save operational settings</button></div>
+          </form>
+          <p id="business-settings-status" class="notice" role="status" aria-live="polite"></p>
+        </article>
+        <article class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">TRUST & SAFETY</p><h3>Status story moderation</h3><p class="muted">Hide or restore story visibility without deleting the original media.</p></div><button id="refresh-status-stories" class="btn btn-secondary" type="button">↻ Refresh stories</button></div>
+          <div id="status-story-results" class="results-wrap"><div class="empty-state"><strong>No stories loaded</strong><p>Refresh to inspect active story metadata and moderation state.</p></div></div>
+        </article>
       </section>
 
       <section id="section-compliance" class="page-section">

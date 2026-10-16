@@ -87,7 +87,8 @@ fun ProfileHeaderSection(
                         android.widget.Toast.LENGTH_LONG
                     ).show()
                 } else {
-                    // Only the opaque encrypted-storage reference enters profile metadata.
+                    // Store the stable public URL of the encrypted object. AvatarImageSupport
+                    // converts it to the logical encrypted reference before image loading/decryption.
                     val uploadedPhotos = existingPhotos.toMutableList()
                     while (uploadedPhotos.size < slot) uploadedPhotos.add("")
                     uploadedPhotos[slot - 1] = remoteUrl

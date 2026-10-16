@@ -85,7 +85,7 @@ object ProfileAvatarStorageManager {
                 "Avatar image exceeds the 512x512 dimension limit."
             }
             val cleanSlot = slot.coerceIn(1, 3)
-            val dir = File(context.cacheDir, "avatars").apply { mkdirs() }
+            val dir = File(context.noBackupFilesDir, "avatars").apply { mkdirs() }
             val localFile = File(dir, "${safeHash(profileId)}_${cleanSlot}.jpg")
             val bytes = compressUnderLimit(square)
             localFile.outputStream().use { output -> output.write(bytes); output.flush() }
@@ -158,7 +158,7 @@ object ProfileAvatarStorageManager {
             val cleanSlot = slot.coerceIn(1, 3)
             val cleanProfileId = profileId.trim()
             val cacheIdentity = cleanProfileId.ifBlank { "unbound-registration-avatar" }
-            val dir = File(context.cacheDir, "avatars").apply { mkdirs() }
+            val dir = File(context.noBackupFilesDir, "avatars").apply { mkdirs() }
             val localFile = File(dir, safeHash(cacheIdentity) + "_" + cleanSlot + ".jpg")
             val bytes = compressUnderLimit(square)
             val byteCount = bytes.size
@@ -207,7 +207,7 @@ object ProfileAvatarStorageManager {
             require(prepared.file.isFile && prepared.file.length() in 1 until MAX_BYTES.toLong()) {
                 "Staged avatar preview is missing or exceeds the 150,000 byte limit."
             }
-            val dir = File(context.cacheDir, "avatars").apply { mkdirs() }
+            val dir = File(context.noBackupFilesDir, "avatars").apply { mkdirs() }
             val cleanSlot = prepared.slot.coerceIn(1, 3)
             val objectName = if (cleanSlot == 1) prepared.profileId + ".enc"
                 else prepared.profileId + "_" + cleanSlot + ".enc"
@@ -261,7 +261,7 @@ object ProfileAvatarStorageManager {
     /** Durable queue. Upload itself is strictly gated by a matching authenticated session/JWT. */
     fun enqueuePreparedAvatarUpload(context: Context, prepared: PreparedAvatar) {
         require(prepared.profileId.isNotBlank()) { "Cannot queue an avatar without its verified profile ID." }
-        val cacheAvatarRoot = File(context.cacheDir, "avatars").canonicalFile
+        val cacheAvatarRoot = File(context.noBackupFilesDir, "avatars").canonicalFile
         val stagedFile = prepared.file.canonicalFile
         require(stagedFile.path.startsWith(cacheAvatarRoot.path + File.separator)) {
             "Avatar staging file must remain inside the app's private avatar cache."
@@ -364,7 +364,11 @@ object ProfileAvatarStorageManager {
                 Log.w(TAG, "Avatar uploaded but its key version could not be activated; local files are retained.")
                 return@withContext null
             }
-            val avatarReference = encryptedAvatarReference(prepared.profileId, prepared.slot)
+            // Keep a stable, permanent public Storage URL in Room and public.profiles.avatar_url.
+            // The object body is Tink AES-GCM ciphertext; AvatarImageSupport converts this URL to
+            // the internal encrypted-avatar reference before any image loader is given the value.
+            val avatarReference = uploadedUrl?.substringBefore('?')?.takeIf { it.isNotBlank() }
+                ?: return@withContext null
             if (publishAsPrimary) {
                 var metadataSaved = false
                 for (attempt in 1..3) {
@@ -377,17 +381,58 @@ object ProfileAvatarStorageManager {
                     if (attempt < 3) delay(350L * attempt)
                 }
                 if (!metadataSaved) enqueueAvatarMetadataSync(appContext, prepared.profileId, avatarReference)
+                persistPrimaryAvatarReferenceLocally(appContext, prepared.profileId, avatarReference)
             }
 
-            // Keep the sanitized JPEG in app cache for Compose preview/fallback.
+            // Room/UI now use the durable encrypted-object URL. Remove both the upload
+            // ciphertext staging file and its sanitized plaintext source after success.
             encrypted.delete()
             File(encrypted.absolutePath + ".version").delete()
+            prepared.file.delete()
             avatarReference
         }
 
     fun encryptedAvatarReference(profileId: String, slot: Int = 1): String =
         if (slot <= 1) "vibesync-avatar-enc://" + profileId
         else "vibesync-avatar-enc://" + profileId + "/" + slot.coerceIn(2, 3)
+
+    /**
+     * Update local Room metadata after upload or after a queued metadata retry succeeds.
+     * The URL points at ciphertext only; display components normalize it to the encrypted scheme.
+     */
+    suspend fun persistPrimaryAvatarReferenceLocally(
+        context: Context,
+        profileId: String,
+        avatarReference: String
+    ) = withContext(Dispatchers.IO) {
+        val session = VibeSyncSessionManager.getSession(context) ?: return@withContext
+        if (!session.profileId.equals(profileId.trim(), ignoreCase = true) ||
+            avatarReference.isBlank()
+        ) return@withContext
+        try {
+            val database = com.example.data.database.DatingDatabase.getDatabase(context.applicationContext)
+            val now = System.currentTimeMillis()
+            val profile = database.profileDao().getProfileByIdSync(profileId)
+            if (profile != null) {
+                database.profileDao().insertProfile(
+                    profile.copy(avatarUrl = avatarReference, avatarCacheVersion = now)
+                )
+            }
+            val prefsDao = database.userPreferencesDao()
+            val prefs = prefsDao.getPreferencesSync() ?: return@withContext
+            val photos = prefs.getPhotoList().toMutableList()
+            if (photos.isEmpty()) photos.add(avatarReference) else photos[0] = avatarReference
+            prefsDao.insertOrUpdate(
+                prefs.copy(
+                    avatarUrl = avatarReference,
+                    profilePhotos = photos.filter(String::isNotBlank).joinToString("|||"),
+                    avatarCacheVersion = now
+                )
+            )
+        } catch (error: Throwable) {
+            Log.w(TAG, "Could not update local avatar metadata: " + error.javaClass.simpleName)
+        }
+    }
 
     /** Replace cache URLs in server metadata with opaque encrypted-object pointers. */
     fun serverAvatarReference(profileId: String, avatarUrl: String): String {

@@ -40,21 +40,26 @@ fun FullScreenPhotoViewerDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    val encryptedPhoto = remember(photoUrl) { photoUrl.startsWith("vibesync-avatar-enc://") }
-    var decryptedPhoto by remember(photoUrl) { mutableStateOf<Bitmap?>(null) }
-    var photoResolved by remember(photoUrl) { mutableStateOf(!encryptedPhoto) }
-    LaunchedEffect(photoUrl) {
+    val normalizedPhotoReference = remember(photoUrl) {
+        com.example.util.AvatarImageSupport.normalizeReference(photoUrl)
+    }
+    val encryptedPhoto = remember(normalizedPhotoReference) {
+        normalizedPhotoReference.startsWith("vibesync-avatar-enc://")
+    }
+    var decryptedPhoto by remember(normalizedPhotoReference) { mutableStateOf<Bitmap?>(null) }
+    var photoResolved by remember(normalizedPhotoReference) { mutableStateOf(!encryptedPhoto) }
+    LaunchedEffect(normalizedPhotoReference) {
         if (encryptedPhoto) {
             photoResolved = false
             decryptedPhoto = com.example.util.ProfileAvatarStorageManager
-                .resolveAvatarForDisplay(context, photoUrl, 0L)
+                .resolveAvatarForDisplay(context, normalizedPhotoReference, 0L)
             photoResolved = true
         } else {
             decryptedPhoto = null
             photoResolved = true
         }
     }
-    val photoRequest = remember(photoUrl, decryptedPhoto) {
+    val photoRequest = remember(normalizedPhotoReference, decryptedPhoto) {
         when {
             decryptedPhoto != null -> ImageRequest.Builder(context)
                 .data(decryptedPhoto)
@@ -62,8 +67,8 @@ fun FullScreenPhotoViewerDialog(
                 .memoryCachePolicy(CachePolicy.DISABLED)
                 .crossfade(true)
                 .build()
-            !encryptedPhoto && photoUrl.isNotBlank() -> ImageRequest.Builder(context)
-                .data(photoUrl)
+            !encryptedPhoto && normalizedPhotoReference.isNotBlank() -> ImageRequest.Builder(context)
+                .data(normalizedPhotoReference)
                 .memoryCachePolicy(CachePolicy.ENABLED)
                 .diskCachePolicy(CachePolicy.ENABLED)
                 .crossfade(true)
