@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.CalendarContract
+import android.provider.ContactsContract
 import android.provider.OpenableColumns
 import androidx.activity.result.PickVisualMediaRequest
 import com.example.util.LocationHelper
@@ -723,6 +724,57 @@ private fun ChatDetailScreenContent(
             }
         }
     }
+    val nativeContactPickerLauncher = rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val selectedUri = result.data?.data
+            if (selectedUri == null) {
+                Toast.makeText(context, "No contact was selected.", Toast.LENGTH_SHORT).show()
+            } else {
+                try {
+                    val selected = context.contentResolver.query(
+                        selectedUri,
+                        arrayOf(ContactsContract.Contacts._ID, ContactsContract.Contacts.DISPLAY_NAME),
+                        null,
+                        null,
+                        null
+                    )?.use { cursor ->
+                        if (!cursor.moveToFirst()) null else {
+                            val idColumn = cursor.getColumnIndex(ContactsContract.Contacts._ID)
+                            val nameColumn = cursor.getColumnIndex(ContactsContract.Contacts.DISPLAY_NAME)
+                            if (idColumn < 0 || nameColumn < 0) null
+                            else cursor.getString(idColumn) to cursor.getString(nameColumn).orEmpty()
+                        }
+                    }
+                    if (selected == null) {
+                        Toast.makeText(context, "Could not read the selected contact.", Toast.LENGTH_LONG).show()
+                    } else {
+                        val phone = context.contentResolver.query(
+                            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                            arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
+                            "${ContactsContract.CommonDataKinds.Phone.CONTACT_ID} = ?",
+                            arrayOf(selected.first),
+                            null
+                        )?.use { cursor ->
+                            if (cursor.moveToFirst()) cursor.getString(0).orEmpty() else ""
+                        }.orEmpty()
+                        if (phone.isBlank()) {
+                            Toast.makeText(context, "That contact has no phone number to share.", Toast.LENGTH_LONG).show()
+                        } else {
+                            val vCard = com.example.util.ContactVCardFormatter.toVCard(selected.second, phone)
+                            onSendMedia("CONTACT", vCard, "", 0)
+                        }
+                    }
+                } catch (failure: SecurityException) {
+                    Toast.makeText(context, "Contacts access was not granted for the selected contact.", Toast.LENGTH_LONG).show()
+                } catch (failure: Exception) {
+                    Toast.makeText(context, "Could not share that contact.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
     val chatWallpaperPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
@@ -3278,267 +3330,171 @@ private fun ChatDetailScreenContent(
                 showChatColorDialog = false
                 Toast.makeText(context, "Chat text color updated locally 🎨", Toast.LENGTH_SHORT).show()
             },
-            onDismiss = { showChatColorDialog = false }
-        )
-    }
-
-    // 1. Location Dialog (Live GPS & Google Maps Places Utility)
+            onDismiss = { showCh    // Fresh, high-accuracy GPS only. Never substitute a demo/default coordinate.
     if (showLocationDialog) {
         val currentContext = LocalContext.current
-        var isLiveSelected by remember { mutableStateOf(false) }
-        var selectedDuration by remember { mutableStateOf("1 hour") }
         var detectedLoc by remember { mutableStateOf<DeviceLocationResult?>(null) }
-        var isFetchingLocation by remember { mutableStateOf(true) }
+        var isFetchingLocation by remember { mutableStateOf(false) }
+        var locationError by remember { mutableStateOf<String?>(null) }
 
-        LaunchedEffect(Unit) {
+        val performGpsRefresh: () -> Unit = {
+            detectedLoc = null
+            locationError = null
             isFetchingLocation = true
-            try {
-                detectedLoc = LocationHelper.fetchCurrentLocation(
-                    context = currentContext,
-                    fallbackPlace = profile.city.ifBlank { "MG Road" },
-                    fallbackCity = profile.city.ifBlank { "Bengaluru" },
-                    fallbackCountry = profile.country.ifBlank { "India" }
-                )
-            } catch (_: Exception) {
-                // Graceful fallback
-            } finally {
+            coroutineScope.launch {
+                try {
+                    detectedLoc = com.example.util.FreshLocationHelper.fetchCurrentLocation(currentContext)
+                } catch (failure: Exception) {
+                    locationError = when (failure) {
+                        is SecurityException -> "Location permission is required to share a fresh GPS fix."
+                        else -> failure.message ?: "A fresh GPS fix is unavailable. Try again outdoors."
+                    }
+                } finally {
+                    isFetchingLocation = false
+                }
+            }
+        }
+        val locationPermissionLauncher = rememberLauncherForActivityResult(
+            contract = androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+        ) { permissions ->
+            if (permissions[android.Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                permissions[android.Manifest.permission.ACCESS_COARSE_LOCATION] == true
+            ) {
+                performGpsRefresh()
+            } else {
+                locationError = "Location permission was not granted. No location was shared."
                 isFetchingLocation = false
             }
         }
-
-        val lat = detectedLoc?.latitude ?: 12.9716
-        val lng = detectedLoc?.longitude ?: 77.5946
-        val locAddress = detectedLoc?.fullAddress ?: "MG Road, Bengaluru, Karnataka"
-        val mapLink = "https://www.google.com/maps/search/?api=1&query=$lat,$lng"
-        val nearbyPlaces = remember(lat, lng, locAddress) {
-            LocationHelper.getNearbyPlaces(lat, lng, locAddress)
+        val refreshGps: () -> Unit = {
+            val fineGranted = androidx.core.content.ContextCompat.checkSelfPermission(
+                currentContext, android.Manifest.permission.ACCESS_FINE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            val coarseGranted = androidx.core.content.ContextCompat.checkSelfPermission(
+                currentContext, android.Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            if (fineGranted || coarseGranted) {
+                performGpsRefresh()
+            } else {
+                locationPermissionLauncher.launch(
+                    arrayOf(
+                        android.Manifest.permission.ACCESS_FINE_LOCATION,
+                        android.Manifest.permission.ACCESS_COARSE_LOCATION
+                    )
+                )
+            }
         }
+        LaunchedEffect(Unit) { refreshGps() }
 
+        val location = detectedLoc
+        val mapLink = location?.let {
+            "https://www.google.com/maps/search/?api=1&query=${it.latitude},${it.longitude}"
+        }.orEmpty()
         AlertDialog(
             onDismissRequest = { showLocationDialog = false },
-            icon = {
-                Icon(Icons.Default.LocationOn, contentDescription = null, tint = VibeSyncTeal, modifier = Modifier.size(32.dp))
-            },
-            title = {
-                Text("Share Location 📍", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            },
+            icon = { Icon(Icons.Default.LocationOn, contentDescription = null, modifier = Modifier.size(30.dp)) },
+            title = { Text("Share location") },
             text = {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    // Visual Google Maps Preview Banner with Drop Pin
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(110.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFFE8F5E9)),
-                        contentAlignment = Alignment.Center
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
                     ) {
                         Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.LocationOn,
-                                contentDescription = "Current Pin",
-                                tint = Color(0xFFE53935),
-                                modifier = Modifier.size(38.dp)
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = Color.White.copy(alpha = 0.9f),
-                                shadowElevation = 1.dp
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Default.MyLocation, contentDescription = null, tint = Color(0xFF0F9D58), modifier = Modifier.size(12.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Accurate to 12 meters • Read-Only GPS", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2E7D32))
-                                }
-                            }
-                        }
-                    }
-
-                    // Current Address Display Card (Read-Only)
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(modifier = Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                             if (isFetchingLocation) {
-                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = VibeSyncTeal)
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Text("Detecting real GPS satellite coordinates...", fontSize = 12.sp)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                                    Spacer(Modifier.width(10.dp))
+                                    Text("Finding a fresh GPS fix…", style = MaterialTheme.typography.bodyMedium)
+                                }
+                            } else if (location != null) {
+                                Text(location.fullAddress, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "GPS ${String.format(java.util.Locale.US, "%.5f", location.latitude)}, ${String.format(java.util.Locale.US, "%.5f", location.longitude)}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    "Accuracy ±${location.accuracyMeters.toInt()} m · refreshed now",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             } else {
-                                Icon(Icons.Default.Lock, contentDescription = "Verified Read-Only Location", tint = Color(0xFF667781), modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Column {
-                                    Text(locAddress, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-                                    Text("GPS: ${String.format(java.util.Locale.US, "%.4f", lat)}° N, ${String.format(java.util.Locale.US, "%.4f", lng)}° E", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
+                                Text(
+                                    locationError ?: "Refresh GPS to get a fresh, accurate location before sharing.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
                             }
                         }
                     }
-
-                    // Primary Option 1: Send Your Current Location
-                    Surface(
+                    OutlinedButton(
+                        onClick = refreshGps,
+                        enabled = !isFetchingLocation,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (isFetchingLocation) "Refreshing GPS…" else "Refresh GPS")
+                    }
+                    Button(
                         onClick = {
-                            onSendMedia("LOCATION", locAddress, mapLink, 0)
-                            showLocationDialog = false
-                            Toast.makeText(currentContext, "Location shared via Google Maps 📍", Toast.LENGTH_SHORT).show()
+                            location?.let { fresh ->
+                                onSendMedia("LOCATION", fresh.fullAddress, mapLink, 0)
+                                showLocationDialog = false
+                            }
                         },
-                        shape = RoundedCornerShape(12.dp),
-                        color = VibeSyncTeal.copy(alpha = 0.12f),
-                        border = BorderStroke(1.dp, VibeSyncTeal.copy(alpha = 0.4f)),
+                        enabled = location != null && !isFetchingLocation,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.MyLocation, contentDescription = null, tint = VibeSyncTeal, modifier = Modifier.size(24.dp))
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column {
-                                Text("Send your current location 📍", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = VibeSyncTeal)
-                                Text("Sends verified GPS location link", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-
-                    // Primary Option 2: Share Live Location
-                    Surface(
-                        onClick = { isLiveSelected = !isLiveSelected },
-                        shape = RoundedCornerShape(12.dp),
-                        color = if (isLiveSelected) Color(0xFF00A884).copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
-                        border = BorderStroke(1.dp, if (isLiveSelected) Color(0xFF00A884) else Color.Transparent),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.ShareLocation, contentDescription = null, tint = Color(0xFF00A884), modifier = Modifier.size(24.dp))
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column {
-                                    Text("Share live location ⚡", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                    Text("Updates position in real-time", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                            }
-                            if (isLiveSelected) {
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text("Sharing duration:", fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
-                                    listOf("15 mins", "1 hour", "8 hours").forEach { dur ->
-                                        FilterChip(
-                                            selected = selectedDuration == dur,
-                                            onClick = { selectedDuration = dur },
-                                            label = { Text(dur, fontSize = 11.sp) }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Section 3: Nearby Places on Google Maps
-                    Text("Nearby Places (Google Maps)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
-
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        nearbyPlaces.forEach { place ->
-                            val placeMapUrl = "https://www.google.com/maps/search/?api=1&query=${place.latitude},${place.longitude}"
-                            Surface(
-                                onClick = {
-                                    onSendMedia("LOCATION", "${place.name}\n${place.address}", placeMapUrl, 0)
-                                    showLocationDialog = false
-                                    Toast.makeText(currentContext, "Shared venue: ${place.name} 🏢", Toast.LENGTH_SHORT).show()
-                                },
-                                shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.LocationOn,
-                                        contentDescription = null,
-                                        tint = VibeSyncTeal,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(place.name, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                                        Text("${place.address} • ${place.distanceMeters}m away", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    }
-                                    Icon(Icons.AutoMirrored.Filled.Forward, contentDescription = null, tint = Color(0xFF667781), modifier = Modifier.size(16.dp))
-                                }
-                            }
-                        }
+                        Icon(Icons.Default.MyLocation, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Share current location")
                     }
                 }
             },
             confirmButton = {
-                if (isLiveSelected) {
-                    Button(
-                        onClick = {
-                            onSendMedia("LIVE_LOCATION", "$locAddress • Active for $selectedDuration", mapLink, 0)
-                            showLocationDialog = false
-                            Toast.makeText(currentContext, "Live Location sharing started ⚡", Toast.LENGTH_SHORT).show()
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = VibeSyncTeal)
-                    ) {
-                        Text("Start Live Sharing ⚡")
-                    }
-                }
-            },
-            dismissButton = {
                 TextButton(onClick = { showLocationDialog = false }) { Text("Cancel") }
             }
         )
     }
 
-    // 2. Contact Dialog
+    // Native contact picker. Only the explicitly selected contact is read and shared as vCard.
     if (showContactDialog) {
-        var contactName by remember { mutableStateOf("Kiran Kumar") }
-        var contactPhone by remember { mutableStateOf("+91 98765 43210") }
         AlertDialog(
             onDismissRequest = { showContactDialog = false },
-            icon = { Icon(Icons.Default.Person, contentDescription = null, tint = Color(0xFF1B72E8), modifier = Modifier.size(36.dp)) },
-            title = { Text("Share Contact 👤", fontWeight = FontWeight.Bold) },
+            icon = { Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(30.dp)) },
+            title = { Text("Share a contact") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = contactName,
-                        onValueChange = { contactName = it },
-                        label = { Text("Contact Name") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = contactPhone,
-                        onValueChange = { contactPhone = it },
-                        label = { Text("Phone Number") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
+                Text(
+                    "Choose a contact from your device. Its name and phone number will be formatted as a vCard and sent through the encrypted message pipeline.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        onSendMedia("CONTACT", "$contactName\n$contactPhone", "", 0)
                         showContactDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B72E8))
-                ) {
-                    Text("Send Contact")
-                }
+                        nativeContactPickerLauncher.launch(
+                            Intent(Intent.ACTION_PICK, ContactsContract.Contacts.CONTENT_URI)
+                        )
+                    }
+                ) { Text("Choose contact") }
             },
             dismissButton = {
                 TextButton(onClick = { showContactDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+ancel") }
             }
         )
     }

@@ -91,4 +91,18 @@ class ChatDeliveryExperienceEngineTest {
             }
     }
 
+    @Test
+    fun selectedContactIsEncodedAsEscapedVCard() {
+        val payload = ContactVCardFormatter.toVCard("Mira, Dev; Team", "+91 98765 43210")
+        assertTrue(payload.startsWith("BEGIN:VCARD\nVERSION:3.0\n"))
+        assertTrue(payload.contains("FN:Mira\\, Dev\\; Team"))
+        assertTrue(payload.contains("TEL;TYPE=CELL:+91 98765 43210"))
+        assertTrue(payload.endsWith("END:VCARD"))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun vCardRequiresAnActualContact() {
+        ContactVCardFormatter.toVCard("", "")
+    }
+
 }
