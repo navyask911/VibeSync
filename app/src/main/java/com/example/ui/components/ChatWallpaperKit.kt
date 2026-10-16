@@ -9,6 +9,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -17,6 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -51,9 +55,9 @@ data class ChatWallpaperStyle(
 @Composable
 fun rememberChatWallpaperStyle(state: ChatWallpaperUiState): ChatWallpaperStyle {
     val context = LocalContext.current
-    val lineColor = if (state.isDarkMode) Color(0xFF222E35) else Color(0xFFD1D7DB)
-    val backgroundColor = if (state.isDarkMode) Color(0xFF0B141A) else Color(0xFFF0F2F5)
-    val bitmap = remember(context, state.theme, state.isDarkMode) {
+    val lineColor = (if (state.isDarkMode) Color(0xFF303840) else Color(0xFF8A929A)).copy(alpha = state.wallpaperOpacity.coerceIn(0.05f, 0.75f))
+    val backgroundColor = if (state.isDarkMode) Color(0xFF151A20) else Color(0xFFF5F6F7)
+    val bitmap = remember(context, state.theme, state.isDarkMode, state.wallpaperOpacity) {
         val drawable: Drawable? = context.getDrawable(state.theme.drawableRes)?.mutate()
         if (drawable == null) {
             Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
@@ -90,7 +94,8 @@ fun ChatWallpaperPickerDialog(
 ) {
     var selectedTheme by remember(state) { mutableStateOf(state.theme) }
     var darkMode by remember(state) { mutableStateOf(state.isDarkMode) }
-    val preview = rememberChatWallpaperStyle(ChatWallpaperUiState(selectedTheme, darkMode))
+    var wallpaperOpacity by remember(state) { mutableStateOf(state.wallpaperOpacity.coerceIn(0.05f, 0.75f)) }
+    val preview = rememberChatWallpaperStyle(ChatWallpaperUiState(selectedTheme, darkMode, wallpaperOpacity))
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -98,14 +103,14 @@ fun ChatWallpaperPickerDialog(
             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text("Chat wallpaper", style = MaterialTheme.typography.titleLarge)
                 Text(
-                    "Local Bangalore doodles · no network storage",
+                    "Bundled Indian city line art · stored on this device",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(modifier = Modifier.fillMaxWidth().heightIn(max = 440.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -130,6 +135,13 @@ fun ChatWallpaperPickerDialog(
                         }
                     }
                 }
+                Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Line opacity", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                        Text("${(wallpaperOpacity * 100).toInt()}%", style = MaterialTheme.typography.labelMedium)
+                    }
+                    Slider(value = wallpaperOpacity, onValueChange = { wallpaperOpacity = it }, valueRange = 0.05f..0.75f)
+                }
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
@@ -141,7 +153,7 @@ fun ChatWallpaperPickerDialog(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Dark mode", style = MaterialTheme.typography.bodyMedium)
-                            Text("Deep teal-black · #0B141A", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Neutral dark surface", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(checked = darkMode, onCheckedChange = { darkMode = it })
                     }
@@ -149,7 +161,7 @@ fun ChatWallpaperPickerDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onApply(ChatWallpaperUiState(selectedTheme, darkMode)) }) { Text("Apply wallpaper") }
+            TextButton(onClick = { onApply(ChatWallpaperUiState(selectedTheme, darkMode, wallpaperOpacity)) }) { Text("Apply wallpaper") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
