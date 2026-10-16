@@ -784,48 +784,24 @@ fun DatingAppRoot(
                 onStartCall = { isVideo ->
                     viewModel.startCall(profile, isVideo)
                 },
-                onBack = { viewModel.closeChat() },
+                onBack = {
+                    viewModel.closeChat()
+                    coroutineScope.launch {
+                        runCatching { com.example.util.LastActiveRouteStore.clear(syncContext) }
+                    }
+                },
                 onClearChat = { alsoDeleteMedia ->
-                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                    coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                         val database = com.example.data.database.DatingDatabase.getDatabase(context)
-                        val sql = database.openHelper.writableDatabase
-                        sql.beginTransaction()
-                        try {
-                            sql.execSQL("DELETE FROM chat_messages WHERE matchId = ?", arrayOf(match.matchId))
-                            sql.execSQL("DELETE FROM local_messages WHERE matchId = ?", arrayOf(match.matchId))
-                            // Clear conversation-scoped receipt/delivery projections when present, without touching the match/contact row.
-                            val cursor = sql.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-                            val tables = mutableListOf<String>()
-                            cursor.use { while (it.moveToNext()) tables += it.getString(0) }
-                            for (table in tables) {
-                                if (table == "chat_messages" || table == "local_messages" || table == "matches") continue
-                                val columnsCursor = sql.query("PRAGMA table_info(`$table`)")
-                                val columns = mutableSetOf<String>()
-                                columnsCursor.use { while (it.moveToNext()) columns += it.getString(1) }
-                                val scopedColumn = when {
-                                    "matchId" in columns -> "matchId"
-                                    "match_id" in columns -> "match_id"
-                                    else -> null
-                                }
-                                if (scopedColumn != null && (table.contains("receipt", true) || table.contains("deliver", true) || table.contains("message_state", true))) {
-                                    sql.execSQL("DELETE FROM `$table` WHERE `$scopedColumn` = ?", arrayOf(match.matchId))
-                                }
-                            }
-                            runCatching {
-                                sql.execSQL("UPDATE matches SET lastMessage = '', lastMessageTime = 0, hasUnread = 0 WHERE matchId = ?", arrayOf(match.matchId))
-                            }
-                            sql.setTransactionSuccessful()
-                        } catch (failure: Throwable) {
-                            android.util.Log.e("VibeSyncClearChat", "Could not clear local conversation ${match.matchId}", failure)
-                        } finally {
-                            sql.endTransaction()
-                        }
+                        val messageIds = database.conversationClearDao().clearConversation(match.matchId)
                         if (alsoDeleteMedia) {
-                            val key = match.matchId
-                            listOf(context.cacheDir, context.filesDir).forEach { rootDir ->
-                                rootDir.walkTopDown().filter { file -> file.isFile && file.name.contains(key, ignoreCase = true) }
-                                    .forEach { file -> runCatching { file.delete() } }
-                            }
+                            com.example.util.ChatAttachmentCryptoManager.purgeLocalCachedMediaForMessageIds(
+                                context = context,
+                                messageIds = messageIds
+                            )
+                        }
+                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            Toast.makeText(context, "Chat cleared on this device", Toast.LENGTH_SHORT).show()
                         }
                     }
                 },
