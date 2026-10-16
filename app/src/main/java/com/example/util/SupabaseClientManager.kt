@@ -1156,31 +1156,50 @@ object SupabaseClientManager {
             )
             httpClient.newCall(request).execute().use { response ->
                 val responseBody = response.body?.string().orEmpty()
-                val body = responseBody.trim().trim('"')
-                val responseChunks = responseBody.chunked(800).ifEmpty { listOf("<empty response body>") }
-                responseChunks.forEachIndexed { index, chunk ->
-                    val message = "Dual-store Tink key publish response body chunk ${index + 1}/${responseChunks.size} " +
-                        "(HTTP ${response.code}): ${chunk}"
-                    if (response.isSuccessful) Log.i(TAG, message) else Log.w(TAG, message)
-                }
+                val result = runCatching { JSONObject(responseBody) }.getOrNull()
+                val returnedStatus = result?.optString("status", "").orEmpty()
+                val returnedKeyId = result?.optString("key_id", "").orEmpty()
 
-                val result = runCatching { JSONObject(body) }.getOrNull()
-                val updated = response.isSuccessful &&
-                    (
-                        body.equals("true", ignoreCase = true) ||
-                            result?.optBoolean("ok", false) == true ||
-                            result?.optString("status")?.equals("ok", ignoreCase = true) == true
+                // The local key may be marked confirmed only when both server assertions match
+                // this exact public keyset. A legacy {ok:true}, boolean, or status-only response
+                // is deliberately insufficient.
+                val serverConfirmed = response.isSuccessful &&
+                    returnedStatus.equals("ok", ignoreCase = true) &&
+                    returnedKeyId == publicKeyId
+
+                if (!serverConfirmed) {
+                    // Log the complete HTTP error body in small chunks so Logcat does not
+                    // truncate the PostgreSQL message. Never log the outgoing keyset/token.
+                    val responseChunks = responseBody.chunked(800).ifEmpty { listOf("<empty response body>") }
+                    responseChunks.forEachIndexed { index, chunk ->
+                        Log.w(
+                            TAG,
+                            "Dual-store Tink key publish response chunk ${index + 1}/${responseChunks.size} " +
+                                "(HTTP ${response.code}): ${chunk}"
                         )
-                if (updated) {
-                    TinkCryptoManager.markMyPublicIdentityKeyPublished(context, activeProfileId, publicKeyset)
-                    Log.i(TAG, "Published Tink public identity key to profiles and user_public_keys.")
-                } else {
+                    }
                     Log.w(
                         TAG,
-                        "Dual-store Tink key publish failed: HTTP ${response.code}; full response body logged above."
+                        "Tink key publication not confirmed: HTTP ${response.code}, " +
+                            "status=${returnedStatus.ifBlank { "<missing>" }}, " +
+                            "returned_key_id_matches_local=${returnedKeyId == publicKeyId}."
                     )
+                    return@use false
                 }
-                updated
+
+                // Persist the Room/local confirmation marker only after status and key_id match.
+                val locallyMarked = TinkCryptoManager.markMyPublicIdentityKeyPublished(
+                    context,
+                    activeProfileId,
+                    publicKeyset
+                )
+                if (!locallyMarked) {
+                    Log.w(TAG, "Supabase confirmed Tink key_id, but local publication confirmation could not be persisted.")
+                    return@use false
+                }
+
+                Log.i(TAG, "Tink public key publication confirmed by Supabase; returned key_id matches local key.")
+                true
             }
         } catch (t: Throwable) {
             Log.w(TAG, "Tink public key publication failed: ${t.javaClass.simpleName}: ${t.message}")
