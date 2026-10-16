@@ -2,6 +2,8 @@ package com.example.data.dao
 
 import android.content.Context
 import androidx.room.Room
+import androidx.work.Configuration
+import androidx.work.WorkManager
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.database.DatingDatabase
 import com.example.data.model.ChatMessageEntity
@@ -29,6 +31,11 @@ class ConversationClearDaoTest {
     @Before
     fun setUp() {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        // Robolectric uses a lightweight test Application; initialize WorkManager explicitly for
+        // Room/application hooks that schedule background synchronization.
+        runCatching {
+            WorkManager.initialize(context, Configuration.Builder().build())
+        }
         database = Room.inMemoryDatabaseBuilder(context, DatingDatabase::class.java)
             .allowMainThreadQueries()
             .build()
