@@ -1616,7 +1616,9 @@ object SupabaseClientManager {
         val messageId: String,
         val senderId: String,
         val isDelivered: Boolean,
-        val isRead: Boolean
+        val isRead: Boolean,
+        val deliveryState: String = "SENT_TO_SERVER",
+        val timestamp: Long = 0L
     )
 
     /**
@@ -1629,7 +1631,7 @@ object SupabaseClientManager {
             try {
                 val safeMatch = java.net.URLEncoder.encode(canonicalMatchId, "UTF-8")
                 val request = buildRequest(
-                    endpoint = "chat_messages?select=message_id,sender_id,is_delivered,is_read,read_at&match_id=eq.$safeMatch&order=timestamp.asc",
+                    endpoint = "chat_message_receipts?select=message_id,status,timestamp&match_id=eq.$safeMatch&order=timestamp.asc",
                     method = "GET"
                 )
                 httpClient.newCall(request).execute().use { response ->
@@ -1643,14 +1645,17 @@ object SupabaseClientManager {
                         for (index in 0 until rows.length()) {
                             val row = rows.optJSONObject(index) ?: continue
                             val messageId = row.optSafeString("message_id")
-                            val senderId = row.optSafeString("sender_id")
-                            if (messageId.isBlank() || senderId.isBlank()) continue
+                            val status = row.optString("status", "SENT_TO_SERVER").trim().uppercase()
+                            if (messageId.isBlank() || status !in setOf("SENT_TO_SERVER", "DELIVERED", "READ", "FAILED")) continue
+                            val receiptAt = ChatDeliveryPresentation.parseTimestampMillis(row.optString("timestamp")) ?: 0L
                             add(
                                 ChatDeliveryState(
                                     messageId = messageId,
-                                    senderId = senderId,
-                                    isDelivered = row.optBoolean("is_delivered", false),
-                                    isRead = row.optBoolean("is_read", false) || row.optString("read_at").isNotBlank()
+                                    senderId = "",
+                                    isDelivered = status == "DELIVERED" || status == "READ",
+                                    isRead = status == "READ",
+                                    deliveryState = status,
+                                    timestamp = receiptAt
                                 )
                             )
                         }

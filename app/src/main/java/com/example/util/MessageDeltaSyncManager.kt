@@ -322,6 +322,12 @@ object MessageDeltaSyncManager {
                         ackFailures++
                         Log.w(TAG, "Delivery ACK left in Room outbox for message_id=${remote.messageId}.")
                     }
+                } else if (!canRenderPlaintext) {
+                    // Retain ciphertext for recovery; NACK changes sender state but never purges it.
+                    if (!SupabaseBackendManager.markMessageDecryptionFailed(remote.messageId)) {
+                        ackFailures++
+                        Log.w(TAG, "Decryption NACK will retry with the next inbox sync.")
+                    }
                 }
 
                 if (

@@ -14,6 +14,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.ui.input.pointer.pointerInput
@@ -1012,7 +1013,7 @@ private fun ChatDetailScreenContent(
     }
 
     fun lazyIndexForMessage(messageId: String): Int {
-        var index = 1 // the intro header card
+        var index = 0
         groupedMessages.forEach { (_, dayMessages) ->
             index += 1 // sticky date separator
             val localIndex = dayMessages.indexOfFirst { it.messageId == messageId }
@@ -1026,8 +1027,8 @@ private fun ChatDetailScreenContent(
 
     LaunchedEffect(visibleMessages.size) {
         if (visibleMessages.isNotEmpty()) {
-            // Index 0 is the recipient intro card, so the last message is at index size.
-            listState.animateScrollToItem((visibleMessages.size + groupedMessages.size).coerceAtLeast(0))
+            // Only sticky date separators and message rows are part of the scrollable timeline.
+            listState.animateScrollToItem((visibleMessages.size + groupedMessages.size - 1).coerceAtLeast(0))
         }
     }
 
@@ -1463,14 +1464,6 @@ private fun ChatDetailScreenContent(
                     contentPadding = PaddingValues(vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    item(key = "recipient_header_card") {
-                        RecipientHeaderCard(
-                            profile = profile,
-                            displayName = resolvedPartnerName,
-                            onClick = onViewProfile
-                        )
-                    }
-
                     groupedMessages.forEach { (messageDate, dayMessages) ->
                     stickyHeader(key = "date-" + messageDate.toString()) {
                         DateSeparatorPill(dateSeparatorLabel(messageDate))
@@ -1573,6 +1566,16 @@ private fun ChatDetailScreenContent(
                                 onMediaClick = { url, type ->
                                     fullScreenMediaUrl = url
                                     fullScreenMediaType = type
+                                },
+                                onRetryDelivery = { failedMessageId ->
+                                    coroutineScope.launch {
+                                        val retried = com.example.util.SupabaseClientManager.dispatchEncryptedMessagePush(failedMessageId)
+                                        if (retried) {
+                                            localMessageStatuses[failedMessageId] = "SENT_TO_SERVER"
+                                        } else {
+                                            Toast.makeText(context, "Retry could not be queued. Check your connection and try again.", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
                                 }
                             )
                         }
@@ -4659,13 +4662,21 @@ private fun VibeSyncChatBubble(
     onToggleSelected: () -> Unit = {},
     onReactToMessage: (messageId: String, emoji: String) -> Unit,
     onActionClick: () -> Unit,
-    onMediaClick: (String, String) -> Unit
+    onMediaClick: (String, String) -> Unit,
+    onRetryDelivery: (String) -> Unit = {}
 ) {
-    val formattedTime = remember(message.timestamp) { formatRelativeMessageTime(message.timestamp) }
+    val context = LocalContext.current
+    val use24HourClock = android.text.format.DateFormat.is24HourFormat(context)
+    val formattedTime = remember(message.timestamp, use24HourClock) {
+        com.example.util.ChatDeliveryPresentation.formatLocalTime(message.timestamp, use24HourClock)
+    }
     val bubbleTextForDisplay = com.example.util.MessageLocalRetentionPolicy.displayText(
         storedText = message.text, decryptState = message.decryptState, isOutgoing = isOutgoing
     )
-    val bubbleTextColor = if (isOutgoing) MaterialTheme.colorScheme.onPrimary else chatTextColor
+    val darkChatTheme = isSystemInDarkTheme()
+    val bubbleTextColor = if (darkChatTheme) Color(0xFFF4F7FA) else Color(0xFF17212B)
+    val outgoingBubbleColor = if (darkChatTheme) Color(0xFF242F3D) else Color(0xFFF0F4F8)
+    val incomingBubbleColor = if (darkChatTheme) Color(0xFF1E242B) else Color(0xFFFFFFFF)
 
     if (message.senderId.equals("SYSTEM", ignoreCase = true)) {
         Box(
@@ -4711,7 +4722,7 @@ private fun VibeSyncChatBubble(
             } else {
                 RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 4.dp, bottomEnd = 18.dp)
             },
-            color = if (isOutgoing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+            color = if (isOutgoing) outgoingBubbleColor else incomingBubbleColor,
             shadowElevation = if (isOutgoing) 0.5.dp else 1.dp,
             border = if (isOutgoing) null else BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
             modifier = Modifier
@@ -5427,17 +5438,20 @@ private fun VibeSyncChatBubble(
                     Text(
                         text = formattedTime,
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (isOutgoing) Color.White.copy(alpha = 0.74f) else MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (darkChatTheme) Color(0xFFCBD5E1) else Color(0xFF52606D),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium
                     )
                     if (isOutgoing && !message.isDeleted && !message.isDeletedForEveryone) {
                         Spacer(modifier = Modifier.width(3.dp))
-                        val status = localMessageStatuses[message.messageId]
-                        val isFailed = status == "FAILED"
-                        val isRead = readReceiptsEnabled && (status == "READ" || message.isRead)
-                        val isDelivered = status == "DELIVERED" || message.isDelivered
-                        val isWaitingForRecipientKey = message.deliveryState.equals("PENDING", ignoreCase = true) &&
+                        val status = localMessageStatuses[message.messageId] ?: message.deliveryState
+                        val tick = com.example.util.ChatDeliveryPresentation.tick(status)
+                        val isFailed = tick.state == com.example.util.ChatDeliveryPresentation.State.FAILED
+                        val isRead = readReceiptsEnabled &&
+                            (tick.state == com.example.util.ChatDeliveryPresentation.State.READ || message.isRead)
+                        val isDelivered = tick.state == com.example.util.ChatDeliveryPresentation.State.DELIVERED || message.isDelivered
+                        val isPending = tick.state == com.example.util.ChatDeliveryPresentation.State.PENDING
+                        val isWaitingForRecipientKey = isPending &&
                             message.lastSyncError.contains("RecipientKeyNotFoundException", ignoreCase = true)
 
                         if (isWaitingForRecipientKey) {
@@ -5453,29 +5467,39 @@ private fun VibeSyncChatBubble(
                                 Icon(
                                     imageVector = Icons.Default.Schedule,
                                     contentDescription = "Waiting for recipient to register security keys",
-                                    tint = if (isOutgoing) Color.White.copy(alpha = 0.72f)
-                                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
+                                    tint = Color(0xFF9E9E9E),
                                     modifier = Modifier.size(14.dp)
                                 )
                             }
                         } else {
-                            // Neutral grey for sent/delivered; electric blue only for read receipts.
-                            val (icon, tint) = when {
-                                isRead -> Icons.Default.DoneAll to VibeSyncReadTickBlue
-                                isDelivered -> Icons.Default.DoneAll to VibeSyncMetadataDark
-                                else -> Icons.Default.Check to VibeSyncMetadataDark
+                            when (tick.glyph) {
+                                com.example.util.ChatDeliveryPresentation.Glyph.CLOCK -> Icon(
+                                    imageVector = Icons.Default.Schedule,
+                                    contentDescription = tick.contentDescription,
+                                    tint = Color(tick.colorArgb),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                com.example.util.ChatDeliveryPresentation.Glyph.SINGLE_CHECK -> Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = tick.contentDescription,
+                                    tint = Color(tick.colorArgb),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                com.example.util.ChatDeliveryPresentation.Glyph.DOUBLE_CHECK -> Icon(
+                                    imageVector = Icons.Default.DoneAll,
+                                    contentDescription = if (isRead) "Read" else if (isDelivered) "Delivered" else tick.contentDescription,
+                                    tint = Color(tick.colorArgb),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                com.example.util.ChatDeliveryPresentation.Glyph.EXCLAMATION -> Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.clickable { onRetryDelivery(message.messageId) }
+                                ) {
+                                    Text("!", color = Color(0xFFE53935), fontSize = 14.sp, fontWeight = FontWeight.ExtraBold)
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    Text("Retry", color = Color(0xFFE53935), fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                                }
                             }
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = when {
-                                    isFailed -> "Failed"
-                                    isRead -> "Read"
-                                    isDelivered -> "Delivered"
-                                    else -> "Sent"
-                                },
-                                tint = tint,
-                                modifier = Modifier.size(14.dp)
-                            )
                         }
                     }
                 }

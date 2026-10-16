@@ -1687,6 +1687,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     val shouldMarkRead = isBelongingToActiveConversation &&
                         database.userPreferencesDao().getPreferencesSync()?.readReceiptsEnabled != false
 
+                    val receiveCommitAt = System.currentTimeMillis()
                     val entity = ChatMessageEntity(
                         messageId = msgId,
                         matchId = targetMatchId,
@@ -1694,7 +1695,9 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         text = decodedPayload.text,
                         timestamp = timestamp,
                         isDelivered = true,
+                        deliveredAt = receiveCommitAt,
                         isRead = if (shouldMarkRead) true else isRead,
+                        readAt = if (shouldMarkRead || isRead) receiveCommitAt else 0L,
                         mediaType = mediaType,
                         mediaUrl = decodedPayload.mediaUrl ?: mediaUrl,
                         voiceDurationSeconds = voiceSeconds,
@@ -1735,13 +1738,10 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                         )
                     }
 
-                    // If user is currently in active chat with the sender, immediately mark as read on backend and locally
+                    // This message is now visible in the active chat. Use its durable receipt ID;
+                    // the ciphertext row has already been purged by the delivery acknowledgement.
                     if (shouldMarkRead) {
-                        com.example.util.SupabaseBackendManager.markMessagesAsRead(
-                            currentUserPhone,
-                            senderPhone,
-                            recordMatchId.ifBlank { canonicalActiveMatchId }
-                        )
+                        com.example.util.SupabaseBackendManager.markMessageRead(msgId)
                         repository.markMatchAsRead(targetMatchId, currentUserPhone, senderPhone)
                     }
                 }
@@ -1780,12 +1780,15 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     return@launch
                 }
 
-                val deliveryState = record.optString("delivery_state", "").trim().uppercase()
+                val deliveryState = record.optString("status", record.optString("delivery_state", "")).trim().uppercase()
                 val isRead = record.optBoolean("is_read", false) || deliveryState == "READ"
                 val isDelivered = record.optBoolean("is_delivered", false) ||
                     deliveryState == "DELIVERED" || deliveryState == "READ"
                 val isSentToServer = deliveryState == "SENT_TO_SERVER"
-                val matchId = record.optString("match_id", "")
+                val isFailed = deliveryState == "FAILED"
+                val receiptAt = com.example.util.ChatDeliveryPresentation.parseTimestampMillis(
+                    record.optString("timestamp")
+                ) ?: System.currentTimeMillis()
 
                 if (msgId.isNotBlank()) {
                     when {
@@ -1796,15 +1799,13 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                             }
                             database.chatMessageDao().markMessageAsReadWithExpiry(
                                 messageId = msgId,
-                                readAt = System.currentTimeMillis(),
+                                readAt = receiptAt,
                                 timerSeconds = localMatch?.disappearingTimerSeconds ?: 0
                             )
                         }
-                        isDelivered -> database.chatMessageDao().markMessageAsDelivered(msgId)
-                        isSentToServer -> database.chatMessageDao().markOutboxSentToServerIfPending(
-                            msgId,
-                            System.currentTimeMillis()
-                        )
+                        isDelivered -> database.chatMessageDao().markMessageAsDelivered(msgId, receiptAt)
+                        isFailed -> database.chatMessageDao().markMessageDeliveryFailed(msgId, receiptAt)
+                        isSentToServer -> database.chatMessageDao().markOutboxSentToServerIfPending(msgId, receiptAt)
                     }
                 }
                 // A status-only Realtime UPDATE applies only to its message ID. Do not bulk-mark
