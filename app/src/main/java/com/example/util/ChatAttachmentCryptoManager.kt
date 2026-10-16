@@ -340,6 +340,35 @@ object ChatAttachmentCryptoManager {
     private fun aad(messageId: String): ByteArray =
         ("vibesync-chat-attachment-v1:" + messageId.trim()).toByteArray(Charsets.UTF_8)
 
+
+    /**
+     * Removes only message-scoped media caches for a conversation the user explicitly cleared.
+     * Remote media and unrelated files are never touched by this local-only operation.
+     */
+    fun purgeLocalCachedMediaForMessageIds(context: Context, messageIds: Collection<String>): Int {
+        val app = context.applicationContext
+        var removed = 0
+        for (messageId in messageIds.map(String::trim).filter(String::isNotBlank).distinct()) {
+            val token = safeToken(messageId)
+            val candidates = mutableListOf(
+                File(File(app.filesDir, "chat-attachments-encrypted"), "$token.enc"),
+                File(File(app.filesDir, "chat-voice-ciphertext"), "$token.enc"),
+                File(app.cacheDir, "attachment-source-$token.tmp")
+            )
+            app.cacheDir.listFiles()?.filter { file ->
+                file.isFile && (
+                    file.name.startsWith("vibesync_attachment_$token.") ||
+                    file.name == "voice_$token.m4a" ||
+                    file.name == "attachment-source-$token.tmp"
+                )
+            }?.let(candidates::addAll)
+            for (file in candidates.distinct()) {
+                if (file.isFile && runCatching { file.delete() }.getOrDefault(false)) removed++
+            }
+        }
+        return removed
+    }
+
     private fun safeToken(value: String): String =
         MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
             .take(12).joinToString("") { "%02x".format(it) }
