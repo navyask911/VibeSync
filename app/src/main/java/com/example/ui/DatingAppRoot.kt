@@ -161,7 +161,8 @@ enum class DatingTab(val title: String) {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DatingAppRoot(
-    viewModel: DatingViewModel = viewModel()
+    viewModel: DatingViewModel = viewModel(),
+    restoreChatRouteAfterProcessDeath: Boolean = false
 ) {
     val pagerState = rememberPagerState(initialPage = 0, pageCount = { 4 })
     val coroutineScope = rememberCoroutineScope()
@@ -192,20 +193,36 @@ fun DatingAppRoot(
                 .onFailure { android.util.Log.w("VibeSyncNavigation", "Could not persist chat route.") }
         }
     }
-    LaunchedEffect(isLoggedIn, isSessionChecking, authState, matches, allProfiles) {
-        if (isSessionChecking || authState == AuthState.INITIALIZING) return@LaunchedEffect
+    LaunchedEffect(restoreChatRouteAfterProcessDeath, isLoggedIn, isSessionChecking, authState, matches, allProfiles) {
+        if (!restoreChatRouteAfterProcessDeath ||
+            isSessionChecking ||
+            authState == AuthState.INITIALIZING
+        ) return@LaunchedEffect
         if (!isLoggedIn || authState != AuthState.AUTHENTICATED) {
             runCatching { com.example.util.LastActiveRouteStore.clear(syncContext) }
             return@LaunchedEffect
         }
-        val savedMatchId = runCatching {
+
+        val storedRoute = runCatching {
             com.example.util.LastActiveRouteStore.readRoute(syncContext)
-                ?.let(com.example.util.LastActiveRoutePolicy::parseChatMatchId)
         }.getOrNull() ?: return@LaunchedEffect
+        val savedMatchId = com.example.util.LastActiveRoutePolicy.parseChatMatchId(storedRoute)
+        if (savedMatchId.isNullOrBlank()) {
+            runCatching { com.example.util.LastActiveRouteStore.clear(syncContext) }
+            return@LaunchedEffect
+        }
+
         val savedMatch = matches.firstOrNull { it.matchId.equals(savedMatchId, ignoreCase = true) }
-            ?: return@LaunchedEffect
+        if (savedMatch == null) {
+            runCatching { com.example.util.LastActiveRouteStore.clear(syncContext) }
+            return@LaunchedEffect
+        }
         val savedProfile = allProfiles.firstOrNull { it.id.equals(savedMatch.profileId, ignoreCase = true) }
-            ?: viewModel.getProfile(savedMatch.profileId) ?: return@LaunchedEffect
+            ?: viewModel.getProfile(savedMatch.profileId)
+        if (savedProfile == null) {
+            runCatching { com.example.util.LastActiveRouteStore.clear(syncContext) }
+            return@LaunchedEffect
+        }
         if (viewModel.activeChat.value == null) viewModel.openChat(savedMatch, savedProfile)
     }
 
