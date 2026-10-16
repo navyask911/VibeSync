@@ -1055,7 +1055,8 @@ object SupabaseClientManager {
             }
 
             // The key is generated locally and the private keyset never leaves this device.
-            // Profile callers often don't hydrate publicIdentityKey from Room, so derive it here.
+            // Keep key publication on its dedicated validating RPC so profile sync cannot write
+            // an unconfirmed identity key independently of the dual-store publication result.
             val publicIdentityKey = TinkCryptoManager.getMyPublicKeysetJson().trim()
             if (publicIdentityKey.isBlank()) {
                 Log.w(TAG, "Local Tink public keyset is not available; profile sync will retry key publication after key initialization.")
@@ -1080,9 +1081,6 @@ object SupabaseClientManager {
                 put("occupation", ContactResolver.sanitizeName(profile.occupation, "Member"))
                 put("qualification", ContactResolver.sanitizeName(profile.qualification, "Verified"))
                 put("marital_status", ContactResolver.sanitizeName(profile.maritalStatus, "Single"))
-                if (publicIdentityKey.isNotBlank()) {
-                    put("public_identity_key", publicIdentityKey)
-                }
             }
 
             val request = buildRequest(
