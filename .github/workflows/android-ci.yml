@@ -9,6 +9,7 @@ on:
       - vibesync-hardening-2026-10-07
       - fix/release-startup-icons-ci
       - feat/chat-experience-engine
+      - feat/fcm-lifecycle-clear-chat-2026-10-17
     paths:
       - "app/**"
       - ".env.example"
