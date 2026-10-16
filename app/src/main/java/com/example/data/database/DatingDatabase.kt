@@ -7,6 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.dao.ChatMessageDao
+import com.example.data.dao.ConversationClearDao
 import com.example.data.dao.ExpiredChatMessageDao
 import com.example.data.dao.FriendshipRequestDao
 import com.example.data.dao.MatchDao
@@ -101,6 +102,7 @@ abstract class DatingDatabase : RoomDatabase() {
     abstract fun swipeDao(): SwipeDao
     abstract fun matchDao(): MatchDao
     abstract fun chatMessageDao(): ChatMessageDao
+    abstract fun conversationClearDao(): ConversationClearDao
     abstract fun expiredChatMessageDao(): ExpiredChatMessageDao
     abstract fun messageDao(): MessageDao
     abstract fun messageSyncWatermarkDao(): MessageSyncWatermarkDao
