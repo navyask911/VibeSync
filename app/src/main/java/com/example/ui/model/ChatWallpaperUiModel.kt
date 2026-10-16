@@ -36,7 +36,7 @@ enum class ChatWallpaperTheme(@DrawableRes val drawableRes: Int, val title: Stri
     KOHIMA(R.drawable.wallpaper_capital_kohima, "Kohima", "Kohima War Cemetery · Hornbill Tribal Motifs · Blyth's Tragopan · Alder Tree · Rhododendron"),
     AGARTALA(R.drawable.wallpaper_capital_agartala, "Agartala", "Ujjayanta Palace · Neermahal · Phayre's Leaf Monkey · Agarwood Tree · Nageshwar Flower"),
     AMARAVATI(R.drawable.wallpaper_capital_amaravati, "Amaravati", "Amaravati Stupa · Krishna River · Buddhist Stone Motifs · Blackbuck · Neem Tree · Jasmine"),
-    PORT_BLAIR(R.drawable.wallpaper_capital_port_blair, "Sri Vijaya Puram", "Cellular Jail · Harbour Boats · Island Coral · Sea Eagle · Coconut Palm · Hibiscus"),
+    PORT_BLAIR(R.drawable.wallpaper_capital_sri_vijaya_puram, "Sri Vijaya Puram", "Cellular Jail · Harbour Boats · Island Coral · Sea Eagle · Coconut Palm · Hibiscus"),
     DAMAN(R.drawable.wallpaper_capital_daman, "Daman", "Moti Daman Fort · Lighthouse · Arabian Sea Boats · Coastal Bird Motifs · Coconut Palm · Hibiscus"),
     SILVASSA(R.drawable.wallpaper_city_silvassa, "Silvassa", "Warli Folk Art · Tribal Museum Motifs · Gaur · Teak Forests · Palash Flower"),
     KAVARATTI(R.drawable.wallpaper_capital_kavaratti, "Kavaratti", "Lagoon Boats · Coral Reefs · Green Sea Turtle · Coconut Palm · Island Flowers"),
