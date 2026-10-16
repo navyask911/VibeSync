@@ -3,6 +3,8 @@ package com.example.util
 import android.content.Context
 import android.util.Base64
 import android.util.Log
+import com.example.data.database.DatingDatabase
+import com.example.data.model.TinkKeyPublicationEntity
 import com.google.crypto.tink.CleartextKeysetHandle
 import com.google.crypto.tink.HybridDecrypt
 import com.google.crypto.tink.HybridEncrypt
@@ -15,6 +17,7 @@ import com.google.crypto.tink.hybrid.HybridConfig
 import com.google.crypto.tink.integration.android.AndroidKeysetManager
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
+import java.util.Locale
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
@@ -37,7 +40,6 @@ object TinkCryptoManager {
     private const val MASTER_KEY_URI = "android-keystore://vibesync_master_key"
     const val TINK_PREFIX = "TINK_ENC:"
     private const val CIPHERTEXT_ENVELOPE_V2_PREFIX = "V2:"
-    private const val PUBLISH_STATE_PREFS = "vibesync_tink_publish_state"
 
     data class PublicKeyMetadata(val keyId: String, val fingerprint: String)
 
@@ -156,42 +158,65 @@ object TinkCryptoManager {
         MessageDigest.getInstance("SHA-256").digest(canonicalPublicKeyBytes(publicKeysetJson))
             .joinToString("") { "%02x".format(it) }
 
-    /** True only after the current local identity keyset has been successfully published to Supabase. */
-    fun isMyPublicIdentityKeyPublished(context: Context, profileId: String, publicKeysetJson: String): Boolean {
+    /** True only when Room records a server-confirmed publication of this exact local key ID/fingerprint. */
+    suspend fun isMyPublicIdentityKeyPublished(
+        context: Context,
+        profileId: String,
+        publicKeysetJson: String
+    ): Boolean {
         if (profileId.isBlank() || publicKeysetJson.isBlank()) return false
-        val fingerprint = try {
-            publicKeyFingerprint(publicKeysetJson)
+        val metadata = try {
+            getPublicKeyMetadata(publicKeysetJson)
         } catch (_: Throwable) {
             return false
         }
-        val marker = "published_" + profilePreferenceToken(profileId)
-        return context.applicationContext
-            .getSharedPreferences(PUBLISH_STATE_PREFS, Context.MODE_PRIVATE)
-            .getString(marker, "")
-            .equals(fingerprint, ignoreCase = true)
+        return try {
+            val normalizedProfileId = profileId.trim().lowercase(Locale.ROOT)
+            val stored = DatingDatabase.getDatabase(context.applicationContext)
+                .tinkKeyPublicationDao()
+                .getPublication(normalizedProfileId)
+            stored != null &&
+                stored.keyId == metadata.keyId &&
+                stored.keyFingerprint.equals(metadata.fingerprint, ignoreCase = true)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Unable to read local Tink publication confirmation from Room: ${failure.javaClass.simpleName}")
+            false
+        }
     }
 
-    /** Persist publication state only after the authenticated Supabase RPC confirms success. */
-    fun markMyPublicIdentityKeyPublished(context: Context, profileId: String, publicKeysetJson: String): Boolean {
+    /** Persist publication confirmation in encrypted Room only after the server response is verified. */
+    suspend fun markMyPublicIdentityKeyPublished(
+        context: Context,
+        profileId: String,
+        publicKeysetJson: String
+    ): Boolean {
         if (profileId.isBlank() || publicKeysetJson.isBlank()) return false
-        val fingerprint = try {
-            publicKeyFingerprint(publicKeysetJson)
+        val metadata = try {
+            getPublicKeyMetadata(publicKeysetJson)
         } catch (_: Throwable) {
             return false
         }
-        val marker = "published_" + profilePreferenceToken(profileId)
-        return context.applicationContext
-            .getSharedPreferences(PUBLISH_STATE_PREFS, Context.MODE_PRIVATE)
-            .edit()
-            .putString(marker, fingerprint)
-            .commit()
+        return try {
+            DatingDatabase.getDatabase(context.applicationContext)
+                .tinkKeyPublicationDao()
+                .upsertPublication(
+                    TinkKeyPublicationEntity(
+                        profileId = profileId.trim().lowercase(Locale.ROOT),
+                        keyId = metadata.keyId,
+                        keyFingerprint = metadata.fingerprint,
+                        confirmedAtEpochMillis = System.currentTimeMillis()
+                    )
+                )
+            true
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Unable to persist local Tink publication confirmation in Room: ${failure.javaClass.simpleName}")
+            false
+        }
     }
-
-    private fun profilePreferenceToken(profileId: String): String =
-        MessageDigest.getInstance("SHA-256")
-            .digest(profileId.trim().lowercase().toByteArray(Charsets.UTF_8))
-            .take(12)
-            .joinToString("") { "%02x".format(it) }
 
     private fun encodeCiphertextEnvelope(
         ciphertextBytes: ByteArray,
