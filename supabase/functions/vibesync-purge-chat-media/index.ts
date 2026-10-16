@@ -38,6 +38,22 @@ async function resolveProfileId(admin: ReturnType<typeof createClient>, sessionT
 }
 
 function parseStorageObject(mediaUrl: string): { bucket: string; path: string } | null {
+  const privateSchemes: Array<[string, string]> = [
+    ["chat-attachments://", "chat-attachments"],
+    ["chat-voice-notes://", "chat-voice-notes"],
+  ];
+  for (const [prefix, bucket] of privateSchemes) {
+    if (!mediaUrl.startsWith(prefix)) continue;
+    const path = mediaUrl.slice(prefix.length);
+    const parts = path.split("/");
+    const expectedFolder = bucket === "chat-attachments" ? "attachments" : "voice-notes";
+    const validFilename = bucket === "chat-attachments"
+      ? /^[A-Za-z0-9_-]{1,160}\.enc$/.test(parts[3] ?? "")
+      : /^[A-Za-z0-9_-]{1,160}\.m4a\.enc$/.test(parts[3] ?? "");
+    if (parts.length !== 4 || parts.some((part) => !part || part === "." || part === ".." || part.includes("..")) ||
+        parts[1] !== expectedFolder || !validFilename) return null;
+    return { bucket, path };
+  }
   let target: URL;
   let root: URL;
   try {
