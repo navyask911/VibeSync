@@ -835,9 +835,8 @@ fun DatingAppRoot(
                     coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                         val previousCutoff = com.example.util.LocalConversationClearStore
                             .readClearTimestamp(context, match.matchId)
+                        var roomClearCommitted = false
                         try {
-                            // Persist the cutoff first to keep an overlapping FCM delta from restoring
-                            // old history in the gap before the Room transaction commits.
                             com.example.util.LocalConversationClearStore.writeClearTimestamp(
                                 context = context,
                                 matchId = match.matchId,
@@ -845,26 +844,48 @@ fun DatingAppRoot(
                             )
                             val database = com.example.data.database.DatingDatabase.getDatabase(context)
                             val messageIds = database.conversationClearDao().clearConversation(match.matchId)
-                            if (alsoDeleteMedia) {
+                            roomClearCommitted = true
+
+                            // Filesystem deletion is outside the Room transaction and its failures are surfaced.
+                            val mediaResult = if (alsoDeleteMedia) {
                                 com.example.util.ChatAttachmentCryptoManager.purgeLocalCachedMediaForMessageIds(
                                     context = context,
                                     messageIds = messageIds
                                 )
-                            }
+                            } else null
+
                             android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                Toast.makeText(context, "Chat cleared on this device", Toast.LENGTH_SHORT).show()
+                                val failedFiles = mediaResult?.failedFiles ?: 0
+                                val message = if (failedFiles > 0) {
+                                    "Chat cleared, but $failedFiles media file(s) could not be removed."
+                                } else {
+                                    "Chat cleared on this device"
+                                }
+                                Toast.makeText(
+                                    context,
+                                    message,
+                                    if (failedFiles > 0) Toast.LENGTH_LONG else Toast.LENGTH_SHORT
+                                ).show()
                             }
                         } catch (failure: Throwable) {
-                            runCatching {
-                                com.example.util.LocalConversationClearStore.restoreClearTimestamp(
-                                    context = context,
-                                    matchId = match.matchId,
-                                    previousTimestampMs = previousCutoff
-                                )
+                            // Restoring cutoff after a committed database clear could resurrect deleted history.
+                            if (!roomClearCommitted) {
+                                runCatching {
+                                    com.example.util.LocalConversationClearStore.restoreClearTimestamp(
+                                        context = context,
+                                        matchId = match.matchId,
+                                        previousTimestampMs = previousCutoff
+                                    )
+                                }
                             }
-                            android.util.Log.e("VibeSyncClearChat", "Clear Chat failed", failure)
+                            android.util.Log.e("VibeSyncClearChat", "Clear Chat operation failed", failure)
                             android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                Toast.makeText(context, "Could not clear this chat. Try again.", Toast.LENGTH_LONG).show()
+                                val message = if (roomClearCommitted) {
+                                    "Chat cleared, but some local media could not be removed."
+                                } else {
+                                    "Could not clear this chat. Try again."
+                                }
+                                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                             }
                         }
                     }

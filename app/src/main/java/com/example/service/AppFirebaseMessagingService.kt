@@ -1,5 +1,7 @@
 package com.example.service
 
+import androidx.room.withTransaction
+
 import android.content.Context
 import android.util.Log
 import com.example.util.AppNotificationManager
@@ -71,6 +73,7 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
     }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val inFlightMessageIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     override fun onNewToken(token: String) {
         super.onNewToken(token)
@@ -290,7 +293,10 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     // FCM Background Delivery Handshake: Intercept high-priority data payloads
                     // Extract ciphertext, decrypt via Tink, persist into Room, and execute delivery ACK back to Supabase
                     val database = com.example.data.database.DatingDatabase.getDatabase(applicationContext)
-                    val messageId = data["message_id"] ?: data["msg_id"] ?: data["id"] ?: java.util.UUID.randomUUID().toString()
+                    val messageId = sequenceOf("message_id", "msg_id", "id")
+                        .map { data[it]?.trim().orEmpty() }
+                        .firstOrNull { it.isNotBlank() }
+                        .orEmpty()
                     val ciphertext = data["ciphertext"] ?: data["text"] ?: data["message"] ?: data["body"] ?: ""
                     val senderProfileId = sequenceOf("sender_id", "sender_profile_id", "senderId").map { data[it]?.trim().orEmpty() }.firstOrNull { it.isNotBlank() }.orEmpty()
                     val receiverProfileId = sequenceOf("recipient_id", "recipient_profile_id", "receiver_id", "recipientId", "receiver_profile_id", "receiverId").map { data[it]?.trim().orEmpty() }.firstOrNull { it.isNotBlank() }.orEmpty()
@@ -326,23 +332,35 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     }
                     val timestamp = data["timestamp"]?.toLongOrNull() ?: System.currentTimeMillis()
 
-                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                    if (messageId.isBlank() || ciphertext.isBlank()) {
+                        Log.w(TAG, "Ignored encrypted-message push without required identifiers or payload.")
+                        return
+                    }
+                    if (!inFlightMessageIds.add(messageId)) {
+                        Log.d(TAG, "Duplicate in-flight encrypted-message delivery suppressed.")
+                        return
+                    }
+
+                    serviceScope.launch {
+                        var decryptionSucceeded = false
+                        var resolvedLocalMatchId = pushMatchId
                         try {
-                            // Decrypt ciphertext via Google Tink HybridDecrypt
                             if (!ciphertext.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
                                 throw SecurityException("Rejected non-Tink message payload")
                             }
                             val participants = aadParticipants
-                                ?: throw SecurityException("Cannot resolve canonical participant context from match_id or participant IDs.")
+                                ?: throw SecurityException("Canonical message participant context unavailable.")
                             val decryptedText = com.example.util.TinkCryptoManager.decryptPayload(
                                 context = applicationContext,
                                 payload = ciphertext,
                                 senderPhone = participants.first,
-                                receiverPhone = participants.second
+                                receiverPhone = participants.second,
+                                messageId = messageId
                             )
                             if (decryptedText.isBlank()) {
-                                throw SecurityException("Tink decryption returned empty plaintext; delivery ACK withheld.")
+                                throw SecurityException("Tink decryption did not produce a renderable message.")
                             }
+                            decryptionSucceeded = true
 
                             val matchedLocalConversation = database.matchDao().getMatchByProfileId(senderRoomIdentity)
                             val fallbackMatchId = pushMatchId.ifBlank {
@@ -350,58 +368,145 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                                     com.example.util.SupabaseClientManager.canonicalChatMatchId(currentProfileId, senderRoomIdentity)
                                 } else if (senderRoomIdentity.isNotBlank()) "match_$senderRoomIdentity" else senderOrMatchId
                             }
-                            val matchId = matchedLocalConversation?.matchId ?: fallbackMatchId
-
+                            resolvedLocalMatchId = matchedLocalConversation?.matchId ?: fallbackMatchId
                             val existingMsg = database.chatMessageDao().getMessageById(messageId)
+                            // Older FCM rows could say DELIVERED before the RPC confirmed it. Trust the
+                            // durable local ACK timestamp (or a completed READ) rather than that flag alone.
+                            val alreadyAcknowledged = existingMsg != null &&
+                                !existingMsg.deliveryAckPending &&
+                                (existingMsg.isRead || existingMsg.deliveredAt > 0L || existingMsg.readAt > 0L)
+                            val needsAck = !alreadyAcknowledged
                             val shouldPersistPlaintext = existingMsg == null ||
                                 existingMsg.text.isBlank() ||
                                 existingMsg.text.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)
-                            if (shouldPersistPlaintext) {
-                                // Preserve the local match key if a ciphertext placeholder was already
-                                // stored; replacing it with plaintext triggers the Room-backed chat Flow.
-                                val resolvedLocalMatchId = existingMsg?.matchId?.takeIf { it.isNotBlank() } ?: matchId
-                                val incomingEntity = com.example.data.model.ChatMessageEntity(
+                            val localMediaUrl = data["media_url"]?.trim().orEmpty()
+                                .ifBlank { existingMsg?.mediaUrl.orEmpty() }
+                            val state = when {
+                                existingMsg?.isRead == true -> "READ"
+                                alreadyAcknowledged -> "DELIVERED"
+                                else -> "ACK_PENDING"
+                            }
+                            val incomingEntity = if (shouldPersistPlaintext) {
+                                com.example.data.model.ChatMessageEntity(
                                     messageId = messageId,
-                                    matchId = resolvedLocalMatchId,
-                                    senderId = existingMsg?.senderId?.takeIf { it.isNotBlank() && it != "USER" } ?: senderRoomIdentity,
+                                    matchId = existingMsg?.matchId?.takeIf { it.isNotBlank() } ?: resolvedLocalMatchId,
+                                    senderId = existingMsg?.senderId?.takeIf { it.isNotBlank() && it != "USER" }
+                                        ?: senderRoomIdentity,
                                     text = decryptedText,
                                     mediaType = mediaType,
-                                    mediaUrl = photoUrl,
+                                    mediaUrl = localMediaUrl,
                                     timestamp = timestamp,
                                     isEncrypted = true,
-                                    isDelivered = true,
-                                    isRead = false,
-                                    deliveryState = "DELIVERED"
+                                    isDelivered = alreadyAcknowledged,
+                                    isRead = existingMsg?.isRead == true,
+                                    deliveryState = state,
+                                    deliveryAckPending = needsAck,
+                                    encryptedPayload = ciphertext,
+                                    decryptState = com.example.util.MessageLocalRetentionPolicy.DECRYPT_STATE_OK
                                 )
-                                database.chatMessageDao().upsertMessage(incomingEntity)
-                                database.messageDao().insertMessage(incomingEntity.toLocalMessage())
+                            } else {
+                                existingMsg!!.copy(
+                                    matchId = existingMsg.matchId.ifBlank { resolvedLocalMatchId },
+                                    isDelivered = alreadyAcknowledged,
+                                    deliveryState = state,
+                                    deliveryAckPending = needsAck,
+                                    decryptState = com.example.util.MessageLocalRetentionPolicy.DECRYPT_STATE_OK
+                                )
+                            }
 
-                                val existingMatch = database.matchDao().getMatchByIdSync(resolvedLocalMatchId)
+                            // Both Room representations and the conversation preview must commit before ACK.
+                            database.withTransaction {
+                                database.chatMessageDao().upsertMessage(incomingEntity)
+                                database.messageDao().insertMessage(
+                                    incomingEntity.toLocalMessage().copy(remoteMessageId = messageId)
+                                )
+                                val existingMatch = database.matchDao().getMatchByIdSync(incomingEntity.matchId)
                                     ?: database.matchDao().getMatchByProfileId(senderRoomIdentity)
                                 if (existingMatch == null) {
-                                    val newMatch = com.example.data.model.MatchEntity(
-                                        matchId = resolvedLocalMatchId,
-                                        profileId = senderRoomIdentity,
-                                        matchedAt = timestamp,
-                                        lastMessage = decryptedText.ifBlank { if (mediaType == "VOICE") "Voice message" else "Photo" },
-                                        lastMessageTime = timestamp,
-                                        hasUnread = true
+                                    database.matchDao().insertMatch(
+                                        com.example.data.model.MatchEntity(
+                                            matchId = incomingEntity.matchId,
+                                            profileId = senderRoomIdentity,
+                                            matchedAt = timestamp,
+                                            lastMessage = decryptedText.ifBlank {
+                                                if (mediaType == "VOICE") "Voice message" else "Photo"
+                                            },
+                                            lastMessageTime = timestamp,
+                                            hasUnread = true
+                                        )
                                     )
-                                    database.matchDao().insertMatch(newMatch)
-                                } else {
+                                } else if (timestamp >= existingMatch.lastMessageTime) {
                                     database.matchDao().updateLastMessage(
                                         matchId = existingMatch.matchId,
-                                        text = decryptedText.ifBlank { if (mediaType == "VOICE") "Voice message" else "Photo" },
+                                        text = decryptedText.ifBlank {
+                                            if (mediaType == "VOICE") "Voice message" else "Photo"
+                                        },
                                         timestamp = timestamp,
-                                        hasUnread = true
+                                        hasUnread = existingMsg?.isRead != true
                                     )
                                 }
                             }
 
-                            // Execute delivery ACK back to Supabase: UPDATE public.chat_messages SET is_delivered = true WHERE id = :messageId
-                            com.example.util.SupabaseBackendManager.markMessageDelivered(messageId, senderIdentity, receiverIdentity)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error processing incoming FCM E2EE message; delivery ACK not issued: ${e.message}", e)
+                            if (needsAck) {
+                                val mediaCached = com.example.util.ChatAttachmentCryptoManager.cacheEncryptedMediaBeforeDeliveryAck(
+                                    context = applicationContext,
+                                    mediaType = mediaType,
+                                    mediaUrl = incomingEntity.mediaUrl,
+                                    messageId = messageId
+                                )
+                                if (mediaCached) {
+                                    val acknowledged = com.example.util.SupabaseBackendManager.markMessageDelivered(
+                                        messageId, senderIdentity, receiverIdentity
+                                    )
+                                    if (acknowledged) {
+                                        database.chatMessageDao().markMessageAsDelivered(messageId)
+                                    } else {
+                                        com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(
+                                            context = applicationContext,
+                                            remoteMatchId = pushMatchId.takeIf { it.isNotBlank() },
+                                            messageId = messageId,
+                                            senderId = senderProfileId.takeIf { it.isNotBlank() }
+                                        )
+                                        Log.w(TAG, "Delivery acknowledgment deferred; durable Room retry retained.")
+                                    }
+                                } else {
+                                    com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(
+                                        context = applicationContext,
+                                        remoteMatchId = pushMatchId.takeIf { it.isNotBlank() },
+                                        messageId = messageId,
+                                        senderId = senderProfileId.takeIf { it.isNotBlank() }
+                                    )
+                                    Log.w(TAG, "Delivery acknowledgment deferred until attachment cache is complete.")
+                                }
+                            }
+                        } catch (failure: Exception) {
+                            if (!decryptionSucceeded) {
+                                val nackRecorded = runCatching {
+                                    com.example.util.SupabaseBackendManager.markMessageDecryptionFailed(messageId)
+                                }.getOrDefault(false)
+                                if (!nackRecorded) {
+                                    com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(
+                                        context = applicationContext,
+                                        remoteMatchId = pushMatchId.takeIf { it.isNotBlank() },
+                                        messageId = messageId,
+                                        senderId = senderProfileId.takeIf { it.isNotBlank() }
+                                    )
+                                }
+                            } else {
+                                // Room persistence/cache/ACK failures never become a success receipt or NACK.
+                                com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(
+                                    context = applicationContext,
+                                    remoteMatchId = pushMatchId.takeIf { it.isNotBlank() },
+                                    messageId = messageId,
+                                    senderId = senderProfileId.takeIf { it.isNotBlank() }
+                                )
+                            }
+                            Log.w(
+                                TAG,
+                                "Encrypted-message processing failed; no successful delivery acknowledgment was emitted (${failure.javaClass.simpleName})."
+                            )
+                        } finally {
+                            inFlightMessageIds.remove(messageId)
                         }
                     }
 

@@ -341,13 +341,23 @@ object ChatAttachmentCryptoManager {
         ("vibesync-chat-attachment-v1:" + messageId.trim()).toByteArray(Charsets.UTF_8)
 
 
+    data class LocalMediaPurgeResult(
+        val deletedFiles: Int,
+        val failedFiles: Int
+    )
+
     /**
-     * Removes only message-scoped media caches for a conversation the user explicitly cleared.
-     * Remote media and unrelated files are never touched by this local-only operation.
+     * Removes only caches whose filenames are derived from stable message IDs returned by the
+     * conversation-scoped Room transaction. Filesystem work intentionally happens after commit.
+     * Failed deletions are returned to the caller; unrelated/shared media are never guessed.
      */
-    fun purgeLocalCachedMediaForMessageIds(context: Context, messageIds: Collection<String>): Int {
+    fun purgeLocalCachedMediaForMessageIds(
+        context: Context,
+        messageIds: Collection<String>
+    ): LocalMediaPurgeResult {
         val app = context.applicationContext
         var removed = 0
+        var failed = 0
         for (messageId in messageIds.map(String::trim).filter(String::isNotBlank).distinct()) {
             val token = safeToken(messageId)
             val candidates = mutableListOf(
@@ -355,18 +365,33 @@ object ChatAttachmentCryptoManager {
                 File(File(app.filesDir, "chat-voice-ciphertext"), "$token.enc"),
                 File(app.cacheDir, "attachment-source-$token.tmp")
             )
-            app.cacheDir.listFiles()?.filter { file ->
-                file.isFile && (
-                    file.name.startsWith("vibesync_attachment_$token.") ||
-                    file.name == "voice_$token.m4a" ||
-                    file.name == "attachment-source-$token.tmp"
-                )
-            }?.let(candidates::addAll)
+            val cacheFiles = try {
+                app.cacheDir.listFiles()
+            } catch (_: SecurityException) {
+                failed++
+                null
+            }
+            if (cacheFiles == null && app.cacheDir.exists()) {
+                failed++
+            } else {
+                cacheFiles?.filter { file ->
+                    file.isFile && (
+                        file.name.startsWith("vibesync_attachment_$token.") ||
+                        file.name == "voice_$token.m4a" ||
+                        file.name == "attachment-source-$token.tmp"
+                    )
+                }?.let(candidates::addAll)
+            }
             for (file in candidates.distinct()) {
-                if (file.isFile && runCatching { file.delete() }.getOrDefault(false)) removed++
+                if (!file.isFile) continue
+                try {
+                    if (file.delete()) removed++ else if (file.exists()) failed++
+                } catch (_: SecurityException) {
+                    failed++
+                }
             }
         }
-        return removed
+        return LocalMediaPurgeResult(deletedFiles = removed, failedFiles = failed)
     }
 
     private fun safeToken(value: String): String =

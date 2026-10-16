@@ -147,6 +147,77 @@ class TinkDecryptRegressionTest {
     }
 
     @Test
+    fun invalidCiphertextBytesAreRejectedByHybridDecrypt() {
+        val recipientPrivate = newPrivateKeyset()
+        val invalidCiphertext = Base64.encodeToString(
+            "not a valid HPKE ciphertext".toByteArray(Charsets.UTF_8),
+            Base64.NO_WRAP
+        )
+        val failure = runCatching {
+            TinkCryptoManager.decryptWithPrivateKeysetOrThrow(
+                recipientPrivate, TinkCryptoManager.TINK_PREFIX + invalidCiphertext,
+                profileA, profileB, "invalid-ciphertext"
+            )
+        }.exceptionOrNull()
+        assertTrue("Invalid ciphertext must not be accepted", failure is GeneralSecurityException)
+    }
+
+    @Test
+    fun incorrectRecipientPrivateKeyIsRejected() {
+        val expectedRecipient = newPrivateKeyset()
+        val unrelatedRecipient = newPrivateKeyset()
+        val payload = TinkCryptoManager.encryptForRecipientOrThrow(
+            TinkCryptoManager.serializePublicKeysetJson(expectedRecipient),
+            "only the intended recipient can read this",
+            profileA, profileB, "wrong-recipient-key"
+        )
+        val failure = runCatching {
+            TinkCryptoManager.decryptWithPrivateKeysetOrThrow(
+                unrelatedRecipient, payload, profileA, profileB, "wrong-recipient-key"
+            )
+        }.exceptionOrNull()
+        assertTrue("A different private key must fail authentication", failure is GeneralSecurityException)
+    }
+
+    @Test
+    fun modifiedCiphertextAuthenticationTagIsRejected() {
+        val recipientPrivate = newPrivateKeyset()
+        val original = TinkCryptoManager.encryptForRecipientOrThrow(
+            TinkCryptoManager.serializePublicKeysetJson(recipientPrivate),
+            "authenticated payload", profileA, profileB, "tampered-tag"
+        )
+        val suffix = original.removePrefix(TinkCryptoManager.TINK_PREFIX).removePrefix("V2:")
+        val envelope = JSONObject(String(Base64.decode(suffix, Base64.NO_WRAP), Charsets.UTF_8))
+        val cipherBytes = Base64.decode(envelope.getString("ciphertext"), Base64.NO_WRAP)
+        cipherBytes[cipherBytes.lastIndex] = (cipherBytes.last().toInt() xor 0x01).toByte()
+        envelope.put("ciphertext", Base64.encodeToString(cipherBytes, Base64.NO_WRAP))
+        val tampered = TinkCryptoManager.TINK_PREFIX + "V2:" + Base64.encodeToString(
+            envelope.toString().toByteArray(Charsets.UTF_8), Base64.NO_WRAP
+        )
+        val failure = runCatching {
+            TinkCryptoManager.decryptWithPrivateKeysetOrThrow(
+                recipientPrivate, tampered, profileA, profileB, "tampered-tag"
+            )
+        }.exceptionOrNull()
+        assertTrue("Tampering with authenticated ciphertext must fail", failure is GeneralSecurityException)
+    }
+
+    @Test
+    fun malformedVersionTwoEnvelopeIsRejected() {
+        val recipientPrivate = newPrivateKeyset()
+        val malformedJson = """{"version":2,"recipient_key_id":"1","ciphertext":""}"""
+        val payload = TinkCryptoManager.TINK_PREFIX + "V2:" + Base64.encodeToString(
+            malformedJson.toByteArray(Charsets.UTF_8), Base64.NO_WRAP
+        )
+        val failure = runCatching {
+            TinkCryptoManager.decryptWithPrivateKeysetOrThrow(
+                recipientPrivate, payload, profileA, profileB, "malformed-envelope"
+            )
+        }.exceptionOrNull()
+        assertTrue("An empty ciphertext envelope must be rejected", failure is IllegalArgumentException)
+    }
+
+    @Test
     fun legacyRawBase64EnvelopeStillDecrypts() {
         val recipientPrivate = newPrivateKeyset()
         val publicHandle = CleartextKeysetHandle.read(

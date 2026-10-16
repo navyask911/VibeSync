@@ -1,9 +1,8 @@
 package com.example.data.dao
 
+import android.app.Application
 import android.content.Context
 import androidx.room.Room
-import androidx.work.Configuration
-import androidx.work.WorkManager
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.database.DatingDatabase
 import com.example.data.model.ChatMessageEntity
@@ -24,18 +23,13 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(manifest = Config.NONE)
+@Config(application = Application::class, manifest = Config.NONE)
 class ConversationClearDaoTest {
     private lateinit var database: DatingDatabase
 
     @Before
     fun setUp() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        // Robolectric uses a lightweight test Application; initialize WorkManager explicitly for
-        // Room/application hooks that schedule background synchronization.
-        runCatching {
-            WorkManager.initialize(context, Configuration.Builder().build())
-        }
         database = Room.inMemoryDatabaseBuilder(context, DatingDatabase::class.java)
             .allowMainThreadQueries()
             .build()
@@ -89,6 +83,75 @@ class ConversationClearDaoTest {
         assertEquals("", preserved?.lastMessage)
         assertEquals(0L, preserved?.lastMessageTime)
         assertFalse(preserved?.hasUnread ?: true)
+        assertTrue(database.conversationClearDao().clearConversation("match-clear-test").isEmpty())
+        assertNotNull(database.matchDao().getMatchByIdSync("match-clear-test"))
+    }
+
+    @Test
+    fun clearConversationHandlesMissingAndEmptyConversationsIdempotently() = runBlocking {
+        assertTrue(database.conversationClearDao().clearConversation("missing-match").isEmpty())
+        database.matchDao().insertMatch(
+            MatchEntity(
+                matchId = "empty-match",
+                profileId = "empty-peer",
+                lastMessage = "Old snippet",
+                lastMessageTime = 10L,
+                hasUnread = true
+            )
+        )
+
+        assertTrue(database.conversationClearDao().clearConversation("empty-match").isEmpty())
+        assertTrue(database.conversationClearDao().clearConversation("empty-match").isEmpty())
+        val preserved = database.matchDao().getMatchByIdSync("empty-match")
+        assertNotNull(preserved)
+        assertEquals("", preserved?.lastMessage)
+        assertEquals(0L, preserved?.lastMessageTime)
+        assertFalse(preserved?.hasUnread ?: true)
+    }
+
+    @Test
+    fun clearConversationNeverDeletesAnotherConversationMessagesOrDeliveryState() = runBlocking {
+        database.matchDao().insertMatch(
+            MatchEntity(matchId = "match-a", profileId = "peer-a", lastMessage = "A", lastMessageTime = 1L)
+        )
+        database.matchDao().insertMatch(
+            MatchEntity(matchId = "match-b", profileId = "peer-b", lastMessage = "B", lastMessageTime = 2L)
+        )
+        database.chatMessageDao().upsertMessage(
+            ChatMessageEntity(
+                messageId = "message-a",
+                matchId = "match-a",
+                senderId = "peer-a",
+                text = "for A",
+                deliveryState = "ACK_PENDING",
+                deliveryAckPending = true
+            )
+        )
+        database.chatMessageDao().upsertMessage(
+            ChatMessageEntity(
+                messageId = "message-b",
+                matchId = "match-b",
+                senderId = "peer-b",
+                text = "for B",
+                deliveryState = "SENT_TO_SERVER"
+            )
+        )
+        database.messageDao().insertMessage(
+            LocalMessage(senderUid = "peer-a", textContent = "for A", isSentByMe = false, matchId = "match-a", remoteMessageId = "message-a")
+        )
+        database.messageDao().insertMessage(
+            LocalMessage(senderUid = "peer-b", textContent = "for B", isSentByMe = false, matchId = "match-b", remoteMessageId = "message-b")
+        )
+
+        database.conversationClearDao().clearConversation("match-a")
+
+        assertNull(database.chatMessageDao().getMessageById("message-a"))
+        val surviving = database.chatMessageDao().getMessageById("message-b")
+        assertNotNull(surviving)
+        assertEquals("match-b", surviving?.matchId)
+        assertEquals("SENT_TO_SERVER", surviving?.deliveryState)
+        assertEquals(1, database.messageDao().getMessagesForMatch("match-b").first().size)
+        assertEquals("B", database.matchDao().getMatchByIdSync("match-b")?.lastMessage)
     }
 
     @Test
