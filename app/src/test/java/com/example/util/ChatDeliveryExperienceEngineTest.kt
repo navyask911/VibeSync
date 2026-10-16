@@ -71,4 +71,24 @@ class ChatDeliveryExperienceEngineTest {
     fun hardDeleteRpcRejectsBlankMessageIdentifiers() {
         ChatDeliveryRpcPayloads.acknowledgeAndPurge("  ")
     }
+
+    @Test
+    fun directChatPushTypesAreRoutedToAuthenticatedInboxSync() {
+        listOf("new_message", "NEW_E2EE_MESSAGE", "MESSAGE", "CHAT_MESSAGE", "CHAT_SYNC_WAKEUP")
+            .forEach { type ->
+                assertTrue("$type must be a wake-up only", ChatPushPayloadPolicy.requiresInboxSync(type))
+            }
+    }
+
+    @Test
+    fun unrelatedPushTypesKeepTheirDedicatedNotificationRoutes() {
+        listOf("MATCH", "LIKE", "BUSINESS_BROADCAST", "GROUP_CHAT_SYNC_WAKEUP", "NEW_USER")
+            .forEach { type ->
+                assertTrue(
+                    "$type must not use the direct-message inbox route",
+                    !ChatPushPayloadPolicy.requiresInboxSync(type)
+                )
+            }
+    }
+
 }

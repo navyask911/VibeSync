@@ -89,22 +89,37 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
             val data = remoteMessage.data
             val type = data["type"] ?: "MESSAGE"
 
-            // A direct-message push is a data-only wake-up. The server sends exactly these
-            // metadata IDs; all ciphertext retrieval/decryption and notification rendering happen
-            // in the expedited inbox worker after an authenticated fetch and Room commit.
-            if (type.equals("new_message", ignoreCase = true)) {
-                val messageId = data["message_id"].orEmpty().trim()
-                val matchId = data["match_id"].orEmpty().trim()
-                if (messageId.isNotBlank() && matchId.isNotBlank()) {
-                    com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(
-                        context = applicationContext,
-                        remoteMatchId = matchId,
-                        messageId = messageId
-                    )
-                    Log.i(TAG, "Metadata-only message wake-up queued for inbox sync.")
-                } else {
-                    Log.w(TAG, "Ignored message wake-up with missing metadata identifiers.")
+            // Direct-message pushes are wake-up hints only. Never consume message bodies,
+            // ciphertext, sender names, or media URLs from FCM, including legacy message types.
+            if (com.example.util.ChatPushPayloadPolicy.requiresInboxSync(type)) {
+                val messageId = sequenceOf("message_id", "msg_id", "id")
+                    .map { data[it]?.trim().orEmpty() }
+                    .firstOrNull { it.isNotBlank() }
+                    .orEmpty()
+                val matchId = sequenceOf("match_id", "matchId")
+                    .map { data[it]?.trim().orEmpty() }
+                    .firstOrNull { it.isNotBlank() }
+                    .orEmpty()
+                val senderId = sequenceOf("sender_id", "sender_profile_id", "senderId")
+                    .map { data[it]?.trim().orEmpty() }
+                    .firstOrNull { it.isNotBlank() }
+                    .orEmpty()
+
+                // Canonical server pushes require both identifiers. A malformed canonical wake-up
+                // is ignored rather than causing an unbounded inbox scan.
+                if (type.equals("new_message", ignoreCase = true) &&
+                    (messageId.isBlank() || matchId.isBlank())
+                ) {
+                    Log.w(TAG, "Ignored metadata-only message wake-up with missing identifiers.")
+                    return
                 }
+                com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(
+                    context = applicationContext,
+                    remoteMatchId = matchId.takeIf { it.isNotBlank() },
+                    messageId = messageId.takeIf { it.isNotBlank() },
+                    senderId = senderId.takeIf { it.isNotBlank() }
+                )
+                Log.i(TAG, "Direct-chat push wake-up queued for authenticated inbox sync.")
                 return
             }
 
