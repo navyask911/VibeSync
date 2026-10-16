@@ -5,6 +5,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.example.ui.model.ChatWallpaperTheme
+import com.example.ui.model.ChatWallpaperUiState
 
 class ChatRuntimeDefectPolicyTest {
     @Test
@@ -23,6 +25,24 @@ class ChatRuntimeDefectPolicyTest {
         assertFalse(VerifiedBadgePolicy.shouldShow(false, "active", true))
         assertFalse(VerifiedBadgePolicy.shouldShow(true, "inactive", false))
         assertFalse(VerifiedBadgePolicy.shouldShow(true, null, false))
+    }
+
+    @Test
+    fun capitalWallpaperPickerIncludesRequestedCapitalCatalogueAndSubtleOpacity() {
+        val themes = ChatWallpaperTheme.entries.associateBy { it.name }
+        assertTrue(themes.keys.containsAll(setOf(
+            "DELHI", "BENGALURU", "MUMBAI", "CHENNAI", "KOLKATA", "HYDERABAD",
+            "JAIPUR", "LUCKNOW", "BHUBANESWAR", "THIRUVANANTHAPURAM", "PANAJI",
+            "BHOPAL", "GANDHINAGAR", "PATNA", "RANCHI", "RAIPUR", "CHANDIGARH",
+            "SHIMLA", "DEHRADUN", "SRINAGAR", "JAMMU", "DISPUR", "GUWAHATI",
+            "GANGTOK", "ITANAGAR", "IMPHAL", "SHILLONG", "AIZAWL", "KOHIMA",
+            "AGARTALA", "AMARAVATI", "PORT_BLAIR", "DAMAN", "SILVASSA",
+            "KAVARATTI", "PUDUCHERRY", "LEH", "GAIRSAIN"
+        )))
+        assertEquals(0.11f, ChatWallpaperUiState().safeOpacity)
+        assertTrue(ChatWallpaperUiState(wallpaperOpacity = 0.75f).safeOpacity <= 0.30f)
+        assertTrue(themes.values.filter { it.title != "Plain" && it.title != "Neutral line art" }
+            .all { it.drawableRes != 0 })
     }
 
     @Test
