@@ -95,8 +95,25 @@ object MessageDeltaSyncManager {
                     synced++
                     continue
                 }
+                val clearCutoffMs = LocalConversationClearStore.readClearTimestamp(
+                    context = context,
+                    matchId = match.matchId
+                )
+                val suppressForClearedHistory = clearCutoffMs > 0L && remote.timestamp <= clearCutoffMs
                 val isFromMe = MessageDecryptionPolicy.isOwnOutgoingMessage(remote.senderId, ownerId)
                 val existing = dao.getMessageById(remote.messageId)
+                if (suppressForClearedHistory && isFromMe) {
+                    // Clearing this device must not resurrect the sender's removed readable copy
+                    // from a still-undelivered server row. Leave server delivery to the recipient.
+                    if (existing != null) {
+                        database.withTransaction {
+                            dao.deleteMessageById(remote.messageId)
+                            messageDao.deleteRemoteMessage(remote.messageId)
+                        }
+                    }
+                    synced++
+                    continue
+                }
                 val existingPlaintext = existing?.text?.takeIf {
                     MessageLocalRetentionPolicy.isRenderableText(it)
                 }
@@ -171,6 +188,19 @@ object MessageDeltaSyncManager {
 
                 // Apply encrypted reaction/delete events before attempting to render them as chat bubbles.
                 if (decodedPayload?.eventType != null) {
+                    if (suppressForClearedHistory) {
+                        // The user cleared this conversation, so its old reaction/delete event
+                        // must not recreate UI state for a message that no longer exists locally.
+                        val acked = SupabaseBackendManager.markMessageDelivered(
+                            remote.messageId, remote.senderId, ownerId
+                        )
+                        if (!acked) {
+                            ackFailures++
+                            complete = false
+                        }
+                        synced++
+                        continue
+                    }
                     val applied = ChatMessageEventCodec.applyControlEvent(
                         database = database,
                         decoded = decodedPayload,
@@ -217,8 +247,12 @@ object MessageDeltaSyncManager {
                             database.profileDao().insertProfile(peerProfile.copy(dateOfBirth = exchange.dateOfBirth))
                         }
                     }
-                    val acked = remote.isDelivered || remote.isRead ||
+                    val acked = if (suppressForClearedHistory) {
                         SupabaseBackendManager.markMessageDelivered(remote.messageId, remote.senderId, ownerId)
+                    } else {
+                        remote.isDelivered || remote.isRead ||
+                            SupabaseBackendManager.markMessageDelivered(remote.messageId, remote.senderId, ownerId)
+                    }
                     if (!acked) {
                         ackFailures++
                         complete = false
@@ -241,7 +275,8 @@ object MessageDeltaSyncManager {
                     existingPlaintext = existingPlaintext,
                     failureState = failureState
                 )
-                val needsAck = canRenderPlaintext && !remote.isDelivered && !remote.isRead
+                val needsAck = canRenderPlaintext &&
+                    ((!remote.isDelivered && !remote.isRead) || suppressForClearedHistory)
                 val local = remote.copy(
                     matchId = match.matchId,
                     senderId = remote.senderId,
@@ -301,7 +336,7 @@ object MessageDeltaSyncManager {
                 }
                 synced++
 
-                if (canRenderPlaintext && remote.timestamp >= match.lastMessageTime && local.text.isNotBlank()) {
+                if (!suppressForClearedHistory && canRenderPlaintext && remote.timestamp >= match.lastMessageTime && local.text.isNotBlank()) {
                     matchDao.updateLastMessage(
                         matchId = match.matchId,
                         text = local.text,
@@ -342,6 +377,7 @@ object MessageDeltaSyncManager {
                 }
 
                 if (
+                    !suppressForClearedHistory &&
                     notifyTargetMessage &&
                     !AppNotificationManager.isAppInForeground &&
                     !targetMessageId.isNullOrBlank() &&
@@ -363,6 +399,16 @@ object MessageDeltaSyncManager {
                         messageId = remote.messageId,
                         messageTimestamp = remote.timestamp
                     )
+                }
+
+                if (suppressForClearedHistory) {
+                    // Keep the decrypt -> durable Room store -> ACK order, then remove the local copy.
+                    // Failed ACK/NACK leaves the delta incomplete so background work retries without
+                    // resurfacing the cleared message.
+                    database.withTransaction {
+                        dao.deleteMessageById(remote.messageId)
+                        messageDao.deleteRemoteMessage(remote.messageId)
+                    }
                 }
             }
 
