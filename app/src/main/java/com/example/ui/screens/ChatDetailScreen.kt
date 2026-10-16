@@ -504,39 +504,11 @@ private fun ChatDetailScreenContent(
         }
     }
 
-    var showMediaPipeline by remember { mutableStateOf(false) }
-    var pipelineProgress by remember { mutableStateOf(0f) }
-    var pipelineStepText by remember { mutableStateOf("") }
-
     val onSendMedia = { mediaType: String, text: String, mediaUrl: String, voiceSeconds: Int ->
         if (isNetworkOnline) {
-            coroutineScope.launch {
-                showMediaPipeline = true
-                pipelineStepText = "Compressing $mediaType via WebP (saving ~85% bandwidth)..."
-                pipelineProgress = 0.12f
-                delay(700)
-                
-                pipelineStepText = "Sealing payload with Google Tink protected message key..."
-                pipelineProgress = 0.38f
-                delay(600)
-                
-                pipelineStepText = "Uploading encrypted chunks to Cloudflare R2 (₹0 Egress CDN)..."
-                var p = 0.38f
-                while (p < 0.82f) {
-                    p += 0.15f
-                    pipelineProgress = p
-                    delay(250)
-                }
-                
-                pipelineStepText = "Verifying SHA256 integrity & signaling recipient..."
-                pipelineProgress = 0.95f
-                delay(400)
-                
-                parentSendMedia(mediaType, text, mediaUrl, voiceSeconds)
-                pipelineProgress = 1.0f
-                delay(200)
-                showMediaPipeline = false
-            }
+            // The parent owns the encrypted outbox and any configured media transport. Avoid a
+            // fake modal/progress timer that reports upload progress without observing real work.
+            parentSendMedia(mediaType, text, mediaUrl, voiceSeconds)
         } else {
             val qMsg = QueuedMessage(
                 type = mediaType,
@@ -739,9 +711,16 @@ private fun ChatDetailScreenContent(
     ) { uri ->
         if (uri != null) {
             val fileName = getFileNameFromUri(context, uri) ?: "Attachment_Document"
-            val fileSize = getFileSizeFromUri(context, uri) ?: "1.2 MB"
-            onSendMedia("DOCUMENT", "$fileName • $fileSize", uri.toString(), 0)
-            Toast.makeText(context, "Document selected: $fileName 📄", Toast.LENGTH_SHORT).show()
+            val fileSizeBytes = getFileSizeBytesFromUri(context, uri)
+            if (fileSizeBytes == null) {
+                Toast.makeText(context, "Could not verify file size. Choose a file with an available size.", Toast.LENGTH_LONG).show()
+            } else if (fileSizeBytes > 25L * 1024L * 1024L) {
+                Toast.makeText(context, "Files must be 25 MB or smaller.", Toast.LENGTH_LONG).show()
+            } else {
+                val fileSize = formatFileSize(fileSizeBytes)
+                onSendMedia("DOCUMENT", "$fileName • $fileSize", uri.toString(), 0)
+                Toast.makeText(context, "Document selected: $fileName", Toast.LENGTH_SHORT).show()
+            }
         }
     }
     val chatWallpaperPickerLauncher = rememberLauncherForActivityResult(
@@ -910,8 +889,6 @@ private fun ChatDetailScreenContent(
             editingMessage = null
         } else if (replyingToMessage != null) {
             replyingToMessage = null
-        } else if (showMediaPipeline) {
-            showMediaPipeline = false
         } else if (showLocationDialog) {
             showLocationDialog = false
         } else if (showContactDialog) {
@@ -2242,52 +2219,6 @@ private fun ChatDetailScreenContent(
                             )
                         }
                     }
-                }
-            }
-        }
-
-        // Animated Media Transmission Pipeline Banner (VibeSync System Design parity)
-        AnimatedVisibility(visible = showMediaPipeline) {
-            Surface(
-                color = VibeSyncTeal.copy(alpha = 0.08f),
-                border = BorderStroke(1.dp, VibeSyncTeal.copy(alpha = 0.2f)),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(
-                        progress = pipelineProgress,
-                        color = VibeSyncTeal,
-                        trackColor = VibeSyncTeal.copy(alpha = 0.15f),
-                        strokeWidth = 3.dp,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Secure Media Journey Pipeline",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = VibeSyncTeal
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = pipelineStepText,
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Text(
-                        text = "${(pipelineProgress * 100).toInt()}%",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = VibeSyncTeal
-                    )
                 }
             }
         }
@@ -3679,56 +3610,83 @@ private fun ChatDetailScreenContent(
         )
     }
 
-    // 4. Poll Dialog
+    // 4. Dynamic Poll Dialog
     if (showPollDialog) {
-        var question by remember { mutableStateOf("Where should we meet up this weekend?") }
-        var option1 by remember { mutableStateOf("Coffee Shop ☕") }
-        var option2 by remember { mutableStateOf("Park Walk 🌿") }
-        var option3 by remember { mutableStateOf("Dinner & Drinks 🍷") }
+        var question by remember { mutableStateOf("") }
+        val pollOptions = remember { mutableStateListOf("", "") }
+        var allowMultipleAnswers by remember { mutableStateOf(false) }
+        val validOptions = pollOptions.map { it.trim() }.filter { it.isNotBlank() }.distinct()
 
         AlertDialog(
             onDismissRequest = { showPollDialog = false },
-            icon = { Icon(Icons.Default.Poll, contentDescription = null, tint = Color(0xFFFFA000), modifier = Modifier.size(36.dp)) },
-            title = { Text("Create Poll 📊", fontWeight = FontWeight.Bold) },
+            icon = { Icon(Icons.Default.Poll, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp)) },
+            title = { Text("Create poll", fontWeight = FontWeight.SemiBold) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     OutlinedTextField(
                         value = question,
-                        onValueChange = { question = it },
+                        onValueChange = { question = it.take(240) },
                         label = { Text("Question") },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = false
                     )
-                    OutlinedTextField(
-                        value = option1,
-                        onValueChange = { option1 = it },
-                        label = { Text("Option 1") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = option2,
-                        onValueChange = { option2 = it },
-                        label = { Text("Option 2") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = option3,
-                        onValueChange = { option3 = it },
-                        label = { Text("Option 3 (Optional)") },
-                        modifier = Modifier.fillMaxWidth()
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Allow multiple answers", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                        androidx.compose.material3.Switch(
+                            checked = allowMultipleAnswers,
+                            onCheckedChange = { allowMultipleAnswers = it }
+                        )
+                    }
+                    pollOptions.forEachIndexed { index, option ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = option,
+                                onValueChange = { value -> pollOptions[index] = value.take(120) },
+                                label = { Text("Option ${index + 1}") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (pollOptions.size > 2) {
+                                TextButton(onClick = { pollOptions.removeAt(index) }) {
+                                    Text("Remove")
+                                }
+                            }
+                        }
+                    }
+                    if (pollOptions.size < 12) {
+                        TextButton(
+                            onClick = { pollOptions.add("") },
+                            modifier = Modifier.align(Alignment.Start)
+                        ) { Text("+ Add option (${pollOptions.size}/12)") }
+                    }
+                    Text(
+                        text = "${validOptions.size} valid options · at least 2 required",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             },
             confirmButton = {
                 Button(
+                    enabled = question.isNotBlank() && validOptions.size >= 2 && validOptions.size <= 12,
                     onClick = {
-                        val pollData = "$question\n1. $option1\n2. $option2" + if (option3.isNotBlank()) "\n3. $option3" else ""
-                        onSendMedia("POLL", pollData, "", 0)
+                        val pollPayload = org.json.JSONObject()
+                            .put("type", "POLL")
+                            .put("question", question.trim())
+                            .put("options", org.json.JSONArray(validOptions))
+                            .put("allowMultipleAnswers", allowMultipleAnswers)
+                            .toString()
+                        onSendMedia("POLL", pollPayload, "", 0)
                         showPollDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFA000))
-                ) {
-                    Text("Create Poll")
-                }
+                    }
+                ) { Text("Create poll") }
             },
             dismissButton = {
                 TextButton(onClick = { showPollDialog = false }) { Text("Cancel") }
@@ -3736,154 +3694,17 @@ private fun ChatDetailScreenContent(
         )
     }
 
-    // 5. Payment Dialog (Exclusive NPCI UPI Integration for Indian Registered Users)
+    // 5. Neutral payment-provider placeholder
     if (showPaymentDialog) {
-        var amount by remember { mutableStateOf("500") }
-        var note by remember { mutableStateOf("Lunch split via UPI") }
-        var selectedUpiApp by remember { mutableStateOf<String?>(null) }
-        val context = LocalContext.current
-
-        // Check if recipient / user is an Indian Registered User
-        val isIndianUser = UpiPaymentManager.isIndianRegisteredUser(profile.country, profile.countryFlag)
-        val installedApps = remember(context) { UpiPaymentManager.getInstalledUpiApps(context) }
-
         AlertDialog(
             onDismissRequest = { showPaymentDialog = false },
-            icon = { Icon(Icons.Default.CurrencyRupee, contentDescription = null, tint = Color(0xFF00897B), modifier = Modifier.size(36.dp)) },
-            title = {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("BHIM UPI Payment 🪙", fontWeight = FontWeight.Bold)
-                    Text("NPCI Unified Payments Interface", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (isIndianUser) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = Color(0xFF00897B).copy(alpha = 0.12f),
-                            border = BorderStroke(1.dp, Color(0xFF00897B).copy(alpha = 0.3f)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("🇮🇳", fontSize = 20.sp)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Column {
-                                    Text("Verified Indian Registered User", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00897B))
-                                    Text("VPA: ${profile.name.lowercase().replace(" ", "")}@icici", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                            }
-                        }
-
-                        OutlinedTextField(
-                            value = amount,
-                            onValueChange = { amount = it },
-                            label = { Text("Amount (₹ INR)") },
-                            prefix = { Text("₹ ") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = note,
-                            onValueChange = { note = it },
-                            label = { Text("Payment Note") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Text("Select Installed UPI App:", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            installedApps.take(4).forEach { app ->
-                                Surface(
-                                    onClick = { selectedUpiApp = app.packageName },
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = if (selectedUpiApp == app.packageName) Color(0xFF00897B).copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant,
-                                    border = BorderStroke(1.dp, if (selectedUpiApp == app.packageName) Color(0xFF00897B) else Color.Transparent),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally
-                                    ) {
-                                        Text(app.badge, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                        Text(app.name, fontSize = 9.sp, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        // Non-Indian user regional restriction
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("⚠️", fontSize = 20.sp)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("UPI Regional Limitation", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
-                                }
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    "BHIM UPI is exclusively available for Indian registered users (+91 / 🇮🇳).",
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    "Current profile region: ${profile.country} ${profile.countryFlag}. Please use International Card.",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
-            },
+            title = { Text("Payments") },
+            text = { Text(com.example.util.ComingSoonPaymentProvider.availabilityMessage()) },
             confirmButton = {
-                if (isIndianUser) {
-                    Button(
-                        onClick = {
-                            val upiUri = UpiPaymentManager.generateUpiPayUri(
-                                vpa = "${profile.name.lowercase().replace(" ", "")}@icici",
-                                payeeName = profile.name,
-                                amount = amount,
-                                note = note
-                            )
-                            try {
-                                val intent = UpiPaymentManager.launchUpiAppIntent(context, selectedUpiApp, upiUri)
-                                context.startActivity(intent)
-                            } catch (e: Exception) {
-                                // Graceful fallback
-                            }
-                            onSendMedia("PAYMENT", "₹$amount • ${note.ifBlank { "UPI Transaction" }} (NPCI 🇮🇳)", "", 0)
-                            showPaymentDialog = false
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00897B))
-                    ) {
-                        Text("Pay ₹$amount via UPI 🇮🇳")
-                    }
-                } else {
-                    Button(
-                        onClick = {
-                            onSendMedia("PAYMENT", "₹$amount • ${note.ifBlank { "Card Transaction" }} (International Card)", "", 0)
-                            showPaymentDialog = false
-                        }
-                    ) {
-                        Text("Process International Card")
-                    }
-                }
+                TextButton(onClick = { showPaymentDialog = false }) { Text("Got it") }
             },
             dismissButton = {
-                TextButton(onClick = { showPaymentDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { showPaymentDialog = false }) { Text("Close") }
             }
         )
     }
@@ -5821,6 +5642,20 @@ private fun getFileNameFromUri(context: Context, uri: Uri): String? {
         }
     }
     return result
+}
+
+private fun getFileSizeBytesFromUri(context: Context, uri: Uri): Long? {
+    if (uri.scheme != "content") return null
+    return context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+        val index = cursor.getColumnIndex(OpenableColumns.SIZE)
+        if (index >= 0 && cursor.moveToFirst()) cursor.getLong(index).takeIf { it >= 0L } else null
+    }
+}
+
+private fun formatFileSize(sizeBytes: Long): String = when {
+    sizeBytes >= 1024L * 1024L -> String.format(Locale.US, "%.1f MB", sizeBytes / (1024.0 * 1024.0))
+    sizeBytes >= 1024L -> String.format(Locale.US, "%.1f KB", sizeBytes / 1024.0)
+    else -> "$sizeBytes B"
 }
 
 private fun getFileSizeFromUri(context: Context, uri: Uri): String? {
