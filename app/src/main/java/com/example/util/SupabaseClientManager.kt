@@ -1114,13 +1114,8 @@ object SupabaseClientManager {
     }
 
     /**
-     * Publish the locally generated Tink public key for the authenticated VibeSync profile.
-     * The RPC derives the owner from the verified session; neither profile ID nor private key
-     * is accepted from caller-controlled JSON. The SQL RPC updates only non-empty payload fields.
-     */
-    /**
-     * Publish the local Tink public key to both profiles.public_key/public_identity_key and
-     * user_public_keys through an owner-authorized RPC. The private keyset never leaves the device.
+     * Publishes only the local public Tink keyset through the single owner-bound RPC.
+     * The private keyset never leaves this device; direct key-table writes are not used.
      */
     suspend fun publishDevicePublicKey(
         context: Context,
@@ -1141,15 +1136,34 @@ object SupabaseClientManager {
             Log.w(TAG, "Cannot publish Tink public key: local public keyset is blank or invalid.")
             return@withContext false
         }
+        val publicKeyId = runCatching {
+            TinkCryptoManager.getPublicKeyMetadata(publicKeyset).keyId
+        }.getOrElse { failure ->
+            Log.w(TAG, "Cannot publish Tink public key without a valid primary key ID: ${failure.message}")
+            return@withContext false
+        }
 
         try {
+            // This RPC is the only network write for Tink public-key publication. Keep PostgREST
+            // parameter names and JSON types aligned with publish_my_tink_public_key(text, text).
             val request = buildRequest(
                 endpoint = "rpc/publish_my_tink_public_key",
                 method = "POST",
-                bodyJson = JSONObject().put("p_public_key", publicKeyset).toString()
+                bodyJson = JSONObject()
+                    .put("p_public_key", publicKeyset)
+                    .put("p_key_id", publicKeyId)
+                    .toString()
             )
             httpClient.newCall(request).execute().use { response ->
-                val body = response.body?.string().orEmpty().trim().trim('"')
+                val responseBody = response.body?.string().orEmpty()
+                val body = responseBody.trim().trim('"')
+                val responseChunks = responseBody.chunked(800).ifEmpty { listOf("<empty response body>") }
+                responseChunks.forEachIndexed { index, chunk ->
+                    val message = "Dual-store Tink key publish response body chunk ${index + 1}/${responseChunks.size} " +
+                        "(HTTP ${response.code}): ${chunk}"
+                    if (response.isSuccessful) Log.i(TAG, message) else Log.w(TAG, message)
+                }
+
                 val result = runCatching { JSONObject(body) }.getOrNull()
                 val updated = response.isSuccessful &&
                     (
@@ -1163,7 +1177,7 @@ object SupabaseClientManager {
                 } else {
                     Log.w(
                         TAG,
-                        "Dual-store Tink key publish failed: HTTP ${response.code}, result=${body.take(100)}."
+                        "Dual-store Tink key publish failed: HTTP ${response.code}; full response body logged above."
                     )
                 }
                 updated
