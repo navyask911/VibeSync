@@ -1,13 +1,19 @@
 package com.example.util
 
+import android.app.Application
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Test
+import org.junit.runner.RunWith
 import org.json.JSONObject
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 import java.time.Instant
 
+@RunWith(RobolectricTestRunner::class)
+@Config(application = Application::class)
 class MessageHistoryClearBarrierPolicyTest {
     private val clearCutoff = 1_760_000_000_000L
 
