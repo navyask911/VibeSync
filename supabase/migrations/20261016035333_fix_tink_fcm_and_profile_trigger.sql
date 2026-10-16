@@ -30,6 +30,10 @@ BEGIN
 END;
 $function$;
 
+-- The old blind phone-hash endpoint belongs to the retired contact pipeline and must not
+-- remain callable as SECURITY DEFINER from the exposed public schema.
+DROP FUNCTION IF EXISTS public.match_contacts(text[]);
+
 -- Public Tink key material is readable to authenticated members, but write access is
 -- deliberately kept behind the validating, session-bound publish RPC.
 ALTER TABLE public.user_public_keys ENABLE ROW LEVEL SECURITY;
