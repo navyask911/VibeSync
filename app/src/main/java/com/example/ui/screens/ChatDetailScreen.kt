@@ -311,6 +311,7 @@ fun ChatDetailScreen(
     onToggleStarMessage: (messageId: String) -> Unit = {},
     onReactToMessage: (messageId: String, emoji: String) -> Unit = { _, _ -> },
     onDeleteForMe: (messageId: String) -> Unit = {},
+    onClearChat: (alsoDeleteMedia: Boolean) -> Unit = {},
     onDeleteForEveryone: (messageId: String) -> Unit = {},
     onForwardMessage: (targetMatchId: String, message: ChatMessageEntity) -> Unit = { _, _ -> },
     onForwardMessages: (
@@ -530,6 +531,8 @@ private fun ChatDetailScreenContent(
     }
 
     var showMenu by remember { mutableStateOf(false) }
+    var showClearChatDialog by remember { mutableStateOf(false) }
+    var alsoDeleteChatMedia by remember { mutableStateOf(false) }
     var showChatColorDialog by remember { mutableStateOf(false) }
     var showChatWallpaperDialog by remember { mutableStateOf(false) }
     var selectedChatWallpaper by remember(profile.id) {
@@ -1286,6 +1289,14 @@ private fun ChatDetailScreenContent(
                             text = { Text("Disappearing messages") },
                             onClick = { showMenu = false; showDisappearingTimerDialog = true }
                         )
+                        DropdownMenuItem(
+                            text = { Text("Clear chat") },
+                            onClick = {
+                                showMenu = false
+                                alsoDeleteChatMedia = false
+                                showClearChatDialog = true
+                            }
+                        )
                     }
                 }
             },
@@ -1293,6 +1304,37 @@ private fun ChatDetailScreenContent(
                 containerColor = MaterialTheme.colorScheme.surface
             )
         )
+
+        if (showClearChatDialog) {
+            AlertDialog(
+                onDismissRequest = { showClearChatDialog = false },
+                title = { Text("Clear this chat?") },
+                text = {
+                    Column {
+                        Text("Clear this chat? Messages will be deleted from this device.")
+                        Row(
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().clickable { alsoDeleteChatMedia = !alsoDeleteChatMedia }
+                        ) {
+                            androidx.compose.material3.Checkbox(
+                                checked = alsoDeleteChatMedia,
+                                onCheckedChange = { alsoDeleteChatMedia = it }
+                            )
+                            Text("Also delete media from device storage")
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showClearChatDialog = false
+                        onClearChat(alsoDeleteChatMedia)
+                    }) { Text("Clear chat") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showClearChatDialog = false }) { Text("Cancel") }
+                }
+            )
+        }
 
         AnimatedVisibility(visible = messageSelectionMode) {
             Surface(
