@@ -3263,7 +3263,10 @@ class SocialConnectRepository(
                                     deliveryState = persistedMessage.deliveryState,
                                     isControlMessage = com.example.util.ConversationUnreadStatePolicy.isControlMessage(
                                         persistedMessage.mediaType, persistedMessage.text
-                                    )
+                                    ),
+                                    isDeleted = persistedMessage.isDeleted,
+                                    isDeletedForMe = persistedMessage.isDeletedForMe,
+                                    isDeletedForEveryone = persistedMessage.isDeletedForEveryone
                                 )
                             )
                         )
@@ -3278,7 +3281,10 @@ class SocialConnectRepository(
                             deliveryState = persistedMessage.deliveryState,
                             isControlMessage = com.example.util.ConversationUnreadStatePolicy.isControlMessage(
                                 persistedMessage.mediaType, persistedMessage.text
-                            )
+                            ),
+                            isDeleted = persistedMessage.isDeleted,
+                            isDeletedForMe = persistedMessage.isDeletedForMe,
+                            isDeletedForEveryone = persistedMessage.isDeletedForEveryone
                         )
                     ) {
                         matchDao.setHasUnread(persistedMessage.matchId, true)
