@@ -69,6 +69,12 @@ data class AppAlertPayload(
  * - Firebase Cloud Messaging (FCM) integration
  * - In-app animated floating banner broadcaster
  */
+internal sealed class IncomingNotificationDispatchResult {
+    object Posted : IncomingNotificationDispatchResult()
+    data class Suppressed(val reason: String) : IncomingNotificationDispatchResult()
+    data class RetryableFailure(val reason: String) : IncomingNotificationDispatchResult()
+}
+
 object AppNotificationManager {
 
     private const val TAG = "AppNotificationManager"
@@ -557,15 +563,61 @@ object AppNotificationManager {
         controlMessage: Boolean = false,
         messageAlreadyRead: Boolean = false
     ) {
+        CoroutineScope(Dispatchers.IO).launch {
+            when (val result = showMessageNotificationAndAwait(
+                context = context,
+                senderId = senderId,
+                senderName = senderName,
+                messageText = messageText,
+                senderPhotoUrl = senderPhotoUrl,
+                mediaType = mediaType,
+                channelId = channelId,
+                conversationId = conversationId,
+                messageId = messageId,
+                messageTimestamp = messageTimestamp,
+                persistedIncomingMessage = persistedIncomingMessage,
+                messageDecrypted = messageDecrypted,
+                clearHistoryBarrierPassed = clearHistoryBarrierPassed,
+                controlMessage = controlMessage,
+                messageAlreadyRead = messageAlreadyRead
+            )) {
+                IncomingNotificationDispatchResult.Posted -> Unit
+                is IncomingNotificationDispatchResult.Suppressed ->
+                    Log.i(TAG, "Notification dispatch suppressed: reason=${result.reason}, message_id=${messageId.ifBlank { "<none>" }}.")
+                is IncomingNotificationDispatchResult.RetryableFailure ->
+                    Log.w(TAG, "Notification dispatch failed: reason=${result.reason}, message_id=${messageId.ifBlank { "<none>" }}.")
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    suspend fun showMessageNotificationAndAwait(
+        context: Context,
+        senderId: String,
+        senderName: String,
+        messageText: String,
+        senderPhotoUrl: String = "",
+        mediaType: String = "TEXT",
+        channelId: String = CHANNEL_ID_CHAT_MESSAGES,
+        conversationId: String = defaultConversationId(senderId),
+        messageId: String = "",
+        messageTimestamp: Long = System.currentTimeMillis(),
+        persistedIncomingMessage: Boolean = false,
+        messageDecrypted: Boolean = false,
+        clearHistoryBarrierPassed: Boolean = false,
+        controlMessage: Boolean = false,
+        messageAlreadyRead: Boolean = false,
+        workRequestId: String = ""
+    ): IncomingNotificationDispatchResult = withContext(Dispatchers.IO) {
         val appContext = context.applicationContext
         val safeMessageId = messageId.trim()
         val reservedMessageId = safeMessageId.takeIf { it.isNotBlank() }
+        val safeWorkRequestId = workRequestId.trim().ifBlank { "<none>" }
         if (reservedMessageId != null && !notificationPostInFlightMessageIds.add(reservedMessageId)) {
-            Log.i(TAG, "Incoming notification suppressed: reason=duplicate_in_flight message_id=${safeMessageId}.")
-            return
+            Log.i(TAG, "Incoming notification suppressed: reason=duplicate_in_flight message_id=${safeMessageId}, work_request_id=$safeWorkRequestId.")
+            return@withContext IncomingNotificationDispatchResult.Suppressed("duplicate_in_flight")
         }
 
-        CoroutineScope(Dispatchers.IO).launch {
             try {
                 val database = DatingDatabase.getDatabase(appContext)
                 val requestedThreadId = conversationId.trim().ifBlank { defaultConversationId(senderId) }
@@ -636,22 +688,22 @@ object AppNotificationManager {
                                 "app foreground policy"
                             else -> blocked.name.lowercase()
                         }
-                        Log.i(TAG, "Incoming notification suppressed: reason=$reason message_id=${safeMessageId}, conversation_id=${threadId}.")
-                        return@launch
+                        Log.i(TAG, "Incoming notification suppressed: reason=$reason message_id=${safeMessageId}, conversation_id=${threadId}, work_request_id=$safeWorkRequestId.")
+                        return@withContext IncomingNotificationDispatchResult.Suppressed(reason)
                     }
                 } else {
                     if (conversationMuted) {
                         Log.i(TAG, "Notification suppressed: reason=conversation muted conversation_id=${threadId}.")
-                        return@launch
+                        return@withContext IncomingNotificationDispatchResult.Suppressed("conversation_muted")
                     }
                     if (activeChat) {
                         Log.i(TAG, "Notification suppressed: reason=active chat conversation_id=${threadId}.")
-                        return@launch
+                        return@withContext IncomingNotificationDispatchResult.Suppressed("active_chat")
                     }
                     val displayBlock = notificationDisplayBlockReason(appContext, effectiveChannelId)
                     if (displayBlock != null) {
                         Log.i(TAG, "Notification suppressed: reason=$displayBlock channel_id=$effectiveChannelId.")
-                        return@launch
+                        return@withContext IncomingNotificationDispatchResult.Suppressed(displayBlock)
                     }
                 }
 
@@ -706,18 +758,32 @@ object AppNotificationManager {
                     channelId = effectiveChannelId,
                     latestText = displayBody
                 )
-                if (postNotificationIfAllowed(appContext, notificationId, notification, safeMessageId)) {
+                if (postNotificationIfAllowed(appContext, notificationId, notification, safeMessageId, safeWorkRequestId)) {
                     if (dedupeKey != null) {
-                        dedupePrefs.edit().putLong(dedupeKey, System.currentTimeMillis()).apply()
+                        if (!dedupePrefs.edit().putLong(dedupeKey, System.currentTimeMillis()).commit()) {
+                            Log.w(TAG, "Notification accepted but dedupe persistence failed: message_id=$safeMessageId, work_request_id=$safeWorkRequestId.")
+                        }
                     }
                     Log.i(TAG, "Incoming notification post accepted: message_id=${safeMessageId.ifBlank { "<none>" }}, conversation_id=${threadId}, channel_id=${effectiveChannelId}.")
-                    postChatGroupSummary(appContext)
-                    AlertSoundAndVibrationManager.triggerChatAlert(appContext)
+                    runCatching { postChatGroupSummary(appContext) }
+                        .onFailure { Log.w(TAG, "Chat group summary update failed after message post: work_request_id=$safeWorkRequestId.") }
+                    runCatching { AlertSoundAndVibrationManager.triggerChatAlert(appContext) }
+                        .onFailure { Log.w(TAG, "Chat alert sound failed after message post: work_request_id=$safeWorkRequestId.") }
+                    return@withContext IncomingNotificationDispatchResult.Posted
                 } else {
-                    Log.i(TAG, "Incoming notification post not accepted: message_id=${safeMessageId.ifBlank { "<none>" }}, conversation_id=${threadId}, channel_id=${effectiveChannelId}.")
+                    val blockReason = notificationDisplayBlockReason(appContext, effectiveChannelId)
+                    if (blockReason != null) {
+                        Log.i(TAG, "Incoming notification suppressed at post time: reason=$blockReason, message_id=$safeMessageId, work_request_id=$safeWorkRequestId.")
+                        return@withContext IncomingNotificationDispatchResult.Suppressed(blockReason)
+                    }
+                    Log.w(TAG, "Incoming notification post failed transiently: message_id=$safeMessageId, conversation_id=$threadId, work_request_id=$safeWorkRequestId.")
+                    return@withContext IncomingNotificationDispatchResult.RetryableFailure("notify_rejected")
                 }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
             } catch (failure: Throwable) {
-                Log.w(TAG, "Unable to build notification: message_id=${safeMessageId.ifBlank { "<none>" }}, reason=${failure.javaClass.simpleName}.")
+                Log.w(TAG, "Unable to build notification: message_id=${safeMessageId.ifBlank { "<none>" }}, work_request_id=$safeWorkRequestId, reason=${failure.javaClass.simpleName}, work_request_id=${diagnosticWorkRequestId.ifBlank { "<none>" }}.")
+                return@withContext IncomingNotificationDispatchResult.RetryableFailure(failure.javaClass.simpleName)
             } finally {
                 reservedMessageId?.let(notificationPostInFlightMessageIds::remove)
             }
@@ -1505,7 +1571,8 @@ object AppNotificationManager {
         context: Context,
         notificationId: Int,
         notification: Notification,
-        diagnosticMessageId: String = ""
+        diagnosticMessageId: String = "",
+        diagnosticWorkRequestId: String = ""
     ): Boolean {
         val channelId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) notification.channelId.orEmpty() else ""
         val blockReason = notificationDisplayBlockReason(context.applicationContext, channelId)
@@ -1513,14 +1580,14 @@ object AppNotificationManager {
             Log.i(
                 TAG,
                 "Android notification post blocked: message_id=${diagnosticMessageId.ifBlank { "<none>" }}, " +
-                    "reason=$blockReason, channel_id=${channelId.ifBlank { "<pre-O>" }}."
+                    "reason=$blockReason, channel_id=${channelId.ifBlank { "<pre-O>" }}, work_request_id=${diagnosticWorkRequestId.ifBlank { "<none>" }}."
             )
             return false
         }
         return try {
             NotificationManagerCompat.from(context.applicationContext).notify(notificationId, notification)
             if (diagnosticMessageId.isNotBlank()) {
-                Log.i(TAG, "Android notification post accepted by notify(): message_id=$diagnosticMessageId, channel_id=$channelId.")
+                Log.i(TAG, "Android notification post accepted by notify(): message_id=$diagnosticMessageId, channel_id=$channelId, work_request_id=${diagnosticWorkRequestId.ifBlank { "<none>" }}.")
             }
             true
         } catch (_: SecurityException) {
