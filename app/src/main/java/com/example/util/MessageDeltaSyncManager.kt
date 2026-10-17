@@ -27,6 +27,84 @@ data class MessageDeltaSyncResult(
 object MessageDeltaSyncManager {
     private const val TAG = "VibeSyncDelta"
 
+    /**
+     * Merge a fetched delta row with the latest Room row inside the commit transaction.
+     *
+     * The network snapshot can be older than a READ ACK committed while decryption/pagination was
+     * running. Read/delivery state and local retention/deletion metadata must never move backwards.
+     */
+    internal fun mergeLatestLocalReadState(
+        incoming: ChatMessageEntity,
+        latestLocal: ChatMessageEntity?
+    ): ChatMessageEntity {
+        if (latestLocal == null) return incoming
+
+        val isRead = ConversationUnreadStatePolicy.mergedIsRead(
+            remoteIsRead = incoming.isRead,
+            remoteDeliveryState = incoming.deliveryState,
+            localIsRead = latestLocal.isRead,
+            localDeliveryState = latestLocal.deliveryState
+        )
+        val isDelivered = incoming.isDelivered ||
+            incoming.deliveryState.equals("DELIVERED", ignoreCase = true) ||
+            incoming.deliveryState.equals("READ", ignoreCase = true) ||
+            latestLocal.isDelivered ||
+            latestLocal.deliveryState.equals("DELIVERED", ignoreCase = true) ||
+            latestLocal.deliveryState.equals("READ", ignoreCase = true) ||
+            isRead
+        val isDeleted = incoming.isDeleted || latestLocal.isDeleted
+        val isDeletedForMe = incoming.isDeletedForMe || latestLocal.isDeletedForMe
+        val isDeletedForEveryone = incoming.isDeletedForEveryone || latestLocal.isDeletedForEveryone
+        val deleted = isDeleted || isDeletedForEveryone
+
+        return incoming.copy(
+            timestamp = if (incoming.timestamp > 0L) incoming.timestamp else latestLocal.timestamp,
+            text = if (deleted) "" else incoming.text.ifBlank { latestLocal.text },
+            mediaUrl = if (deleted) "" else incoming.mediaUrl.ifBlank { latestLocal.mediaUrl },
+            isDelivered = isDelivered,
+            isRead = isRead,
+            isEdited = incoming.isEdited || latestLocal.isEdited,
+            editedTimestamp = maxOf(incoming.editedTimestamp, latestLocal.editedTimestamp),
+            isStarred = incoming.isStarred || latestLocal.isStarred,
+            isDeleted = isDeleted,
+            isDeletedForMe = isDeletedForMe,
+            isDeletedForEveryone = isDeletedForEveryone,
+            isForwarded = incoming.isForwarded || latestLocal.isForwarded,
+            forwardCount = maxOf(incoming.forwardCount, latestLocal.forwardCount),
+            deliveryState = when {
+                isRead -> "READ"
+                isDelivered -> "DELIVERED"
+                incoming.deliveryState.isNotBlank() -> incoming.deliveryState
+                else -> latestLocal.deliveryState
+            },
+            syncAttempts = maxOf(incoming.syncAttempts, latestLocal.syncAttempts),
+            lastSyncError = incoming.lastSyncError.ifBlank { latestLocal.lastSyncError },
+            lastSyncAttemptAt = maxOf(incoming.lastSyncAttemptAt, latestLocal.lastSyncAttemptAt),
+            outboxOwnerProfileId = incoming.outboxOwnerProfileId.ifBlank { latestLocal.outboxOwnerProfileId },
+            senderDisplayName = incoming.senderDisplayName.ifBlank { latestLocal.senderDisplayName },
+            senderPhotoUri = incoming.senderPhotoUri.ifBlank { latestLocal.senderPhotoUri },
+            serverCreatedAt = maxOf(incoming.serverCreatedAt, latestLocal.serverCreatedAt),
+            deliveredAt = maxOf(incoming.deliveredAt, latestLocal.deliveredAt),
+            readAt = maxOf(incoming.readAt, latestLocal.readAt),
+            deliveryAckPending = (incoming.deliveryAckPending || latestLocal.deliveryAckPending) &&
+                !isRead && !isDelivered,
+            reactionsJson = latestLocal.reactionsJson.takeIf {
+                it.isNotBlank() && it != "{}"
+            } ?: incoming.reactionsJson,
+            expiresAt = maxOf(incoming.expiresAt, latestLocal.expiresAt),
+            encryptedPayload = if (deleted) "" else incoming.encryptedPayload.ifBlank { latestLocal.encryptedPayload },
+            decryptState = when {
+                deleted -> MessageLocalRetentionPolicy.DECRYPT_STATE_OK
+                incoming.decryptState == MessageLocalRetentionPolicy.DECRYPT_STATE_OK -> incoming.decryptState
+                latestLocal.decryptState == MessageLocalRetentionPolicy.DECRYPT_STATE_OK &&
+                    (MessageLocalRetentionPolicy.isRenderableText(latestLocal.text) || latestLocal.mediaUrl.isNotBlank()) ->
+                    MessageLocalRetentionPolicy.DECRYPT_STATE_OK
+                else -> incoming.decryptState
+            }
+        )
+    }
+
+
     suspend fun syncConversation(
         context: Context,
         database: DatingDatabase,
@@ -367,7 +445,9 @@ object MessageDeltaSyncManager {
                     )
                 }
 
-                // Room is the durable inbox commit. ACK is only attempted after this REPLACE succeeds.
+                // Room is the durable inbox commit. Re-read the current row while the transaction
+                // is held so a visible READ ACK cannot be overwritten by this older network snapshot.
+                var committedMessage = local
                 val commitAllowed = ConversationClearCoordinator.withConversationLock(match.matchId) {
                     if (MessageHistoryClearBarrier.shouldSuppress(
                             context, database, match.matchId, authoritativeCreatedAt
@@ -375,18 +455,42 @@ object MessageDeltaSyncManager {
                     ) {
                         false
                     } else {
-                        val committed = database.withTransaction {
+                        database.withTransaction {
                             if (database.conversationClearDao().isConversationClearInProgress(match.matchId)) {
                                 false
                             } else {
-                                dao.upsertMessage(local.copy(serverCreatedAt = authoritativeCreatedAt ?: 0L))
-                                messageDao.insertMessage(
-                                    local.toLocalMessage().copy(remoteMessageId = local.messageId)
+                                val latestLocal = dao.getMessageById(remote.messageId)
+                                committedMessage = mergeLatestLocalReadState(local, latestLocal).copy(
+                                    serverCreatedAt = maxOf(
+                                        authoritativeCreatedAt ?: 0L,
+                                        latestLocal?.serverCreatedAt ?: 0L
+                                    )
                                 )
+                                dao.upsertMessage(committedMessage)
+                                messageDao.insertMessage(
+                                    committedMessage.toLocalMessage().copy(remoteMessageId = committedMessage.messageId)
+                                )
+
+                                // Update the conversation marker atomically with the durable message
+                                // row, using the latest merged read state—not the pre-transaction snapshot.
+                                if (!suppressForClearedHistory && canRenderPlaintext &&
+                                    ConversationUnreadStatePolicy.isUnreadIncoming(
+                                        isIncoming = true,
+                                        isRead = committedMessage.isRead,
+                                        deliveryState = committedMessage.deliveryState,
+                                        isControlMessage = ConversationUnreadStatePolicy.isControlMessage(
+                                            committedMessage.mediaType, committedMessage.text
+                                        ),
+                                        isDeleted = committedMessage.isDeleted,
+                                        isDeletedForMe = committedMessage.isDeletedForMe,
+                                        isDeletedForEveryone = committedMessage.isDeletedForEveryone
+                                    )
+                                ) {
+                                    matchDao.setHasUnread(match.matchId, true)
+                                }
                                 true
                             }
                         }
-                        committed
                     }
                 }
                 if (!commitAllowed) {
@@ -401,36 +505,21 @@ object MessageDeltaSyncManager {
                 )
 
                 if (!suppressForClearedHistory && canRenderPlaintext &&
-                    ConversationUnreadStatePolicy.isUnreadIncoming(
-                        isIncoming = true,
-                        isRead = local.isRead,
-                        deliveryState = local.deliveryState,
-                        isControlMessage = ConversationUnreadStatePolicy.isControlMessage(local.mediaType, local.text),
-                        isDeleted = local.isDeleted,
-                        isDeletedForMe = local.isDeletedForMe,
-                        isDeletedForEveryone = local.isDeletedForEveryone
-                    )
-                ) {
-                    // A genuinely unseen incoming message sets the flag, irrespective of ordering.
-                    // A replay of an already-read message never clears or re-enables the flag.
-                    matchDao.setHasUnread(match.matchId, true)
-                }
-                if (!suppressForClearedHistory && canRenderPlaintext &&
-                    remote.timestamp >= match.lastMessageTime && local.text.isNotBlank()
+                    remote.timestamp >= match.lastMessageTime && committedMessage.text.isNotBlank()
                 ) {
                     matchDao.updateLastMessagePreservingUnread(
                         matchId = match.matchId,
-                        text = local.text,
+                        text = committedMessage.text,
                         timestamp = remote.timestamp
                     )
                 }
 
-                if (canRenderPlaintext && needsAck) {
+                if (canRenderPlaintext && committedMessage.deliveryAckPending) {
                     val mediaCached = ChatAttachmentCryptoManager.cacheEncryptedMediaBeforeDeliveryAck(
                         context = context.applicationContext,
-                        mediaType = local.mediaType,
-                        mediaUrl = local.mediaUrl,
-                        messageId = remote.messageId
+                        mediaType = committedMessage.mediaType,
+                        mediaUrl = committedMessage.mediaUrl,
+                        messageId = committedMessage.messageId
                     )
                     if (!mediaCached) {
                         ackFailures++
