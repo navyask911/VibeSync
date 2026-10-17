@@ -1,6 +1,7 @@
 package com.example.util
 
 import android.Manifest
+import android.app.Application
 import android.app.Notification
 import android.app.NotificationManager
 import android.content.Context
@@ -22,7 +23,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [32], manifest = Config.NONE)
+@Config(sdk = [32], manifest = Config.NONE, application = Application::class)
 class AppNotificationManagerPostTest {
     private lateinit var context: Context
 
@@ -99,7 +100,7 @@ class AppNotificationManagerPostTest {
 }
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33], manifest = Config.NONE)
+@Config(sdk = [33], manifest = Config.NONE, application = Application::class)
 class AppNotificationManagerPermissionTest {
     @Test
     fun deniedAndroid13NotificationPermissionBlocksPost() {

@@ -1,5 +1,6 @@
 package com.example.service
 
+import android.app.Application
 import androidx.work.NetworkType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -10,7 +11,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [32], manifest = Config.NONE)
+@Config(sdk = [32], manifest = Config.NONE, application = Application::class)
 class PendingMessageInboxWorkRequestTest {
     @Test
     fun targetedMessageAndConversationIdsArePersistedInWorkInput() {
