@@ -1085,6 +1085,7 @@ object SupabaseClientManager {
                 put("occupation", ContactResolver.sanitizeName(profile.occupation, "Member"))
                 put("qualification", ContactResolver.sanitizeName(profile.qualification, "Verified"))
                 put("marital_status", ContactResolver.sanitizeName(profile.maritalStatus, "Single"))
+                put("is_discoverable", profile.isDiscoverable)
             }
 
             val request = buildRequest(
@@ -2379,7 +2380,10 @@ object SupabaseClientManager {
         afterCreatedAtMs: Long,
         afterCreatedAtRaw: String = "",
         afterMessageId: String = "",
-        onPeerPublicKeyRefreshed: (suspend (String, String) -> Unit)? = null
+        onPeerPublicKeyRefreshed: (suspend (String, String) -> Unit)? = null,
+        localMatchId: String = "",
+        clearBarrierContext: android.content.Context? = null,
+        clearBarrierDatabase: com.example.data.database.DatingDatabase? = null
     ): MessageDeltaBatch? = withContext(Dispatchers.IO) {
         val records = mutableListOf<MessageDeltaRecord>()
         var complete = true
@@ -2390,7 +2394,11 @@ object SupabaseClientManager {
         val pageSize = 500
         val maxPages = 20
         val currentProfileId = VibeSyncSessionManager.getProfileId().orEmpty().trim()
-        val context = AppNotificationManager.appContext ?: MessageHandler.appContext
+        val context = clearBarrierContext?.applicationContext
+            ?: AppNotificationManager.appContext ?: MessageHandler.appContext
+        val barrierDatabase = clearBarrierDatabase ?: context?.let {
+            runCatching { com.example.data.database.DatingDatabase.getDatabase(it) }.getOrNull()
+        }
         val safeMatch = java.net.URLEncoder.encode(matchId, "UTF-8")
         val afterFilter = when {
             afterCreatedAtRaw.isNotBlank() && afterMessageId.isNotBlank() -> {
@@ -2449,6 +2457,15 @@ object SupabaseClientManager {
                         complete = false
                         continue
                     }
+
+                    // Advance the ordered cursor, but skip obsolete rows before Tink decryption,
+                    // media-only tombstone creation, retry metadata, or receipt side effects.
+                    if (context != null && barrierDatabase != null &&
+                        MessageHistoryClearBarrier.shouldSuppress(
+                            context, barrierDatabase, localMatchId.ifBlank { remoteMatch },
+                            createdAt.takeIf { it > 0L }, currentProfileId
+                        )
+                    ) continue
 
                     // Server-side deletions still advance only after the row identity/timestamp is known.
                     val mediaType = row.optSafeString("media_type", "TEXT")
@@ -2555,7 +2572,10 @@ object SupabaseClientManager {
     suspend fun fetchMessagesForMatch(
         matchId: String,
         currentUserPhone: String = "",
-        partnerPhone: String = ""
+        partnerPhone: String = "",
+        localMatchId: String = "",
+        clearBarrierContext: android.content.Context? = null,
+        clearBarrierDatabase: com.example.data.database.DatingDatabase? = null
     ): List<ChatMessageEntity> = withContext(Dispatchers.IO) {
         val list = mutableListOf<ChatMessageEntity>()
         try {
@@ -2567,9 +2587,12 @@ object SupabaseClientManager {
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext list
                 val rows = JSONArray(response.body?.string() ?: "[]")
-                val context = AppNotificationManager.appContext ?: MessageHandler.appContext
+                val context = clearBarrierContext?.applicationContext
+                    ?: AppNotificationManager.appContext ?: MessageHandler.appContext
                 val localProfileId = VibeSyncSessionManager.getProfileId().orEmpty().trim()
-                val database = context?.let { runCatching { com.example.data.database.DatingDatabase.getDatabase(it) }.getOrNull() }
+                val database = clearBarrierDatabase ?: context?.let {
+                    runCatching { com.example.data.database.DatingDatabase.getDatabase(it) }.getOrNull()
+                }
                 for (index in 0 until rows.length()) {
                     val row = rows.optJSONObject(index) ?: continue
                     val messageId = row.optSafeString("message_id", row.optSafeString("id", ""))
@@ -2577,7 +2600,16 @@ object SupabaseClientManager {
                     val receiverId = row.optSafeString("receiver_id", "")
                     val ciphertext = row.optSafeString("ciphertext", "")
                     val remoteMatchId = row.optSafeString("match_id", matchId)
-                    if (messageId.isBlank() || ciphertext.isBlank()) continue
+                    val authoritativeCreatedAtMs = MessageHistoryClearBarrier.parseServerTimestampMillis(row)
+                    if (messageId.isBlank()) continue
+                    // Reject old ciphertext before decrypt/recovery can refresh keys or create tombstones.
+                    if (context != null && database != null &&
+                        MessageHistoryClearBarrier.shouldSuppress(
+                            context, database, localMatchId.ifBlank { remoteMatchId },
+                            authoritativeCreatedAtMs, localProfileId
+                        )
+                    ) continue
+                    if (ciphertext.isBlank()) continue
                     val ownMessage = MessageDecryptionPolicy.isOwnOutgoingMessage(senderId, localProfileId)
                     val existingLocal = if (ownMessage && database != null) {
                         runCatching { database.chatMessageDao().getMessageById(messageId) }.getOrNull()
@@ -2612,7 +2644,6 @@ object SupabaseClientManager {
                     // created_at is authoritative server ordering metadata. Keep unknown timestamps
                     // unknown in serverCreatedAt rather than making an old row look newly created
                     // by substituting this device's clock before the clear-history barrier runs.
-                    val authoritativeCreatedAtMs = MessageHistoryClearBarrier.parseServerTimestampMillis(row)
                     val timestamp = authoritativeCreatedAtMs
                         ?: row.optLong("timestamp", 0L).takeIf { it > 0L }
                         ?: System.currentTimeMillis()

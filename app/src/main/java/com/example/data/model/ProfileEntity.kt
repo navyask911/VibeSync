@@ -67,7 +67,9 @@ data class ProfileEntity(
     val email: String = "",
     val publicIdentityKey: String = "",
     /** Private DOB from registration; never serialized into public profile fields. */
-    @androidx.room.ColumnInfo(defaultValue = "''") val dateOfBirth: String = ""
+    @androidx.room.ColumnInfo(defaultValue = "''") val dateOfBirth: String = "",
+    /** Server-owned discoverability; distinct from permission to inspect the local address book. */
+    @androidx.room.ColumnInfo(defaultValue = "1") val isDiscoverable: Boolean = true
 ) {
     fun getInterestList(): List<String> {
         return interests.split(",").map { it.trim() }.filter { it.isNotEmpty() }

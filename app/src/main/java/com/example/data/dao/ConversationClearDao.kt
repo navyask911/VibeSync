@@ -49,6 +49,10 @@ abstract class ConversationClearDao {
     @Query("SELECT * FROM conversation_clear_guards WHERE isClearing = 1 ORDER BY clearedAtMs ASC")
     abstract suspend fun getPendingClearGuards(): List<ConversationClearGuardEntity>
 
+    /** Retained cutoffs are permanent local tombstones; aliases are resolved against these guards. */
+    @Query("SELECT * FROM conversation_clear_guards ORDER BY clearedAtMs DESC")
+    abstract suspend fun getAllClearGuards(): List<ConversationClearGuardEntity>
+
     @Query("SELECT EXISTS(SELECT 1 FROM conversation_clear_guards WHERE matchId = :matchId AND isClearing = 1)")
     abstract suspend fun isConversationClearInProgress(matchId: String): Boolean
 

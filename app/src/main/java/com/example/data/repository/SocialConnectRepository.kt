@@ -2342,7 +2342,8 @@ class SocialConnectRepository(
         bio: String = "",
         interests: String = "",
         maritalStatus: String = "Single (Never Married)",
-        isOpenForDating: Boolean = true
+        isOpenForDating: Boolean = true,
+        isDiscoverable: Boolean = true
     ) {
         val current = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
         val joinedPhotos = photos.joinToString("|||")
@@ -2404,6 +2405,7 @@ class SocialConnectRepository(
                     "relationshipGoal" to updatedPrefs.userRelationshipGoal,
                     "maritalStatus" to updatedPrefs.userMaritalStatus,
                     "isOpenForDating" to updatedPrefs.isOpenForDating,
+                    "isDiscoverable" to isDiscoverable,
                     "avatarEmoji" to if (updatedPrefs.avatarUrl.isNotBlank()) "" else "✨",
                     "avatarUrl" to com.example.util.ProfileAvatarStorageManager.serverAvatarReference(userId, updatedPrefs.avatarUrl),
                     "isRealFaceVerified" to updatedPrefs.isFaceVerified,
@@ -2448,7 +2450,8 @@ class SocialConnectRepository(
                     phoneNumber = updatedPrefs.verifiedMobileNumber,
                     email = updatedPrefs.googleEmail,
                     isDeleted = false,
-                    accountStatus = "ACTIVE"
+                    accountStatus = "ACTIVE",
+                    isDiscoverable = isDiscoverable
                 )
                 profileDao.insertProfile(ownProf)
                 try {

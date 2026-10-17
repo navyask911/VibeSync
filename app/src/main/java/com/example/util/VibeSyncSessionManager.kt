@@ -507,6 +507,7 @@ object VibeSyncSessionManager {
 
             var fetched = 0
             var inserted = 0
+            var suppressed = 0
             val myDigits = myPhone.filter { it.isDigit() }
             val myProfileId = VibeSyncSessionManager.getProfileId(context).orEmpty().trim()
             database.matchDao().getAllMatchesSync().forEach { match ->
@@ -519,12 +520,30 @@ object VibeSyncSessionManager {
                 val remoteMessages = SupabaseClientManager.fetchMessagesForMatch(
                     matchId = queryMatchId,
                     currentUserPhone = myPhone,
-                    partnerPhone = peerProfileId
+                    partnerPhone = peerProfileId,
+                    localMatchId = match.matchId,
+                    clearBarrierContext = context,
+                    clearBarrierDatabase = database
                 )
                 fetched += remoteMessages.size
 
                 remoteMessages.forEach remoteLoop@ { remote ->
                     if (remote.messageId.isBlank()) return@remoteLoop
+                    val authoritativeCreatedAt = remote.serverCreatedAt.takeIf { it > 0L }
+
+                    // Close the fetch/commit race: old rows are deleted locally if needed, never
+                    // converted into fresh tombstones or ACKed after Clear Chat.
+                    if (MessageHistoryClearBarrier.shouldSuppress(
+                            context, database, match.matchId, authoritativeCreatedAt, myProfileId
+                        )
+                    ) {
+                        database.withTransaction {
+                            database.chatMessageDao().deleteMessageById(remote.messageId)
+                            database.messageDao().deleteRemoteMessage(remote.messageId)
+                        }
+                        suppressed++
+                        return@remoteLoop
+                    }
                     val isControlPacket =
                         remote.mediaType in listOf("KEY_EXCHANGE", "HANDSHAKE", "SETUP", "PROTOCOL", "SYSTEM") ||
                             remote.text.startsWith("KEY_EXCHANGE") ||
@@ -561,21 +580,43 @@ object VibeSyncSessionManager {
                     // Replace missing/ciphertext placeholders without overwriting readable content
                     // with a ciphertext response from a later network sweep.
                     if (existing == null || !MessageLocalRetentionPolicy.isRenderableText(existing.text)) {
-                        database.withTransaction {
+                        val committed = database.withTransaction {
+                            if (MessageHistoryClearBarrier.shouldSuppress(
+                                    context, database, match.matchId, authoritativeCreatedAt, myProfileId
+                                ) || database.conversationClearDao().isConversationClearInProgress(match.matchId)
+                            ) return@withTransaction false
                             database.chatMessageDao().upsertMessage(incoming)
                             database.messageDao().insertMessage(
                                 incoming.toLocalMessage().copy(remoteMessageId = incoming.messageId)
                             )
+                            if (canRender) {
+                                database.matchDao().updateLastMessage(
+                                    matchId = match.matchId,
+                                    text = safeText,
+                                    timestamp = remote.timestamp,
+                                    hasUnread = !isMyOwn
+                                )
+                            }
+                            true
                         }
-                        if (canRender) {
-                            database.matchDao().updateLastMessage(
-                                matchId = match.matchId,
-                                text = safeText,
-                                timestamp = remote.timestamp,
-                                hasUnread = !isMyOwn
-                            )
+                        if (!committed) {
+                            suppressed++
+                            return@remoteLoop
                         }
                         inserted++
+                    }
+
+                    // Recheck the durable barrier before emitting any remote receipt.
+                    if (MessageHistoryClearBarrier.shouldSuppress(
+                            context, database, match.matchId, authoritativeCreatedAt, myProfileId
+                        )
+                    ) {
+                        database.withTransaction {
+                            database.chatMessageDao().deleteMessageById(remote.messageId)
+                            database.messageDao().deleteRemoteMessage(remote.messageId)
+                        }
+                        suppressed++
+                        return@remoteLoop
                     }
 
                     // Delivery ACK is deferred until the decoded message has committed to Room.
@@ -603,7 +644,7 @@ object VibeSyncSessionManager {
                 }
             }
 
-            Log.d(TAG, "Immediate message sync completed: fetched=$fetched inserted=$inserted")
+            Log.d(TAG, "Immediate message sync completed: fetched=$fetched inserted=$inserted suppressed=$suppressed")
         } catch (e: Throwable) {
             Log.w(TAG, "Immediate message sync notice: ${e.message}")
         }

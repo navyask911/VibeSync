@@ -24,16 +24,50 @@ object MessageHistoryClearBarrier {
         context: Context,
         database: DatingDatabase,
         matchId: String,
-        serverTimestampMs: Long?
+        serverTimestampMs: Long?,
+        ownerProfileId: String = VibeSyncSessionManager.getProfileId(context.applicationContext).orEmpty()
     ): Boolean {
         val safeMatchId = matchId.trim()
         if (safeMatchId.isBlank()) return true
-        val guard = database.conversationClearDao().getClearGuard(safeMatchId)
-        if (guard?.isClearing == true) return true
-        val preferenceCutoff = runCatching {
-            LocalConversationClearStore.readClearTimestamp(context.applicationContext, safeMatchId)
-        }.getOrDefault(Long.MAX_VALUE)
-        val cutoff = maxOf(guard?.clearedAtMs ?: 0L, preferenceCutoff)
+
+        val app = context.applicationContext
+        val clearDao = database.conversationClearDao()
+        val directGuard = clearDao.getClearGuard(safeMatchId)
+        if (directGuard?.isClearing == true) return true
+        var cutoff = maxOf(
+            directGuard?.clearedAtMs ?: 0L,
+            runCatching { LocalConversationClearStore.readClearTimestamp(app, safeMatchId) }
+                .getOrDefault(Long.MAX_VALUE)
+        )
+
+        // The local match ID and canonical server match ID name the same conversation. Resolve
+        // permanent local clear tombstones against canonical participant IDs to prevent bypass
+        // through another match-ID representation.
+        val owner = ownerProfileId.trim()
+        val directMatch = runCatching { database.matchDao().getMatchByIdSync(safeMatchId) }.getOrNull()
+        val incomingCanonical = if (owner.isNotBlank() && !directMatch?.profileId.isNullOrBlank()) {
+            runCatching { SupabaseClientManager.canonicalChatMatchId(owner, directMatch!!.profileId.trim()) }
+                .getOrDefault("")
+        } else ""
+
+        for (guard in clearDao.getAllClearGuards()) {
+            val guardedId = guard.matchId.trim()
+            if (guardedId.isBlank() || guardedId.equals(safeMatchId, ignoreCase = true)) continue
+            val guardedMatch = runCatching { database.matchDao().getMatchByIdSync(guardedId) }.getOrNull()
+            val guardedCanonical = if (owner.isNotBlank() && !guardedMatch?.profileId.isNullOrBlank()) {
+                runCatching { SupabaseClientManager.canonicalChatMatchId(owner, guardedMatch!!.profileId.trim()) }
+                    .getOrDefault("")
+            } else ""
+            val sameConversation = guardedCanonical.isNotBlank() && (
+                guardedCanonical.equals(safeMatchId, ignoreCase = true) ||
+                    (incomingCanonical.isNotBlank() && guardedCanonical.equals(incomingCanonical, ignoreCase = true))
+                )
+            if (!sameConversation) continue
+            if (guard.isClearing) return true
+            val aliasPreferenceCutoff = runCatching { LocalConversationClearStore.readClearTimestamp(app, guardedId) }
+                .getOrDefault(Long.MAX_VALUE)
+            cutoff = maxOf(cutoff, guard.clearedAtMs, aliasPreferenceCutoff)
+        }
         return MessageHistoryClearBarrierPolicy.shouldSuppress(cutoff, serverTimestampMs)
     }
 

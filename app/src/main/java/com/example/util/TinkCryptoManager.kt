@@ -122,7 +122,14 @@ object TinkCryptoManager {
             val preferences = app.getSharedPreferences(PREF_FILE_NAME, Context.MODE_PRIVATE)
             val persistedKeyset = preferences.getString(KEYSET_NAME, null)
             val wasProvisioned = preferences.getBoolean(KEYSET_PROVISIONED_MARKER, false)
-            if (persistedKeyset.isNullOrBlank() && wasProvisioned) {
+            val previouslyPublishedIdentity = persistedKeyset.isNullOrBlank() &&
+                hasPreviouslyPublishedLocalIdentity(app)
+            if (shouldRefuseIdentityRegeneration(
+                    hasPersistedKeyset = !persistedKeyset.isNullOrBlank(),
+                    provisionedMarker = wasProvisioned,
+                    previouslyPublishedIdentity = previouslyPublishedIdentity
+                )
+            ) {
                 Log.e(TAG, "Refusing to regenerate a previously provisioned Tink identity because its protected keyset is missing.")
                 return null
             }
@@ -150,6 +157,23 @@ object TinkCryptoManager {
                 null
             }
         }
+    }
+
+    /** Pure continuity guard, testable without reading or exporting protected key material. */
+    fun shouldRefuseIdentityRegeneration(
+        hasPersistedKeyset: Boolean,
+        provisionedMarker: Boolean,
+        previouslyPublishedIdentity: Boolean
+    ): Boolean = !hasPersistedKeyset && (provisionedMarker || previouslyPublishedIdentity)
+
+    /** Existing local public identity is continuity evidence for legacy installs predating the marker. */
+    private fun hasPreviouslyPublishedLocalIdentity(context: Context): Boolean {
+        val profileId = VibeSyncSessionManager.getProfileId(context.applicationContext).orEmpty().trim()
+        if (profileId.isBlank()) return false
+        return runCatching {
+            val database = com.example.data.database.DatingDatabase.getDatabase(context.applicationContext)
+            !database.profileDao().getProfileByIdSync(profileId)?.publicIdentityKey.isNullOrBlank()
+        }.getOrDefault(false)
     }
 
     /**
@@ -676,10 +700,15 @@ object TinkCryptoManager {
 
     /** True when this device still has an enabled private key matching the ciphertext recipient key ID. */
     fun hasRetainedRecipientKey(context: Context, payload: String): Boolean {
-        val recipientKeyId = runCatching { parseCiphertextEnvelope(payload).recipientKeyId }.getOrDefault("")
-        if (recipientKeyId.isBlank()) return true
         val handle = getOrCreateMyKeysetHandle(context) ?: return false
-        return handle.keysetInfo.keyInfoList.any { info ->
+        return hasRetainedRecipientKey(handle, payload)
+    }
+
+    /** Testable enabled-key-ID check; no private material leaves the provided protected/test handle. */
+    fun hasRetainedRecipientKey(privateKeysetHandle: KeysetHandle, payload: String): Boolean {
+        val recipientKeyId = runCatching { parseCiphertextEnvelope(payload).recipientKeyId }.getOrDefault("")
+        if (recipientKeyId.isBlank()) return true // Legacy envelopes omit the ID; Tink still authenticates decryption.
+        return privateKeysetHandle.keysetInfo.keyInfoList.any { info ->
             unsignedTinkKeyId(info.keyId) == recipientKeyId && info.status.name == "ENABLED"
         }
     }
@@ -706,6 +735,24 @@ object TinkCryptoManager {
         peerPublicKeysetJson: String = ""
     ): String {
         if (!payload.startsWith(TINK_PREFIX)) return payload
+
+        val localKeyset = getOrCreateMyKeysetHandle(context)
+        if (localKeyset == null) {
+            Log.w(TAG, "Decryption deferred: protected local Tink keyset is unavailable; no replacement identity was generated.")
+            return ""
+        }
+        if (!hasRetainedRecipientKey(localKeyset, payload)) {
+            val recipientKeyId = runCatching { parseCiphertextEnvelope(payload).recipientKeyId }.getOrDefault("unknown")
+            val enabledLocalIds = localKeyset.keysetInfo.keyInfoList
+                .filter { it.status.name == "ENABLED" }
+                .map { unsignedTinkKeyId(it.keyId) }
+                .sorted()
+            Log.w(
+                TAG,
+                "Decryption deferred before peer-key refresh: message_id=${messageId.ifBlank { "unknown" }} recipient_key_id=$recipientKeyId enabled_local_key_ids=$enabledLocalIds. A peer public-key refresh cannot replace the missing recipient private key."
+            )
+            return ""
+        }
 
         val firstAttempt = decryptPayload(
             context = context,

@@ -58,6 +58,14 @@ class MessageHistoryClearBarrierPolicyTest {
     }
 
     @Test
+    fun participantOrderingMapsToOneCanonicalConversationId() {
+        val forward = SupabaseClientManager.canonicalChatMatchId("profile-a", "profile-b")
+        val reverse = SupabaseClientManager.canonicalChatMatchId("profile-b", "profile-a")
+        assertEquals(forward, reverse)
+        assertTrue(forward.isNotBlank())
+    }
+
+    @Test
     fun noClearCutoffDoesNotBlockIncomingMessages() {
         assertFalse(MessageHistoryClearBarrierPolicy.shouldSuppress(0L, null))
         assertFalse(MessageHistoryClearBarrierPolicy.shouldSuppress(0L, clearCutoff))

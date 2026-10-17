@@ -95,7 +95,7 @@ import com.example.data.dao.ConversationNotificationPreferencesDao
         ConversationClearGuardEntity::class,
         ConversationClearCleanupItemEntity::class
     ],
-    version = 65,
+    version = 66,
     exportSchema = false
 )
 abstract class DatingDatabase : RoomDatabase() {
@@ -548,6 +548,13 @@ abstract class DatingDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_65_66 = object : Migration(65, 66) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Additive: preserve local profiles, messages, and encrypted identity material.
+                addColumnIfMissing(db, "profiles", "isDiscoverable", "INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
         fun getDatabase(context: Context): DatingDatabase {
             val appContext = context.applicationContext
             return INSTANCE ?: synchronized(this) {
@@ -607,7 +614,8 @@ abstract class DatingDatabase : RoomDatabase() {
                                 MIGRATION_61_62,
                                 MIGRATION_62_63,
                                 MIGRATION_63_64,
-                                MIGRATION_64_65
+                                MIGRATION_64_65,
+                                MIGRATION_65_66
                             )
                             // Fail closed instead of recreating a database that contains local history.
                             .build()

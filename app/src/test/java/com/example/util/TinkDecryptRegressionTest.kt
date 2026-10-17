@@ -239,6 +239,40 @@ class TinkDecryptRegressionTest {
     }
 
     @Test
+    fun missingHistoricalRecipientKeyIsDetectedWithoutRegeneratingAnExistingIdentity() {
+        val intendedRecipient = newPrivateKeyset()
+        val unrelatedRecipient = newPrivateKeyset()
+        val ciphertext = TinkCryptoManager.encryptForRecipientOrThrow(
+            TinkCryptoManager.serializePublicKeysetJson(intendedRecipient),
+            "historical-key payload",
+            profileA, profileB, "historical-key-preflight"
+        )
+
+        assertTrue(TinkCryptoManager.hasRetainedRecipientKey(intendedRecipient, ciphertext))
+        assertFalse(TinkCryptoManager.hasRetainedRecipientKey(unrelatedRecipient, ciphertext))
+        assertTrue(TinkCryptoManager.shouldRefuseIdentityRegeneration(
+            hasPersistedKeyset = false,
+            provisionedMarker = false,
+            previouslyPublishedIdentity = true
+        ))
+        assertTrue(TinkCryptoManager.shouldRefuseIdentityRegeneration(
+            hasPersistedKeyset = false,
+            provisionedMarker = true,
+            previouslyPublishedIdentity = false
+        ))
+        assertFalse(TinkCryptoManager.shouldRefuseIdentityRegeneration(
+            hasPersistedKeyset = false,
+            provisionedMarker = false,
+            previouslyPublishedIdentity = false
+        ))
+        assertFalse(TinkCryptoManager.shouldRefuseIdentityRegeneration(
+            hasPersistedKeyset = true,
+            provisionedMarker = true,
+            previouslyPublishedIdentity = true
+        ))
+    }
+
+    @Test
     fun oldCiphertextDecryptsAfterNewPrimaryIsAdded() {
         val originalPrivate = newPrivateKeyset()
         val originalPublic = TinkCryptoManager.serializePublicKeysetJson(originalPrivate)

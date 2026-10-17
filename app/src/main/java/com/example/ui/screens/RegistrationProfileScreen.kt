@@ -48,7 +48,6 @@ import androidx.compose.material.icons.filled.Interests
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -64,7 +63,6 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -133,7 +131,10 @@ fun RegistrationProfileScreen(
         avatarEmoji: String,
         photos: List<String>,
         pendingAvatar: com.example.util.ProfileAvatarStorageManager.PreparedAvatar?
-    ) -> Unit
+    ) -> Unit,
+    onContactsPermissionGranted: (((String) -> Unit) -> Unit) = { report ->
+        report("Contact matching has not been started yet.")
+    }
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -271,9 +272,6 @@ fun RegistrationProfileScreen(
     // 7. Passions / Interests
     var interestsText by remember { mutableStateOf("Music, Travel, Coffee") }
     val presetInterests = listOf("Music 🎵", "Travel ✈️", "Coffee ☕", "Photography 📷", "Fitness 🏋️", "Coding 💻", "Art 🎨", "Movies 🍿")
-
-    // 8. Discovery & Contact Matching Toggle
-    var isDiscoveryEnabled by remember { mutableStateOf(true) }
 
     // Detected location fallback
     var detectedCity by remember { mutableStateOf("Bangalore") }
@@ -675,81 +673,92 @@ fun RegistrationProfileScreen(
 
             Spacer(modifier = Modifier.height(18.dp))
 
-            // 8. Direct HTTPS Contact Matching Toggle
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                ),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .background(VibeSyncTeal.copy(alpha = 0.15f), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Visibility,
-                            contentDescription = null,
-                            tint = VibeSyncTeal,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
+            // Preserve dating availability as a separate preference from profile discoverability.
+            var isOpenForDating by remember { mutableStateOf(true) }
 
-                    Spacer(modifier = Modifier.width(12.dp))
-
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Contact Discovery",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
-                        )
-                        Text(
-                            text = "Let people who have your number find you. Matching uses HTTPS; their phone numbers are sent to Supabase securely. Private chats remain end-to-end encrypted.",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    Switch(
-                        checked = isDiscoveryEnabled,
-                        onCheckedChange = { isDiscoveryEnabled = it },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = VibeSyncTeal
-                        ),
-                        modifier = Modifier.testTag("discovery_switch")
-                    )
+            // Profile discoverability is enabled by default. Android address-book permission
+            // is a separate, optional feature and does not control server-side discoverability.
+            var hasContactsPermission by remember(context) {
+                mutableStateOf(
+                    androidx.core.content.ContextCompat.checkSelfPermission(
+                        context, android.Manifest.permission.READ_CONTACTS
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                )
+            }
+            var contactsSyncStatus by remember {
+                mutableStateOf(
+                    if (hasContactsPermission) "Contacts permission is available; checking registered matches."
+                    else "Contact matching is optional. Allow access only if you want to match your address book."
+                )
+            }
+            val contactsPermissionLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.RequestPermission()
+            ) { granted ->
+                hasContactsPermission = granted
+                if (!granted) {
+                    contactsSyncStatus = "Contacts access was denied. No contacts were read; you can retry here."
                 }
             }
-
-            // Encrypted HTTPS Contact Matching Disclosure
+            LaunchedEffect(hasContactsPermission) {
+                if (hasContactsPermission) {
+                    onContactsPermissionGranted { result -> contactsSyncStatus = result }
+                }
+            }
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 12.dp, bottom = 20.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.Default.Security,
-                    contentDescription = null,
-                    tint = VibeSyncTeal,
-                    modifier = Modifier.size(14.dp)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Open to dating", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    Text(
+                        "This preference is separate from profile discoverability.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = isOpenForDating,
+                    onCheckedChange = { isOpenForDating = it },
+                    modifier = Modifier.testTag("switch_open_to_dating")
                 )
-                Spacer(modifier = Modifier.width(4.dp))
+            }
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Security,
+                        contentDescription = null,
+                        tint = VibeSyncTeal,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Privacy & contact matching", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                }
                 Text(
-                    text = "Phone numbers sent securely over SSL/TLS (HTTPS)",
-                    fontSize = 11.sp,
+                    text = "Profile discoverability is enabled by default. Contacts permission is separate: if allowed, VibeSync reads phone numbers on this device and securely sends normalized numbers over HTTPS to match registered profiles. Private chats remain end-to-end encrypted.",
+                    fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Button(
+                    onClick = {
+                        if (hasContactsPermission) {
+                            onContactsPermissionGranted { result -> contactsSyncStatus = result }
+                        } else {
+                            contactsPermissionLauncher.launch(android.Manifest.permission.READ_CONTACTS)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().testTag("btn_enable_contact_matching"),
+                    colors = ButtonDefaults.buttonColors(containerColor = VibeSyncTeal)
+                ) {
+                    Text(if (hasContactsPermission) "Refresh contact matches" else "Enable contact matching")
+                }
+                Text(
+                    text = contactsSyncStatus,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("contact_matching_status")
                 )
             }
 
@@ -790,7 +799,7 @@ fun RegistrationProfileScreen(
                             finalBio,
                             interestsText,
                             "Not specified",
-                            isDiscoveryEnabled,
+                            isOpenForDating,
                             detectedCity + ", " + detectedState,
                             detectedCity,
                             detectedCoords,

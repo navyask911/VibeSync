@@ -5483,12 +5483,18 @@ private fun VibeSyncChatBubble(
                         )
                     } else if (isOutgoing && !message.isDeleted && !message.isDeletedForEveryone) {
                         Spacer(modifier = Modifier.width(3.dp))
-                        // The durable Room READ state outranks any stale in-memory optimistic status.
-                        val status = if (message.isRead || message.deliveryState.equals("READ", ignoreCase = true)) {
-                            "READ"
-                        } else {
-                            localMessageStatuses[message.messageId] ?: message.deliveryState
+                        // Room's durable receipt outranks stale optimistic "SENDING"/"SENT" UI state.
+                        val durableStatus = when {
+                            message.isRead || message.deliveryState.equals("READ", ignoreCase = true) -> "READ"
+                            message.isDelivered || message.deliveryState.equals("DELIVERED", ignoreCase = true) -> "DELIVERED"
+                            else -> message.deliveryState
                         }
+                        val status = com.example.util.ChatDeliveryPresentation.effectiveState(
+                            persistedState = durableStatus,
+                            optimisticState = localMessageStatuses[message.messageId],
+                            isDelivered = message.isDelivered,
+                            isRead = message.isRead
+                        ).name
                         val tick = com.example.util.ChatDeliveryPresentation.tick(status)
                         val isFailed = tick.state == com.example.util.ChatDeliveryPresentation.State.FAILED
                         val isRead = readReceiptsEnabled &&

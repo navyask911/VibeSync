@@ -3377,13 +3377,12 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     fun onPermissionsResult(allGranted: Boolean) {
         viewModelScope.launch {
             hasPromptedInitialPermissions = true
-            repository.updatePermissionsStatus(true)
+            repository.updatePermissionsStatus(allGranted)
             _showMandatoryPermissionsDialog.value = false
-            if (allGranted) {
-                _toastMessage.emit("All mandatory permissions granted! Location, Camera & Biometrics enabled 🛡️")
-            } else {
-                _toastMessage.emit("Permissions updated. Location & essential features active.")
-            }
+            _toastMessage.emit(
+                if (allGranted) "Contacts permission granted."
+                else "Contacts access was not granted; contact matching remains off."
+            )
         }
     }
 
@@ -3396,7 +3395,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
     fun dismissMandatoryPermissionsDialog() {
         viewModelScope.launch {
-            repository.updatePermissionsStatus(true)
+            // Dismissing an explanation does not constitute an Android permission grant.
+            repository.updatePermissionsStatus(false)
             _showMandatoryPermissionsDialog.value = false
         }
     }
@@ -3632,35 +3632,47 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun loadPhonebookContacts(forceRefresh: Boolean = false, forceNetwork: Boolean = false) {
+    fun loadPhonebookContacts(
+        forceRefresh: Boolean = false,
+        forceNetwork: Boolean = false,
+        onResult: ((String) -> Unit)? = null
+    ) {
         viewModelScope.launch(Dispatchers.IO) {
             val currentPrefs = repository.userPreferences.first()
-            if (currentPrefs?.isLoggedIn != true) return@launch
+            if (currentPrefs?.isLoggedIn != true) {
+                onResult?.invoke("Sign in before syncing contacts.")
+                return@launch
+            }
+            val contactsPermissionGranted = androidx.core.content.ContextCompat.checkSelfPermission(
+                getApplication(), android.Manifest.permission.READ_CONTACTS
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            if (!contactsPermissionGranted) {
+                _rawDeviceContacts.value = emptyList()
+                onResult?.invoke("Contacts access is off. No contacts were read or reported.")
+                return@launch
+            }
 
             val doRefresh = forceRefresh || forceNetwork
-
-            // 1. IMMEDIATE UI LOAD & ROOM PERSISTENCE:
-            // On screen open, immediately display cached Room contacts so the list is never blank.
             if (_rawDeviceContacts.value.isEmpty()) {
                 val cached = com.example.util.PhonebookSyncManager.getCachedRoomContacts(getApplication())
-                if (cached.isNotEmpty()) {
-                    _rawDeviceContacts.value = cached
-                }
+                if (cached.isNotEmpty()) _rawDeviceContacts.value = cached
             }
-
-            // 2. Run the remote sync in the background and update the UI list automatically.
-            val syncResult = com.example.util.PhonebookSyncManager.syncContacts(
-                context = getApplication(),
-                forceClearCache = doRefresh
-            )
-
-            if (syncResult.contacts.isNotEmpty()) {
+            try {
+                val syncResult = com.example.util.PhonebookSyncManager.syncContacts(
+                    context = getApplication(),
+                    forceClearCache = doRefresh
+                )
                 _rawDeviceContacts.value = syncResult.contacts
-            }
-
-            // 3. Show a Snackbar/Toast: "Synced X contacts (Y on VibeSync)"
-            if (doRefresh) {
-                _toastMessage.emit("Synced ${syncResult.totalSynced} contacts (${syncResult.matchedCount} on VibeSync)")
+                val summary = when {
+                    syncResult.totalSynced == 0 -> "No contacts were found on this device. No matches were fabricated."
+                    else -> "Synced ${syncResult.totalSynced} contacts; ${syncResult.matchedCount} registered VibeSync profiles found."
+                }
+                onResult?.invoke(summary)
+                if (doRefresh) _toastMessage.emit(summary)
+            } catch (failure: Throwable) {
+                if (failure is kotlinx.coroutines.CancellationException) throw failure
+                android.util.Log.w("DatingViewModel", "Contact matching failed: ${failure.javaClass.simpleName}")
+                onResult?.invoke("Contact matching could not finish. Check the connection and retry.")
             }
         }
     }

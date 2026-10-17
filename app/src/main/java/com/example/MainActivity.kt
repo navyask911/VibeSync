@@ -1,13 +1,10 @@
 package com.example
 
-import android.Manifest
 import android.content.Intent
-import android.net.Uri
 import android.provider.Settings
 import android.content.SharedPreferences
 import android.os.Bundle
 import android.os.Build
-import android.content.pm.PackageManager
 import android.os.SystemClock
 import android.util.Log
 import android.view.WindowManager
@@ -41,7 +38,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import com.example.ui.DatingAppRoot
 import com.razorpay.PaymentData
@@ -230,9 +226,8 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
       if (VibeSyncSessionManager.getSession(applicationContext) != null) {
         // Token registration and silent/background message handling never depend on notification display permission.
         com.example.service.AppFirebaseMessagingService.refreshAndRegisterToken(applicationContext)
-        val displayPermissionGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-          ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-        if (displayPermissionGranted) maybeShowBackgroundRestrictionHelp()
+        // Do not interrupt resume with OEM-specific settings advice. FCM token refresh and
+        // silent/data-message processing are independent of notification display permission.
       }
     }
   }
@@ -270,43 +265,6 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
       if (active) forcedSecureSurfaceTokens.add(token) else forcedSecureSurfaceTokens.remove(token)
     }
     applyScreenSecurityFlag()
-  }
-
-  /**
-   * Some OEM battery managers suppress background message processing. Give eligible devices
-   * a one-time, dismissible explanation and deep-link to app settings; never change OS policy
-   * or request battery-optimization exemptions without the user's action.
-   */
-  private fun maybeShowBackgroundRestrictionHelp() {
-    val manufacturer = (Build.MANUFACTURER + " " + Build.BRAND).lowercase(java.util.Locale.ROOT)
-    val restrictiveVendors = listOf(
-      "xiaomi", "redmi", "poco", "oppo", "realme", "vivo", "oneplus",
-      "huawei", "honor", "tecno", "infinix", "itel"
-    )
-    if (restrictiveVendors.none { manufacturer.contains(it) }) return
-
-    val preferences = getSharedPreferences("vibesync_background_delivery_help", MODE_PRIVATE)
-    if (preferences.getBoolean("shown_once", false) || isFinishing || isDestroyed) return
-    preferences.edit().putBoolean("shown_once", true).apply()
-
-    android.app.AlertDialog.Builder(this)
-      .setTitle("Keep messages arriving in the background")
-      .setMessage(
-        "Some phones pause apps in the background to save battery. To receive VibeSync messages " +
-          "reliably, allow background activity or autostart and set battery use to Unrestricted " +
-          "if your phone offers that option."
-      )
-      .setNegativeButton("Not now", null)
-      .setPositiveButton("Open app settings") { _, _ ->
-        runCatching {
-          startActivity(
-            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-              data = Uri.parse("package:$packageName")
-            }
-          )
-        }.onFailure { Log.w("VibeSyncNotifications", "Could not open app settings for background guidance.", it) }
-      }
-      .show()
   }
 
   private fun applyScreenSecurityFlag() {

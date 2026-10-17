@@ -94,7 +94,6 @@ import com.example.ui.components.FriendsListDialog
 import com.example.ui.components.FriendshipRequestDialog
 import com.example.ui.components.GoogleCloudBackupSetupDialog
 import com.example.ui.components.InviteToVibeSyncDialog
-import com.example.ui.components.MandatoryPermissionsDialog
 import com.example.ui.components.MatchCelebrationDialog
 import com.example.ui.components.MpinSetupDialog
 import com.example.ui.components.NetworkSyncStatusBanner
@@ -296,7 +295,6 @@ fun DatingAppRoot(
     // Zero Profile Duplication & Recovery States
     val duplicateProfileDetected by viewModel.duplicateProfileDetected.collectAsStateWithLifecycle()
     val showAccountRecoveryDialog by viewModel.showAccountRecoveryDialog.collectAsStateWithLifecycle()
-    val showMandatoryPermissionsDialog by viewModel.showMandatoryPermissionsDialog.collectAsStateWithLifecycle()
     val showPostRegistrationBackupDialog by viewModel.showPostRegistrationBackupDialog.collectAsStateWithLifecycle()
     val detectedDriveBackup by viewModel.detectedDriveBackup.collectAsStateWithLifecycle()
     val showRestorePromptDialog by viewModel.showRestorePromptDialog.collectAsStateWithLifecycle()
@@ -340,16 +338,8 @@ fun DatingAppRoot(
         }
     }
 
-    val systemPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        contract = androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        val allGranted = results.values.all { it }
-        viewModel.onPermissionsResult(allGranted)
-        if (results[android.Manifest.permission.READ_CONTACTS] == true) {
-            com.example.util.ContactResolver.reload(context)
-            viewModel.loadPhonebookContacts()
-        }
-    }
+    // Contacts are requested only from the registration privacy disclosure. Each other
+    // protected feature requests its own permission when the user invokes that feature.
 
     // Initialize ContactResolver on startup
     LaunchedEffect(Unit) {
@@ -432,23 +422,6 @@ fun DatingAppRoot(
     LaunchedEffect(Unit) {
         viewModel.toastMessage.collect { msg ->
             snackbarHostState.showSnackbar(msg)
-        }
-    }
-
-    // Auto-prompt mandatory permissions only after login and profile creation are completed
-    LaunchedEffect(preferences?.isLoggedIn, preferences?.isProfileCompleted, preferences?.permissionsGranted) {
-        if (preferences?.isLoggedIn == true && preferences?.isProfileCompleted == true && preferences?.permissionsGranted != true) {
-            val permissionsToRequest = mutableListOf(
-                android.Manifest.permission.ACCESS_FINE_LOCATION,
-                android.Manifest.permission.ACCESS_COARSE_LOCATION,
-                android.Manifest.permission.CAMERA,
-                android.Manifest.permission.READ_CONTACTS
-            )
-            try {
-                systemPermissionLauncher.launch(permissionsToRequest.toTypedArray())
-            } catch (e: Exception) {
-                viewModel.onPermissionsResult(true)
-            }
         }
     }
 
@@ -535,7 +508,6 @@ fun DatingAppRoot(
             pendingRequestToReview != null ||
             outgoingFriendRequestNotification != null ||
             showFriendsListDialog ||
-            showMandatoryPermissionsDialog ||
             showPostRegistrationBackupDialog ||
             showMpinSetupPrompt ||
             showPhonebookScreen ||
@@ -611,9 +583,6 @@ fun DatingAppRoot(
         viewModel.dismissPostRegistrationBackupDialog()
     }
 
-    BackHandler(enabled = showMandatoryPermissionsDialog) {
-        viewModel.dismissMandatoryPermissionsDialog()
-    }
 
     BackHandler(enabled = showFriendsListDialog) {
         viewModel.closeFriendsList()
@@ -671,6 +640,9 @@ fun DatingAppRoot(
             initialOccupation = preferences?.userOccupation ?: "",
             initialAvatarUrl = preferences?.avatarUrl ?: "",
             onBackToLogin = { viewModel.logout() },
+            onContactsPermissionGranted = { reportResult ->
+                viewModel.loadPhonebookContacts(forceRefresh = false, forceNetwork = true, onResult = reportResult)
+            },
             onCompleteRegistration = { name, age, dob, gender, interestedIn, goal, country, countryFlag, place, qualification, occupation, bio, interests, maritalStatus, isOpenForDating, address, city, coords, avatar, photos, pendingAvatar ->
                 val (parsedLat, parsedLon) = try {
                     val parts = coords.split(",")

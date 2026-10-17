@@ -81,6 +81,9 @@ object MessageDeltaSyncManager {
             afterCreatedAtMs = cursor.createdAtMs,
             afterCreatedAtRaw = cursor.createdAtIso,
             afterMessageId = cursor.messageId,
+            localMatchId = match.matchId,
+            clearBarrierContext = context,
+            clearBarrierDatabase = database,
             onPeerPublicKeyRefreshed = { refreshedProfileId, newKey ->
                 val peerProfile = database.profileDao().getProfileByIdSync(refreshedProfileId)
                     ?: SupabaseClientManager.fetchProfileById(refreshedProfileId)

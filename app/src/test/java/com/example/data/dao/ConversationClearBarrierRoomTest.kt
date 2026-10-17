@@ -9,6 +9,8 @@ import com.example.data.model.ChatMessageEntity
 import com.example.data.model.ConversationClearGuardEntity
 import com.example.data.model.MatchEntity
 import com.example.util.MessageHistoryClearBarrierPolicy
+import com.example.util.MessageHistoryClearBarrier
+import com.example.util.SupabaseClientManager
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -79,6 +81,35 @@ class ConversationClearBarrierRoomTest {
         assertFalse(guard.isClearing)
         assertTrue(MessageHistoryClearBarrierPolicy.shouldSuppress(guard.clearedAtMs, guard.clearedAtMs))
         assertFalse(MessageHistoryClearBarrierPolicy.shouldSuppress(guard.clearedAtMs, guard.clearedAtMs + 1L))
+    }
+
+    @Test
+    fun retainedLocalClearGuardBlocksItsCanonicalServerAliasButAllowsNewerMessages() = runBlocking {
+        val localId = "local-clear-alias"
+        val ownerId = "owner-profile"
+        val peerId = "peer-profile"
+        val cutoff = 1_760_000_000_321L
+        database.matchDao().insertMatch(MatchEntity(matchId = localId, profileId = peerId))
+
+        database.conversationClearDao().beginConversationClear(localId, cutoff, false)
+        database.conversationClearDao().clearConversation(localId)
+        assertTrue(database.conversationClearDao().finishConversationClear(localId))
+
+        val canonical = SupabaseClientManager.canonicalChatMatchId(ownerId, peerId)
+        val reverse = SupabaseClientManager.canonicalChatMatchId(peerId, ownerId)
+        assertEquals(canonical, reverse)
+        assertTrue(MessageHistoryClearBarrier.shouldSuppress(
+            context, database, canonical, cutoff - 1L, ownerProfileId = ownerId
+        ))
+        assertTrue(MessageHistoryClearBarrier.shouldSuppress(
+            context, database, reverse, cutoff, ownerProfileId = ownerId
+        ))
+        assertFalse(MessageHistoryClearBarrier.shouldSuppress(
+            context, database, canonical, cutoff + 1L, ownerProfileId = ownerId
+        ))
+        assertTrue(MessageHistoryClearBarrier.shouldSuppress(
+            context, database, canonical, null, ownerProfileId = ownerId
+        ))
     }
 
     @Test
