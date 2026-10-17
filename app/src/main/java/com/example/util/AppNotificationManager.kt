@@ -819,7 +819,6 @@ object AppNotificationManager {
                 reservedMessageId?.let(notificationPostInFlightMessageIds::remove)
             }
         }
-    }
 
     private fun incomingNotificationDedupeKey(messageId: String): String =
         "message_" + java.util.UUID.nameUUIDFromBytes(messageId.toByteArray(Charsets.UTF_8)).toString()
