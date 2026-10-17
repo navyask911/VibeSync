@@ -9,7 +9,10 @@ internal object ConversationUnreadStatePolicy {
         val isIncoming: Boolean,
         val isRead: Boolean,
         val deliveryState: String,
-        val isControlMessage: Boolean = false
+        val isControlMessage: Boolean = false,
+        val isDeleted: Boolean = false,
+        val isDeletedForMe: Boolean = false,
+        val isDeletedForEveryone: Boolean = false
     )
 
     /** A stale server snapshot must not undo a durable local READ transition. */
@@ -28,10 +31,16 @@ internal object ConversationUnreadStatePolicy {
         isIncoming: Boolean,
         isRead: Boolean,
         deliveryState: String,
-        isControlMessage: Boolean = false
+        isControlMessage: Boolean = false,
+        isDeleted: Boolean = false,
+        isDeletedForMe: Boolean = false,
+        isDeletedForEveryone: Boolean = false
     ): Boolean =
         isIncoming &&
             !isControlMessage &&
+            !isDeleted &&
+            !isDeletedForMe &&
+            !isDeletedForEveryone &&
             !isRead &&
             !deliveryState.equals("READ", ignoreCase = true)
 
@@ -41,7 +50,10 @@ internal object ConversationUnreadStatePolicy {
                 isIncoming = message.isIncoming,
                 isRead = message.isRead,
                 deliveryState = message.deliveryState,
-                isControlMessage = message.isControlMessage
+                isControlMessage = message.isControlMessage,
+                isDeleted = message.isDeleted,
+                isDeletedForMe = message.isDeletedForMe,
+                isDeletedForEveryone = message.isDeletedForEveryone
             )
         }
 
