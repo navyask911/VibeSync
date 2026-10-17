@@ -157,6 +157,41 @@ enum class DatingTab(val title: String) {
     PROFILE("Profile")
 }
 
+@Composable
+private fun ReturningAccountRecoveryRetryScreen(
+    errorMessage: String?,
+    onRetry: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(28.dp),
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "Your VibeSync account is verified",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = errorMessage
+                    ?: "We are checking your saved profile. Your account will not be treated as new until recovery is confirmed.",
+                modifier = Modifier.padding(top = 12.dp, bottom = 20.dp),
+                style = MaterialTheme.typography.bodyLarge
+            )
+            androidx.compose.material3.Button(
+                onClick = onRetry,
+                modifier = Modifier.testTag("returning_account_recovery_retry")
+            ) {
+                Text("Retry account recovery")
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DatingAppRoot(
@@ -175,6 +210,8 @@ fun DatingAppRoot(
     val isSessionChecking by viewModel.isSessionChecking.collectAsStateWithLifecycle()
     val authState by viewModel.authState.collectAsStateWithLifecycle()
     val truecallerError by viewModel.truecallerError.collectAsStateWithLifecycle()
+    val returningAccountRecoveryRoute by viewModel.returningAccountRecoveryRoute.collectAsStateWithLifecycle()
+    val accountRecoveryError by viewModel.accountRecoveryError.collectAsStateWithLifecycle()
 
     val activeMatchDialog by viewModel.activeMatchDialog.collectAsStateWithLifecycle()
     val activeChat by viewModel.activeChat.collectAsStateWithLifecycle()
@@ -631,10 +668,24 @@ fun DatingAppRoot(
             truecallerError = truecallerError,
             onTruecallerRetry = { viewModel.clearTruecallerError() }
         )
-    } else if (authState == AuthState.AUTHENTICATED && preferences == null) {
-        // Wait for Room profile state after session restoration; never flash registration on a null emission.
+    } else if (
+        authState == AuthState.AUTHENTICATED &&
+        returningAccountRecoveryRoute == com.example.util.ReturningAccountRecoveryPolicy.Route.RETRY_RECOVERY
+    ) {
+        ReturningAccountRecoveryRetryScreen(
+            errorMessage = accountRecoveryError,
+            onRetry = { viewModel.retryReturningAccountRecovery() }
+        )
+    } else if (
+        authState == AuthState.AUTHENTICATED &&
+        (preferences == null || returningAccountRecoveryRoute == null)
+    ) {
+        // Keep the splash visible until typed profile recovery has a conclusive routing decision.
         VibeSyncSplashScreen()
-    } else if (!isProfileCompleted) {
+    } else if (
+        returningAccountRecoveryRoute == com.example.util.ReturningAccountRecoveryPolicy.Route.REGISTRATION &&
+        !isProfileCompleted
+    ) {
         RegistrationProfileScreen(
             initialName = preferences?.userName ?: "",
             initialOccupation = preferences?.userOccupation ?: "",
@@ -678,6 +729,9 @@ fun DatingAppRoot(
                 )
             }
         )
+    } else if (!isProfileCompleted) {
+        // A completed recovery decision must be explicit before registration can appear.
+        VibeSyncSplashScreen()
     } else if (isMpinSet && !isMpinUnlocked) {
         MpinScreen(
             isMpinSet = isMpinSet,
