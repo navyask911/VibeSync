@@ -593,7 +593,7 @@ object AppNotificationManager {
     }
 
     @SuppressLint("MissingPermission")
-    suspend fun showMessageNotificationAndAwait(
+    internal suspend fun showMessageNotificationAndAwait(
         context: Context,
         senderId: String,
         senderName: String,
@@ -710,6 +710,11 @@ object AppNotificationManager {
                                 )
                             )
                             if (shown) {
+                                if (dedupeKey != null && !dedupePrefs.edit()
+                                        .putLong(dedupeKey, System.currentTimeMillis()).commit()
+                                ) {
+                                    Log.w(TAG, "In-app notification fallback displayed but dedupe persistence failed: message_id=$safeMessageId, work_request_id=$safeWorkRequestId.")
+                                }
                                 Log.i(TAG, "Notification presented in-app because system notifications are unavailable: message_id=$safeMessageId, reason=$reason, conversation_id=$threadId, work_request_id=$safeWorkRequestId.")
                                 return@withContext IncomingNotificationDispatchResult.PresentedInApp(reason)
                             }
