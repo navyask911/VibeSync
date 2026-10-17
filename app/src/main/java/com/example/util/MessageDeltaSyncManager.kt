@@ -59,7 +59,9 @@ object MessageDeltaSyncManager {
 
         return incoming.copy(
             timestamp = if (incoming.timestamp > 0L) incoming.timestamp else latestLocal.timestamp,
-            text = if (deleted) "" else incoming.text.ifBlank { latestLocal.text },
+            text = if (deleted) "" else if (latestLocal.isEdited &&
+                (!incoming.isEdited || latestLocal.editedTimestamp > incoming.editedTimestamp)
+            ) latestLocal.text else incoming.text.ifBlank { latestLocal.text },
             mediaUrl = if (deleted) "" else incoming.mediaUrl.ifBlank { latestLocal.mediaUrl },
             isDelivered = isDelivered,
             isRead = isRead,
@@ -92,7 +94,10 @@ object MessageDeltaSyncManager {
                 it.isNotBlank() && it != "{}"
             } ?: incoming.reactionsJson,
             expiresAt = maxOf(incoming.expiresAt, latestLocal.expiresAt),
-            encryptedPayload = if (deleted) "" else incoming.encryptedPayload.ifBlank { latestLocal.encryptedPayload },
+            encryptedPayload = if (deleted) "" else if (latestLocal.isEdited &&
+                (!incoming.isEdited || latestLocal.editedTimestamp > incoming.editedTimestamp)
+            ) latestLocal.encryptedPayload.ifBlank { incoming.encryptedPayload }
+            else incoming.encryptedPayload.ifBlank { latestLocal.encryptedPayload },
             decryptState = when {
                 deleted -> MessageLocalRetentionPolicy.DECRYPT_STATE_OK
                 incoming.decryptState == MessageLocalRetentionPolicy.DECRYPT_STATE_OK -> incoming.decryptState

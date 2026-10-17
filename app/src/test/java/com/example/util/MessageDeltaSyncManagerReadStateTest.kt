@@ -51,6 +51,36 @@ class MessageDeltaSyncManagerReadStateTest {
     }
 
     @Test
+    fun olderHistorySnapshotCannotOverwriteNewerLocalEdit() {
+        val fetchedSnapshot = ChatMessageEntity(
+            messageId = "message-edit-race",
+            matchId = "match-edit-race",
+            senderId = "peer-profile",
+            text = "Original server text",
+            isEdited = false,
+            editedTimestamp = 0L,
+            encryptedPayload = "older-ciphertext",
+            deliveryState = "DELIVERED"
+        )
+        val latestRoomRow = fetchedSnapshot.copy(
+            text = "Newer edited text",
+            isEdited = true,
+            editedTimestamp = 2_000L,
+            encryptedPayload = "newer-ciphertext"
+        )
+
+        val merged = MessageDeltaSyncManager.mergeLatestLocalReadState(
+            incoming = fetchedSnapshot,
+            latestLocal = latestRoomRow
+        )
+
+        assertEquals("Newer edited text", merged.text)
+        assertEquals("newer-ciphertext", merged.encryptedPayload)
+        assertTrue(merged.isEdited)
+        assertEquals(2_000L, merged.editedTimestamp)
+    }
+
+    @Test
     fun firstDeliveryWithoutLocalRowRemainsEligibleToBecomeUnread() {
         val incoming = ChatMessageEntity(
             messageId = "message-new-unread",

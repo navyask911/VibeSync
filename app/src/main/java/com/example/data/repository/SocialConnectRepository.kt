@@ -5827,6 +5827,7 @@ class SocialConnectRepository(
                                         else if (incomingIsDelivered) "DELIVERED"
                                         else if (isMyOwn) "SENT_TO_SERVER" else "ACK_PENDING"
                                 )
+                                var committedIncoming = incoming
                                 val persisted = com.example.util.ConversationClearCoordinator.withConversationLock(m.matchId) {
                                     if (com.example.util.MessageHistoryClearBarrier.shouldSuppress(
                                             appContext, database, m.matchId, authoritativeCreatedAt
@@ -5834,39 +5835,59 @@ class SocialConnectRepository(
                                     ) {
                                         false
                                     } else {
-                                        val committed = database.withTransaction {
+                                        database.withTransaction {
                                             if (database.conversationClearDao().isConversationClearInProgress(m.matchId)) {
                                                 false
                                             } else {
-                                                chatMessageDao.upsertMessage(incoming.copy(serverCreatedAt = authoritativeCreatedAt ?: 0L))
+                                                // A visible READ ACK or local edit may have committed after
+                                                // the remote row was fetched. Merge against the latest Room
+                                                // row instead of replacing it with that stale snapshot.
+                                                val latestRoomMessage = chatMessageDao.getMessageById(remote.messageId)
+                                                committedIncoming = com.example.util.MessageDeltaSyncManager
+                                                    .mergeLatestLocalReadState(incoming, latestRoomMessage)
+                                                    .copy(
+                                                        serverCreatedAt = maxOf(
+                                                            authoritativeCreatedAt ?: 0L,
+                                                            latestRoomMessage?.serverCreatedAt ?: 0L
+                                                        )
+                                                    )
+                                                chatMessageDao.upsertMessage(committedIncoming)
                                                 messageDao.insertMessage(
-                                                    incoming.toLocalMessage().copy(remoteMessageId = incoming.messageId)
+                                                    committedIncoming.toLocalMessage().copy(
+                                                        remoteMessageId = committedIncoming.messageId
+                                                    )
                                                 )
+
+                                                if (canRenderText) {
+                                                    val latestMatch = matchDao.getMatchByIdSync(m.matchId) ?: m
+                                                    if (remote.timestamp >= latestMatch.lastMessageTime &&
+                                                        committedIncoming.text.isNotBlank()
+                                                    ) {
+                                                        matchDao.updateLastMessagePreservingUnread(
+                                                            m.matchId, committedIncoming.text, remote.timestamp
+                                                        )
+                                                    }
+                                                    // Set the marker only from the state that was actually
+                                                    // committed. A stale pre-transaction snapshot must not
+                                                    // re-enable Unread after a concurrent READ ACK.
+                                                    if (!isMyOwn && com.example.util.ConversationUnreadStatePolicy.isUnreadIncoming(
+                                                            isIncoming = true,
+                                                            isRead = committedIncoming.isRead,
+                                                            deliveryState = committedIncoming.deliveryState,
+                                                            isControlMessage = com.example.util.ConversationUnreadStatePolicy.isControlMessage(
+                                                                committedIncoming.mediaType, committedIncoming.text
+                                                            ),
+                                                            isDeleted = committedIncoming.isDeleted,
+                                                            isDeletedForMe = committedIncoming.isDeletedForMe,
+                                                            isDeletedForEveryone = committedIncoming.isDeletedForEveryone
+                                                        )
+                                                    ) {
+                                                        matchDao.setHasUnread(m.matchId, true)
+                                                    }
+                                                }
                                                 true
                                             }
                                         }
-                                        if (committed && canRenderText) {
-                                            if (remote.timestamp >= m.lastMessageTime && safeText.isNotBlank()) {
-                                                matchDao.updateLastMessagePreservingUnread(
-                                                    m.matchId, safeText, remote.timestamp
-                                                )
-                                            }
-                                            if (!isMyOwn && com.example.util.ConversationUnreadStatePolicy.isUnreadIncoming(
-                                                    isIncoming = true,
-                                                    isRead = incoming.isRead,
-                                                    deliveryState = incoming.deliveryState,
-                                                    isControlMessage = com.example.util.ConversationUnreadStatePolicy.isControlMessage(
-                                                        incoming.mediaType, incoming.text
-                                                    ),
-                                                    isDeleted = incoming.isDeleted,
-                                                    isDeletedForMe = incoming.isDeletedForMe,
-                                                    isDeletedForEveryone = incoming.isDeletedForEveryone
-                                                )
-                                            ) {
-                                                matchDao.setHasUnread(m.matchId, true)
-                                            }
-                                        }
-                                        committed
                                     }
                                 }
                                 if (!persisted) continue
