@@ -70,6 +70,18 @@ class ConversationUnreadStatePolicyTest {
     }
 
     @Test
+    fun deletedIncomingMessageDoesNotKeepConversationUnread() {
+        assertFalse(
+            ConversationUnreadStatePolicy.isUnreadIncoming(
+                isIncoming = true,
+                isRead = false,
+                deliveryState = "DELIVERED",
+                isDeletedForMe = true
+            )
+        )
+    }
+
+    @Test
     fun outgoingAndControlMessagesDoNotKeepUnreadFilterActive() {
         assertFalse(
             ConversationUnreadStatePolicy.isUnreadIncoming(
