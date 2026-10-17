@@ -23,6 +23,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -42,6 +43,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
@@ -49,6 +51,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -131,6 +134,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -149,7 +153,9 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import com.example.data.model.StatusStoryEntity
+import com.example.security.ForceSecureWindowEffect
 import com.example.ui.DatingViewModel
+import com.example.ui.components.FullEmojiBottomSheet
 import com.example.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -172,6 +178,7 @@ fun StatusStoriesScreen(
     viewModel: DatingViewModel,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val myStories by viewModel.myStatusStories.collectAsState()
     val friendsStories by viewModel.friendsStatusStories.collectAsState()
     val userPrefs by viewModel.userPreferences.collectAsState()
@@ -190,6 +197,20 @@ fun StatusStoriesScreen(
     // Automatically fetch and update the feed with new Stories from mutual contacts upon opening
     LaunchedEffect(Unit) {
         viewModel.fetchMutualFriendsStories()
+    }
+
+    val recentStoryOwnerIds = remember(friendsStories) {
+        friendsStories.asSequence()
+            .filterNot { it.isAd }
+            .map { it.userId.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .toList()
+    }
+    LaunchedEffect(recentStoryOwnerIds) {
+        recentStoryOwnerIds.forEach { peerId ->
+            viewModel.ensureProfileKeyExchangeForStoryOwner(peerId)
+        }
     }
 
     // Intercept back button to dismiss overlays cleanly
@@ -540,10 +561,13 @@ fun StatusStoriesScreen(
             backgroundMusicUri = pendingAudioTrackUri,
             onDismiss = { pendingMediaUpload = null; pendingAudioTrackUri = "" },
             onPostStatus = { finalCaption, bgStart, bgEnd, musicUri ->
+                val compressedPhotoUri = if (mediaType.equals("PHOTO", ignoreCase = true)) {
+                    com.example.util.ImageCompressorHelper.compressImageUriToCacheFile(context, uri.toString())
+                } else null
                 viewModel.uploadStatus(
                     mediaType = mediaType,
                     caption = finalCaption,
-                    mediaUrl = uri.toString(),
+                    mediaUrl = (compressedPhotoUri ?: uri).toString(),
                     videoDurationSeconds = if (mediaType == "VIDEO") 15 else 0,
                     backgroundColorStart = bgStart,
                     backgroundColorEnd = bgEnd,
@@ -704,6 +728,47 @@ fun VibeSyncStatusRow(
     isViewed: Boolean = false,
     onClick: () -> Unit
 ) {
+    val context = LocalContext.current.applicationContext
+    // Only the first active avatar is needed for a round story thumbnail. Encrypted avatar
+    // pointers are resolved with the peer's exchanged Tink key, never sent to Coil as a URL.
+    val avatarReference = remember(avatarUrl) {
+        avatarUrl.split("|||").firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+    }
+    val encryptedOwnerId = remember(avatarReference) {
+        avatarReference.takeIf { it.startsWith("vibesync-avatar-enc://") }
+            ?.removePrefix("vibesync-avatar-enc://")
+            ?.substringBefore('/')
+            .orEmpty()
+    }
+    val keyRevisionFlow = remember(context, encryptedOwnerId) {
+        if (encryptedOwnerId.isBlank()) {
+            kotlinx.coroutines.flow.flowOf(0)
+        } else {
+            com.example.util.ProfileKeyManager.peerProfileKeyRevisionFlow(context, encryptedOwnerId)
+        }
+    }
+    val peerKeyRevision by keyRevisionFlow.collectAsState(initial = 0)
+    var decryptedAvatar by remember(avatarReference) { mutableStateOf<Bitmap?>(null) }
+    var networkAvatarLoaded by remember(avatarReference) { mutableStateOf(false) }
+    val initial = remember(title) {
+        title.trim().firstOrNull()?.uppercaseChar()?.toString().orEmpty().ifBlank { "?" }
+    }
+
+    LaunchedEffect(avatarReference, peerKeyRevision) {
+        decryptedAvatar = null
+        networkAvatarLoaded = false
+        if (avatarReference.startsWith("vibesync-avatar-enc://")) {
+            // This method downloads ciphertext only, authenticates/decrypts using Google Tink
+            // AES-256-GCM and the peer key, then returns a bounded in-memory Bitmap.
+            decryptedAvatar = runCatching {
+                com.example.util.ProfileAvatarStorageManager.resolveAvatarForDisplay(
+                    context = context,
+                    reference = avatarReference
+                )
+            }.getOrNull()
+        }
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -715,7 +780,6 @@ fun VibeSyncStatusRow(
             modifier = Modifier.size(46.dp),
             contentAlignment = Alignment.Center
         ) {
-            // VibeSync Status Ring around Avatar
             Canvas(modifier = Modifier.size(45.dp)) {
                 drawCircle(
                     color = if (isViewed) Color(0xFFD1D7DB) else VibeSyncGreen,
@@ -723,26 +787,50 @@ fun VibeSyncStatusRow(
                 )
             }
 
-            // Avatar circle thumbnail
             Box(
                 modifier = Modifier
                     .size(38.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFFE2E8EC)),
+                    .background(MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center
             ) {
-                if (avatarUrl.isNotBlank()) {
-                    AsyncImage(
-                        model = avatarUrl,
-                        contentDescription = title,
-                        modifier = Modifier.fillMaxSize(),
+                // Always render a styled initial first, so empty/loading/invalid images never show
+                // an empty white circle. A valid decrypted/network image naturally covers it.
+                Text(
+                    text = initial,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+
+                if (decryptedAvatar != null) {
+                    Image(
+                        bitmap = decryptedAvatar!!.asImageBitmap(),
+                        contentDescription = "$title's story avatar",
+                        modifier = Modifier.fillMaxSize().clip(CircleShape),
                         contentScale = ContentScale.Crop
                     )
-                } else {
-                    Text(
-                        text = avatarEmoji,
-                        fontSize = 18.sp
+                } else if (
+                    avatarReference.isNotBlank() &&
+                    !avatarReference.startsWith("vibesync-avatar-enc://")
+                ) {
+                    AsyncImage(
+                        model = avatarReference,
+                        contentDescription = "$title's story avatar",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                        onLoading = { networkAvatarLoaded = false },
+                        onSuccess = { networkAvatarLoaded = true },
+                        onError = { networkAvatarLoaded = false }
                     )
+                    if (!networkAvatarLoaded) {
+                        Text(
+                            text = initial,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
                 }
             }
         }
@@ -813,13 +901,18 @@ fun TypeAStatusComposerScreen(
         androidx.compose.foundation.layout.BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Brush.linearGradient(listOf(Color(currentBgStart), Color(currentBgEnd))))
-                .statusBarsPadding()
+                .systemBarsPadding()
                 .navigationBarsPadding()
-                .imePadding()
+                .imePadding(),
+            contentAlignment = Alignment.Center
         ) {
             Column(
-                modifier = Modifier.fillMaxSize().imePadding()
+                modifier = Modifier
+                    .fillMaxWidth(0.97f)
+                    .fillMaxHeight(0.97f)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(Brush.linearGradient(listOf(Color(currentBgStart), Color(currentBgEnd))))
+                    .verticalScroll(rememberScrollState())
             ) {
                 // Top Action Bar
                 Row(
@@ -895,7 +988,7 @@ fun TypeAStatusComposerScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f)
+                        .heightIn(min = 220.dp)
                         .padding(horizontal = 24.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -931,7 +1024,7 @@ fun TypeAStatusComposerScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 18.dp, start = 14.dp, end = 14.dp)
+                        .padding(bottom = 8.dp, top = 8.dp, start = 14.dp, end = 14.dp)
                 ) {
                     Row(
                         modifier = Modifier
@@ -1127,13 +1220,16 @@ fun AddStatusBottomSheet(
         containerColor = MaterialTheme.colorScheme.surface
     ) {
         androidx.compose.foundation.layout.BoxWithConstraints(
-            modifier = Modifier.fillMaxWidth().navigationBarsPadding().imePadding()
+            modifier = Modifier
+                .fillMaxWidth()
+                .systemBarsPadding()
+                .navigationBarsPadding()
+                .imePadding()
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = maxHeight)
-                    .statusBarsPadding()
+                    .heightIn(max = maxHeight * 0.97f)
                     .padding(bottom = 20.dp)
             ) {
             // Top Bar: 'X' close button and "Add Stories" title
@@ -1474,17 +1570,24 @@ fun StatusCaptionUploadPreviewDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Brush.linearGradient(listOf(Color(currentBgStart), Color(currentBgEnd))))
-                .statusBarsPadding(),
-            verticalArrangement = Arrangement.SpaceBetween
+        // Keep the dialog's content viewport above the IME. The app-bar and bottom
+        // actions handle their respective system-bar insets locally to avoid clipped controls
+        // on Android 15 edge-to-edge windows.
+        androidx.compose.foundation.layout.BoxWithConstraints(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
         ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Brush.linearGradient(listOf(Color(currentBgStart), Color(currentBgEnd)))),
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
             // Top Header: Back button, Title & Color palette picker
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .statusBarsPadding()
                     .padding(horizontal = 14.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
@@ -1538,10 +1641,7 @@ fun StatusCaptionUploadPreviewDialog(
 
             // Middle: Flexible Preview Media fitting dynamically
             Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentAlignment = Alignment.Center
             ) {
                 if (mediaUri != null && mediaUri.toString().isNotBlank()) {
@@ -1549,7 +1649,7 @@ fun StatusCaptionUploadPreviewDialog(
                         model = mediaUri,
                         contentDescription = "Story media preview",
                         modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit
+                        contentScale = ContentScale.Crop
                     )
 
                     // If VIDEO, show Play Icon overlay in center
@@ -1574,17 +1674,19 @@ fun StatusCaptionUploadPreviewDialog(
 
             // Bottom Caption Bar & Upload Send Button with safe area edge-to-edge window insets
             Surface(
-                color = Color.Black.copy(alpha = 0.75f),
+                color = Color(0xF20B1220),
+                // Insets belong to the action container so the caption and send target remain
+                // above gesture and three-button navigation areas, including keyboard resize.
                 modifier = Modifier
                     .fillMaxWidth()
-                    .windowInsetsPadding(WindowInsets.ime)
-                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .navigationBarsPadding()
+                    .imePadding()
+                    .padding(bottom = 8.dp)
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 12.dp)
-                        .padding(bottom = 12.dp),
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -1621,6 +1723,7 @@ fun StatusCaptionUploadPreviewDialog(
                     }
                 }
             }
+        }
         }
     }
 }
@@ -1675,6 +1778,7 @@ fun StatusStoryViewer(
     var isPaused by remember { mutableStateOf(false) }
 
     val quickReactionEmojis = remember { listOf("❤️", "😂", "😮", "😢", "🙏", "🔥", "👏", "💯") }
+    var showFullEmojiPicker by remember(activeStory.id) { mutableStateOf(false) }
     var activeFloatingReaction by remember { mutableStateOf<String?>(null) }
 
     val storyDurationMs = remember(activeStory.id, activeStory.mediaType, activeStory.videoDurationSeconds) {
@@ -1719,17 +1823,14 @@ fun StatusStoryViewer(
         onDismissRequest = onClose,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
+        ForceSecureWindowEffect(enabled = true)
         Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.9f)),
+            modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
         ) {
             Box(
                 modifier = Modifier
-                    .fillMaxWidth(0.99f)
-                    .fillMaxHeight(0.98f)
-                    .clip(RoundedCornerShape(16.dp))
+                    .fillMaxSize()
                     .background(
                         Brush.linearGradient(
                             listOf(
@@ -1738,8 +1839,6 @@ fun StatusStoryViewer(
                             )
                         )
                     )
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
                     .pointerInput(activeStory.id, currentIndex) {
                         detectTapGestures(
                             onPress = {
@@ -1771,18 +1870,14 @@ fun StatusStoryViewer(
                 // Media background/foreground image
                 if (activeStory.mediaUrl.isNotBlank()) {
                     Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(top = 76.dp, bottom = 125.dp),
+                        modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
                     ) {
                         AsyncImage(
                             model = activeStory.mediaUrl,
                             contentDescription = "Story media",
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .fillMaxHeight(),
-                            contentScale = ContentScale.Fit
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
                         )
 
                         if (activeStory.mediaType == "VIDEO") {
@@ -1810,6 +1905,7 @@ fun StatusStoryViewer(
                         modifier = Modifier
                             .fillMaxWidth()
                             .align(Alignment.TopCenter)
+                            .statusBarsPadding()
                             .padding(horizontal = 12.dp, vertical = 8.dp)
                     ) {
                         // Multi-Segment Visual Progress Indicator
@@ -1972,6 +2068,7 @@ fun StatusStoryViewer(
                                 .align(Alignment.BottomCenter)
                                 .fillMaxWidth()
                                 .navigationBarsPadding()
+                                .imePadding()
                                 .padding(horizontal = 14.dp, vertical = 10.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
@@ -2032,6 +2129,7 @@ fun StatusStoryViewer(
                                 .align(Alignment.BottomCenter)
                                 .fillMaxWidth()
                                 .navigationBarsPadding()
+                                .imePadding()
                                 .padding(horizontal = 10.dp, vertical = 6.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
@@ -2058,6 +2156,12 @@ fun StatusStoryViewer(
                                     ) {
                                         Text(text = emoji, fontSize = 19.sp)
                                     }
+                                }
+                                IconButton(
+                                    onClick = { showFullEmojiPicker = true },
+                                    modifier = Modifier.size(34.dp).testTag("story_more_reactions")
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = "More story reactions", tint = Color.White)
                                 }
                             }
 
@@ -2121,6 +2225,17 @@ fun StatusStoryViewer(
                 }
             }
         }
+    }
+
+    if (showFullEmojiPicker) {
+        FullEmojiBottomSheet(
+            onDismiss = { showFullEmojiPicker = false },
+            onEmojiSelected = { emoji ->
+                showFullEmojiPicker = false
+                activeFloatingReaction = emoji
+                onSendReaction(activeStory.userId, activeStory.userName, activeStory.caption, emoji)
+            }
+        )
     }
 }
 

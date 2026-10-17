@@ -21,7 +21,7 @@ VibeSync may operate across jurisdictions. Where local law imposes additional ri
 | Profile media | Avatar/profile photos and other user-selected media | Profile and communication features |
 | Connections | Likes, matches, friendships, blocks, reports | Social graph features and safety |
 | Messages | Encrypted message envelopes, message IDs, timestamps, delivery/read state | Private messaging and delivery |
-| Contact discovery | Locally derived phone representations/hashes | Finding existing VibeSync contacts |
+| Contact discovery | Normalized E.164 phone numbers submitted in an authenticated HTTPS request | Matching registered VibeSync friends |
 | Push/device | FCM registration token, platform information | Push notification delivery |
 | Safety/security | Abuse reports, moderation events, rate-limit/security telemetry | Fraud prevention, safety, platform integrity |
 | Business | Business profile, campaign, broadcast, wallet and transaction-reference data | Business services and accounting |
@@ -35,11 +35,9 @@ VibeSync should not collect a category merely because the application can techni
 
 The phonebook is intended to remain on the device.
 
-For contact discovery, VibeSync locally normalizes numbers and derives pseudonymous lookup representations before a lookup is attempted. The server is intended to return only the minimum matching profile information required by the feature.
+For contact discovery, after permission is granted, VibeSync normalizes selected contact phone numbers to E.164 and sends the numbers in the JSON body of an authenticated Supabase RPC over encrypted HTTPS (SSL/TLS), strictly to match registered friends. Supabase processes the supplied phone numbers against an indexed, server-restricted lookup directory and returns canonical profile IDs plus the minimum profile metadata needed to display matches. The client no longer computes blind tokens or phone-number hashes for contact discovery.
 
-A plain SHA-256 phone-number hash is a pseudonymous representation; it is not described as formal zero-knowledge cryptography. Stronger PSI/OPRF-style contact discovery may be introduced only after independent cryptographic review.
-
-Raw address-book rows are not intended to be uploaded as a permanent cloud contact database.
+HTTPS protects phone numbers in transit; it does not make those numbers invisible to Supabase and does not extend chat end-to-end encryption to contact matching. The app does not upload contact display names as a permanent cloud address book. Local contact names and returned match results are cached on-device for the contacts UI.
 
 ## 4. Messages and encryption
 

@@ -1,0 +1,96 @@
+name: Deploy VibeSync Admin Pages
+
+on:
+  push:
+    branches:
+      - main
+      - fix/release-startup-icons-ci
+    paths:
+      - 'admin-web/**'
+      - '.github/workflows/deploy-admin-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: vibesync-admin-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SUPABASE_URL: ${{ vars.SUPABASE_URL || secrets.SUPABASE_URL }}
+      SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY || vars.SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Generate PNG favicon and Apple touch icon from Android launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --quiet Pillow
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageOps
+
+          source = Path("admin-web/assets/icon.webp")
+          target = Path("admin-web/assets/icon.png")
+          if not source.is_file():
+              raise SystemExit("Android launcher icon source is missing")
+          with Image.open(source) as image:
+              image = ImageOps.fit(image.convert("RGBA"), (180, 180), method=Image.Resampling.LANCZOS)
+              background = Image.new("RGBA", image.size, (16, 27, 46, 255))
+              background.alpha_composite(image)
+              background.convert("RGB").save(target, format="PNG", optimize=True)
+          print(f"Generated {target} from {source}")
+          PY
+
+      - name: Validate static portal files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f admin-web/index.html
+          test ! -e admin-web/CNAME
+          test -s admin-web/assets/icon.webp
+          test -s admin-web/assets/icon.png
+          grep -q "connect-src 'self' https://imhcbgpvjwersbnlgwzq.supabase.co wss://imhcbgpvjwersbnlgwzq.supabase.co" admin-web/index.html
+          grep -q "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net" admin-web/index.html
+          grep -q 'rel="apple-touch-icon"' admin-web/index.html
+          node --input-type=module --check < admin-web/app.js
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - name: Inject public Supabase browser configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          project_url="${SUPABASE_URL:-https://imhcbgpvjwersbnlgwzq.supabase.co}"
+          if [[ -n "${SUPABASE_PUBLISHABLE_KEY:-}" ]]; then
+            config="$(jq -cn --arg url "$project_url" --arg key "$SUPABASE_PUBLISHABLE_KEY" '{supabaseUrl:$url,supabaseAnonKey:$key}')"
+            printf 'window.VIBESYNC_CONFIG = Object.freeze(%s);\n' "$config" > admin-web/config.js
+            echo "Configured the deployment artifact with the public Supabase key."
+          else
+            echo "::warning::SUPABASE_PUBLISHABLE_KEY/SUPABASE_ANON_KEY variable or SUPABASE_ANON_KEY Actions secret is missing. Pages deploys with sign-in disabled."
+          fi
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: admin-web
+  deploy:
+    environment:
+      name: github-pages-admin-portal
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

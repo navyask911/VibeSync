@@ -4,9 +4,8 @@ import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
 import com.example.data.database.DatingDatabase
-import com.example.data.model.AdminEmployee
-import com.example.data.model.AdminRole
 import com.example.data.model.BlockEntity
 import com.example.data.model.BusinessEntity
 import com.example.data.model.photosList
@@ -15,8 +14,6 @@ import com.example.data.model.BusinessReviewEntity
 import com.example.data.model.ChannelBroadcastEntity
 import com.example.data.model.ChannelEntity
 import com.example.data.model.ChatMessageEntity
-import com.example.data.model.DefaultAdminEmployees
-import com.example.data.model.DefaultAdminRoles
 import com.example.data.model.FriendshipRequestEntity
 import com.example.data.model.MatchEntity
 import com.example.data.model.PhoneContact
@@ -35,12 +32,16 @@ import com.example.util.DeviceSimAndIpCountryHelper
 import com.example.util.MatchingManager
 import com.example.util.NetworkMonitor
 import com.example.util.NetworkState
+import com.example.util.OnboardingStatePolicy
 import com.example.util.PhonebookHelper
 import com.example.util.SystemHealthDiagnosticsManager
 import com.example.util.UserPresenceInfo
 import com.example.util.UserSessionManager
+import com.example.util.VibeSyncSessionManager
 import com.example.util.UserPresenceManager
 import com.example.util.WebRTCManager
+import com.example.util.WebRtcCallClient
+import com.example.util.WebRtcSignalingManager
 import com.example.util.SupabaseClientManager
 import com.example.util.backup.DriveBackupMetadata
 import com.google.firebase.messaging.FirebaseMessaging
@@ -55,6 +56,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
@@ -80,7 +82,11 @@ data class ActiveCallState(
     val durationSeconds: Int = 0,
     val isMuted: Boolean = false,
     val isCameraOff: Boolean = false,
-    val isE2eeEncrypted: Boolean = true
+    val isE2eeEncrypted: Boolean = true,
+    val callId: String = "",
+    val localProfileId: String = "",
+    val isIncoming: Boolean = false,
+    val remoteOfferSdp: String? = null
 )
 
 data class CountryStat(
@@ -169,10 +175,13 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                             map[key] = m
                         }
                     }
-                    emit(map.values.sortedByDescending { it.lastMessageTime })
+                    emit(map.values
+                        .distinctBy { it.matchId.trim().lowercase() }
+                        .sortedByDescending { it.lastMessageTime })
                 }
             }
         }
+        .distinctUntilChanged()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val userPreferences: StateFlow<UserPreferencesEntity?> = repository.userPreferences
@@ -193,6 +202,12 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
     val pendingOutgoingRequests: StateFlow<List<FriendshipRequestEntity>> = repository.pendingOutgoingRequests
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun refreshFriendshipRequestsFromSupabase() {
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.syncFriendshipRequestsFromSupabase()
+        }
+    }
 
     val acceptedFriendsCount: StateFlow<Int> = repository.acceptedFriendsCount
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
@@ -222,63 +237,175 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     val selectedChannel: StateFlow<ChannelEntity?> = _selectedChannel.asStateFlow()
 
     init {
-        // Start system network monitoring
-        NetworkMonitor.getInstance().startMonitoring(application)
-        schedulePhonebookSyncWorker()
-        viewModelScope.launch {
+        // Register connectivity callbacks off the first-render path.
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                NetworkMonitor.getInstance().startMonitoring(application)
+            } catch (t: Throwable) {
+                android.util.Log.e("VibeSyncInit", "Safe init fallback: network monitor", t)
+            }
+        }
+        // WorkManager may initialize its own Room database; initialize/enqueue away from the UI thread.
+        viewModelScope.launch(Dispatchers.IO) {
+            schedulePhonebookSyncWorker()
             repository.purgeGhostNullData()
         }
 
-        // Initialize Auth State with 2500ms safety timeout on local storage
-        viewModelScope.launch {
+        // The encrypted Truecaller session is the authentication source of truth.
+        // Keep AuthState.INITIALIZING (and therefore the splash screen) until the local
+        // session has been restored and checked. Room preferences are used to hydrate the
+        // UI, but a late/missing preferences emission must never send a valid session to login.
+        viewModelScope.launch(Dispatchers.IO) {
+            var restoredSession: com.example.util.VibeSyncSessionManager.Session? = null
             try {
-                val prefs = kotlinx.coroutines.withTimeoutOrNull(2500L) {
-                    repository.userPreferences.firstOrNull()
+                val app = getApplication<Application>()
+                com.example.util.VibeSyncSessionManager.initialize(app)
+                restoredSession = com.example.util.VibeSyncSessionManager.getSession(app)
+
+                // Wrap the nullable Room emission so "no row" can be distinguished from a
+                // timeout. Never overwrite an existing profile row just because Room is slow.
+                val prefsRead = kotlinx.coroutines.withTimeoutOrNull(
+                    if (restoredSession != null) 10_000L else 2_500L
+                ) {
+                    repository.userPreferences.map { value -> value to true }.first()
                 }
-                val hasVibeSyncSession = com.example.util.VibeSyncSessionManager.hasValidSession(getApplication())
-                if (prefs != null && prefs.isLoggedIn && prefs.userName.isNotBlank() && hasVibeSyncSession) {
-                    val thirtyDaysMillis = 30L * 24 * 60 * 60 * 1000L
-                    val isExpired = prefs.loginTimestamp > 0L && (System.currentTimeMillis() - prefs.loginTimestamp) > thirtyDaysMillis
-                    if (!isExpired) {
-                        android.util.Log.i("AuthSessionManager", "[AUTH STATE] Session valid: userName=${prefs.userName}")
-                        _authState.value = AuthState.AUTHENTICATED
+                val prefs = prefsRead?.first
+
+                if (restoredSession != null) {
+                    val activeSession = restoredSession
+                    val now = System.currentTimeMillis()
+                    val restoredPhone = activeSession.phoneNumber.ifBlank {
+                        prefs?.verifiedMobileNumber.orEmpty()
+                    }
+                    val storedPrefs = prefs ?: runCatching {
+                        database.userPreferencesDao().getPreferencesSync()
+                    }.getOrNull()
+                    val sameAccountCompletion = storedPrefs?.let {
+                        it.isProfileCompleted && OnboardingStatePolicy.sameVerifiedPhone(
+                            it.verifiedMobileNumber,
+                            restoredPhone
+                        )
+                    } == true
+
+                    // Search local rows first. If a valid session/Room marker proves completion,
+                    // normal startup does not wait on remote calls; old installs without either
+                    // marker recover their profile from Supabase before routing to Registration.
+                    val locallyRecoveredProfile = findLocalCompletedProfile(
+                        activeSession.profileId,
+                        restoredPhone
+                    )
+                    val recoveredProfile = locallyRecoveredProfile ?: if (
+                        !activeSession.hasCompletedOnboarding && !sameAccountCompletion
+                    ) {
+                        kotlinx.coroutines.withTimeoutOrNull(6_000L) {
+                            findExistingCompletedProfile(activeSession.profileId, restoredPhone)
+                        }
                     } else {
-                        com.example.util.VibeSyncSessionManager.clear(getApplication())
-                        _authState.value = AuthState.UNAUTHENTICATED
+                        null
                     }
+                    val profileComplete = OnboardingStatePolicy.shouldTreatAsCompleted(
+                        storedCompleted = storedPrefs?.isProfileCompleted == true,
+                        storedPhone = storedPrefs?.verifiedMobileNumber.orEmpty(),
+                        verifiedPhone = restoredPhone,
+                        secureSessionMarker = activeSession.hasCompletedOnboarding,
+                        recoveredProfileName = recoveredProfile?.name
+                    )
+
+                    if (recoveredProfile != null) {
+                        runCatching {
+                            database.profileDao().insertProfile(
+                                recoveredProfile.copy(phoneNumber = restoredPhone)
+                            )
+                        }.onFailure { failure ->
+                            android.util.Log.w(
+                                "AuthSessionManager",
+                                "Recovered profile Room cache notice: " + failure.javaClass.simpleName
+                            )
+                        }
+                    }
+
+                    val basePrefs = storedPrefs ?: UserPreferencesEntity()
+                    val hydrated = basePrefs.copy(
+                        userName = recoveredProfile?.name?.ifBlank { basePrefs.userName } ?: basePrefs.userName,
+                        userAge = recoveredProfile?.age?.takeIf { it > 0 } ?: basePrefs.userAge,
+                        userOccupation = recoveredProfile?.occupation?.ifBlank { basePrefs.userOccupation }
+                            ?: basePrefs.userOccupation,
+                        userCity = recoveredProfile?.city?.ifBlank { basePrefs.userCity } ?: basePrefs.userCity,
+                        userBio = recoveredProfile?.bio?.ifBlank { basePrefs.userBio } ?: basePrefs.userBio,
+                        userGender = recoveredProfile?.gender?.ifBlank { basePrefs.userGender } ?: basePrefs.userGender,
+                        userCountry = recoveredProfile?.country?.ifBlank { basePrefs.userCountry } ?: basePrefs.userCountry,
+                        userCountryFlag = recoveredProfile?.countryFlag?.ifBlank { basePrefs.userCountryFlag }
+                            ?: basePrefs.userCountryFlag,
+                        userPlace = recoveredProfile?.place?.ifBlank { basePrefs.userPlace } ?: basePrefs.userPlace,
+                        userQualification = recoveredProfile?.qualification?.ifBlank { basePrefs.userQualification }
+                            ?: basePrefs.userQualification,
+                        avatarUrl = recoveredProfile?.avatarUrl?.ifBlank { basePrefs.avatarUrl } ?: basePrefs.avatarUrl,
+                        profilePhotos = recoveredProfile?.getPhotoList()?.joinToString("|||")
+                            ?.ifBlank { basePrefs.profilePhotos } ?: basePrefs.profilePhotos,
+                        isProfileCompleted = profileComplete,
+                        isLoggedIn = true,
+                        verifiedMobileNumber = restoredPhone.ifBlank { basePrefs.verifiedMobileNumber },
+                        isMobileVerified = true,
+                        loginTimestamp = if (basePrefs.loginTimestamp > 0L) basePrefs.loginTimestamp else now
+                    )
+                    repository.updatePreferences(hydrated)
+                    if (profileComplete) {
+                        VibeSyncSessionManager.markOnboardingCompleted(
+                            app,
+                            activeSession.profileId,
+                            completed = true
+                        )
+                    }
+
+                    _activeMobile.value = restoredPhone
+                    // A valid encrypted session routes to Home as soon as completion is known.
+                    _isMpinUnlocked.value = true
+                    _authState.value = AuthState.AUTHENTICATED
+                    if (profileComplete && recoveredProfile == null) {
+                        viewModelScope.launch(Dispatchers.IO) {
+                            runCatching {
+                                findExistingCompletedProfile(activeSession.profileId, restoredPhone)
+                            }.getOrNull()?.let { remoteProfile ->
+                                hydrateRecoveredProfile(remoteProfile, restoredPhone, activeSession.profileId)
+                            }
+                        }
+                    }
+                    android.util.Log.i(
+                        "AuthSessionManager",
+                        "Restored valid encrypted VibeSync session (onboardingCompleted=" +
+                            profileComplete + ", accessJwtPresent=true)."
+                    )
                 } else {
-                    if (prefs?.isLoggedIn == true && !hasVibeSyncSession) {
-                        com.example.util.UserSessionManager.clearVerifiedSession(getApplication())
-                    }
+                    // No complete, unexpired session is available. Leave saved credentials and
+                    // user data untouched; re-authentication can occur without destructive cleanup.
                     _authState.value = AuthState.UNAUTHENTICATED
+                    android.util.Log.i("AuthSessionManager", "No valid cached VibeSync session; sign-in is required.")
                 }
             } catch (e: Exception) {
-                android.util.Log.e("AuthSessionManager", "Error or timeout reading auth storage: ${e.message}", e)
-                try {
-                    com.example.util.UserSessionManager.sanitizeCorruptedStorageAndCache(getApplication())
-                } catch (_: Exception) {}
-                _authState.value = AuthState.UNAUTHENTICATED
+                android.util.Log.e(
+                    "AuthSessionManager",
+                    "Session bootstrap issue (local credentials preserved): ${e.message}",
+                    e
+                )
+                // A Room timeout or temporary AndroidKeyStore error is not proof of revocation.
+                // Never sanitize the database or wipe session credentials on a startup exception.
+                val fallbackSession = restoredSession ?: runCatching {
+                    com.example.util.VibeSyncSessionManager.getSession(getApplication())
+                }.getOrNull()
+                if (fallbackSession != null) {
+                    _activeMobile.value = fallbackSession.phoneNumber
+                    _isMpinUnlocked.value = true
+                    _authState.value = AuthState.AUTHENTICATED
+                } else {
+                    _authState.value = AuthState.UNAUTHENTICATED
+                }
             }
         }
 
         // Truecaller verification is the sign-in authority; the verified session is device-local.
         // Firebase remains a transport/legacy compatibility boundary only.
 
-        // Initialize Supabase Realtime WebSocket for two-way chat synchronization and delivery/read receipts
-        try {
-            com.example.util.SupabaseBackendManager.connectRealtimeWebsocket(
-                onInsert = { record ->
-                    handleRealtimeChatMessageInsert(record)
-                },
-                onUpdate = { record ->
-                    handleRealtimeChatMessageUpdate(record)
-                }
-            )
-        } catch (e: Exception) {
-            android.util.Log.w("DatingViewModel", "Failed to initialize Supabase Realtime WebSocket: ${e.message}")
-        }
-
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             repository.userPreferences.collectLatest { prefs ->
                 if (prefs != null && prefs.isLoggedIn) {
                     val userId = if (prefs.verifiedMobileNumber.isNotBlank()) {
@@ -294,22 +421,168 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun disconnectRealtime() {
-        try {
-            com.example.util.SupabaseBackendManager.disconnectRealtimeWebsocket()
-        } catch (e: Exception) {
-            android.util.Log.w("DatingViewModel", "Error disconnecting realtime: ${e.message}")
+    @Volatile private var activeRealtimeRemoteMatchId: String? = null
+    private var realtimeStartJob: kotlinx.coroutines.Job? = null
+    private var realtimeStatusSyncJob: kotlinx.coroutines.Job? = null
+    private var typingStopJob: kotlinx.coroutines.Job? = null
+    private var typingBroadcastActive = false
+    private val _isPartnerTyping = MutableStateFlow(false)
+    val isPartnerTyping: StateFlow<Boolean> = _isPartnerTyping.asStateFlow()
+    private val readReceiptRequestsInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** Called only by ChatDetailScreen while its 1-on-1 route is resumed. */
+    fun startChatRealtime(match: MatchEntity, profile: ProfileEntity) {
+        realtimeStartJob?.cancel()
+        realtimeStartJob = viewModelScope.launch(Dispatchers.IO) {
+            val ownProfileId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+            val phoneIdentity = com.example.util.ChatRecipientIdentityResolver.phoneIdentityCandidate(
+                profile.phoneNumber,
+                profile.id
+            )
+            // Resolve the active contact before subscribing. A stale local ID must not produce a
+            // Realtime match_id filter that differs from the canonical pair written by the outbox.
+            val canonicalPeerId = if (phoneIdentity != null) {
+                com.example.util.SupabaseClientManager.resolveProfileIdByPhoneNumber(phoneIdentity)
+                    ?.trim()
+                    .orEmpty()
+            } else {
+                profile.id.trim()
+            }
+
+            if (
+                ownProfileId.isBlank() ||
+                canonicalPeerId.isBlank() ||
+                canonicalPeerId.startsWith("match_", ignoreCase = true) ||
+                canonicalPeerId.equals(ownProfileId, ignoreCase = true)
+            ) {
+                activeRealtimeRemoteMatchId = null
+                realtimeStatusSyncJob?.cancel()
+                realtimeStatusSyncJob = null
+                com.example.util.SupabaseBackendManager.disconnectRealtimeWebsocket()
+                android.util.Log.w(
+                    "VibeSyncRealtime",
+                    "Skipped chat channel because canonical participant identity could not be resolved."
+                )
+                return@launch
+            }
+
+            val remoteMatchId = com.example.util.SupabaseClientManager.canonicalChatMatchId(
+                ownProfileId,
+                canonicalPeerId
+            )
+            if (remoteMatchId.isBlank()) {
+                activeRealtimeRemoteMatchId = null
+                realtimeStatusSyncJob?.cancel()
+                realtimeStatusSyncJob = null
+                com.example.util.SupabaseBackendManager.disconnectRealtimeWebsocket()
+                android.util.Log.w("VibeSyncRealtime", "Skipped chat channel because participants cannot form a canonical match_id.")
+                return@launch
+            }
+
+            if (activeRealtimeRemoteMatchId != null && activeRealtimeRemoteMatchId != remoteMatchId) {
+                activeRealtimeRemoteMatchId = null
+                realtimeStatusSyncJob?.cancel()
+                realtimeStatusSyncJob = null
+                com.example.util.SupabaseBackendManager.disconnectRealtimeWebsocket()
+            }
+            activeRealtimeRemoteMatchId = remoteMatchId
+
+            val resolvedProfile = if (profile.id.equals(canonicalPeerId, ignoreCase = true)) {
+                profile
+            } else {
+                profile.copy(id = canonicalPeerId)
+            }
+            val resolvedMatch = if (match.profileId.equals(canonicalPeerId, ignoreCase = true)) {
+                match
+            } else {
+                match.copy(profileId = canonicalPeerId)
+            }
+
+            fun belongsToActiveChat(record: org.json.JSONObject): Boolean {
+                val rowMatchId = record.optString("match_id", record.optString("matchId", "")).trim()
+                // Read-receipt/update payloads can carry only message_id; those updates are Room-ID-scoped.
+                return rowMatchId.isBlank() || rowMatchId.equals(remoteMatchId, ignoreCase = true)
+            }
+
+            com.example.util.SupabaseBackendManager.connectRealtimeWebsocket(
+                onInsert = { record ->
+                    if (activeRealtimeRemoteMatchId == remoteMatchId && belongsToActiveChat(record)) {
+                        handleRealtimeChatMessageInsert(record)
+                    }
+                },
+                onUpdate = { record ->
+                    if (activeRealtimeRemoteMatchId == remoteMatchId && belongsToActiveChat(record)) {
+                        handleRealtimeChatMessageUpdate(record)
+                    }
+                },
+                matchId = remoteMatchId,
+                onTyping = { senderId, isTyping ->
+                    val myId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty()
+                    if (activeRealtimeRemoteMatchId == remoteMatchId &&
+                        !senderId.equals(myId, ignoreCase = true) &&
+                        userPreferences.value?.typingIndicatorsEnabled != false
+                    ) {
+                        _isPartnerTyping.value = isTyping
+                    }
+                }
+            )
+
+            realtimeStatusSyncJob?.cancel()
+            realtimeStatusSyncJob = viewModelScope.launch {
+                com.example.util.SupabaseBackendManager.realtimeSubscriptionStatus.collectLatest { state ->
+                    // SUBSCRIBED is emitted only after the chat_messages postgres_changes join is accepted.
+                    // Resync on each accepted join/reconnect to recover any receipts missed while offline.
+                    if (state == "SUBSCRIBED" && activeRealtimeRemoteMatchId == remoteMatchId) {
+                        syncChatMessagesSinceWatermark(resolvedMatch, resolvedProfile)
+                    }
+                }
+            }
+            // Catch up immediately too; the subscribed-state collector covers reconnects.
+            syncChatMessagesSinceWatermark(resolvedMatch, resolvedProfile)
         }
     }
 
-    fun reconnectRealtime() {
+    fun stopChatRealtime() {
+        realtimeStartJob?.cancel()
+        realtimeStartJob = null
+        activeRealtimeRemoteMatchId = null
+        realtimeStatusSyncJob?.cancel()
+        realtimeStatusSyncJob = null
+        typingStopJob?.cancel()
+        typingStopJob = null
+        typingBroadcastActive = false
+        _isPartnerTyping.value = false
         try {
-            com.example.util.SupabaseBackendManager.connectRealtimeWebsocket(
-                onInsert = { record -> handleRealtimeChatMessageInsert(record) },
-                onUpdate = { record -> handleRealtimeChatMessageUpdate(record) }
-            )
+            com.example.util.SupabaseBackendManager.disconnectRealtimeWebsocket()
         } catch (e: Exception) {
-            android.util.Log.w("DatingViewModel", "Error reconnecting realtime: ${e.message}")
+            android.util.Log.w("DatingViewModel", "Error closing active chat Realtime: ${e.message}")
+        }
+    }
+
+    // Compatibility wrappers deliberately never open a socket without an active chat screen.
+    fun disconnectRealtime() = stopChatRealtime()
+
+    fun reconnectRealtime() {
+        val current = _activeChat.value
+        if (current != null) startChatRealtime(current.first, current.second)
+        else com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(getApplication())
+    }
+
+    suspend fun syncChatMessagesSinceWatermark(match: MatchEntity, profile: ProfileEntity) {
+        val prefs = repository.userPreferences.firstOrNull() ?: return
+        val ownerId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+        if (ownerId.isBlank() || !prefs.isLoggedIn) return
+        val result = com.example.util.MessageDeltaSyncManager.syncConversation(
+            context = getApplication(),
+            database = database,
+            match = match,
+            myProfileId = ownerId,
+            myPhone = prefs.verifiedMobileNumber,
+            partnerPhone = profile.phoneNumber.ifBlank { profile.id },
+            notifyTargetMessage = false
+        )
+        if (!result.complete) {
+            android.util.Log.w("VibeSyncDelta", "Active chat sync will retry on resume/reconnect: ${result.reason}")
         }
     }
 
@@ -385,24 +658,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     )
 
     // Admin & Developer Backend States
-    private val _isAdminLoggedIn = MutableStateFlow(false)
-    val isAdminLoggedIn: StateFlow<Boolean> = _isAdminLoggedIn.asStateFlow()
-
-    private val _adminLoginInProgress = MutableStateFlow(false)
-    val adminLoginInProgress: StateFlow<Boolean> = _adminLoginInProgress.asStateFlow()
-
-    private val _adminLoginError = MutableStateFlow<String?>(null)
-    val adminLoginError: StateFlow<String?> = _adminLoginError.asStateFlow()
-
-    private val _showAdminPortal = MutableStateFlow(false)
-    val showAdminPortal: StateFlow<Boolean> = _showAdminPortal.asStateFlow()
-
-    private val _adminRoles = MutableStateFlow<List<AdminRole>>(DefaultAdminRoles.allDefaultRoles)
-    val adminRoles: StateFlow<List<AdminRole>> = _adminRoles.asStateFlow()
-
-    private val _adminEmployees = MutableStateFlow<List<AdminEmployee>>(DefaultAdminEmployees.sampleStaff)
-    val adminEmployees: StateFlow<List<AdminEmployee>> = _adminEmployees.asStateFlow()
-
     // 30-Day Session & Fast MPIN State
     private val _isMpinUnlocked = MutableStateFlow(false)
     val isMpinUnlocked: StateFlow<Boolean> = _isMpinUnlocked.asStateFlow()
@@ -410,7 +665,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     // Auth & Verification States
     private val _truecallerError = MutableStateFlow<String?>(null)
     val truecallerError: StateFlow<String?> = _truecallerError.asStateFlow()
-
     private val _activeMobile = MutableStateFlow("")
     val activeMobile: StateFlow<String> = _activeMobile.asStateFlow()
 
@@ -565,6 +819,33 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     private val _showStatusUploadSheet = MutableStateFlow(false)
     val showStatusUploadSheet: StateFlow<Boolean> = _showStatusUploadSheet.asStateFlow()
 
+    // Contact discovery and explicit phone-number disclosure requests.
+    private val _incomingPhoneNumberRequests = MutableStateFlow<List<com.example.data.model.PhoneNumberAccessRequest>>(emptyList())
+    val incomingPhoneNumberRequests: StateFlow<List<com.example.data.model.PhoneNumberAccessRequest>> =
+        _incomingPhoneNumberRequests.asStateFlow()
+
+    fun refreshIncomingPhoneNumberRequests() {
+        viewModelScope.launch(Dispatchers.IO) {
+            com.example.util.SupabaseClientManager.fetchIncomingPhoneNumberRequests()
+                .onSuccess { _incomingPhoneNumberRequests.value = it }
+                .onFailure { android.util.Log.w("PhoneNumberRequests", "Refresh deferred: ${it.message}") }
+        }
+    }
+
+    fun respondToPhoneNumberRequest(requestId: String, accept: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val status = if (accept) "ACCEPTED" else "BLOCKED"
+            val saved = com.example.util.SupabaseClientManager.respondToPhoneNumberRequest(requestId, status)
+            if (saved) {
+                _incomingPhoneNumberRequests.value = _incomingPhoneNumberRequests.value.filterNot { it.id == requestId }
+                _toastMessage.emit(if (accept) "Phone-number request accepted." else "Future phone-number requests from this user blocked.")
+            } else {
+                _toastMessage.emit("Could not update that phone-number request. Please retry.")
+                refreshIncomingPhoneNumberRequests()
+            }
+        }
+    }
+
     // Phonebook Contact Gated Chat & Invites
     val isPhonebookSyncing: StateFlow<Boolean> = com.example.util.PhonebookSyncManager.isSyncing
     private val _rawDeviceContacts = MutableStateFlow<List<PhoneContact>>(emptyList())
@@ -572,29 +853,20 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         _rawDeviceContacts,
         database.matchedContactDao().getAllMatchedContactsFlow()
     ) { rawContacts, matchedList ->
-        val matchedPhonesMap = matchedList.associateBy { it.phoneHash }
-        val matchedPhoneNumbersMap = matchedList.associateBy { it.phoneNumber.filter { c -> c.isDigit() }.takeLast(10) }
-        
+        val matchedByPhone = matchedList.associateBy {
+            com.example.util.PhonebookHelper.normalizeToE164(it.phoneNumber.ifBlank { it.phoneHash })
+        }
         rawContacts.map { contact ->
-            val e164 = com.example.util.PhonebookHasher.normalizeToE164(contact.phoneNumber)
-            val hash = com.example.util.PhonebookHasher.sha256Hex(e164)
-            val c10 = e164.filter { it.isDigit() }.takeLast(10)
-            
-            val matched = matchedPhonesMap[hash] 
-                ?: matchedPhoneNumbersMap[c10]
-                ?: matchedList.find { m -> com.example.util.PhonebookHasher.arePhonesMatching(m.phoneNumber, contact.phoneNumber) }
-                
-            if (matched != null) {
-                contact.copy(
-                    isOnVibeSync = true,
-                    vibeSyncProfileId = matched.vibeSyncUserId,
-                    avatarEmoji = matched.avatarEmoji,
-                    photoUrl = matched.photoUrl,
-                    statusTagline = matched.statusTagline
-                )
-            } else {
-                contact
-            }
+            val phoneE164 = com.example.util.PhonebookHelper.normalizeToE164(contact.phoneNumber)
+            val matched = matchedByPhone[phoneE164]
+            if (matched != null) contact.copy(
+                isOnVibeSync = true,
+                vibeSyncProfileId = matched.vibeSyncUserId,
+                avatarEmoji = matched.avatarEmoji,
+                photoUrl = matched.photoUrl,
+                statusTagline = matched.statusTagline,
+                phoneHash = phoneE164
+            ) else contact.copy(phoneHash = phoneE164)
         }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
@@ -614,7 +886,12 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
         .map { list -> 
             list.distinctBy { it.messageId }
-                .filter { it.text.isNotBlank() || it.mediaUrl.isNotBlank() || it.mediaType in listOf("VOICE", "AUDIO", "LOCATION", "IMAGE", "VIDEO") }
+                .filter {
+                    !it.mediaType.equals("PROFILE_KEY_EXCHANGE", ignoreCase = true) &&
+                        !it.text.startsWith(com.example.util.ProfileKeyManager.EXCHANGE_PREFIX) &&
+                        (it.text.isNotBlank() || it.mediaUrl.isNotBlank() ||
+                            it.mediaType in listOf("VOICE", "AUDIO", "LOCATION", "IMAGE", "VIDEO"))
+                }
                 .sortedBy { it.timestamp } 
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -700,16 +977,31 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         backgroundMusicUri: String = ""
     ) {
         viewModelScope.launch {
-            val result = repository.uploadUserStatus(
-                mediaType = mediaType,
-                caption = caption,
-                mediaUrl = mediaUrl,
-                videoDurationSeconds = videoDurationSeconds,
-                backgroundColorStart = backgroundColorStart,
-                backgroundColorEnd = backgroundColorEnd,
-                privacy = privacy,
-                backgroundMusicUri = backgroundMusicUri
-            )
+            val appContext = getApplication<Application>()
+            val compressedTempFile = runCatching {
+                val uri = android.net.Uri.parse(mediaUrl)
+                val path: java.io.File? = uri.path?.let { java.io.File(it) }
+                val cacheRoot = appContext.cacheDir.canonicalPath + java.io.File.separator
+                path?.takeIf {
+                    uri.scheme == "file" &&
+                        it.name.startsWith("vibesync_compressed_") &&
+                        it.canonicalPath.startsWith(cacheRoot)
+                }
+            }.getOrNull()
+            val result = try {
+                repository.uploadUserStatus(
+                    mediaType = mediaType,
+                    caption = caption,
+                    mediaUrl = mediaUrl,
+                    videoDurationSeconds = videoDurationSeconds,
+                    backgroundColorStart = backgroundColorStart,
+                    backgroundColorEnd = backgroundColorEnd,
+                    privacy = privacy,
+                    backgroundMusicUri = backgroundMusicUri
+                )
+            } finally {
+                runCatching { compressedTempFile?.delete() }
+            }
             when (result) {
                 is SocialConnectRepository.UploadStatusResult.Success -> {
                     _showStatusUploadSheet.value = false
@@ -875,27 +1167,147 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
     fun normalizePhone(p: String): String = p.replace("[^0-9]".toRegex(), "").takeLast(10)
 
+    /**
+     * Share profile-avatar key material only to an accepted/mutual connection. A phone-book
+     * match alone is not authorization to decrypt another person's avatar.
+     */
+    private suspend fun queueProfileKeyExchangeIfAuthorized(match: MatchEntity, peer: ProfileEntity) {
+        val context = getApplication<Application>()
+        val ownerId = com.example.util.VibeSyncSessionManager.getProfileId(context).orEmpty().trim()
+        if (ownerId.isBlank() || peer.id.isBlank() || ownerId.equals(peer.id, ignoreCase = true) ||
+            peer.id.startsWith("biz_", ignoreCase = true)
+        ) return
+
+        val accepted = repository.acceptedFriendships.first().any { request ->
+            request.status.equals("ACCEPTED", ignoreCase = true) &&
+                (request.senderId.equals(peer.id, ignoreCase = true) ||
+                    request.receiverId.equals(peer.id, ignoreCase = true))
+        }
+        val peerPhone = peer.phoneNumber.ifBlank {
+            peer.id.takeIf { com.example.util.SupabaseClientManager.isPhoneNumberCandidate(it) }.orEmpty()
+        }
+        val savedInMyContacts = peerPhone.isNotBlank() &&
+            com.example.util.ContactResolver.isNumberSavedOnDevice(context, peerPhone)
+        val mutual = accepted || match.isDatingMatch
+        if (!mutual) return
+
+        var recipient = peer
+        if (recipient.publicIdentityKey.isBlank()) {
+            recipient = com.example.util.SupabaseClientManager.fetchProfileById(peer.id) ?: return
+            if (recipient.publicIdentityKey.isNotBlank()) {
+                database.profileDao().insertProfile(
+                    (database.profileDao().getProfileByIdSync(peer.id) ?: peer)
+                        .copy(publicIdentityKey = recipient.publicIdentityKey)
+                )
+            }
+        }
+        if (recipient.publicIdentityKey.isBlank()) {
+            android.util.Log.w("ProfileKeyExchange", "Skipping exchange because recipient has no published Tink key.")
+            return
+        }
+
+        val preferences = repository.userPreferences.firstOrNull() ?: return
+        val peerHasSavedMe = com.example.util.ProfileKeyManager.peerHasConfirmedSavingMyNumber(context, peer.id)
+        val mayShareDob = mutual || (savedInMyContacts && peerHasSavedMe)
+        val payload = com.example.util.ProfileKeyManager.buildExchangePayload(
+            context = context,
+            ownerProfileId = ownerId,
+            recipientProfileId = peer.id,
+            dateOfBirth = if (mayShareDob) preferences.userDob else "",
+            senderHasRecipientSaved = savedInMyContacts
+        )
+        if (com.example.util.ProfileKeyManager.hasSharedPayload(context, peer.id, payload)) return
+
+        repository.sendMessage(
+            matchId = match.matchId,
+            text = payload,
+            mediaType = "PROFILE_KEY_EXCHANGE",
+            clientMsgId = UUID.randomUUID().toString(),
+            recipientProfileId = peer.id,
+            recipientPhoneNumber = peerPhone
+        )
+        // sendMessage has already persisted the control row to Room and schedules durable retry on
+        // transient send failures, so the same envelope need not be enqueued on every chat opening.
+        com.example.util.ProfileKeyManager.markPayloadShared(context, peer.id, payload)
+        android.util.Log.i("ProfileKeyExchange", "Queued contact-scoped profile-key exchange for an authorized peer.")
+    }
+
+    /**
+     * Warm the in-band profile-key exchange when an authorized peer appears in Recent Stories.
+     * The private helper still rejects phonebook-only / unaccepted relationships before sharing
+     * any avatar key material.
+     */
+    fun ensureProfileKeyExchangeForStoryOwner(peerProfileId: String) {
+        val peerId = peerProfileId.trim()
+        val appContext = getApplication<Application>()
+        val ownProfileId = com.example.util.VibeSyncSessionManager.getProfileId(appContext).orEmpty()
+        if (peerId.isBlank() || ownProfileId.isBlank() || peerId.equals(ownProfileId, ignoreCase = true)) return
+
+        viewModelScope.launch {
+            try {
+                val match = database.matchDao().getMatchByProfileId(peerId) ?: return@launch
+                val peer = database.profileDao().getProfileByIdSync(peerId)
+                    ?: com.example.util.SupabaseClientManager.fetchProfileById(peerId)?.also {
+                        database.profileDao().insertProfile(it)
+                    }
+                    ?: return@launch
+                queueProfileKeyExchangeIfAuthorized(match, peer)
+            } catch (t: Throwable) {
+                android.util.Log.w(
+                    "ProfileKeyExchange",
+                    "Recent-story avatar key warm-up did not complete: ${t.javaClass.simpleName}"
+                )
+            }
+        }
+    }
+
     fun openChat(match: MatchEntity, profile: ProfileEntity) {
+        com.example.util.AlertSoundAndVibrationManager.stopAllSounds(getApplication())
         val resolvedProfile = com.example.util.ContactResolver.matchChatSessionParticipant(getApplication(), profile)
         _activeChat.value = Pair(match, resolvedProfile)
         _currentMatchId.value = match.matchId
         com.example.util.AppNotificationManager.setActiveChatSession(resolvedProfile.id, match.matchId)
         viewModelScope.launch {
+            val contactName = resolvedProfile.name.trim().takeUnless {
+                it.isBlank() || it.equals("VibeSync User", true) ||
+                    it.equals("VibeSync Match", true) || it.equals("VibeSync Contact", true) ||
+                    it.equals("VibeSync Friend", true)
+            }.orEmpty()
+            val photoValue = resolvedProfile.avatarUrl.trim()
+            val context = getApplication<Application>()
+            val localPhoto = if (photoValue.startsWith("content://")) {
+                com.example.util.ProfileAvatarStorageManager.cacheContactPhoto(context, photoValue, match.profileId).orEmpty()
+            } else if (photoValue.startsWith("file://")) photoValue else ""
+            if (contactName.isNotBlank() || localPhoto.isNotBlank()) {
+                val latestMatch = database.matchDao().getMatchByIdSync(match.matchId) ?: match
+                val persisted = latestMatch.copy(
+                    localContactName = contactName.ifBlank { latestMatch.localContactName },
+                    localPhotoUri = localPhoto.ifBlank { latestMatch.localPhotoUri }
+                )
+                database.matchDao().insertMatch(persisted)
+                database.chatMessageDao().persistIncomingContactMetadata(
+                    match.matchId, persisted.localContactName, persisted.localPhotoUri
+                )
+                val displayProfile = resolvedProfile.copy(
+                    name = persisted.localContactName.ifBlank { resolvedProfile.name },
+                    avatarUrl = persisted.localPhotoUri.ifBlank { resolvedProfile.avatarUrl }
+                )
+                _activeChat.value = Pair(persisted, displayProfile)
+            }
             val prefs = repository.userPreferences.firstOrNull()
             val myPhone = prefs?.verifiedMobileNumber ?: ""
             val partnerPhone = resolvedProfile.phoneNumber.ifBlank { match.profileId }
             
-            // Mark all past incoming messages as read both locally and in public.chat_messages
-            repository.markMatchAsRead(match.matchId, myPhone, partnerPhone)
-
-            // Immediately query and load all past messages from public.chat_messages where both participants match
+            // Reconcile from the monotonic per-chat cursor; never depend on the socket for history.
             try {
-                val remoteMsgs = com.example.util.SupabaseClientManager.fetchMessagesForMatch(match.matchId, myPhone, partnerPhone)
-                for (rm in remoteMsgs) {
-                    repository.insertReceivedChatMessage(rm, rm.senderId, myPhone)
-                }
+                syncChatMessagesSinceWatermark(match, resolvedProfile)
             } catch (e: Exception) {
-                android.util.Log.w("DatingViewModel", "openChat fetch remote messages error: ${e.message}")
+                android.util.Log.w("VibeSyncChat", "Opening-chat delta sync failed: ${e.message}")
+            }
+            try {
+                queueProfileKeyExchangeIfAuthorized(match, resolvedProfile)
+            } catch (e: Exception) {
+                android.util.Log.w("ProfileKeyExchange", "Could not enqueue profile-key exchange: ${e.javaClass.simpleName}")
             }
         }
     }
@@ -905,10 +1317,16 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             try {
                 val msgId = com.example.util.MessageHandler.extractMessageId(record)
                 val isDeleted = com.example.util.MessageHandler.isMessageDeletion(record)
+                if (msgId.isNotBlank() && database.expiredChatMessageDao().isExpiredMessage(msgId)) {
+                    return@launch
+                }
 
                 // If record signals a deletion, immediately remove from local Room DB
                 if (isDeleted && msgId.isNotBlank()) {
-                    database.chatMessageDao().deleteMessageById(msgId)
+                    database.withTransaction {
+                        database.chatMessageDao().deleteMessageById(msgId)
+                        database.messageDao().deleteRemoteMessage(msgId)
+                    }
                     val activeMatchId = _activeChat.value?.first?.matchId
                     if (activeMatchId != null) {
                         val remaining = database.chatMessageDao().getMessagesForMatchSync(activeMatchId)
@@ -923,28 +1341,71 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     return@launch
                 }
 
-                val rawText = sequenceOf("message_text", "text", "message", "content")
+                val rawText = sequenceOf("ciphertext", "message_text", "text", "message", "content")
                     .map { record.optString(it, "") }
                     .firstOrNull { it.isNotBlank() } ?: ""
                 val mediaType = record.optString("media_type", "TEXT")
                 val mediaUrl = record.optString("media_url", "")
 
+                // Diagnostic rows are never displayed; the receiving device ACKs the Realtime INSERT.
+                if (mediaType.equals("DIAGNOSTIC", ignoreCase = true)) {
+                    val myProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
+                    val receiverId = record.optString("receiver_id", "")
+                    if (msgId.isNotBlank() && myProfileId.isNotBlank() && receiverId == myProfileId) {
+                        val acked = com.example.util.SupabaseBackendManager.markMessageDelivered(
+                            msgId,
+                            record.optString("sender_id", ""),
+                            receiverId
+                        )
+                        if (acked) {
+                            android.util.Log.i("VibeSyncChatTest", "[VibeSyncChatTest] RECEIVED: diagnostic INSERT reached recipient and delivery ACK committed.")
+                        } else {
+                            android.util.Log.e("VibeSyncChatTest", "[VibeSyncChatTest] STATUS: FAIL - recipient saw diagnostic INSERT but delivery ACK failed.")
+                        }
+                    }
+                    return@launch
+                }
+
                 val msgType = record.optString("type", "CHAT_MESSAGE").ifBlank {
                     record.optString("msg_type", "CHAT_MESSAGE")
                 }
 
-                // Filter Background Control Packets: process silently in the crypto layer and do not insert into Room database
-                val isControlPacket = msgType != "CHAT_MESSAGE" || 
-                    rawText.startsWith("KEY_EXCHANGE") || 
-                    rawText.startsWith("DH_HANDSHAKE") || 
-                    rawText.startsWith("E2EE_SETUP") ||
-                    rawText.equals("Message", ignoreCase = true) ||
-                    mediaType in listOf("KEY_EXCHANGE", "HANDSHAKE", "SETUP", "PROTOCOL", "SYSTEM")
+                // Profile-key exchange uses the same encrypted chat transport, but is consumed silently.
+                val isProfileKeyExchange =
+                    mediaType.equals("PROFILE_KEY_EXCHANGE", ignoreCase = true) ||
+                        rawText.startsWith(com.example.util.ProfileKeyManager.EXCHANGE_PREFIX)
+                val isChatInteractionEvent = mediaType.equals(
+                    com.example.util.ChatMessageEventCodec.MEDIA_TYPE_REACTION,
+                    ignoreCase = true
+                ) || mediaType.equals(
+                    com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DELETE,
+                    ignoreCase = true
+                ) || mediaType.equals(
+                    com.example.util.ChatMessageEventCodec.MEDIA_TYPE_EDIT,
+                    ignoreCase = true
+                ) || mediaType.equals(
+                    com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DISAPPEARING_TIMER,
+                    ignoreCase = true
+                )
+                val isControlPacket = !isProfileKeyExchange && !isChatInteractionEvent && (
+                    msgType != "CHAT_MESSAGE" ||
+                        rawText.startsWith("KEY_EXCHANGE") ||
+                        rawText.startsWith("DH_HANDSHAKE") ||
+                        rawText.startsWith("E2EE_SETUP") ||
+                        rawText.equals("Message", ignoreCase = true) ||
+                        mediaType in listOf("KEY_EXCHANGE", "HANDSHAKE", "SETUP", "PROTOCOL", "SYSTEM")
+                    )
 
                 if (isControlPacket) {
                     try {
-                        val senderPhone = record.optString("sender_phone", record.optString("sender_id", ""))
-                        com.example.util.MessageHandler.verifyAndDecryptPayload(senderPhone, rawText)
+                        val senderPhone = record.optString("sender_phone", record.optString("sender_id", record.optString("sender_profile_id", record.optString("senderId", ""))))
+                        com.example.util.MessageHandler.verifyAndDecryptPayload(
+                            senderUid = senderPhone, rawPayload = rawText, context = getApplication(),
+                            senderPhone = record.optString("sender_id", record.optString("sender_profile_id", record.optString("senderId", ""))),
+                            receiverPhone = record.optString("recipient_id", record.optString("recipient_profile_id", record.optString("receiver_id", ""))),
+                            matchId = record.optString("match_id", record.optString("matchId", "")),
+                            inboundEventPayload = record
+                        )
                     } catch (_: Exception) {}
                     return@launch
                 }
@@ -956,9 +1417,13 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 if (rawText.equals("heartbeat", true) || rawText.equals("ping", true) || rawText.equals("pong", true) || rawText.startsWith("phx_") || rawText.startsWith("phx-") || rawText.equals("phx_reply", true) || rawText.equals("phx_close", true)) return@launch
                 if (rawText.startsWith("{\"topic\":") || rawText.startsWith("{\"event\":") || rawText.startsWith("{\"status\":\"ok\"")) return@launch
 
-                val senderPhone = record.optString("sender_phone", record.optString("sender_id", ""))
-                val receiverPhone = record.optString("receiver_phone", record.optString("receiver_id", ""))
-                val recordMatchId = record.optString("match_id", "")
+                // Encryption AAD uses canonical profile IDs from the server. Phone fields are
+                // fallbacks for legacy rows and phone-based conversation matching only.
+                val senderProfileId = sequenceOf("sender_id", "sender_profile_id", "senderId").map { record.optString(it, "").trim() }.firstOrNull { it.isNotBlank() && !it.equals("null", true) }.orEmpty()
+                val receiverProfileId = sequenceOf("recipient_id", "recipient_profile_id", "receiver_id", "recipientId", "receiver_profile_id", "receiverId").map { record.optString(it, "").trim() }.firstOrNull { it.isNotBlank() && !it.equals("null", true) }.orEmpty()
+                val senderPhone = record.optString("sender_phone", "").trim()
+                val receiverPhone = record.optString("receiver_phone", "").trim()
+                val recordMatchId = sequenceOf("match_id", "matchId").map { record.optString(it, "").trim() }.firstOrNull { it.isNotBlank() && !it.equals("null", true) }.orEmpty()
                 val voiceSeconds = record.optInt("voice_duration_seconds", 0)
                 val timestamp = record.optLong("timestamp", System.currentTimeMillis())
                 val isRead = record.optBoolean("is_read", false)
@@ -966,23 +1431,46 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 val replyToText = record.optString("reply_to_text", "").ifBlank { null }
                 val replyToSender = record.optString("reply_to_sender", "").ifBlank { null }
                 val isForwarded = record.optBoolean("is_forwarded", false)
+                val forwardCount = record.optInt("forward_count", 0).coerceAtLeast(0)
 
                 val prefs = repository.userPreferences.firstOrNull()
                 val currentUserPhone = prefs?.verifiedMobileNumber ?: ""
+                val currentProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
+                val aadParticipants = com.example.util.MessageHandler.resolveAadParticipantsFromPayload(record, currentProfileId)
+                    ?: com.example.util.TinkCryptoManager.resolveAadParticipantIds(
+                        senderProfileId = senderProfileId,
+                        receiverProfileId = receiverProfileId,
+                        matchId = recordMatchId,
+                        currentProfileId = currentProfileId
+                    )
+                val senderIdentity = senderProfileId.ifBlank {
+                    aadParticipants?.let { pair -> if (currentProfileId.equals(pair.first, true)) pair.second else pair.first } ?: senderPhone
+                }
+                val receiverIdentity = receiverProfileId.ifBlank {
+                    aadParticipants?.let { pair -> if (currentProfileId.equals(pair.first, true) || currentProfileId.equals(pair.second, true)) currentProfileId else pair.second } ?: receiverPhone
+                }
 
                 val activePair = _activeChat.value
                 val activePartnerProfile = activePair?.second
                 val activePartnerPhone = activePartnerProfile?.phoneNumber ?: (activePair?.first?.profileId ?: "")
                 val activeMatchId = activePair?.first?.matchId
+                val canonicalActiveMatchId = if (currentProfileId.isNotBlank() && activePartnerProfile != null) {
+                    com.example.util.SupabaseClientManager.canonicalChatMatchId(currentProfileId, activePartnerProfile.id)
+                } else ""
 
-                // Bulletproof phone matching using PhonebookHasher
-                val isSenderMe = com.example.util.PhonebookHasher.arePhonesMatching(senderPhone, currentUserPhone) || senderPhone == "USER"
-                val isReceiverMe = com.example.util.PhonebookHasher.arePhonesMatching(receiverPhone, currentUserPhone)
+                // Bulletproof phone matching using PhonebookHelper
+                val isSenderMe = senderIdentity.equals(currentProfileId, ignoreCase = true) ||
+                    com.example.util.PhonebookHelper.arePhonesMatching(senderPhone, currentUserPhone) ||
+                    senderIdentity == "USER"
+                val isReceiverMe = receiverIdentity.equals(currentProfileId, ignoreCase = true) ||
+                    com.example.util.PhonebookHelper.arePhonesMatching(receiverPhone, currentUserPhone)
 
+                // Keep the active-conversation membership test for routing incoming rows into Room.
+                // It is deliberately NOT used as a substitute for message-viewport READ visibility.
                 val isBelongingToActiveConversation = (activePair != null) && (
-                    ((com.example.util.PhonebookHasher.arePhonesMatching(senderPhone, activePartnerPhone) && com.example.util.PhonebookHasher.arePhonesMatching(receiverPhone, currentUserPhone)) ||
-                     (com.example.util.PhonebookHasher.arePhonesMatching(senderPhone, currentUserPhone) && com.example.util.PhonebookHasher.arePhonesMatching(receiverPhone, activePartnerPhone))) ||
-                    (recordMatchId.isNotBlank() && recordMatchId == activeMatchId)
+                    ((com.example.util.PhonebookHelper.arePhonesMatching(senderPhone, activePartnerPhone) && com.example.util.PhonebookHelper.arePhonesMatching(receiverPhone, currentUserPhone)) ||
+                     (com.example.util.PhonebookHelper.arePhonesMatching(senderPhone, currentUserPhone) && com.example.util.PhonebookHelper.arePhonesMatching(receiverPhone, activePartnerPhone))) ||
+                    (recordMatchId.isNotBlank() && (recordMatchId == activeMatchId || recordMatchId == canonicalActiveMatchId))
                 )
 
                 // For sender's own message broadcast echo:
@@ -993,86 +1481,259 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 }
 
                 if (isReceiverMe || isBelongingToActiveConversation) {
-                    val normSender = com.example.util.PhonebookHasher.normalizeToE164(senderPhone)
-                    val normReceiver = com.example.util.PhonebookHasher.normalizeToE164(receiverPhone)
+                    val normSender = com.example.util.PhonebookHelper.normalizeToE164(senderPhone)
+                    val normReceiver = com.example.util.PhonebookHelper.normalizeToE164(receiverPhone)
 
                     val targetMatchId = when {
-                        recordMatchId.isNotBlank() -> recordMatchId
                         isBelongingToActiveConversation && activeMatchId != null -> activeMatchId
+                        recordMatchId.isNotBlank() -> recordMatchId
+                        aadParticipants != null -> com.example.util.SupabaseClientManager.canonicalChatMatchId(
+                            aadParticipants.first, aadParticipants.second
+                        )
                         normSender.isNotBlank() -> "match_$normSender"
                         else -> "match_$senderPhone"
                     }
 
-                    // Decrypt incoming payload with Google Tink HybridDecrypt
-                    val decryptedText = if (rawText.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
-                        com.example.util.TinkCryptoManager.decryptPayload(
-                            context = getApplication(),
-                            payload = rawText,
-                            senderPhone = senderPhone,
-                            receiverPhone = receiverPhone,
-                            onMismatchedKey = {
-                                viewModelScope.launch(Dispatchers.IO) {
-                                    com.example.util.SupabaseBackendManager.fetchPublicKeyForPhone(senderPhone)?.let { newKey ->
-                                        val partnerProf = database.profileDao().getProfileByPhone(senderPhone)
-                                        if (partnerProf != null && newKey.isNotBlank()) {
-                                            database.profileDao().insertProfile(partnerProf.copy(publicIdentityKey = newKey))
-                                        }
-                                    }
-                                }
-                            }
-                        )
-                    } else {
-                        com.example.util.MessageHandler.verifyAndDecryptPayload(
+                    // Await a single immediate key refresh + decrypt retry on this IO coroutine.
+                    // Successful plaintext is then upserted via insertReceivedChatMessage, which
+                    // emits through ChatMessageDao Flow and updates the active bubble without polling.
+                    val fallbackPeerPhone = senderPhone
+                        .takeIf { value -> value.filter { ch -> ch.isDigit() }.length >= 7 }
+                        .orEmpty()
+                    val decryptedText = com.example.util.MessageHandler
+                        .verifyAndDecryptPayloadWithImmediateKeyRefresh(
                             senderUid = senderPhone,
                             rawPayload = rawText,
                             context = getApplication(),
-                            senderPhone = senderPhone,
-                            receiverPhone = receiverPhone,
-                            onMismatchedKey = {
-                                viewModelScope.launch(Dispatchers.IO) {
-                                    com.example.util.SupabaseBackendManager.fetchPublicKeyForPhone(senderPhone)?.let { newKey ->
-                                        val partnerProf = database.profileDao().getProfileByPhone(senderPhone)
-                                        if (partnerProf != null && newKey.isNotBlank()) {
-                                            database.profileDao().insertProfile(partnerProf.copy(publicIdentityKey = newKey))
-                                        }
-                                    }
+                            senderPhone = senderIdentity,
+                            receiverPhone = receiverIdentity,
+                            matchId = recordMatchId,
+                            inboundEventPayload = record,
+                            peerProfileId = senderIdentity,
+                            fallbackPhoneNumber = fallbackPeerPhone,
+                            onPeerPublicKeyRefreshed = { refreshedProfileId, newKey ->
+                                val partnerProf = database.profileDao().getProfileByIdSync(refreshedProfileId)
+                                    ?: com.example.util.SupabaseClientManager.fetchProfileById(refreshedProfileId)
+                                    ?: database.profileDao().getProfileByPhone(fallbackPeerPhone)
+                                if (newKey.isNotBlank()) {
+                                    // Keep the latest server key even when the peer profile has not
+                                    // populated Room yet; this cache row can be hydrated on next profile sync.
+                                    val cacheEntry = partnerProf ?: com.example.data.model.ProfileEntity(
+                                        id = refreshedProfileId,
+                                        name = "VibeSync member",
+                                        age = 0
+                                    )
+                                    database.profileDao().insertProfile(
+                                        cacheEntry.copy(publicIdentityKey = newKey)
+                                    )
                                 }
                             }
                         )
+
+                    if (decryptedText.isBlank()) {
+                        // Commit an explicit tombstone rather than dropping the inbound server row.
+                        // Do not ACK it: the durable delta worker will retry decryption on its next sweep.
+                        val prior = database.chatMessageDao().getMessageById(msgId)
+                        val renderablePriorText = prior?.text?.takeIf {
+                            com.example.util.MessageLocalRetentionPolicy.isRenderableText(it)
+                        }
+                        val fallbackSenderId = senderProfileId.ifBlank {
+                            aadParticipants?.first ?: normSender.ifBlank { senderPhone }
+                        }
+                        val fallbackMatchId = targetMatchId.ifBlank {
+                            prior?.matchId ?: "match_$fallbackSenderId"
+                        }
+                        val localMatch = database.matchDao().getMatchByIdSync(fallbackMatchId)
+                        val fallbackText = renderablePriorText
+                            ?: com.example.util.MessageLocalRetentionPolicy.DECRYPTION_TOMBSTONE_TEXT
+                        val unresolved = (prior ?: ChatMessageEntity(
+                            messageId = msgId,
+                            matchId = fallbackMatchId,
+                            senderId = fallbackSenderId,
+                            text = fallbackText,
+                            timestamp = timestamp,
+                            mediaType = mediaType.ifBlank { "TEXT" },
+                            mediaUrl = mediaUrl,
+                            voiceDurationSeconds = voiceSeconds,
+                            replyToMessageId = replyToId,
+                            replyToText = replyToText,
+                            replyToSender = replyToSender,
+                            isForwarded = isForwarded,
+                            forwardCount = forwardCount,
+                            isEncrypted = true
+                        )).copy(
+                            matchId = fallbackMatchId,
+                            senderId = fallbackSenderId,
+                            text = fallbackText,
+                            timestamp = prior?.timestamp?.takeIf { it > 0L } ?: timestamp,
+                            isDelivered = prior?.isDelivered ?: false,
+                            isRead = prior?.isRead ?: false,
+                            mediaType = mediaType.ifBlank { prior?.mediaType ?: "TEXT" },
+                            mediaUrl = mediaUrl.ifBlank { prior?.mediaUrl.orEmpty() },
+                            voiceDurationSeconds = maxOf(prior?.voiceDurationSeconds ?: 0, voiceSeconds),
+                            replyToMessageId = replyToId ?: prior?.replyToMessageId,
+                            replyToText = replyToText ?: prior?.replyToText,
+                            replyToSender = replyToSender ?: prior?.replyToSender,
+                            isForwarded = isForwarded || (prior?.isForwarded == true),
+                            forwardCount = maxOf(forwardCount, prior?.forwardCount ?: 0),
+                            isEncrypted = true,
+                            deliveryState = if (renderablePriorText != null) {
+                                prior?.deliveryState ?: "DELIVERED"
+                            } else {
+                                "PENDING_DECRYPTION"
+                            },
+                            deliveryAckPending = if (renderablePriorText != null) {
+                                prior?.deliveryAckPending ?: false
+                            } else {
+                                false
+                            },
+                            senderDisplayName = prior?.senderDisplayName?.ifBlank {
+                                localMatch?.localContactName.orEmpty()
+                            } ?: localMatch?.localContactName.orEmpty(),
+                            senderPhotoUri = prior?.senderPhotoUri?.ifBlank {
+                                localMatch?.localPhotoUri.orEmpty()
+                            } ?: localMatch?.localPhotoUri.orEmpty()
+                        )
+                        repository.insertReceivedChatMessage(unresolved, normSender, normReceiver)
+                        android.util.Log.w(
+                            "VibeSyncChat",
+                            "Persisted encrypted-room decryption tombstone for message_id=$msgId; delivery ACK withheld for retry."
+                        )
+                        return@launch
                     }
 
-                    val shouldMarkRead = isBelongingToActiveConversation
+                    val decodedPayload = com.example.util.ChatMessageEventCodec.decode(decryptedText, mediaType)
+                    if (decodedPayload.eventType != null) {
+                        val applied = com.example.util.ChatMessageEventCodec.applyControlEvent(
+                            database = database,
+                            decoded = decodedPayload,
+                            actorId = senderIdentity,
+                            localMatchId = targetMatchId,
+                            eventMessageId = msgId
+                        )
+                        if (!applied) {
+                            android.util.Log.w("VibeSyncChat", "Control event deferred because its target message is not present in this conversation.")
+                            return@launch
+                        }
+                        if (decodedPayload.eventType == com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DISAPPEARING_TIMER) {
+                            val currentActive = _activeChat.value
+                            if (currentActive?.first?.matchId == targetMatchId) {
+                                val refreshedMatch = database.matchDao().getMatchByIdSync(targetMatchId)
+                                if (refreshedMatch != null) {
+                                    _activeChat.value = Pair(refreshedMatch, currentActive.second)
+                                }
+                            }
+                        }
+                        val controlAcked = com.example.util.SupabaseBackendManager.markMessageDelivered(
+                            msgId, senderIdentity, receiverIdentity
+                        )
+                        if (!controlAcked) {
+                            android.util.Log.w("VibeSyncChat", "Control event ACK will be retried by inbox delta sync.")
+                        }
+                        return@launch
+                    }
 
+                    if (com.example.util.ProfileKeyManager.isExchangePayload(decryptedText)) {
+                        val localProfileId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty()
+                        val exchange = com.example.util.ProfileKeyManager.consumeExchangePayload(
+                            context = getApplication(),
+                            senderProfileId = senderProfileId.ifBlank { senderIdentity },
+                            currentProfileId = localProfileId,
+                            payload = decryptedText
+                        )
+                        if (exchange == null) {
+                            android.util.Log.w("ProfileKeyExchange", "Rejected inbound exchange because its authenticated identities did not match.")
+                            return@launch
+                        }
+                        val peerProfile = database.profileDao().getProfileByIdSync(exchange.ownerProfileId)
+                            ?: com.example.util.SupabaseClientManager.fetchProfileById(exchange.ownerProfileId)
+                        if (peerProfile != null && exchange.dateOfBirth.isNotBlank()) {
+                            database.profileDao().insertProfile(peerProfile.copy(dateOfBirth = exchange.dateOfBirth))
+                        }
+                        // A key exchange is a two-way handshake: after the sender's authenticated
+                        // avatar key is committed, enqueue ours if we have not already shared it.
+                        // The queue helper independently enforces accepted/mutual authorization and
+                        // deduplicates identical payloads, so this does not create an exchange loop.
+                        if (peerProfile != null) {
+                            runCatching {
+                                val exchangeMatch = database.matchDao().getMatchByIdSync(targetMatchId)
+                                if (exchangeMatch != null) {
+                                    queueProfileKeyExchangeIfAuthorized(exchangeMatch, peerProfile)
+                                }
+                            }.onFailure {
+                                android.util.Log.w(
+                                    "ProfileKeyExchange",
+                                    "Could not queue the reciprocal profile-key envelope: ${it.javaClass.simpleName}"
+                                )
+                            }
+                        }
+                        // Force the open profile dialog to re-check contact reciprocity after the
+                        // peer's authenticated key exchange has been committed to local storage.
+                        val currentlySelected = _selectedProfileDetail.value
+                        if (currentlySelected?.id?.equals(exchange.ownerProfileId, ignoreCase = true) == true) {
+                            _selectedProfileDetail.value = currentlySelected.copy(
+                                dateOfBirth = exchange.dateOfBirth.ifBlank { currentlySelected.dateOfBirth }
+                            )
+                        }
+                        val ack = com.example.util.SupabaseBackendManager.markMessageDelivered(
+                            msgId, senderIdentity, receiverIdentity
+                        )
+                        if (!ack) {
+                            android.util.Log.w("ProfileKeyExchange", "Key was saved locally, but delivery ACK for $msgId will need a later sync.")
+                        }
+                        return@launch
+                    }
+                    val receiveCommitAt = System.currentTimeMillis()
                     val entity = ChatMessageEntity(
                         messageId = msgId,
                         matchId = targetMatchId,
-                        senderId = normSender.ifBlank { senderPhone },
-                        text = decryptedText,
+                        senderId = senderProfileId.ifBlank { aadParticipants?.first ?: normSender.ifBlank { senderPhone } },
+                        text = decodedPayload.text,
                         timestamp = timestamp,
                         isDelivered = true,
-                        isRead = if (shouldMarkRead) true else isRead,
+                        deliveredAt = receiveCommitAt,
+                        isRead = isRead,
+                        readAt = if (isRead) receiveCommitAt else 0L,
                         mediaType = mediaType,
-                        mediaUrl = mediaUrl,
+                        mediaUrl = decodedPayload.mediaUrl ?: mediaUrl,
                         voiceDurationSeconds = voiceSeconds,
-                        replyToMessageId = replyToId,
-                        replyToText = replyToText,
-                        replyToSender = replyToSender,
+                        replyToMessageId = decodedPayload.replyToMessageId ?: replyToId,
+                        replyToText = decodedPayload.replyToText ?: replyToText,
+                        replyToSender = decodedPayload.replyToSender ?: replyToSender,
                         isForwarded = isForwarded,
-                        isEncrypted = true
+                        forwardCount = forwardCount,
+                        isEncrypted = true,
+                        deliveryState = if (isRead) "READ" else "DELIVERED",
+                        senderDisplayName = database.matchDao().getMatchByIdSync(targetMatchId)?.localContactName.orEmpty(),
+                        senderPhotoUri = database.matchDao().getMatchByIdSync(targetMatchId)?.localPhotoUri.orEmpty()
                     )
 
-                    // Immediately insert successfully decrypted plaintext entities into Room on Dispatchers.IO
-                    // so ChatDetailScreen collects them reactively via Flow<List<ChatMessageEntity>> and renders incoming bubbles instantly!
+                    // Play once for a newly decrypted incoming message. Existing plaintext rows suppress
+                    // duplicate Realtime replay sounds; an encrypted placeholder still qualifies as new.
+                    val priorLocalMessage = database.chatMessageDao().getMessageById(msgId)
+                    val isNewlyDecryptedMessage = priorLocalMessage == null ||
+                        priorLocalMessage.text.isBlank() ||
+                        priorLocalMessage.text.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)
+                    if (isNewlyDecryptedMessage && com.example.util.AppNotificationManager.isAppInForeground) {
+                        com.example.util.AlertSoundAndVibrationManager.playInAppIncomingMessageSound(getApplication())
+                    }
+
+                    // Persist plaintext immediately so the Room chat Flow emits without a polling sweep.
                     repository.insertReceivedChatMessage(entity, normSender, normReceiver)
 
                     // Immediately execute delivery ACK back to Supabase: UPDATE public.chat_messages SET is_delivered = true WHERE id = :messageId
-                    com.example.util.SupabaseBackendManager.markMessageDelivered(msgId, senderPhone, receiverPhone)
-
-                    // If user is currently in active chat with the sender, immediately mark as read on backend and locally
-                    if (shouldMarkRead) {
-                        com.example.util.SupabaseBackendManager.markMessagesAsRead(currentUserPhone, senderPhone, activeMatchId)
-                        repository.markMatchAsRead(targetMatchId, currentUserPhone, senderPhone)
+                    val ackCommitted = com.example.util.SupabaseBackendManager.markMessageDelivered(
+                        msgId,
+                        senderIdentity,
+                        receiverIdentity
+                    )
+                    if (!ackCommitted) {
+                        android.util.Log.w(
+                            "VibeSyncChat",
+                            "Realtime delivery ACK failed for message_id=$msgId; open-chat/catch-up sync will retry."
+                        )
                     }
+
                 }
             } catch (e: Exception) {
                 android.util.Log.e("DatingViewModel", "Error handling realtime chat message insert: ${e.message}", e)
@@ -1085,10 +1746,16 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             try {
                 val msgId = com.example.util.MessageHandler.extractMessageId(record)
                 val isDeleted = com.example.util.MessageHandler.isMessageDeletion(record)
+                if (msgId.isNotBlank() && database.expiredChatMessageDao().isExpiredMessage(msgId)) {
+                    return@launch
+                }
 
                 // If record signals a deletion, immediately remove from local Room DB
                 if (isDeleted && msgId.isNotBlank()) {
-                    database.chatMessageDao().deleteMessageById(msgId)
+                    database.withTransaction {
+                        database.chatMessageDao().deleteMessageById(msgId)
+                        database.messageDao().deleteRemoteMessage(msgId)
+                    }
                     val activeMatchId = _activeChat.value?.first?.matchId
                     if (activeMatchId != null) {
                         val remaining = database.chatMessageDao().getMessagesForMatchSync(activeMatchId)
@@ -1103,26 +1770,36 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     return@launch
                 }
 
-                val isRead = record.optBoolean("is_read", false)
-                val isDelivered = record.optBoolean("is_delivered", false)
-                val matchId = record.optString("match_id", "")
+                val deliveryState = record.optString("status", record.optString("delivery_state", "")).trim().uppercase()
+                val isRead = record.optBoolean("is_read", false) || deliveryState == "READ"
+                val isDelivered = record.optBoolean("is_delivered", false) ||
+                    deliveryState == "DELIVERED" || deliveryState == "READ"
+                val isSentToServer = deliveryState == "SENT_TO_SERVER"
+                val isFailed = deliveryState == "FAILED"
+                val receiptAt = com.example.util.ChatDeliveryPresentation.parseTimestampMillis(
+                    record.optString("timestamp")
+                ) ?: System.currentTimeMillis()
 
                 if (msgId.isNotBlank()) {
-                    if (isRead) {
-                        database.chatMessageDao().markMessageAsRead(msgId)
-                    } else if (isDelivered) {
-                        database.chatMessageDao().markMessageAsDelivered(msgId)
+                    when {
+                        isRead -> {
+                            val localMessage = database.chatMessageDao().getMessageById(msgId)
+                            val localMatch = localMessage?.let {
+                                database.matchDao().getMatchByIdSync(it.matchId)
+                            }
+                            database.chatMessageDao().markMessageAsReadWithExpiry(
+                                messageId = msgId,
+                                readAt = receiptAt,
+                                timerSeconds = localMatch?.disappearingTimerSeconds ?: 0
+                            )
+                        }
+                        isDelivered -> database.chatMessageDao().markMessageAsDelivered(msgId, receiptAt)
+                        isFailed -> database.chatMessageDao().markMessageDeliveryFailed(msgId, receiptAt)
+                        isSentToServer -> database.chatMessageDao().markOutboxSentToServerIfPending(msgId, receiptAt)
                     }
                 }
-                if (matchId.isNotBlank() && isRead) {
-                    database.chatMessageDao().markAllMessagesAsReadForMatch(matchId)
-                }
-                if (isRead) {
-                    val activeMatchId = _activeChat.value?.first?.matchId
-                    if (activeMatchId != null) {
-                        database.chatMessageDao().markAllMessagesAsReadForMatch(activeMatchId)
-                    }
-                }
+                // A status-only Realtime UPDATE applies only to its message ID. Do not bulk-mark
+                // the conversation READ here; each message gets its own correct expiry timestamp.
             } catch (e: Exception) {
                 android.util.Log.e("DatingViewModel", "Error handling realtime chat message update: ${e.message}", e)
             }
@@ -1206,10 +1883,216 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         _showFaceVerification.value = true
     }
 
+    fun markMessageReadWhenVisible(messageId: String) {
+        val id = messageId.trim()
+        if (id.isBlank() || !readReceiptRequestsInFlight.add(id)) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val active = _activeChat.value ?: return@launch
+                val local = database.chatMessageDao().getMessageById(id) ?: return@launch
+                val currentProfileId = VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+                if (!local.matchId.equals(active.first.matchId, ignoreCase = true) ||
+                    local.senderId.equals("USER", ignoreCase = true) ||
+                    com.example.util.MessageDecryptionPolicy.isOwnOutgoingMessage(local.senderId, currentProfileId) ||
+                    local.isRead || local.deliveryState.equals("READ", ignoreCase = true)
+                ) return@launch
+                if (repository.userPreferences.firstOrNull()?.readReceiptsEnabled == false) return@launch
+                // Retry transient failures because a still-visible row may not emit visibility again.
+                var acknowledged = false
+                for (attempt in 1..com.example.util.ChatReadReceiptPolicy.MAX_SEND_ATTEMPTS) {
+                    val latestActive = _activeChat.value
+                    if (latestActive?.first?.matchId?.equals(active.first.matchId, ignoreCase = true) != true) {
+                        return@launch
+                    }
+                    val latestLocal = database.chatMessageDao().getMessageById(id) ?: return@launch
+                    if (latestLocal.isRead || latestLocal.deliveryState.equals("READ", ignoreCase = true)) return@launch
+                    if (repository.userPreferences.firstOrNull()?.readReceiptsEnabled == false) return@launch
+                    if (com.example.util.SupabaseBackendManager.markMessageRead(id)) {
+                        acknowledged = true
+                        break
+                    }
+                    if (attempt < com.example.util.ChatReadReceiptPolicy.MAX_SEND_ATTEMPTS) {
+                        delay(com.example.util.ChatReadReceiptPolicy.retryDelayMillis(attempt))
+                    }
+                }
+                if (!acknowledged) {
+                    android.util.Log.w("VibeSyncReadReceipt", "READ receipt still pending after bounded retries for visible message.")
+                    return@launch
+                }
+                database.chatMessageDao().markMessageAsReadWithExpiry(
+                    messageId = id,
+                    readAt = System.currentTimeMillis(),
+                    timerSeconds = active.first.disappearingTimerSeconds
+                )
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                android.util.Log.w("VibeSyncReadReceipt", "Visible-message READ receipt failed: " + failure.javaClass.simpleName)
+            } finally {
+                readReceiptRequestsInFlight.remove(id)
+            }
+        }
+    }
+
     fun closeChat() {
+        stopChatRealtime()
+        com.example.util.AlertSoundAndVibrationManager.stopAllSounds(getApplication())
         _activeChat.value = null
         _currentMatchId.value = null
         com.example.util.AppNotificationManager.clearActiveChatSession()
+    }
+
+    /**
+     * End-to-end diagnostic for an online peer. The encrypted DIAGNOSTIC row is not rendered or pushed;
+     * the peer's Realtime INSERT handler ACKs it, allowing this device to verify delivery in Postgres.
+     */
+    fun runChatDiagnostics(peerUserId: String) {
+        val peerProfileId = peerUserId.trim()
+        val logTag = "VibeSyncChatTest"
+        if (peerProfileId.isBlank()) {
+            android.util.Log.e(logTag, "[VibeSyncChatTest] STATUS: FAIL - Step 0 failed: peerUserId is blank.")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            var diagnosticMessageId = ""
+            var senderProfileId = ""
+            var canonicalMatchId = ""
+            var currentStep = 1
+            fun result(pass: Boolean, step: Int, detail: String) {
+                val status = if (pass) "PASS" else "FAIL"
+                val line = "[VibeSyncChatTest] STATUS: " + status + " - Step " + step +
+                    (if (pass) ":" else " failed:") + " " + detail
+                if (pass) android.util.Log.i(logTag, line) else android.util.Log.e(logTag, line)
+            }
+            try {
+                val session = com.example.util.VibeSyncSessionManager.getSession()
+                senderProfileId = session?.profileId?.trim().orEmpty()
+                if (session == null || senderProfileId.isBlank() || session.sessionToken.isBlank() ||
+                    session.accessToken.isBlank() || session.expiresAtEpochSeconds <= System.currentTimeMillis() / 1000L
+                ) {
+                    result(false, 1, "no complete, unexpired Truecaller/Supabase session (profile/token/JWT/expiry check failed).")
+                    return@launch
+                }
+                val sessionProbe = com.example.util.SupabaseClientManager.verifyChatSession(senderProfileId)
+                if (sessionProbe.isFailure) {
+                    result(false, 1, "Supabase session probe failed: " + (sessionProbe.exceptionOrNull()?.message ?: "unknown error"))
+                    return@launch
+                }
+                result(true, 1, "valid bearer JWT and x-vibesync-session resolve to the current profile.")
+
+                currentStep = 2
+                val recipientKey = com.example.util.SupabaseClientManager.fetchPublicIdentityKey(peerProfileId)
+                if (recipientKey.isNullOrBlank()) {
+                    result(false, 2, "recipient public Tink key is unavailable; no test row was written.")
+                    return@launch
+                }
+                canonicalMatchId = com.example.util.SupabaseClientManager.canonicalChatMatchId(senderProfileId, peerProfileId)
+                if (canonicalMatchId.isBlank()) {
+                    result(false, 2, "sender and peer IDs cannot form a canonical match_id.")
+                    return@launch
+                }
+
+                // Join before inserting so the subscription is active before the test row commits.
+                com.example.util.SupabaseBackendManager.connectRealtimeWebsocket(
+                    onInsert = { record -> handleRealtimeChatMessageInsert(record) },
+                    onUpdate = { record -> handleRealtimeChatMessageUpdate(record) }
+                )
+                val realtimeSubscribed = kotlinx.coroutines.withTimeoutOrNull(12_000L) {
+                    com.example.util.SupabaseBackendManager.realtimeSubscriptionStatus.first { it == "SUBSCRIBED" }
+                } != null
+
+                diagnosticMessageId = "diag_" + java.util.UUID.randomUUID().toString()
+                val diagnosticPlaintext = "VIBESYNC_DIAGNOSTIC:" + diagnosticMessageId
+                val diagnosticCiphertext = com.example.util.TinkCryptoManager.encryptForRecipient(
+                    recipientPublicKeysetJson = recipientKey,
+                    rawText = diagnosticPlaintext,
+                    senderPhone = senderProfileId,
+                    receiverPhone = peerProfileId
+                )
+                if (!diagnosticCiphertext.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
+                    result(false, 2, "Tink failed to create the encrypted diagnostic payload.")
+                    return@launch
+                }
+                val diagnosticMessage = ChatMessageEntity(
+                    messageId = diagnosticMessageId,
+                    matchId = canonicalMatchId,
+                    senderId = senderProfileId,
+                    text = diagnosticCiphertext,
+                    timestamp = System.currentTimeMillis(),
+                    isDelivered = false,
+                    isRead = false,
+                    isEncrypted = true,
+                    mediaType = "DIAGNOSTIC"
+                )
+                val inserted = com.example.util.SupabaseClientManager.upsertChatMessage(
+                    msg = diagnosticMessage,
+                    senderIdentity = senderProfileId,
+                    receiverIdentity = peerProfileId,
+                    recipientProfileId = peerProfileId,
+                    dispatchPush = false,
+                    broadcastRealtime = false
+                )
+                if (!inserted) {
+                    result(false, 2, "rpc/send_encrypted_message failed; inspect VibeSyncChat HTTP/SQL error above.")
+                    return@launch
+                }
+                result(true, 2, "encrypted ping committed through rpc/send_encrypted_message to public.chat_messages (media_type=DIAGNOSTIC).")
+
+                currentStep = 3
+                var readBack: org.json.JSONObject? = null
+                repeat(5) {
+                    if (readBack == null) {
+                        readBack = com.example.util.SupabaseClientManager.fetchChatMessageDiagnosticRow(diagnosticMessageId)
+                        if (readBack == null) kotlinx.coroutines.delay(350L)
+                    }
+                }
+                val row = readBack
+                if (row == null) {
+                    result(false, 3, "insert returned success but SELECT could not read the committed message row.")
+                    return@launch
+                }
+                val rowMatches = row.optString("sender_id") == senderProfileId &&
+                    row.optString("receiver_id") == peerProfileId &&
+                    row.optString("match_id") == canonicalMatchId &&
+                    row.optString("media_type") == "DIAGNOSTIC"
+                if (!rowMatches) {
+                    result(false, 3, "SELECT returned a row with mismatched sender/recipient/match/media_type fields.")
+                    return@launch
+                }
+                result(true, 3, "SELECT read the committed row back with matching sender_id, receiver_id, match_id and media_type.")
+
+                currentStep = 4
+                if (realtimeSubscribed) {
+                    result(true, 4, com.example.util.SupabaseBackendManager.CHAT_REALTIME_TOPIC + " reached SUBSCRIBED before insertion.")
+                } else {
+                    result(false, 4, com.example.util.SupabaseBackendManager.CHAT_REALTIME_TOPIC +
+                        " status did not reach SUBSCRIBED (current=" +
+                        com.example.util.SupabaseBackendManager.realtimeSubscriptionStatus.value + ").")
+                }
+
+                currentStep = 5
+                var delivered = row.optBoolean("is_delivered", false)
+                val deadline = System.currentTimeMillis() + 15_000L
+                while (!delivered && System.currentTimeMillis() < deadline) {
+                    kotlinx.coroutines.delay(1_000L)
+                    val refreshed = com.example.util.SupabaseClientManager.fetchChatMessageDiagnosticRow(diagnosticMessageId)
+                    if (refreshed != null) delivered = refreshed.optBoolean("is_delivered", false)
+                }
+                if (delivered) {
+                    result(true, 5, "recipient device received the Realtime INSERT and set is_delivered=true in Postgres.")
+                } else {
+                    result(false, 5, "no recipient delivery ACK in 15s; keep Phone B online/unlocked and check its VibeSyncChatTest/VibeSyncChat Logcat.")
+                }
+            } catch (t: Throwable) {
+                result(false, currentStep, t.javaClass.simpleName + ": " + (t.message ?: "unknown error"))
+            } finally {
+                if (diagnosticMessageId.isNotBlank() && senderProfileId.isNotBlank()) {
+                    val removed = com.example.util.SupabaseClientManager.deleteChatDiagnosticRow(diagnosticMessageId, senderProfileId)
+                    android.util.Log.i(logTag, "[VibeSyncChatTest] cleanup " + (if (removed) "PASS" else "NOTICE") +
+                        ": diagnostic row " + (if (removed) "removed" else "could not be removed automatically") + ".")
+                }
+            }
+        }
     }
 
     fun sendMessage(
@@ -1228,7 +2111,9 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 replyToMessageId = replyToMessageId,
                 replyToText = replyToText,
                 replyToSender = replyToSender,
-                clientMsgId = clientMsgId
+                clientMsgId = clientMsgId,
+                recipientProfileId = current.second.id,
+                recipientPhoneNumber = current.second.phoneNumber
             )
         }
     }
@@ -1251,10 +2136,71 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             val success = repository.editMessage(messageId, newText)
             if (success) {
-                _toastMessage.emit("Message edited ✨")
+                _toastMessage.emit("Message edited and synced securely ✨")
             } else {
-                _toastMessage.emit("Cannot edit: 10-minute editing window expired.")
+                _toastMessage.emit("Cannot edit: only your text messages can be edited within 15 minutes.")
             }
+        }
+    }
+
+    fun setDisappearingTimer(seconds: Int) {
+        val current = _activeChat.value ?: return
+        viewModelScope.launch {
+            val saved = repository.setDisappearingTimer(current.first.matchId, seconds)
+            if (saved && _activeChat.value?.first?.matchId == current.first.matchId) {
+                _activeChat.value = Pair(
+                    current.first.copy(disappearingTimerSeconds = seconds),
+                    current.second
+                )
+            }
+            _toastMessage.emit(
+                if (saved) "Disappearing message timer updated." else "Couldn't update the disappearing timer."
+            )
+        }
+    }
+
+    /** Throttled typing presence; disabled settings emit no typing broadcasts. */
+    fun onChatTyping(isTyping: Boolean) {
+        val active = _activeChat.value ?: return
+        if (userPreferences.value?.typingIndicatorsEnabled == false) {
+            typingStopJob?.cancel()
+            typingStopJob = null
+            // Send a single stop event only if this device had already announced typing, so
+            // peers do not retain a stale indicator after the privacy preference is changed.
+            if (typingBroadcastActive) {
+                val senderId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+                val remoteMatchId = activeRealtimeRemoteMatchId.orEmpty()
+                if (senderId.isNotBlank() && remoteMatchId.isNotBlank()) {
+                    com.example.util.SupabaseBackendManager.broadcastTypingStatus(remoteMatchId, senderId, false)
+                }
+            }
+            typingBroadcastActive = false
+            _isPartnerTyping.value = false
+            return
+        }
+        val senderId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+        val remoteMatchId = activeRealtimeRemoteMatchId.orEmpty()
+        if (senderId.isBlank() || remoteMatchId.isBlank()) return
+
+        if (isTyping && !typingBroadcastActive) {
+            com.example.util.SupabaseBackendManager.broadcastTypingStatus(remoteMatchId, senderId, true)
+            typingBroadcastActive = true
+        }
+        typingStopJob?.cancel()
+        typingStopJob = if (isTyping) {
+            viewModelScope.launch {
+                delay(2_200L)
+                if (typingBroadcastActive) {
+                    com.example.util.SupabaseBackendManager.broadcastTypingStatus(remoteMatchId, senderId, false)
+                }
+                typingBroadcastActive = false
+            }
+        } else {
+            if (typingBroadcastActive) {
+                com.example.util.SupabaseBackendManager.broadcastTypingStatus(remoteMatchId, senderId, false)
+            }
+            typingBroadcastActive = false
+            null
         }
     }
 
@@ -1273,8 +2219,17 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
     fun deleteMessageForEveryone(messageId: String) {
         viewModelScope.launch {
-            repository.deleteMessageForEveryone(messageId)
-            _toastMessage.emit("Message deleted for everyone 🚫")
+            val deleted = repository.deleteMessageForEveryone(messageId)
+            _toastMessage.emit(
+                if (deleted) "Message deleted for everyone 🚫"
+                else "Delete for everyone is only available for your messages within 15 minutes."
+            )
+        }
+    }
+
+    fun reactToMessage(messageId: String, emoji: String) {
+        viewModelScope.launch {
+            repository.reactToMessage(messageId, emoji)
         }
     }
 
@@ -1282,6 +2237,27 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             repository.forwardMessage(targetMatchId, message)
             _toastMessage.emit("Message forwarded ↪")
+        }
+    }
+
+    fun forwardMessages(
+        message: ChatMessageEntity,
+        directTargets: List<Pair<String, String>>,
+        targetGroupIds: List<String>
+    ) {
+        viewModelScope.launch {
+            val result = com.example.util.GroupMessagingManager.forwardMessageBatch(
+                context = getApplication(),
+                message = message,
+                directTargets = directTargets,
+                targetGroupIds = targetGroupIds,
+                chatMessageDao = database.chatMessageDao()
+            )
+            result.onSuccess { count ->
+                _toastMessage.emit("Message forwarded to $count chat${if (count == 1) "" else "s"} ↪")
+            }.onFailure { failure ->
+                _toastMessage.emit(failure.message ?: "Message could not be forwarded.")
+            }
         }
     }
 
@@ -1303,7 +2279,9 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 mediaType = mediaType,
                 mediaUrl = mediaUrl,
                 voiceDurationSeconds = voiceDurationSeconds,
-                clientMsgId = clientMsgId
+                clientMsgId = clientMsgId,
+                recipientProfileId = current.second.id,
+                recipientPhoneNumber = current.second.phoneNumber
             )
             val toast = when (mediaType) {
                 "IMAGE" -> "Photo sent with VibeSync E2EE Protocol E2EE 🔒📷"
@@ -1314,56 +2292,81 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // Voice & Video Calling (WebRTC P2P Direct Stream with Zero Relay Bandwidth Costs)
+    // Voice & Video Calling: verified profile IDs form the deterministic private Realtime topic.
     fun startCall(profile: ProfileEntity, isVideo: Boolean) {
         val app = getApplication<Application>()
-        val currentUserId = userPreferences.value?.userName?.ifBlank { "user_self" } ?: "user_self"
-
-        WebRTCManager.startCall(
-            context = app,
-            localUserId = currentUserId,
-            remoteUserId = profile.id,
-            remoteUserName = profile.name,
-            callType = if (isVideo) WebRTCManager.CallType.VIDEO_CALL else WebRTCManager.CallType.AUDIO_ONLY
-        )
-
+        com.example.util.AlertSoundAndVibrationManager.stopAllSounds(app)
+        val localId = com.example.util.VibeSyncSessionManager.getProfileId(app).orEmpty().trim()
+        if (localId.isBlank() || profile.id.isBlank() || localId == profile.id) {
+            viewModelScope.launch {
+                _toastMessage.emit("A verified account and valid peer profile are required to call.")
+            }
+            return
+        }
+        val callId = try {
+            WebRtcSignalingManager.callIdFor(localId, profile.id)
+        } catch (_: IllegalArgumentException) {
+            viewModelScope.launch { _toastMessage.emit("This profile cannot be used for secure call signaling.") }
+            return
+        }
         _activeCall.value = ActiveCallState(
             profile = profile,
             isVideo = isVideo,
             durationSeconds = 0,
             isMuted = false,
-            isCameraOff = false,
-            isE2eeEncrypted = true
+            isCameraOff = !isVideo,
+            isE2eeEncrypted = true,
+            callId = callId,
+            localProfileId = localId,
+            isIncoming = false,
+            remoteOfferSdp = null
         )
         viewModelScope.launch {
             _toastMessage.emit(
-                if (isVideo) "Connecting 1-on-1 P2P WebRTC Video Call with ${profile.name} (₹0 Server Cost) 📹⚡" 
-                else "Connecting 1-on-1 P2P WebRTC Audio Call with ${profile.name} (₹0 Server Cost) 📞⚡"
+                if (isVideo) "Calling " + profile.name + " with peer-to-peer video."
+                else "Calling " + profile.name + " with peer-to-peer audio."
             )
         }
     }
 
+    fun acceptIncomingCall(profile: ProfileEntity, callId: String, isVideo: Boolean, offerSdp: String) {
+        if (_activeCall.value != null) {
+            viewModelScope.launch { _toastMessage.emit("You are already in a call.") }
+            return
+        }
+        val localId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+        if (localId.isBlank() || profile.id.isBlank() || offerSdp.isBlank()) return
+        _activeCall.value = ActiveCallState(
+            profile = profile,
+            isVideo = isVideo,
+            isMuted = false,
+            isCameraOff = !isVideo,
+            isE2eeEncrypted = true,
+            callId = callId,
+            localProfileId = localId,
+            isIncoming = true,
+            remoteOfferSdp = offerSdp
+        )
+    }
+
     fun endCall() {
+        com.example.util.AlertSoundAndVibrationManager.stopAllSounds(getApplication())
         val call = _activeCall.value
-        WebRTCManager.endCall()
+        if (call != null) WebRtcCallClient.endActiveCall(call.callId)
         _activeCall.value = null
         if (call != null) {
-            viewModelScope.launch {
-                _toastMessage.emit("Call ended • WebRTC P2P Session Closed (100% Bandwidth Saved)")
-            }
+            viewModelScope.launch { _toastMessage.emit("Call ended.") }
         }
     }
 
     fun toggleMuteCall() {
         val current = _activeCall.value ?: return
-        val newMute = WebRTCManager.toggleMicrophone()
-        _activeCall.value = current.copy(isMuted = newMute)
+        _activeCall.value = current.copy(isMuted = !current.isMuted)
     }
 
     fun toggleVideoCall() {
         val current = _activeCall.value ?: return
-        val newCamState = WebRTCManager.toggleCamera()
-        _activeCall.value = current.copy(isCameraOff = newCamState)
+        _activeCall.value = current.copy(isCameraOff = !current.isCameraOff)
     }
 
     // Google Cloud & Google Drive Private Encrypted Backup Handlers
@@ -1385,7 +2388,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun syncGoogleCloudBackupNow(email: String = "", wifiOnly: Boolean = false) {
+    fun syncGoogleCloudBackupNow(email: String = "", wifiOnly: Boolean = false, encryptionPassphrase: String = "") {
         viewModelScope.launch {
             _isBackupInProgress.value = true
             val currentPrefs = userPreferences.value
@@ -1394,7 +2397,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             val (success, msg) = repository.performGoogleDriveBackup(
                 accountEmail = targetEmail,
                 frequency = freq,
-                wifiOnly = wifiOnly
+                wifiOnly = wifiOnly,
+                encryptionPassphrase = encryptionPassphrase
             )
             _isBackupInProgress.value = false
             _toastMessage.emit(msg)
@@ -1415,14 +2419,15 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun restoreFromGoogleCloudBackup(fileId: String? = null, email: String = "") {
+    fun restoreFromGoogleCloudBackup(fileId: String? = null, email: String = "", encryptionPassphrase: String = "") {
         viewModelScope.launch {
             _isRestoreInProgress.value = true
             val currentPrefs = userPreferences.value
             val targetEmail = email.ifBlank { currentPrefs?.cloudBackupAccount?.ifBlank { currentPrefs.googleEmail } ?: "" }
             val (success, msg) = repository.restoreGoogleDriveBackup(
                 accountEmail = targetEmail,
-                fileId = fileId
+                fileId = fileId,
+                encryptionPassphrase = encryptionPassphrase
             )
             _isRestoreInProgress.value = false
             _showRestorePromptDialog.value = false
@@ -1485,7 +2490,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         interests: String = "",
         maritalStatus: String = "Single (Never Married)",
         isOpenForDating: Boolean = true,
-        photos: List<String> = emptyList()
+        photos: List<String> = emptyList(),
+        pendingAvatar: com.example.util.ProfileAvatarStorageManager.PreparedAvatar? = null
     ) {
         val cleanName = name.trim()
         if (cleanName.length < 2) {
@@ -1522,6 +2528,36 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 maritalStatus = maritalStatus,
                 isOpenForDating = isOpenForDating
             )
+
+            // Room persists isProfileCompleted; mirror it into the encrypted session so startup
+            // can recover if the local preference flow is delayed or recreated.
+            runCatching {
+                val app = getApplication<Application>()
+                VibeSyncSessionManager.getSession(app)?.let { session ->
+                    VibeSyncSessionManager.markOnboardingCompleted(app, session.profileId, completed = true)
+                }
+            }.onFailure { failure ->
+                android.util.Log.w(
+                    "AuthSessionManager",
+                    "Could not persist encrypted onboarding marker: " + failure.javaClass.simpleName
+                )
+            }
+
+            // Durable best-effort sync: profile creation succeeds independently of avatar upload.
+            pendingAvatar?.let { staged ->
+                runCatching {
+                    com.example.util.ProfileAvatarStorageManager.enqueuePreparedAvatarUpload(
+                        context = getApplication<Application>().applicationContext,
+                        prepared = staged
+                    )
+                }.onFailure { failure ->
+                    android.util.Log.w(
+                        "DatingViewModel",
+                        "Could not enqueue encrypted avatar upload: " + failure.javaClass.simpleName
+                    )
+                }
+            }
+
             // Ask user to set 4-digit MPIN after registration by user interest
             val current = repository.userPreferences.first()
             if (current != null) {
@@ -1543,14 +2579,29 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     "name" to name.trim(),
                     "userName" to name.trim(),
                     "age" to age,
-                    "dob" to dob,
+                    // Explicitly remove any legacy public DOB instead of merging it forward.
+                    "dob" to com.google.firebase.firestore.FieldValue.delete(),
                     "gender" to gender,
                     "address" to address.trim(),
                     "city" to city.trim(),
                     "latitude" to latitude,
                     "longitude" to longitude,
-                    "avatarUrl" to avatarUrl,
-                    "avatarEmoji" to (if (avatarUrl.startsWith("http") || avatarUrl.startsWith("content")) "" else avatarUrl),
+                    "avatarUrl" to (
+                        pendingAvatar?.let { staged ->
+                            com.example.util.ProfileAvatarStorageManager.encryptedAvatarReference(
+                                staged.profileId,
+                                staged.slot
+                            )
+                        } ?: com.example.util.ProfileAvatarStorageManager.serverAvatarReference(verifiedUserId, avatarUrl)
+                    ),
+                    "avatarEmoji" to (
+                        if (pendingAvatar != null ||
+                            avatarUrl.startsWith("http") ||
+                            avatarUrl.startsWith("content") ||
+                            avatarUrl.startsWith("file:") ||
+                            avatarUrl.startsWith("vibesync-avatar-enc://")
+                        ) "" else avatarUrl
+                    ),
                     "interestedIn" to interestedIn,
                     "relationshipGoal" to goal,
                     "country" to country,
@@ -1562,7 +2613,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     "interests" to interests.split(",").map { it.trim() }.filter { it.isNotEmpty() },
                     "maritalStatus" to maritalStatus,
                     "isOpenForDating" to isOpenForDating,
-                    "isRealFaceVerified" to true,
+                    "isRealFaceVerified" to current.isFaceVerified,
                     "biometricHash" to current.biometricHash,
                     "phoneNumber" to current.verifiedMobileNumber,
                     "cleanPhone" to cleanDigits,
@@ -1609,7 +2660,36 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun openProfileDetail(profile: ProfileEntity) {
-        _selectedProfileDetail.value = profile
+        // Open immediately from the selected registration/profile record, then enrich with Room.
+        val context = getApplication<Application>()
+        _selectedProfileDetail.value =
+            com.example.util.ContactResolver.matchChatSessionParticipant(context, profile)
+
+        viewModelScope.launch {
+            val local = runCatching {
+                database.profileDao().getProfileByIdSync(profile.id)
+            }.getOrNull()
+            val canonical = if (local == null) profile else local.copy(
+                name = local.name.takeIf { value ->
+                    value.isNotBlank() && !value.equals("VibeSync User", true) &&
+                        !value.equals("VibeSync Contact", true) && !value.equals("VibeSync Match", true)
+                } ?: profile.name,
+                age = local.age.takeIf { it > 0 } ?: profile.age,
+                occupation = local.occupation.takeIf { it.isNotBlank() && !it.equals("Member", true) } ?: profile.occupation,
+                city = local.city.takeIf { it.isNotBlank() && !it.equals("Online", true) } ?: profile.city,
+                bio = local.bio.takeIf { it.isNotBlank() && !it.equals("VibeSync Connection", true) } ?: profile.bio,
+                gender = local.gender.takeIf { it.isNotBlank() && !it.equals("Not specified", true) } ?: profile.gender,
+                phoneNumber = local.phoneNumber.ifBlank { profile.phoneNumber },
+                dateOfBirth = local.dateOfBirth.ifBlank { profile.dateOfBirth },
+                avatarUrl = local.avatarUrl.ifBlank { profile.avatarUrl },
+                avatarCacheVersion = maxOf(local.avatarCacheVersion, profile.avatarCacheVersion),
+                publicIdentityKey = local.publicIdentityKey.ifBlank { profile.publicIdentityKey }
+            )
+            if (_selectedProfileDetail.value?.id == profile.id) {
+                _selectedProfileDetail.value =
+                    com.example.util.ContactResolver.matchChatSessionParticipant(context, canonical)
+            }
+        }
     }
 
     fun closeProfileDetail() {
@@ -1629,103 +2709,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             val result = com.example.util.SupabaseClientManager.checkSupabaseConnectivity()
             _supabaseDiagnostic.value = result
         }
-    }
-
-    // Admin & Developer Backend Actions
-    fun openAdminPortal() {
-        _showAdminPortal.value = true
-        runSupabaseDiagnosticTest() // Instant connectivity test on portal entry
-        viewModelScope.launch {
-            repository.pullProfilesFromFirestore()
-            val currentPrefs = repository.userPreferences.first()
-            if (currentPrefs != null) {
-                SystemHealthDiagnosticsManager.registerActiveDeviceInCloud(
-                    context = getApplication(),
-                    phone = currentPrefs.verifiedMobileNumber,
-                    email = currentPrefs.googleEmail,
-                    name = currentPrefs.userName,
-                    isFaceVerified = currentPrefs.isFaceVerified
-                )
-            }
-            val profiles = repository.getAllProfilesSync()
-            SystemHealthDiagnosticsManager.runLiveFullDiagnostics(getApplication(), profiles)
-        }
-    }
-
-    fun closeAdminPortal() {
-        _showAdminPortal.value = false
-    }
-
-    fun loginAdmin(user: String, pass: String) {
-        _adminLoginInProgress.value = true
-        _adminLoginError.value = null
-        _isAdminLoggedIn.value = false
-        viewModelScope.launch {
-            try {
-                val prefs = repository.userPreferences.first() ?: UserPreferencesEntity()
-                val expectedUser = prefs.adminUsername.trim().ifBlank { "creator" }
-                val expectedPass = prefs.adminPassword.trim().ifBlank { "9999" }
-                if (!user.trim().equals(expectedUser, ignoreCase = true) || pass.trim() != expectedPass) {
-                    _adminLoginError.value = "Invalid administrator username or passcode."
-                } else if (com.example.util.SupabaseClientManager.isPlatformStaff()) {
-                    _isAdminLoggedIn.value = true
-                    _showAdminPortal.value = true
-                    _toastMessage.emit("Platform staff authorization verified.")
-                } else {
-                    _adminLoginError.value = "Passcode accepted, but this VibeSync session is not authorized as platform staff."
-                }
-            } catch (e: Exception) {
-                android.util.Log.w("AdminAuth", "Admin login verification failed: ${e.message}")
-                _adminLoginError.value = "Administrator verification is temporarily unavailable. Please retry."
-            } finally {
-                _adminLoginInProgress.value = false
-            }
-        }
-    }
-
-    fun updateAdminCredentials(newUsername: String, newPassword: String) {
-        viewModelScope.launch {
-            repository.updateAdminCredentials(newUsername, newPassword)
-            _toastMessage.emit("Admin credentials updated successfully 🔑")
-        }
-    }
-
-    fun createAdminRole(role: AdminRole) {
-        _adminRoles.value = _adminRoles.value + role
-        viewModelScope.launch {
-            _toastMessage.emit("New role '${role.roleName}' created! 🛡️")
-        }
-    }
-
-    fun assignAdminEmployee(employee: AdminEmployee) {
-        _adminEmployees.value = _adminEmployees.value + employee
-        viewModelScope.launch {
-            _toastMessage.emit("Staff member '${employee.name}' assigned as ${employee.roleName} 👥")
-        }
-    }
-
-    fun toggleEmployeeStatus(employeeId: String) {
-        _adminEmployees.value = _adminEmployees.value.map { emp ->
-            if (emp.id == employeeId) {
-                val newStatus = if (emp.status == "ACTIVE") "SUSPENDED" else "ACTIVE"
-                emp.copy(status = newStatus)
-            } else emp
-        }
-        viewModelScope.launch {
-            _toastMessage.emit("Staff status updated.")
-        }
-    }
-
-    fun deleteAdminEmployee(employeeId: String) {
-        _adminEmployees.value = _adminEmployees.value.filter { it.id != employeeId }
-        viewModelScope.launch {
-            _toastMessage.emit("Staff member assignment removed 🗑️")
-        }
-    }
-
-    fun logoutAdmin() {
-        _isAdminLoggedIn.value = false
-        _showAdminPortal.value = false
     }
 
     fun banProfile(profileId: String, note: String = "Violated Community Guidelines / Spam") {
@@ -1794,10 +2777,101 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private suspend fun findLocalCompletedProfile(
+        profileId: String,
+        verifiedPhone: String
+    ): ProfileEntity? {
+        val phoneDigits = verifiedPhone.filter(Char::isDigit)
+        return runCatching {
+            database.profileDao().getAllProfilesSync()
+                .filter { candidate ->
+                    candidate.id.equals(profileId, ignoreCase = true) ||
+                        (phoneDigits.length >= 10 && candidate.id.filter(Char::isDigit) == phoneDigits) ||
+                        OnboardingStatePolicy.sameVerifiedPhone(candidate.phoneNumber, verifiedPhone)
+                }
+                .filter { OnboardingStatePolicy.isMeaningfulProfileName(it.name) }
+                .maxByOrNull { candidate ->
+                    (if (candidate.id.equals(profileId, ignoreCase = true)) 4 else 0) +
+                        (if (candidate.bio.isNotBlank()) 2 else 0) +
+                        (if (candidate.occupation.isNotBlank()) 1 else 0) +
+                        (if (candidate.avatarUrl.isNotBlank()) 1 else 0)
+                }
+        }.getOrNull()
+    }
+
+    /**
+     * Recover an existing registration by authenticated profile ID or legacy phone-derived ID.
+     * The contact-match RPC intentionally excludes the caller, so it is not a self-profile lookup.
+     */
+    private suspend fun findExistingCompletedProfile(
+        profileId: String,
+        verifiedPhone: String
+    ): ProfileEntity? {
+        findLocalCompletedProfile(profileId, verifiedPhone)?.let { return it }
+
+        val phoneDigits = verifiedPhone.filter(Char::isDigit)
+        val idsToTry = listOf(profileId.trim(), phoneDigits)
+            .filter { it.isNotBlank() && it != "null" }
+            .distinct()
+        for (candidateId in idsToTry) {
+            val fetched = runCatching {
+                kotlinx.coroutines.withTimeoutOrNull(2_500L) {
+                    SupabaseClientManager.fetchProfileById(candidateId)
+                }
+            }.getOrNull()
+            if (fetched != null && OnboardingStatePolicy.isMeaningfulProfileName(fetched.name)) {
+                return fetched.copy(phoneNumber = verifiedPhone)
+            }
+        }
+        return null
+    }
+
+    /** Hydrate profile details in the background after a trusted completion marker routes Home. */
+    private suspend fun hydrateRecoveredProfile(
+        profile: ProfileEntity,
+        verifiedPhone: String,
+        expectedProfileId: String
+    ) {
+        val context = getApplication<Application>()
+        val activeSession = VibeSyncSessionManager.getSession(context) ?: return
+        if (!activeSession.profileId.equals(expectedProfileId, ignoreCase = true)) return
+        if (!OnboardingStatePolicy.isMeaningfulProfileName(profile.name)) return
+        runCatching {
+            database.profileDao().insertProfile(profile.copy(phoneNumber = verifiedPhone))
+            val current = repository.userPreferences.first() ?: UserPreferencesEntity()
+            val updated = current.copy(
+                userName = profile.name,
+                userAge = profile.age.takeIf { it > 0 } ?: current.userAge,
+                userOccupation = profile.occupation.ifBlank { current.userOccupation },
+                userCity = profile.city.ifBlank { current.userCity },
+                userBio = profile.bio.ifBlank { current.userBio },
+                userGender = profile.gender.ifBlank { current.userGender },
+                userCountry = profile.country.ifBlank { current.userCountry },
+                userCountryFlag = profile.countryFlag.ifBlank { current.userCountryFlag },
+                userPlace = profile.place.ifBlank { current.userPlace },
+                userQualification = profile.qualification.ifBlank { current.userQualification },
+                avatarUrl = profile.avatarUrl.ifBlank { current.avatarUrl },
+                profilePhotos = profile.getPhotoList().joinToString("|||").ifBlank { current.profilePhotos },
+                isProfileCompleted = true,
+                isLoggedIn = true,
+                verifiedMobileNumber = verifiedPhone,
+                isMobileVerified = true
+            )
+            repository.updatePreferences(updated)
+            VibeSyncSessionManager.markOnboardingCompleted(context, expectedProfileId, completed = true)
+        }.onFailure { failure ->
+            android.util.Log.w(
+                "AuthSessionManager",
+                "Background profile hydration notice: " + failure.javaClass.simpleName
+            )
+        }
+    }
+
     private suspend fun finalizeTruecallerAuthenticatedSession(
         phone: String,
         profileId: String,
         sessionToken: String,
+        accessToken: String,
         expiresAtEpochSeconds: Long,
         firstName: String = "",
         lastName: String = "",
@@ -1814,27 +2888,51 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             phoneNumber = cleanPhone,
             sessionToken = sessionToken,
             profileId = profileId,
-            expiresAtEpochSeconds = expiresAtEpochSeconds
+            expiresAtEpochSeconds = expiresAtEpochSeconds,
+            accessToken = accessToken
         )
 
-        // Always check the verified phone as well as the gateway-issued profile ID. Older
-        // accounts can be keyed differently from the ID returned by the authentication gateway.
+        // Await first-device-key publication before completing login. Failure does not discard the
+        // authenticated session; the startup/outbox retry path will repeat the dual-store RPC.
+        val deviceKeyPublished = runCatching {
+            kotlinx.coroutines.withTimeoutOrNull(12_000L) {
+                com.example.util.TinkKeyRepository.publishDevicePublicKey(
+                    context = getApplication(),
+                    expectedProfileId = profileId
+                )
+            } ?: false
+        }.getOrElse { failure ->
+            android.util.Log.w("AuthSessionManager", "Initial Tink key publication deferred: ${failure.javaClass.simpleName}")
+            false
+        }
+        if (!deviceKeyPublished) {
+            android.util.Log.w("AuthSessionManager", "Login continues, but outbox sends will wait until the device key is published.")
+        }
+
+        // Existing registrations can be keyed by the gateway profile ID or by the verified
+        // phone's legacy profile ID. Check both; the contact-match RPC deliberately omits self.
+        val phoneDigits = cleanPhone.filter { it.isDigit() }
         val profileById = SupabaseClientManager.fetchProfileById(profileId)
+        val profileByPhoneId = if (
+            !OnboardingStatePolicy.isMeaningfulProfileName(profileById?.name.orEmpty()) &&
+            phoneDigits.length >= 10 &&
+            !phoneDigits.equals(profileId, ignoreCase = true)
+        ) {
+            SupabaseClientManager.fetchProfileById(phoneDigits)
+        } else null
         val profileByVerifiedPhone = if (cleanPhone.isNotBlank()) {
             try {
                 SupabaseClientManager.fetchProfilesByE164Phones(listOf(cleanPhone)).firstOrNull()
             } catch (e: Exception) {
-                android.util.Log.w("AuthSessionManager", "Verified-phone profile lookup notice: ${e.message}")
+                android.util.Log.w("AuthSessionManager", "Verified-phone profile lookup notice: " + e.message)
                 null
             }
         } else null
-        val phoneDigits = cleanPhone.filter { it.isDigit() }
         val localProfileByPhone = try {
             database.profileDao().getAllProfilesSync().firstOrNull { candidate ->
-                candidate.id == profileId || (
-                    phoneDigits.length >= 7 &&
-                        candidate.phoneNumber.filter { it.isDigit() }.takeLast(10) == phoneDigits.takeLast(10)
-                )
+                candidate.id.equals(profileId, ignoreCase = true) ||
+                    (phoneDigits.length >= 10 && candidate.id.filter(Char::isDigit) == phoneDigits) ||
+                    OnboardingStatePolicy.sameVerifiedPhone(candidate.phoneNumber, cleanPhone)
             }
         } catch (_: Exception) {
             null
@@ -1846,7 +2944,12 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 (if (profile.avatarUrl.isNotBlank()) 2 else 0) +
                 (if (profile.getPhotoList().isNotEmpty()) 1 else 0) +
                 (if (profile.id == profileId) 3 else 0)
-        val existingProfile = listOfNotNull(profileById, profileByVerifiedPhone, localProfileByPhone)
+        val existingProfile = listOfNotNull(
+            profileById,
+            profileByPhoneId,
+            profileByVerifiedPhone,
+            localProfileByPhone
+        ).filter { OnboardingStatePolicy.isMeaningfulProfileName(it.name) }
             .maxByOrNull { completeness(it) }
         if (existingProfile != null) {
             try {
@@ -1876,7 +2979,13 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             userQualification = existingProfile?.qualification?.ifBlank { current.userQualification } ?: current.userQualification,
             avatarUrl = restoredAvatar,
             profilePhotos = existingProfile?.getPhotoList()?.joinToString("|||")?.ifBlank { current.profilePhotos } ?: current.profilePhotos,
-            isProfileCompleted = existingProfile != null || current.isProfileCompleted,
+            isProfileCompleted = OnboardingStatePolicy.shouldTreatAsCompleted(
+                storedCompleted = current.isProfileCompleted,
+                storedPhone = current.verifiedMobileNumber,
+                verifiedPhone = cleanPhone,
+                secureSessionMarker = VibeSyncSessionManager.getSession(getApplication())?.hasCompletedOnboarding == true,
+                recoveredProfileName = existingProfile?.name
+            ),
             isLoggedIn = true,
             verifiedMobileNumber = cleanPhone,
             isMobileVerified = true,
@@ -1903,12 +3012,22 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         repository.updatePreferences(updated)
+        if (updated.isProfileCompleted) {
+            VibeSyncSessionManager.markOnboardingCompleted(
+                getApplication(),
+                profileId,
+                completed = true
+            )
+        }
         _activeMobile.value = cleanPhone
         _isMpinUnlocked.value = true
         _showFaceVerification.value = false
         _authState.value = AuthState.AUTHENTICATED
         try {
             repository.startAllSyncsAfterLogin()
+            // Saving the session notifies Realtime directly. This call remains as a
+            // safety net for a ViewModel created after session restoration.
+            reconnectRealtime()
         } catch (e: Exception) {
             android.util.Log.w("AuthSessionManager", "Post-login sync notice: ${e.message}")
         }
@@ -1927,25 +3046,41 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(Dispatchers.IO) {
             val result = com.example.util.TruecallerAuthGateway.verify(profile)
             result.onSuccess { identity ->
-                finalizeTruecallerAuthenticatedSession(
-                    phone = identity.phone,
-                    profileId = identity.profileId,
-                    sessionToken = identity.sessionToken,
-                    expiresAtEpochSeconds = identity.expiresAtEpochSeconds,
-                    firstName = identity.firstName,
-                    lastName = identity.lastName,
-                    avatarUrl = identity.avatarUrl
-                )
-                _toastMessage.emit(
-                    if (identity.firstName.isNotBlank()) {
-                        "Verified instantly with Truecaller. Welcome ${identity.firstName}!"
-                    } else {
-                        "Verified instantly with Truecaller."
-                    }
-                )
+                try {
+                    finalizeTruecallerAuthenticatedSession(
+                        phone = identity.phone,
+                        profileId = identity.profileId,
+                        sessionToken = identity.sessionToken,
+                        accessToken = identity.accessToken,
+                        expiresAtEpochSeconds = identity.expiresAtEpochSeconds,
+                        firstName = identity.firstName,
+                        lastName = identity.lastName,
+                        avatarUrl = identity.avatarUrl
+                    )
+                    _toastMessage.emit(
+                        if (identity.firstName.isNotBlank()) {
+                            "Verified instantly with Truecaller. Welcome ${identity.firstName}!"
+                        } else {
+                            "Verified instantly with Truecaller."
+                        }
+                    )
+                } catch (e: Exception) {
+                    android.util.Log.e(
+                        "TruecallerAuthFlow",
+                        "Truecaller verification succeeded but local session finalization failed: ${e.message}",
+                        e
+                    )
+                    _truecallerError.value =
+                        "Truecaller verified this account, but VibeSync could not save the secure local session. Check device storage and retry."
+                }
             }.onFailure { error ->
-                android.util.Log.w("TruecallerAuthFlow", "Truecaller verification gateway failed: ${error.message}")
-                _truecallerError.value = "Truecaller verification could not be completed. Please retry with Truecaller."
+                val detail = error.message?.trim().orEmpty()
+                android.util.Log.w("TruecallerAuthFlow", "Truecaller verification gateway failed: ${detail}", error)
+                // Keep HTTP status and connectivity/DNS diagnostics visible instead of replacing
+                // actionable gateway errors with the generic Truecaller banner.
+                _truecallerError.value = detail.take(500).ifBlank {
+                    "Truecaller verification could not be completed. Check your connection and retry."
+                }
             }
         }
     }
@@ -2237,6 +3372,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun logout() {
+        com.example.util.AlertSoundAndVibrationManager.stopAllSounds(getApplication())
         viewModelScope.launch {
             val prefs = userPreferences.value
             val userId = if (prefs?.verifiedMobileNumber?.isNotBlank() == true) {
@@ -2258,8 +3394,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             com.example.util.UserSessionManager.clearVerifiedSession(getApplication())
 
             // 3. Reset in-memory states and overlays
-            _showAdminPortal.value = false
-            _isAdminLoggedIn.value = false
             _activeChat.value = null
             _activeCall.value = null
             _selectedProfileDetail.value = null
@@ -2310,8 +3444,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             }
 
             // 3. Reset all in-memory states and overlays
-            _showAdminPortal.value = false
-            _isAdminLoggedIn.value = false
             _activeChat.value = null
             _activeCall.value = null
             _selectedProfileDetail.value = null
@@ -2381,16 +3513,9 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun clearAllProfilesAndBackendData() {
-        viewModelScope.launch {
-            repository.clearAllProfilesAndDataInBackend(keepOwnUser = false)
-            _toastMessage.emit("All profiles & backend data completely wiped 🧹✨")
-        }
-    }
-
     init {
         MatchingManager.createNotificationChannels(getApplication())
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val currentPrefs = repository.userPreferences.first()
             if (currentPrefs != null && currentPrefs.isLoggedIn) {
                 // Initial local setup without continuous polling
@@ -2403,10 +3528,14 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     name = currentPrefs.userName,
                     isFaceVerified = currentPrefs.isFaceVerified
                 )
-                // Auto-unlock interval: if MPIN is not set, or if verified within the 7-day interval, auto-unlock session!
+                // A valid signed VibeSync session survives process death; don't relock it
+                // because a local MPIN timestamp crossed an arbitrary seven-day interval.
+                val hasValidVibeSyncSession = runCatching {
+                    com.example.util.VibeSyncSessionManager.hasValidSession(getApplication())
+                }.getOrDefault(false)
                 val sevenDaysMillis = 7L * 24 * 60 * 60 * 1000L
                 val isWithinInterval = (System.currentTimeMillis() - currentPrefs.lastMpinVerifiedTimestamp) < sevenDaysMillis
-                if (!currentPrefs.isMpinSet || isWithinInterval) {
+                if (hasValidVibeSyncSession || !currentPrefs.isMpinSet || isWithinInterval) {
                     _isMpinUnlocked.value = true
                 }
             } else {
@@ -2502,70 +3631,58 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
     fun startChatWithContact(contact: PhoneContact) {
         viewModelScope.launch {
-            var profile = contact.vibeSyncUser ?: repository.getProfileSync(contact.vibeSyncProfileId ?: "")
+            val phoneE164 = com.example.util.PhonebookHelper.normalizeToE164(contact.phoneNumber)
+            if (phoneE164.isBlank()) {
+                _toastMessage.emit("This contact does not have a valid phone number.")
+                return@launch
+            }
+            val remoteProfile = runCatching {
+                com.example.util.SupabaseClientManager.fetchProfilesByE164Phones(listOf(phoneE164)).firstOrNull()
+            }.getOrNull()
+            val cachedProfile = contact.vibeSyncUser
+                ?: contact.vibeSyncProfileId?.takeIf { it.isNotBlank() }?.let { repository.getProfileSync(it) }
+                ?: repository.getProfileByPhone(phoneE164)
+            var profile = remoteProfile ?: cachedProfile?.takeIf {
+                it.id.isNotBlank() && !com.example.util.SupabaseClientManager.isPhoneNumberCandidate(it.id) &&
+                    !it.id.startsWith("match_", ignoreCase = true)
+            }
             if (profile == null) {
-                val hashes = com.example.util.PhonebookHasher.getAllMatchHashes(contact.phoneNumber).toList()
-                val sbProfiles = com.example.data.repository.SupabaseSyncRepository.fetchProfilesByHashes(hashes)
-                profile = sbProfiles.firstOrNull() ?: repository.getProfileByPhone(contact.phoneNumber)
+                _toastMessage.emit("Could not resolve this contact to a registered VibeSync profile. Refresh contacts and retry.")
+                return@launch
             }
-
-            if (profile == null) {
-                // Synthesize and persist a clean profile for this contact/number so users can chat immediately
-                val cleanDigits = contact.phoneNumber.filter { it.isDigit() }
-                val profId = if (cleanDigits.length >= 10) cleanDigits.takeLast(10) else if (cleanDigits.isNotBlank()) cleanDigits else contact.id
-                val newProf = ProfileEntity(
-                    id = profId,
-                    name = contact.name.ifBlank { "Contact ($profId)" },
-                    age = 25,
-                    occupation = "VibeSync Contact",
-                    city = "Direct Contact",
-                    distanceMiles = 1,
-                    bio = "Connected directly via Phone Contacts 📱",
-                    interests = "Chat, Friendship",
-                    relationshipGoal = "Friends",
-                    promptQuestion = "",
-                    promptAnswer = "",
-                    gradientColorStart = 0xFFFF5E62,
-                    gradientColorEnd = 0xFFFF9966,
-                    avatarEmoji = contact.avatarEmoji.ifBlank { "✨" },
-                    avatarUrl = contact.photoUrl,
-                    phoneNumber = contact.phoneNumber,
-                    email = contact.email,
-                    isVerified = true,
-                    likedMe = true,
-                    isSuperLikedMe = true,
-                    isOpenForDating = false
-                )
-                repository.insertProfileSync(newProf)
-                profile = newProf
+            val ownProfileId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+            if (ownProfileId.isBlank() || profile.id.equals(ownProfileId, ignoreCase = true)) {
+                _toastMessage.emit("Could not open a chat for this profile.")
+                return@launch
             }
-
-            if (profile != null) {
-                // Invalidate any remote encrypted string with local address book contact name
-                profile = com.example.util.ContactResolver.matchChatSessionParticipant(getApplication(), profile)
-                // ALWAYS insert/persist the profile to Room database so it exists locally for chat/UI
-                repository.insertProfileSync(profile)
-                
-                val matchId = repository.getSymmetricMatchId(profile.id)
-                var existingMatch = repository.getMatchByProfileId(profile.id)
-                if (existingMatch == null) {
-                    val outcome = repository.matchDirectly(profile.id)
-                    existingMatch = repository.getMatchByProfileId(profile.id) ?: MatchEntity(
-                        matchId = matchId,
-                        profileId = profile.id,
-                        matchedAt = System.currentTimeMillis(),
-                        lastMessage = "Connected from Phonebook Contacts 📱 Say hi!",
-                        lastMessageTime = System.currentTimeMillis(),
-                        hasUnread = false,
-                        isDatingMatch = false,
-                        relationshipStatus = "FRIENDS",
-                        isPhonebookContact = true
-                    )
-                }
-                _showPhonebookScreen.value = false
-                openChat(existingMatch, profile)
-                _toastMessage.emit("💬 Chat started with ${contact.name}")
+            if (com.example.util.PhonebookHelper.normalizeToE164(profile.phoneNumber).isBlank()) {
+                profile = profile.copy(phoneNumber = phoneE164)
             }
+            profile = com.example.util.ContactResolver.matchChatSessionParticipant(getApplication(), profile)
+            if (profile.id.isBlank() || com.example.util.SupabaseClientManager.isPhoneNumberCandidate(profile.id) ||
+                profile.id.startsWith("match_", ignoreCase = true)) {
+                _toastMessage.emit("Could not resolve a canonical VibeSync profile ID for this contact.")
+                return@launch
+            }
+            repository.insertProfileSync(profile)
+            val matchId = repository.getSymmetricMatchId(profile.id)
+            if (matchId.isBlank()) {
+                _toastMessage.emit("Could not establish a canonical conversation identity. Please refresh and retry.")
+                return@launch
+            }
+            var existingMatch = repository.getMatchByProfileId(profile.id)
+            if (existingMatch == null) {
+                repository.matchDirectly(profile.id)
+                existingMatch = repository.getMatchByProfileId(profile.id)
+            }
+            val resolvedMatch = existingMatch ?: MatchEntity(
+                matchId = matchId, profileId = profile.id, matchedAt = System.currentTimeMillis(),
+                lastMessage = "Connected from Phonebook Contacts 📱 Say hi!", lastMessageTime = System.currentTimeMillis(),
+                hasUnread = false, isDatingMatch = false, relationshipStatus = "FRIENDS", isPhonebookContact = true
+            )
+            _showPhonebookScreen.value = false
+            openChat(resolvedMatch, profile)
+            _toastMessage.emit("💬 Chat started with ${contact.name}")
         }
     }
 
@@ -2825,6 +3942,18 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    /** Reconcile Room to a balance verified by Supabase; never locally mint payment points. */
+    fun reconcileBusinessWalletBalance(
+        businessId: String,
+        serverBalance: Int,
+        onComplete: (Int) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val newBalance = repository.reconcileBusinessWalletBalance(businessId, serverBalance)
+            onComplete(newBalance)
+        }
+    }
+
     fun upgradeBusinessVerificationTier(
         businessId: String,
         newTier: String,
@@ -2915,6 +4044,14 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     fun recordBusinessView(businessId: String) {
         viewModelScope.launch {
             repository.recordBusinessAnalyticsEvent(businessId, "VIEW")
+            com.example.util.SupabaseClientManager.recordBusinessAnalyticsEvent(businessId, "VIEW")
+        }
+    }
+
+    /** Record a click-through to a public business profile in owner analytics. */
+    fun recordBusinessProfileClick(businessId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            com.example.util.SupabaseClientManager.recordBusinessAnalyticsEvent(businessId, "PROFILE_CLICK")
         }
     }
 
@@ -3063,78 +4200,52 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
     fun startChatWithNumber(rawNumber: String) {
         viewModelScope.launch {
-            val cleanNumber = rawNumber.trim()
-            if (cleanNumber.isBlank()) {
-                _toastMessage.emit("Please enter a valid phone number.")
+            val phoneE164 = com.example.util.PhonebookHelper.normalizeToE164(rawNumber.trim())
+            if (phoneE164.isBlank()) {
+                _toastMessage.emit("Please enter a valid phone number in international format.")
                 return@launch
             }
-
-            // 1. Normalize the typed number to standard international E.164 format (+91...)
-            val normalized = com.example.util.PhonebookHasher.normalizeToE164(cleanNumber)
-            val cleanDigits = normalized.filter { it.isDigit() }
-
-            // 2. Instantly check local database first to open chat even if background contact sync hasn't completed
-            var profile = repository.getProfileByPhone(normalized)
-                ?: repository.getProfileByPhone(cleanDigits)
-                ?: (if (cleanDigits.length >= 10) repository.getProfileByPhone(cleanDigits.takeLast(10)) else null)
-                ?: repository.getProfileByPhone(cleanNumber)
-
-            if (profile == null) {
-                // Check local cache from previously synchronized registered users map
-                val registeredUsers = repository.getAllRegisteredUsersFromFirestore()
-                profile = registeredUsers[normalized]
-                    ?: registeredUsers[cleanNumber]
-                    ?: registeredUsers[cleanDigits]
-                    ?: (if (cleanDigits.length >= 10) registeredUsers[cleanDigits.takeLast(10)] else null)
+            val remoteProfile = runCatching {
+                com.example.util.SupabaseClientManager.fetchProfilesByE164Phones(listOf(phoneE164)).firstOrNull()
+            }.getOrNull()
+            val cachedProfile = repository.getProfileByPhone(phoneE164)?.takeIf {
+                it.id.isNotBlank() && !com.example.util.SupabaseClientManager.isPhoneNumberCandidate(it.id) &&
+                    !it.id.startsWith("match_", ignoreCase = true)
             }
-
+            val profile = remoteProfile ?: cachedProfile
             if (profile == null) {
-                // 3. Fallback to server/Supabase Zero-Knowledge RPC search lookup
-                try {
-                    val hash64 = com.example.util.PhonebookHasher.hashPhoneNumberToHex(normalized)
-                    val rpcResult = com.example.util.SupabaseClientManager.matchContactsRpc(listOf(hash64))
-                    if (rpcResult.isNotEmpty()) {
-                        val matched = rpcResult.first()
-                        profile = com.example.data.model.ProfileEntity(
-                            id = matched.id,
-                            name = matched.name,
-                            age = 24,
-                            phoneNumber = normalized,
-                            avatarUrl = matched.photoUrl ?: "",
-                            avatarEmoji = matched.avatarEmoji,
-                            isVerified = true
-                        )
-                    }
-                } catch (e: Exception) {
-                    android.util.Log.d("DatingViewModel", "RPC search lookup failed: ${e.message}")
-                }
-            }
-
-            if (profile != null) {
-                // Save profile locally
-                repository.insertProfileSync(profile)
-                val matchId = repository.getSymmetricMatchId(profile.id)
-                var existingMatch = repository.getMatchByProfileId(profile.id)
-                if (existingMatch == null) {
-                    repository.matchDirectly(profile.id)
-                    existingMatch = repository.getMatchByProfileId(profile.id) ?: MatchEntity(
-                        matchId = matchId,
-                        profileId = profile.id,
-                        matchedAt = System.currentTimeMillis(),
-                        lastMessage = "Direct chat started 📱 Say hi!",
-                        lastMessageTime = System.currentTimeMillis(),
-                        hasUnread = false,
-                        isDatingMatch = false,
-                        relationshipStatus = "FRIENDS",
-                        isPhonebookContact = true // Enable E2EE / chat direct features
-                    )
-                }
-                _showPhonebookScreen.value = false
-                openChat(existingMatch, profile)
-                _toastMessage.emit("💬 Chat started with ${profile.name}")
-            } else {
                 _toastMessage.emit("⚠️ Number not registered on VibeSync yet. Invite them to join!")
+                return@launch
             }
+            val ownProfileId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+            if (profile.id.isBlank() || profile.id.startsWith("match_", ignoreCase = true) ||
+                com.example.util.SupabaseClientManager.isPhoneNumberCandidate(profile.id) || ownProfileId.isBlank() ||
+                profile.id.equals(ownProfileId, ignoreCase = true)) {
+                _toastMessage.emit("Could not resolve this number to a canonical VibeSync profile.")
+                return@launch
+            }
+            val resolvedProfile = if (com.example.util.PhonebookHelper.normalizeToE164(profile.phoneNumber).isBlank()) {
+                profile.copy(phoneNumber = phoneE164)
+            } else profile
+            repository.insertProfileSync(resolvedProfile)
+            val matchId = repository.getSymmetricMatchId(resolvedProfile.id)
+            if (matchId.isBlank()) {
+                _toastMessage.emit("Could not establish a canonical conversation identity. Please retry.")
+                return@launch
+            }
+            var existingMatch = repository.getMatchByProfileId(resolvedProfile.id)
+            if (existingMatch == null) {
+                repository.matchDirectly(resolvedProfile.id)
+                existingMatch = repository.getMatchByProfileId(resolvedProfile.id)
+            }
+            val resolvedMatch = existingMatch ?: MatchEntity(
+                matchId = matchId, profileId = resolvedProfile.id, matchedAt = System.currentTimeMillis(),
+                lastMessage = "Direct chat started 📱 Say hi!", lastMessageTime = System.currentTimeMillis(),
+                hasUnread = false, isDatingMatch = false, relationshipStatus = "FRIENDS", isPhonebookContact = true
+            )
+            _showPhonebookScreen.value = false
+            openChat(resolvedMatch, resolvedProfile)
+            _toastMessage.emit("💬 Chat started with ${resolvedProfile.name}")
         }
     }
 

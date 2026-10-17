@@ -4,6 +4,14 @@ on:
   push:
     branches:
       - main
+      - fix/release-startup-icons-ci
+    paths:
+      - 'supabase/migrations/**'
+      - 'supabase/functions/admin-fcm-broadcast/**'
+      - 'supabase/functions/admin-portal-api/**'
+      - 'supabase/functions/vibesync-purge-chat-media/**'
+      - 'supabase/functions/vibesync-ai-image-preview/**'
+      - '.github/workflows/deploy-migrations.yml'
   workflow_dispatch:
 
 permissions:
@@ -25,7 +33,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Supabase CLI
-        uses: supabase/setup-cli@v1
+        uses: supabase/setup-cli@v3
         with:
           version: latest
 
@@ -41,8 +49,79 @@ jobs:
           test -n "$SUPABASE_DB_PASSWORD"
           supabase link             --project-ref "$SUPABASE_PROJECT_ID"             --password "$SUPABASE_DB_PASSWORD"
 
+      - name: Reconcile superseded legacy migration entries
+        run: |
+          set -euo pipefail
+          for version in 20261008121000 20261008121500 20261009150000; do
+            if supabase migration list --linked | awk -F'|' -v v="$version" '$2 ~ v { found=1 } END { exit found ? 0 : 1 }'; then
+              echo "Migration $version is already recorded as applied."
+            else
+              supabase migration repair --status applied "$version"
+            fi
+          done
+
+      - name: Inspect linked migration history
+        run: supabase migration list --linked
+
       - name: Preview pending migrations
         run: supabase db push --dry-run
 
       - name: Apply pending migrations
         run: supabase db push
+
+      - name: Deploy staff-authorized FCM re-engagement function
+        run: supabase functions deploy admin-fcm-broadcast --project-ref "$SUPABASE_PROJECT_ID"
+
+      - name: Deploy staff-authorized admin RPC gateway
+        run: supabase functions deploy admin-portal-api --project-ref "$SUPABASE_PROJECT_ID"
+
+      - name: Sync optional AI image provider secrets from GitHub Actions
+        env:
+          CHAT_IMAGE_PROVIDER_URL: ${{ secrets.CHAT_IMAGE_PROVIDER_URL }}
+          CHAT_IMAGE_PROVIDER_API_KEY: ${{ secrets.CHAT_IMAGE_PROVIDER_API_KEY }}
+          CHAT_IMAGE_PROVIDER_MODEL: ${{ secrets.CHAT_IMAGE_PROVIDER_MODEL }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${CHAT_IMAGE_PROVIDER_URL:-}" && -n "${CHAT_IMAGE_PROVIDER_API_KEY:-}" ]]; then
+            if [[ -n "${CHAT_IMAGE_PROVIDER_MODEL:-}" ]]; then
+              supabase secrets set CHAT_IMAGE_PROVIDER_URL="$CHAT_IMAGE_PROVIDER_URL" CHAT_IMAGE_PROVIDER_API_KEY="$CHAT_IMAGE_PROVIDER_API_KEY" CHAT_IMAGE_PROVIDER_MODEL="$CHAT_IMAGE_PROVIDER_MODEL" --project-ref "$SUPABASE_PROJECT_ID"
+            else
+              supabase secrets set CHAT_IMAGE_PROVIDER_URL="$CHAT_IMAGE_PROVIDER_URL" CHAT_IMAGE_PROVIDER_API_KEY="$CHAT_IMAGE_PROVIDER_API_KEY" --project-ref "$SUPABASE_PROJECT_ID"
+            fi
+            echo "AI image provider secrets synced from configured GitHub Actions secrets."
+          else
+            echo "AI image provider GitHub Actions secrets are absent; existing Supabase secret values were left unchanged."
+          fi
+
+      - name: Deploy chat media purge Edge Function
+        run: supabase functions deploy vibesync-purge-chat-media --no-verify-jwt --project-ref "$SUPABASE_PROJECT_ID"
+
+      - name: Deploy AI image preview Edge Function
+        run: supabase functions deploy vibesync-ai-image-preview --no-verify-jwt --project-ref "$SUPABASE_PROJECT_ID"
+
+      - name: Enable and verify Supabase custom access token hook
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_ACCESS_TOKEN"
+          hook_uri="pg-functions://postgres/public/custom_access_token_hook"
+          payload="$(jq -cn --arg uri "$hook_uri" '{hook_custom_access_token_enabled:true, hook_custom_access_token_uri:$uri}')"
+          auth_config_url="https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_ID/config/auth"
+          patch_code="$(curl --silent --show-error --output /tmp/vibesync-auth-hook-patch.json --write-out '%{http_code}' \
+            --request PATCH "$auth_config_url" \
+            --header "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            --header "Content-Type: application/json" \
+            --data "$payload")"
+          if [[ ! "$patch_code" =~ ^2[0-9][0-9]$ ]]; then
+            echo "Could not enable the Supabase custom access-token hook (HTTP $patch_code)."
+            exit 1
+          fi
+          read_code="$(curl --silent --show-error --output /tmp/vibesync-auth-hook-readback.json --write-out '%{http_code}' \
+            --request GET "$auth_config_url" \
+            --header "Authorization: Bearer $SUPABASE_ACCESS_TOKEN")"
+          if [[ ! "$read_code" =~ ^2[0-9][0-9]$ ]] || \
+             ! jq -e --arg uri "$hook_uri" '.hook_custom_access_token_enabled == true and .hook_custom_access_token_uri == $uri' \
+               /tmp/vibesync-auth-hook-readback.json >/dev/null; then
+            echo "Supabase Auth hook configuration did not match the requested enabled URI (HTTP $read_code)."
+            exit 1
+          fi
+          echo "Custom access-token hook is enabled and verified."

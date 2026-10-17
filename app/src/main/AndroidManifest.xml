@@ -17,6 +17,7 @@
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
     <uses-permission android:name="android.permission.CALL_PHONE" android:maxSdkVersion="25" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
@@ -53,32 +54,48 @@
         <package android:name="com.amazon.mShop.android.shopping" />
     </queries>
 
+    <!-- Supplied VibeSync launcher artwork; adaptive icons on Android 8+ with density fallbacks for older versions. -->
     <application
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:name=".VibeSyncApplication"
         android:allowBackup="false"
         android:usesCleartextTraffic="false"
         android:largeHeap="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
-        android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:roundIcon="@mipmap/ic_launcher_round"
         android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
-        android:theme="@style/Theme.MyApplication">
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
             android:name=".MainActivity"
+            android:icon="@mipmap/ic_launcher"
+            android:roundIcon="@mipmap/ic_launcher_round"
             android:launchMode="singleTask"
             android:exported="true"
             android:label="@string/app_name"
             android:resizeableActivity="true"
             android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
-            android:theme="@style/Theme.MyApplication">
+            android:theme="@android:style/Theme.Material.Light.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="vibesync.app" android:pathPrefix="/g/" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="vibesync" android:host="group" />
             </intent-filter>
 
             <!-- VibeSync Custom Deep Link Scheme for Venues & QR Stickers -->
@@ -99,7 +116,7 @@
 
         <meta-data
             android:name="com.truecaller.android.sdk.ClientId"
-            android:value="qkpfffgkiebypf8hvifhkkknj2msgud5hfjqg_ti1wu" />
+            android:value="${truecallerClientId}" />
 
         <!-- Firebase Cloud Messaging Service & Channel (Auto-init disabled to prevent emulator hard failure sync exceptions) -->
         <meta-data
@@ -110,7 +127,7 @@
             android:value="true" />
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
-            android:value="channel_vibe_messages_v3" />
+            android:value="vibesync_messages_channel" />
 
         <service
             android:name=".service.AppFirebaseMessagingService"
@@ -122,7 +139,7 @@
 
         <!-- FileProvider for Law Enforcement Package Download & Export -->
         <provider
-            android:name="androidx.core.content.FileProvider"
+            android:name=".SafeFileProvider"
             android:authorities="${applicationId}.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">
@@ -131,7 +148,18 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
-        <!-- Inline Reply & Action Broadcast Receiver -->
+        <!-- Notification actions are explicit, non-exported receivers; RemoteInput is mutable only at its PendingIntent. -->
+        <receiver
+            android:name=".service.DirectReplyReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".service.MarkAsReadReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".service.MuteConversationReceiver"
+            android:exported="false" />
+
+        <!-- Compatibility for action PendingIntents created by previous app versions. -->
         <receiver
             android:name=".service.NotificationActionReceiver"
             android:exported="false">

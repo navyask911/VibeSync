@@ -58,7 +58,7 @@ object MatchingManager {
         val avatarUrl: String = "",
         val gender: String = "Female",
         val maritalStatus: String = "Single (Never Married)",
-        val isRealFaceVerified: Boolean = true,
+        val isRealFaceVerified: Boolean = false,
         val isOpenForDating: Boolean = true,
         val phoneNumber: String = "",
         val googleEmail: String = "",
@@ -332,6 +332,15 @@ object MatchingManager {
                 .document(profileData.userId)
                 .set(profileData, SetOptions.merge())
                 .await()
+            // DOB stays in the owner's encrypted local/E2EE profile only; clear legacy public copies.
+            runCatching {
+                firestore.collection(COLLECTION_PROFILES).document(profileData.userId)
+                    .update("dob", com.google.firebase.firestore.FieldValue.delete()).await()
+            }
+            runCatching {
+                firestore.collection("users").document(profileData.userId)
+                    .update("dob", com.google.firebase.firestore.FieldValue.delete()).await()
+            }
             Log.d(TAG, "Successfully saved profile ${profileData.userId} to Firestore")
             true
         } catch (e: Exception) {
@@ -395,7 +404,7 @@ object MatchingManager {
             occupation = prefs.userOccupation,
             trustScore = prefs.trustRating,
             avatarEmoji = if (prefs.avatarUrl.isNotBlank()) "" else "✨",
-            avatarUrl = prefs.avatarUrl,
+            avatarUrl = ProfileAvatarStorageManager.serverAvatarReference(userId, prefs.avatarUrl),
             gender = prefs.userGender,
             maritalStatus = prefs.userMaritalStatus,
             isRealFaceVerified = prefs.isFaceVerified,
@@ -594,7 +603,7 @@ object MatchingManager {
             }
 
             val notification = NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
-                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setSmallIcon(android.R.drawable.sym_def_app_icon)
                 .setContentTitle("🎉 It's a Mutual Match with ${matchedProfile.name}!")
                 .setContentText("$compatibilityScore% Chemistry! $interestSnippet")
                 .setStyle(

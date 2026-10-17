@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101b2e">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self'; connect-src 'self' https://imhcbgpvjwersbnlgwzq.supabase.co wss://imhcbgpvjwersbnlgwzq.supabase.co https://*.supabase.co wss://*.supabase.co; img-src 'self' data: blob:; object-src 'none'; base-uri 'self'; frame-src 'none'; form-action 'self'; upgrade-insecure-requests">
+  <meta name="robots" content="noindex, nofollow, noarchive">
+  <meta name="description" content="Restricted VibeSync staff administration portal.">
+  <link rel="icon" type="image/png" sizes="180x180" href="./assets/icon.png">
+  <link rel="icon" type="image/webp" sizes="192x192" href="./assets/icon.webp">
+  <link rel="apple-touch-icon" sizes="180x180" href="./assets/icon.png">
+  <meta name="apple-mobile-web-app-title" content="VibeSync Admin">
+  <title>VibeSync · Staff Admin</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <div class="ambient ambient-a" aria-hidden="true"></div>
+  <div class="ambient ambient-b" aria-hidden="true"></div>
+  <main id="auth-view" class="auth-wrap">
+    <section class="auth-card" aria-labelledby="login-title">
+      <div class="brand-mark" aria-hidden="true"><span>V</span><i></i></div>
+      <p class="eyebrow">VIBESYNC · RESTRICTED ACCESS</p>
+      <h1 id="login-title">Staff sign in</h1>
+      <p class="muted">Use your provisioned staff email to receive a secure sign-in link. Access is checked against the live staff roster after authentication.</p>
+      <form id="login-form">
+        <label for="staff-email">Staff email</label>
+        <input id="staff-email" name="email" type="email" autocomplete="email" placeholder="name@company.com" required maxlength="254">
+        <button id="login-submit" class="btn btn-primary btn-wide" type="submit">Send secure magic link <span aria-hidden="true">↗</span></button>
+      </form>
+      <p id="auth-message" class="notice" role="status" aria-live="polite"></p>
+      <p id="config-warning" class="config-warning" hidden>Supabase public configuration is missing. Add the GitHub Actions repository variable <code>SUPABASE_PUBLISHABLE_KEY</code> (or <code>SUPABASE_ANON_KEY</code>) and redeploy. Never use a service-role key in this portal.</p>
+      <div class="security-note"><span class="dot"></span><span>Active <code>admin_users</code> membership and role required</span></div>
+    </section>
+    <p class="auth-footer">Made in India, for the World · VibeSync Operations</p>
+  </main>
+
+  <div id="admin-app" class="app-shell" hidden>
+    <aside class="sidebar">
+      <a class="brand-lockup" href="#" data-home aria-label="VibeSync Admin home">
+        <span class="brand-mark small" aria-hidden="true"><span>V</span><i></i></span>
+        <span><strong>VibeSync</strong><small>ADMIN CONSOLE</small></span>
+      </a>
+      <div class="workspace-label">WORKSPACE</div>
+      <nav id="primary-nav" class="side-nav" aria-label="Admin sections">
+        <button class="nav-item is-active" data-section="telemetry"><span class="nav-icon">◉</span>Live telemetry</button>
+        <button class="nav-item" data-section="moderation"><span class="nav-icon">◎</span>User moderation</button>
+        <button class="nav-item" data-section="payments"><span class="nav-icon">↗</span>Payment & ledger</button>
+        <button class="nav-item" data-section="business-governance"><span class="nav-icon">▦</span>Business governance</button>
+        <button class="nav-item" data-section="compliance"><span class="nav-icon">⌁</span>Compliance & LEA</button>
+        <button class="nav-item" data-section="reengagement"><span class="nav-icon">◌</span>Re-engagement</button>
+        <button class="nav-item" data-section="preservation"><span class="nav-icon">⇩</span>Data preservation</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="secure-chip"><span class="dot"></span>SECURE SESSION</div>
+        <p>Staff actions are role-checked and audit logged by Supabase.</p>
+        <button id="sign-out" class="btn btn-quiet btn-wide" type="button">Sign out <span aria-hidden="true">↗</span></button>
+      </div>
+    </aside>
+
+    <main class="main-panel">
+      <header class="topbar">
+        <div><p class="eyebrow">OPERATIONS / <span id="section-breadcrumb">LIVE TELEMETRY</span></p><h1 id="page-title">Live telemetry</h1></div>
+        <div class="session-meta"><span class="online-dot"></span><span id="staff-display">Authorized staff</span><span id="role-badge" class="role-badge">staff</span><button id="theme-toggle" class="btn btn-quiet theme-toggle" type="button" aria-pressed="false">☼ Light theme</button></div>
+      </header>
+      <div id="global-notice" class="global-notice" role="status" aria-live="polite" hidden></div>
+
+      <section id="section-telemetry" class="page-section is-visible">
+        <div class="section-intro"><div><p class="eyebrow">SYSTEM HEALTH</p><h2>Platform at a glance</h2><p class="muted">Server-derived counts refresh periodically; realtime invalidation is used when available.</p></div><button id="refresh-telemetry" class="btn btn-secondary" type="button">↻ Refresh</button></div>
+        <div id="telemetry-cards" class="metric-grid"><div class="metric-card skeleton"></div><div class="metric-card skeleton"></div><div class="metric-card skeleton"></div><div class="metric-card skeleton"></div></div>
+        <div class="panel-grid">
+          <article class="panel chart-panel chart-panel-full"><div class="panel-heading"><div><p class="eyebrow">LAST 24 HOURS</p><h3>Active connections & message throughput</h3></div><span class="state-pill">Live database aggregates</span></div><div class="chart-container"><canvas id="telemetry-chart" role="img" aria-label="Line chart of hourly active profile connections and message throughput"></canvas></div><p class="footnote">Connections use each profile’s latest app-resume heartbeat by hour. Message counts expose no message content.</p></article>
+          <article class="panel"><div class="panel-heading"><div><p class="eyebrow">DIAGNOSTICS</p><h3>Live telemetry response</h3></div><span class="state-pill" id="telemetry-state">Checking</span></div><pre id="telemetry-json" class="json-view">Waiting for authorized telemetry…</pre><p class="footnote">The browser does not calculate platform totals or contain privileged database credentials.</p></article>
+          <article class="panel"><div class="panel-heading"><div><p class="eyebrow">ACCESS MODEL</p><h3>Staff authorization</h3></div></div><div class="info-list"><div><span>Session source</span><strong>Supabase Auth</strong></div><div><span>Roster check</span><strong>admin_users</strong></div><div><span>Role enforcement</span><strong>Postgres RPC + RLS</strong></div><div><span>Service key in browser</span><strong class="text-good">Never</strong></div></div></article>
+        </div>
+      </section>
+
+      <section id="section-moderation" class="page-section">
+        <div class="section-intro"><div><p class="eyebrow">TRUST & SAFETY</p><h2>User moderation</h2><p class="muted">Find existing profiles and apply audited, server-authorized actions.</p></div></div>
+        <article class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">ACCOUNT COHORTS</p><h3>Active, inactive & verified profiles</h3></div><span class="state-pill">Current profile state</span></div><div class="chart-container chart-container-short"><canvas id="moderation-chart" role="img" aria-label="Area chart of active, inactive, and verified profiles"></canvas></div><p class="footnote">Active within 24 hours, inactive beyond 24 hours or without a heartbeat, and verified badges. Current cohorts, not historical snapshots.</p></article>
+        <article class="panel">
+          <form id="profile-search-form" class="search-row"><div class="search-field"><label for="profile-query">Search profiles</label><input id="profile-query" type="search" minlength="2" maxlength="80" placeholder="Name or exact profile ID" required></div><button class="btn btn-primary" type="submit">Search users</button></form>
+          <p class="footnote">Verification changes the free account verification flag only. It does not create a paid tier, subscription, or payment record.</p>
+          <div id="profile-results" class="results-wrap"><div class="empty-state"><span>⌕</span><strong>Search the real profile directory</strong><p>Results appear here after you submit a query.</p></div></div>
+        </article>
+      </section>
+
+      <section id="section-payments" class="page-section">
+        <div class="section-intro"><div><p class="eyebrow">FINANCE OPERATIONS</p><h2>Payment & ledger</h2><p class="muted">Server-side financial aggregates and recent business payment orders.</p></div><button id="refresh-payments" class="btn btn-secondary" type="button">↻ Refresh</button></div>
+        <div id="payment-cards" class="metric-grid"></div>
+        <div class="panel-grid">
+          <article class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">LAST 14 DAYS</p><h3>Daily transaction volume</h3></div></div><div class="chart-container"><canvas id="payment-volume-chart" role="img" aria-label="Daily payment volume, paid orders and failed orders"></canvas></div></article>
+          <article class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">GATEWAY OUTCOMES</p><h3>Success vs. failure by gateway</h3></div></div><div class="chart-container"><canvas id="gateway-outcomes-chart" role="img" aria-label="Bar chart of successful and failed payment orders by gateway"></canvas></div></article>
+        </div>
+        <article class="panel"><div class="panel-heading"><div><p class="eyebrow">TRANSACTION LOG</p><h3>Recent payment orders</h3></div><span id="webhook-state" class="state-pill state-warn">Webhook telemetry unverified</span></div><div id="payment-results" class="results-wrap"><div class="empty-state">Loading payment summary…</div></div><p id="webhook-note" class="footnote">Webhook health is unverified until delivery events are persisted; paid-order state alone is not a webhook health check.</p></article>
+      </section>
+
+      <section id="section-business-governance" class="page-section">
+        <div class="section-intro">
+          <div><p class="eyebrow">MERCHANT OPERATIONS</p><h2>Business governance</h2><p class="muted">Audited administrative controls for listings, points ledger and story moderation. Merchant workflows remain unchanged.</p></div>
+          <button id="refresh-business" class="btn btn-secondary" type="button">↻ Refresh</button>
+        </div>
+        <div id="business-metrics" class="metric-grid" aria-live="polite"></div>
+        <div class="panel-grid">
+          <article class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">DIRECTORY REVIEW</p><h3>Merchant listings</h3></div><span class="state-pill">Server-authorized</span></div>
+            <form id="business-search-form" class="search-row"><div class="search-field"><label for="business-query">Business name, category or ID</label><input id="business-query" type="search" maxlength="100" placeholder="Search all business listings"></div><button class="btn btn-primary" type="submit">Search</button></form>
+            <div id="business-results" class="results-wrap"><div class="empty-state"><strong>Business directory</strong><p>Search for listings, then verify or publish them with an audit record.</p></div></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">BALANCE CONTROL</p><h3>Manual wallet adjustment</h3></div><span class="state-pill state-warn">Audit logged</span></div>
+            <form id="wallet-adjustment-form" class="form-grid">
+              <div class="full-span"><label for="wallet-business-id">Business ID</label><input id="wallet-business-id" name="business_id" required maxlength="160" placeholder="Exact business ID"></div>
+              <div><label for="wallet-points-delta">Points delta (+ / −)</label><input id="wallet-points-delta" name="points_delta" type="number" required step="1" min="-1000000" max="1000000" placeholder="e.g. 500"></div>
+              <div class="full-span"><label for="wallet-adjustment-reason">Reason (required)</label><input id="wallet-adjustment-reason" name="reason" required maxlength="500" placeholder="Support ticket / reconciliation reference"></div>
+              <div class="full-span"><button class="btn btn-primary" type="submit">Apply audited adjustment</button></div>
+            </form>
+            <p id="wallet-adjustment-status" class="notice" role="status" aria-live="polite"></p>
+            <p class="footnote">The balance and ledger change atomically. This is not a payment-settlement action.</p>
+          </article>
+        </div>
+        <article class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">OPERATIONS</p><h3>Business operational settings</h3><p class="muted">Update operating hours and public offer copy, with a required audit reason.</p></div><span class="state-pill state-warn">Audited</span></div>
+          <form id="business-settings-form" class="form-grid">
+            <div class="full-span"><label for="settings-business-id">Business ID</label><input id="settings-business-id" name="business_id" required maxlength="160" placeholder="Exact business ID"></div>
+            <div class="full-span"><label for="settings-opening-hours">Opening hours / service window</label><textarea id="settings-opening-hours" name="opening_hours" required maxlength="1000" rows="3" placeholder="Mon–Fri 09:00–18:00"></textarea></div>
+            <div class="full-span"><label for="settings-active-offer">Public offer summary</label><textarea id="settings-active-offer" name="active_offer_summary" required maxlength="500" rows="2" placeholder="Current offer or service notice"></textarea></div>
+            <div class="full-span"><label for="settings-reason">Audit reason</label><input id="settings-reason" name="reason" required maxlength="500" placeholder="Ticket / compliance reason"></div>
+            <div class="full-span"><button class="btn btn-primary" type="submit">Save operational settings</button></div>
+          </form>
+          <p id="business-settings-status" class="notice" role="status" aria-live="polite"></p>
+        </article>
+        <article class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">TRUST & SAFETY</p><h3>Status story moderation</h3><p class="muted">Hide or restore story visibility without deleting the original media.</p></div><button id="refresh-status-stories" class="btn btn-secondary" type="button">↻ Refresh stories</button></div>
+          <div id="status-story-results" class="results-wrap"><div class="empty-state"><strong>No stories loaded</strong><p>Refresh to inspect active story metadata and moderation state.</p></div></div>
+        </article>
+      </section>
+
+      <section id="section-compliance" class="page-section">
+        <div class="section-intro"><div><p class="eyebrow">CONTROLLED DISCLOSURE</p><h2>Compliance & LEA</h2><p class="muted">Purpose-bound search and export of non-content account metadata.</p></div></div>
+        <article class="panel">
+          <div class="notice notice-caution"><strong>Metadata only.</strong> This tool excludes message contents, encrypted payloads, private keys, FCM tokens, and contact hashes. Verify legal process and internal approval before disclosure.</div>
+          <form id="lea-form" class="form-grid">
+            <div><label for="lea-basis">Legal basis</label><select id="lea-basis" required><option value="SEC_94_BNSS">Section 94 BNSS</option><option value="MLAT">MLAT / mutual legal assistance</option></select></div>
+            <div><label for="lea-case">Case / order reference</label><input id="lea-case" required maxlength="120" placeholder="Court / agency reference"></div>
+            <div class="full-span"><label for="lea-query">Exact profile ID or name fragment</label><input id="lea-query" required minlength="2" maxlength="120" placeholder="Profile ID or name"></div>
+            <div class="full-span checkbox-line"><input id="lea-confirm" type="checkbox" required><label for="lea-confirm">I verified the referenced legal process and am authorized to request this metadata.</label></div>
+            <div class="full-span"><button class="btn btn-primary" type="submit">Search & create sealed export</button></div>
+          </form>
+          <p id="lea-status" class="notice" role="status" aria-live="polite"></p><div id="lea-results" class="results-wrap"></div>
+        </article>
+      </section>
+
+      <section id="section-reengagement" class="page-section">
+        <div class="section-intro"><div><p class="eyebrow">LIFECYCLE MESSAGING</p><h2>Re-engagement broadcasts</h2><p class="muted">Server-side FCM broadcast to users with a known last-active timestamp.</p></div></div>
+        <div class="notice notice-caution"><strong>Review before sending.</strong> Only profiles with a recorded app-resume heartbeat are eligible. Accounts without known activity are excluded; device tokens remain server-side.</div>
+        <div class="broadcast-grid">
+          <article class="broadcast-card"><div class="broadcast-symbol">3d</div><p class="eyebrow">EARLY RETURN</p><h3>Inactive for 3+ days</h3><p class="muted">A generic reminder for users who have not recently opened VibeSync.</p><button class="btn btn-primary btn-wide" data-broadcast-days="3" type="button">Review & send 3-day broadcast</button></article>
+          <article class="broadcast-card"><div class="broadcast-symbol">7d</div><p class="eyebrow">WIN-BACK</p><h3>Inactive for 7+ days</h3><p class="muted">A separate audience for longer inactivity; recently active users are excluded.</p><button class="btn btn-secondary btn-wide" data-broadcast-days="7" type="button">Review & send 7-day broadcast</button></article>
+        </div>
+        <p id="broadcast-status" class="notice" role="status" aria-live="polite"></p>
+      </section>
+
+      <section id="section-preservation" class="page-section">
+        <div class="section-intro"><div><p class="eyebrow">DATA GOVERNANCE</p><h2>Data preservation</h2><p class="muted">Export role-authorized operational records with a timestamp and SHA-256 integrity seal.</p></div></div>
+        <article class="panel export-panel"><div class="export-icon">⇩</div><div><h3>Generate a timestamped snapshot</h3><p class="muted">Approved tables are paged from a strict server allow-list. Encrypted messages, authentication secrets, private keys, device tokens, phone numbers and contact hashes are excluded.</p><div id="export-scope" class="scope-chip">Checking role permissions…</div></div></article>
+        <div class="export-actions"><label for="export-format">File format<select id="export-format"><option value="json">JSON + SHA-256 seal</option><option value="csv">CSV + SHA-256 sidecar</option></select></label><button id="export-snapshot" class="btn btn-primary" type="button">Download platform snapshot</button></div>
+        <div class="progress-track" aria-hidden="true"><span id="export-progress"></span></div><p id="export-status" class="notice" role="status" aria-live="polite"></p>
+      </section>
+      <footer class="page-footer"><span>VibeSync Admin · Restricted staff access</span><span id="last-refreshed">Awaiting telemetry</span></footer>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

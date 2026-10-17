@@ -5,16 +5,19 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.size
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 
 @Composable
@@ -23,8 +26,8 @@ fun MandatoryPermissionsDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    var showDisclosure by remember { mutableStateOf(true) }
 
-    // Build platform-specific permissions list
     val permissionsToRequest = remember {
         buildList {
             add(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -49,8 +52,8 @@ fun MandatoryPermissionsDialog(
 
     val permissionsStatus = remember {
         mutableStateMapOf<String, Boolean>().apply {
-            permissionsToRequest.forEach { perm ->
-                put(perm, ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED)
+            permissionsToRequest.forEach { permission ->
+                put(permission, ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED)
             }
         }
     }
@@ -58,18 +61,40 @@ fun MandatoryPermissionsDialog(
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
-        results.forEach { (perm, granted) ->
-            permissionsStatus[perm] = granted
-        }
-        val allGranted = results.values.all { it }
-        onPermissionsGranted(allGranted)
+        results.forEach { (permission, granted) -> permissionsStatus[permission] = granted }
+        onPermissionsGranted(results.values.all { it })
         onDismiss()
     }
 
-    LaunchedEffect(Unit) {
-        launcher.launch(permissionsToRequest)
+    if (showDisclosure) {
+        AlertDialog(
+            modifier = Modifier.testTag("dialog_mandatory_permissions"),
+            onDismissRequest = {
+                showDisclosure = false
+                onPermissionsGranted(false)
+                onDismiss()
+            },
+            title = { Text("Contact matching privacy") },
+            text = {
+                Text(
+                    "If you grant contacts access, VibeSync sends normalized phone numbers securely " +
+                        "over SSL/TLS (HTTPS) to Supabase only to match registered friends. " +
+                        "Private chat messages remain End-to-End Encrypted (E2EE)."
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showDisclosure = false
+                    launcher.launch(permissionsToRequest)
+                }) { Text("Continue") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showDisclosure = false
+                    onPermissionsGranted(false)
+                    onDismiss()
+                }) { Text("Not now") }
+            }
+        )
     }
-
-    // Transparent loading state or blank indicator to bypass full page details
-    Box(modifier = Modifier.size(1.dp).testTag("dialog_mandatory_permissions"))
 }

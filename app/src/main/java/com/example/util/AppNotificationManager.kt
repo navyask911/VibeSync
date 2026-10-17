@@ -10,6 +10,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Typeface
 import android.graphics.Color
 import android.media.AudioAttributes
 import android.media.RingtoneManager
@@ -25,7 +28,11 @@ import androidx.core.graphics.drawable.IconCompat
 import com.example.MainActivity
 import com.example.R
 import com.example.VibeSyncApplication
-import com.example.service.NotificationActionReceiver
+import com.example.data.database.DatingDatabase
+import com.example.data.model.ChatMessageEntity
+import com.example.service.DirectReplyReceiver
+import com.example.service.MarkAsReadReceiver
+import com.example.service.MuteConversationReceiver
 import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -66,15 +73,24 @@ object AppNotificationManager {
     private const val TAG = "AppNotificationManager"
 
     // Channel IDs
-    const val CHANNEL_ID_MATCHES = "channel_vibe_matches_v3"
-    const val CHANNEL_ID_MESSAGES = "channel_vibe_messages_v3"
-    const val CHANNEL_ID_VIBESYNC_MESSAGES = "vibesync_messages"
+    @Volatile var CHANNEL_ID_MATCHES = "channel_vibe_matches_v4_default"
+        private set
+    @Volatile var CHANNEL_ID_MESSAGES = "channel_vibe_messages_v4_default"
+        private set
+    @Volatile var CHANNEL_ID_VIBESYNC_MESSAGES = "vibesync_messages_v4_default"
+        private set
+    /** Stable Android 8+ conversation channel requested for grouped MessagingStyle notifications. */
+    const val CHANNEL_ID_CHAT_MESSAGES = "vibesync_messages_channel"
+    const val CHAT_NOTIFICATION_GROUP_KEY = "vibesync_chat_group"
+    const val EXTRA_CONVERSATION_ID = "extra_conversation_id"
+    private const val CHAT_GROUP_SUMMARY_NOTIFICATION_ID = 0x5653594E
     const val CHANNEL_ID_ALERTS = "channel_vibe_alerts_v3"
     const val CHANNEL_ID_OTP = "channel_vibe_otp_v3"
 
     // Intent Actions & Extras
     const val ACTION_DIRECT_REPLY = "com.example.action.DIRECT_REPLY"
     const val ACTION_MARK_AS_READ = "com.example.action.MARK_AS_READ"
+    const val ACTION_MUTE_CONVERSATION = "com.example.action.MUTE_CONVERSATION"
     const val KEY_TEXT_REPLY = "key_text_reply"
 
     const val EXTRA_NOTIFICATION_ID = "extra_notification_id"
@@ -171,6 +187,17 @@ object AppNotificationManager {
 
     // Message History for VibeSync-style MessagingStyle conversation threads
     private val conversationHistory = ConcurrentHashMap<String, MutableList<NotificationCompat.MessagingStyle.Message>>()
+    private val seenMessageIds = ConcurrentHashMap<String, MutableSet<String>>()
+    /** Stable IDs aligned with the capped MessagingStyle list, allowing duplicate FCM wakeups to refresh text. */
+    private val conversationMessageIds = ConcurrentHashMap<String, MutableList<String>>()
+    private data class ConversationSummary(
+        val conversationId: String,
+        val title: String,
+        val snippet: String,
+        val updatedAt: Long
+    )
+    private val conversationSummaries = ConcurrentHashMap<String, ConversationSummary>()
+    private val summaryUpdateLock = Any()
 
     /**
      * Initializes the notification manager and Android 8.0+ notification channels.
@@ -182,7 +209,10 @@ object AppNotificationManager {
             val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 ?: return
 
+            // System channels use Android's default notification sound; in-app audio can still
+            // honor the user's selected VibeSync sound preference while the app is open.
             val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            updateSoundChannelIds(null)
             val audioAttributes = AudioAttributes.Builder()
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .setUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_INSTANT)
@@ -211,6 +241,22 @@ object AppNotificationManager {
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Background VibeSync chat messages delivered through FCM"
+                enableLights(true)
+                lightColor = VIBESYNC_TEAL_COLOR
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 200, 100, 250)
+                setSound(soundUri, audioAttributes)
+                setShowBadge(true)
+                lockscreenVisibility = NotificationCompat.VISIBILITY_PRIVATE
+            }
+
+            // Stable base channel used by the grouped per-conversation notification stack.
+            val groupedChatChannel = NotificationChannel(
+                CHANNEL_ID_CHAT_MESSAGES,
+                "VibeSync Messages",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Direct messages with inline reply, mark-read and mute actions"
                 enableLights(true)
                 lightColor = VIBESYNC_TEAL_COLOR
                 enableVibration(true)
@@ -263,10 +309,27 @@ object AppNotificationManager {
             }
 
             notificationManager.createNotificationChannels(
-                listOf(messageChannel, vibesyncMessagesChannel, matchChannel, alertChannel, otpChannel)
+                listOf(messageChannel, vibesyncMessagesChannel, groupedChatChannel, matchChannel, alertChannel, otpChannel)
             )
             Log.d(TAG, "VibeSync-style notification channels initialized successfully")
         }
+    }
+
+    fun updateNotificationSound(context: Context, selectedUri: String?) {
+        NotificationSoundPreferences.cacheSoundUri(context, selectedUri)
+        updateSoundChannelIds(selectedUri)
+        initChannels(context.applicationContext)
+    }
+
+    private fun updateSoundChannelIds(selectedUri: String?) {
+        val suffix = when {
+            selectedUri == NotificationSoundPreferences.SILENT_URI -> "silent"
+            selectedUri.isNullOrBlank() -> "default"
+            else -> selectedUri.hashCode().toUInt().toString(16)
+        }
+        CHANNEL_ID_MESSAGES = "channel_vibe_messages_v4_${suffix}"
+        CHANNEL_ID_VIBESYNC_MESSAGES = "vibesync_messages_v4_${suffix}"
+        CHANNEL_ID_MATCHES = "channel_vibe_matches_v4_${suffix}"
     }
 
     /**
@@ -417,12 +480,52 @@ object AppNotificationManager {
     }
 
     private fun syncTokenToRegistry(context: Context, tokenToSync: String) {
-        Log.d(TAG, "Skipping Supabase device-token registry; FCM remains the notification transport boundary.")
+        // Keep one session-bound registration path for refreshed and explicitly requested tokens.
+        // The server stores one row per profile/device token in public.device_tokens.
+        com.example.service.AppFirebaseMessagingService.registerTokenForCurrentSession(
+            context.applicationContext,
+            tokenToSync
+        )
     }
 
     fun getCachedFcmToken(): String = currentFcmToken.orEmpty()
 
     fun isFcmActive(): Boolean = true
+
+    /**
+     * Returns a stable notification channel for a thread-specific sound. Android 8+ caches
+     * sound on the channel itself, so a distinct ID is required when a contact's sound changes.
+     */
+    private fun messageChannelForThread(
+        context: Context,
+        senderId: String,
+        senderName: String,
+        soundUri: String,
+        fallbackChannelId: String
+    ): String {
+        if (soundUri.isBlank() || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return fallbackChannelId
+        val id = "vibesync_thread_" +
+            senderId.hashCode().toString().replace("-", "n") + "_" +
+            soundUri.hashCode().toString().replace("-", "n")
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            ?: return fallbackChannelId
+        if (manager.getNotificationChannel(id) == null) {
+            val channel = NotificationChannel(
+                id,
+                (senderName.ifBlank { "VibeSync conversation" }.take(35) + " messages"),
+                NotificationManager.IMPORTANCE_HIGH
+            )
+            val attributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_INSTANT)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+            val uri = if (soundUri == ChatThreadPreferences.SILENT_SOUND_URI) null else Uri.parse(soundUri)
+            channel.setSound(uri, attributes)
+            channel.enableVibration(soundUri != ChatThreadPreferences.SILENT_SOUND_URI)
+            manager.createNotificationChannel(channel)
+        }
+        return id
+    }
 
     /**
      * Shows a VibeSync-style Real-Time Chat Message Notification with:
@@ -439,168 +542,430 @@ object AppNotificationManager {
         messageText: String,
         senderPhotoUrl: String = "",
         mediaType: String = "TEXT",
-        channelId: String = CHANNEL_ID_MESSAGES
+        channelId: String = CHANNEL_ID_CHAT_MESSAGES,
+        conversationId: String = defaultConversationId(senderId),
+        messageId: String = "",
+        messageTimestamp: Long = System.currentTimeMillis()
     ) {
         if (!hasNotificationPermission(context)) return
-
-        // Critical Check: If the user is currently online and actively in live chat with the same person,
-        // do NOT trigger any notification (system popup or in-app banner dropdown) since they see it live on screen.
-        if (isUserActiveInChatWith(senderId)) {
-            Log.d(TAG, "Notification suppressed: user is actively chatting with $senderName ($senderId) live.")
+        val appContext = context.applicationContext
+        val requestedThreadId = conversationId.trim().ifBlank { defaultConversationId(senderId) }
+        if (ChatThreadPreferences.isMuted(appContext, senderId) ||
+            ChatThreadPreferences.isMuted(appContext, requestedThreadId)
+        ) {
+            Log.d(TAG, "Notification suppressed by legacy local mute for conversation=$requestedThreadId.")
+            return
+        }
+        if (isUserActiveInChatWith(senderId) || isUserActiveInChatWith(requestedThreadId)) {
+            Log.d(TAG, "Notification suppressed because conversation=$requestedThreadId is currently open.")
             return
         }
 
-        val displayBody = when (mediaType) {
-            "IMAGE" -> "📸 Photo"
-            "AI_IMAGE" -> "✨ AI Art: $messageText"
-            "VOICE" -> "🎤 Voice message"
-            "LOCATION", "LIVE_LOCATION" -> "📍 Location"
-            "DOCUMENT" -> "📄 Document"
-            "POLL" -> "📊 Poll"
-            "PAYMENT" -> "💳 Payment request"
-            "EVENT" -> "📅 Event invite"
-            else -> messageText.ifBlank { "New message" }
+        val displayBody = displayTextForNotification(messageText, mediaType)
+        val now = System.currentTimeMillis()
+        val senderTitle = senderName.ifBlank { "VibeSync contact" }
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val database = DatingDatabase.getDatabase(appContext)
+                // Normalize legacy sender-based IDs to the durable local matchId before hashing the
+                // notification ID. New targeted FCM sync already supplies match.matchId here.
+                val localMatch = database.matchDao().getMatchByIdSync(requestedThreadId)
+                    ?: database.matchDao().getMatchByProfileId(senderId)
+                val threadId = localMatch?.matchId?.takeIf { it.isNotBlank() } ?: requestedThreadId
+                val notificationId = notificationIdForConversation(threadId)
+                if (ChatThreadPreferences.isMuted(appContext, threadId)) return@launch
+                val mutedUntil = (database.conversationNotificationPreferencesDao().getMutedUntil(threadId)
+                    ?: database.conversationNotificationPreferencesDao().getMutedUntil(requestedThreadId)
+                    ?: 0L)
+                if (mutedUntil > now) {
+                    Log.d(TAG, "Notification suppressed by 8-hour conversation mute; conversation=$threadId.")
+                    return@launch
+                }
+                if (mutedUntil != 0L && mutedUntil <= now) {
+                    database.conversationNotificationPreferencesDao().delete(threadId)
+                }
+
+                val senderBitmap = senderPhotoUrl.takeIf { it.isNotBlank() }?.let { resolveNotificationAvatar(appContext, it) }
+                val senderIcon = senderBitmap?.let { IconCompat.createWithBitmap(it) } ?: initialsIcon(senderTitle)
+                val senderPerson = Person.Builder()
+                    .setName(senderTitle)
+                    .setKey(senderId.ifBlank { threadId })
+                    .setIcon(senderIcon)
+                    .build()
+                val userPerson = Person.Builder().setName("You").setKey("current_user").build()
+
+                hydrateConversationHistory(
+                    context = appContext,
+                    conversationId = threadId,
+                    senderPerson = senderPerson,
+                    userPerson = userPerson
+                )
+                appendThreadMessage(
+                    conversationId = threadId,
+                    messageId = messageId,
+                    message = NotificationCompat.MessagingStyle.Message(displayBody, messageTimestamp, senderPerson)
+                )
+
+                conversationSummaries[threadId] = ConversationSummary(
+                    conversationId = threadId,
+                    title = senderTitle,
+                    snippet = displayBody.take(180),
+                    updatedAt = messageTimestamp
+                )
+                _inAppAlertEvents.tryEmit(
+                    AppAlertPayload(
+                        type = "MESSAGE",
+                        title = senderTitle,
+                        body = displayBody,
+                        senderOrMatchId = senderId,
+                        senderName = senderTitle,
+                        photoUrl = senderPhotoUrl,
+                        timestamp = messageTimestamp
+                    )
+                )
+
+                val configuredThreadSound = ChatThreadPreferences.soundUri(appContext, senderId)
+                    .ifBlank { ChatThreadPreferences.soundUri(appContext, threadId) }
+                val effectiveChannelId = messageChannelForThread(
+                    context = appContext,
+                    senderId = threadId,
+                    senderName = senderTitle,
+                    soundUri = configuredThreadSound,
+                    fallbackChannelId = channelId
+                )
+                val notification = buildConversationNotification(
+                    context = appContext,
+                    conversationId = threadId,
+                    targetProfileId = senderId,
+                    senderName = senderTitle,
+                    senderPerson = senderPerson,
+                    userPerson = userPerson,
+                    senderBitmap = senderBitmap,
+                    notificationId = notificationId,
+                    channelId = effectiveChannelId,
+                    latestText = displayBody
+                )
+                try {
+                    NotificationManagerCompat.from(appContext).notify(notificationId, notification)
+                    postChatGroupSummary(appContext)
+                    AlertSoundAndVibrationManager.triggerChatAlert(appContext)
+                } catch (securityException: SecurityException) {
+                    Log.w(TAG, "Notification permission missing: ${securityException.message}")
+                }
+            } catch (failure: Throwable) {
+                Log.w(TAG, "Unable to build grouped notification for conversation=$requestedThreadId.", failure)
+            }
+        }
+    }
+
+    private fun defaultConversationId(senderId: String): String {
+        val clean = senderId.trim()
+        if (clean.isBlank()) return ""
+        return if (clean.startsWith("match_", ignoreCase = true)) clean else "match_$clean"
+    }
+
+    /** Stable across process restarts; each conversation gets its own child notification. */
+    fun notificationIdForConversation(conversationId: String): Int {
+        var id = ("vibesync_chat:" + conversationId.trim()).hashCode() and 0x7fffffff
+        if (id == CHAT_GROUP_SUMMARY_NOTIFICATION_ID) id -= 1
+        return id
+    }
+
+    private fun displayTextForNotification(messageText: String, mediaType: String): String = when (mediaType.uppercase()) {
+        "IMAGE" -> "📸 Photo"
+        "AI_IMAGE" -> "✨ AI Art: $messageText"
+        "VOICE" -> "🎤 Voice message"
+        "LOCATION", "LIVE_LOCATION" -> "📍 Location"
+        "DOCUMENT" -> "📄 Document"
+        "POLL" -> "📊 Poll"
+        "PAYMENT" -> "💳 Payment request"
+        "EVENT" -> "📅 Event invite"
+        else -> messageText.ifBlank { "New message" }
+    }
+
+    private fun initialsIcon(displayName: String): IconCompat {
+        val size = 112
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val background = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = VIBESYNC_TEAL_COLOR }
+        canvas.drawCircle(size / 2f, size / 2f, size / 2f, background)
+        val initials = displayName.trim().split(Regex("\\s+"))
+            .filter { it.isNotBlank() }
+            .take(2)
+            .mapNotNull { it.firstOrNull()?.uppercaseChar()?.toString() }
+            .joinToString("")
+            .ifBlank { "V" }
+        val foreground = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textAlign = Paint.Align.CENTER
+            textSize = 42f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        }
+        val baseline = size / 2f - (foreground.ascent() + foreground.descent()) / 2f
+        canvas.drawText(initials, size / 2f, baseline, foreground)
+        return IconCompat.createWithBitmap(bitmap)
+    }
+
+    private suspend fun hydrateConversationHistory(
+        context: Context,
+        conversationId: String,
+        senderPerson: Person,
+        userPerson: Person
+    ) {
+        val list = conversationHistory.getOrPut(conversationId) { mutableListOf() }
+        synchronized(list) { if (list.isNotEmpty()) return }
+        val rows = runCatching {
+            DatingDatabase.getDatabase(context).chatMessageDao()
+                .getMessagesForMatchSync(conversationId)
+                .takeLast(10)
+        }.getOrDefault(emptyList())
+        val ids = seenMessageIds.getOrPut(conversationId) { ConcurrentHashMap.newKeySet<String>() }
+        val orderedIds = conversationMessageIds.getOrPut(conversationId) { mutableListOf() }
+        synchronized(list) {
+            if (list.isEmpty()) {
+                rows.filterNot { it.isDeleted || it.isDeletedForMe || it.isDeletedForEveryone }
+                    .forEach { row ->
+                        val text = displayTextForNotification(row.text, row.mediaType)
+                        val isOutgoing = row.senderId == "USER"
+                        val person = if (isOutgoing) userPerson else Person.Builder()
+                            .setName(row.senderDisplayName.ifBlank { senderPerson.name?.toString().orEmpty() })
+                            .setKey(row.senderId)
+                            .apply { senderPerson.icon?.let { setIcon(it) } }
+                            .build()
+                        list.add(NotificationCompat.MessagingStyle.Message(text, row.timestamp, person))
+                        orderedIds.add(row.messageId)
+                        ids.add(row.messageId)
+                    }
+                while (list.size > 10) {
+                    list.removeAt(0)
+                    orderedIds.removeAt(0)
+                }
+                if (orderedIds.size != list.size) {
+                    orderedIds.clear()
+                    repeat(list.size) { orderedIds.add("") }
+                }
+            }
+        }
+    }
+
+    private fun appendThreadMessage(
+        conversationId: String,
+        messageId: String,
+        message: NotificationCompat.MessagingStyle.Message
+    ) {
+        val list = conversationHistory.getOrPut(conversationId) { mutableListOf() }
+        val ids = seenMessageIds.getOrPut(conversationId) { ConcurrentHashMap.newKeySet<String>() }
+        val orderedIds = conversationMessageIds.getOrPut(conversationId) { mutableListOf() }
+        synchronized(list) {
+            // Targeted FCM may first render a safe "Encrypted message" placeholder and the pull
+            // sync later resolves the same ID to decrypted text. Replace that bubble instead of
+            // dropping the update or appending a duplicate.
+            if (messageId.isNotBlank()) {
+                val existingIndex = orderedIds.indexOf(messageId)
+                if (existingIndex in list.indices) {
+                    list[existingIndex] = message
+                    ids.add(messageId)
+                    return
+                }
+                if (!ids.add(messageId)) return
+            }
+            list.add(message)
+            orderedIds.add(messageId)
+            while (list.size > 10) {
+                list.removeAt(0)
+                orderedIds.removeAt(0)
+            }
+            if (ids.size > 40) {
+                ids.clear()
+                orderedIds.filter { it.isNotBlank() }.forEach { ids.add(it) }
+            }
+            // Preserve positional alignment even if a historical Room row has an empty message ID.
+            while (orderedIds.size < list.size) orderedIds.add("")
+            while (orderedIds.size > list.size) orderedIds.removeAt(0)
+        }
+    }
+
+    private fun buildConversationNotification(
+        context: Context,
+        conversationId: String,
+        targetProfileId: String,
+        senderName: String,
+        senderPerson: Person,
+        userPerson: Person,
+        senderBitmap: Bitmap?,
+        notificationId: Int,
+        channelId: String,
+        latestText: String
+    ): android.app.Notification {
+        val style = NotificationCompat.MessagingStyle(userPerson)
+            .setConversationTitle(senderName)
+            .setGroupConversation(false)
+        conversationHistory[conversationId]?.let { messages ->
+            synchronized(messages) { messages.forEach(style::addMessage) }
         }
 
-        val notificationId = ("msg_$senderId").hashCode()
-        val now = System.currentTimeMillis()
-
-        // 1. Trigger open-source sound and vibration alert
-        AlertSoundAndVibrationManager.triggerChatAlert(context)
-
-        // 2. Emit in-app event for floating banner
-        _inAppAlertEvents.tryEmit(
-            AppAlertPayload(
-                type = "MESSAGE",
-                title = senderName,
-                body = displayBody,
-                senderOrMatchId = senderId,
-                senderName = senderName,
-                photoUrl = senderPhotoUrl,
-                timestamp = now
-            )
+        val contentIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_NOTIFICATION_TYPE, "MESSAGE")
+            putExtra(EXTRA_TARGET_ID, targetProfileId)
+            putExtra(EXTRA_TARGET_NAME, senderName)
+            putExtra(EXTRA_CONVERSATION_ID, conversationId)
+        }
+        val contentPendingIntent = PendingIntent.getActivity(
+            context,
+            notificationId,
+            contentIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // 2. Build VibeSync-style MessagingStyle
-        CoroutineScope(Dispatchers.IO).launch {
-            val senderBitmap = if (senderPhotoUrl.isNotBlank()) downloadBitmap(senderPhotoUrl) else null
-            val senderIcon = senderBitmap?.let { IconCompat.createWithBitmap(it) }
+        val replyIntent = Intent(context, DirectReplyReceiver::class.java).apply {
+            action = ACTION_DIRECT_REPLY
+            putExtra(EXTRA_NOTIFICATION_ID, notificationId)
+            putExtra(EXTRA_TARGET_ID, targetProfileId)
+            putExtra(EXTRA_TARGET_NAME, senderName)
+            putExtra(EXTRA_CONVERSATION_ID, conversationId)
+        }
+        val replyFlags = PendingIntent.FLAG_UPDATE_CURRENT or
+            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0)
+        val replyPendingIntent = PendingIntent.getBroadcast(
+            context,
+            notificationId xor 0x5245504C,
+            replyIntent,
+            replyFlags
+        )
+        val remoteInput = RemoteInput.Builder(KEY_TEXT_REPLY)
+            .setLabel("Reply to $senderName")
+            .build()
+        val replyAction = NotificationCompat.Action.Builder(
+            android.R.drawable.ic_menu_send,
+            "Reply",
+            replyPendingIntent
+        ).addRemoteInput(remoteInput).build()
 
-            val senderPerson = Person.Builder()
-                .setName(senderName)
-                .setKey(senderId)
-                .apply { if (senderIcon != null) setIcon(senderIcon) }
-                .build()
+        val markReadIntent = Intent(context, MarkAsReadReceiver::class.java).apply {
+            action = ACTION_MARK_AS_READ
+            putExtra(EXTRA_NOTIFICATION_ID, notificationId)
+            putExtra(EXTRA_TARGET_ID, targetProfileId)
+            putExtra(EXTRA_CONVERSATION_ID, conversationId)
+        }
+        val markReadPendingIntent = PendingIntent.getBroadcast(
+            context,
+            notificationId xor 0x52454144,
+            markReadIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val markReadAction = NotificationCompat.Action.Builder(
+            android.R.drawable.ic_menu_view,
+            "Mark as read",
+            markReadPendingIntent
+        ).build()
 
-            val userPerson = Person.Builder()
-                .setName("You")
-                .setKey("current_user")
-                .build()
+        val muteIntent = Intent(context, MuteConversationReceiver::class.java).apply {
+            action = ACTION_MUTE_CONVERSATION
+            putExtra(EXTRA_NOTIFICATION_ID, notificationId)
+            putExtra(EXTRA_TARGET_ID, targetProfileId)
+            putExtra(EXTRA_CONVERSATION_ID, conversationId)
+        }
+        val mutePendingIntent = PendingIntent.getBroadcast(
+            context,
+            notificationId xor 0x4D555445,
+            muteIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val muteAction = NotificationCompat.Action.Builder(
+            android.R.drawable.ic_lock_silent_mode,
+            "Mute 8 hours",
+            mutePendingIntent
+        ).build()
 
-            // Append to conversation history for rich multi-message bubbles
-            val msgList = conversationHistory.getOrPut(senderId) { mutableListOf() }
-            msgList.add(NotificationCompat.MessagingStyle.Message(displayBody, now, senderPerson))
-            if (msgList.size > 8) {
-                msgList.removeAt(0)
-            }
+        return NotificationCompat.Builder(context, channelId)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setLargeIcon(senderBitmap)
+            .setStyle(style)
+            .setContentTitle(senderName)
+            .setContentText(latestText)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setColor(VIBESYNC_TEAL_COLOR)
+            .setAutoCancel(true)
+            .setContentIntent(contentPendingIntent)
+            .setOnlyAlertOnce(true)
+            .setGroup(CHAT_NOTIFICATION_GROUP_KEY)
+            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
+            .addAction(replyAction)
+            .addAction(markReadAction)
+            .addAction(muteAction)
+            .build()
+    }
 
-            val messagingStyle = NotificationCompat.MessagingStyle(userPerson)
-                .setConversationTitle(senderName)
-                .setGroupConversation(false)
-
-            msgList.forEach { msg ->
-                messagingStyle.addMessage(msg)
-            }
-
-            // Deep-link intent to open chat
-            val contentIntent = Intent(context, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                putExtra(EXTRA_NOTIFICATION_TYPE, "MESSAGE")
-                putExtra(EXTRA_TARGET_ID, senderId)
-                putExtra(EXTRA_TARGET_NAME, senderName)
-            }
-            val contentPendingIntent = PendingIntent.getActivity(
-                context,
-                notificationId,
-                contentIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-
-            // Direct Inline Reply Action (RemoteInput)
-            val remoteInput = RemoteInput.Builder(KEY_TEXT_REPLY)
-                .setLabel("Reply to $senderName...")
-                .build()
-
-            val replyIntent = Intent(context, NotificationActionReceiver::class.java).apply {
-                action = ACTION_DIRECT_REPLY
-                putExtra(EXTRA_NOTIFICATION_ID, notificationId)
-                putExtra(EXTRA_TARGET_ID, senderId)
-                putExtra(EXTRA_TARGET_NAME, senderName)
-            }
-
-            val replyPendingIntent = PendingIntent.getBroadcast(
-                context,
-                notificationId + 1,
-                replyIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0)
-            )
-
-            val replyAction = NotificationCompat.Action.Builder(
-                android.R.drawable.ic_menu_send,
-                "Reply",
-                replyPendingIntent
-            ).addRemoteInput(remoteInput).build()
-
-            // "Mark as Read" Quick Action
-            val markAsReadIntent = Intent(context, NotificationActionReceiver::class.java).apply {
-                action = ACTION_MARK_AS_READ
-                putExtra(EXTRA_NOTIFICATION_ID, notificationId)
-                putExtra(EXTRA_TARGET_ID, senderId)
-            }
-            val markAsReadPendingIntent = PendingIntent.getBroadcast(
-                context,
-                notificationId + 2,
-                markAsReadIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-
-            val markAsReadAction = NotificationCompat.Action.Builder(
-                android.R.drawable.ic_menu_view,
-                "Mark as read",
-                markAsReadPendingIntent
-            ).build()
-
-            val defaultSoundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-
-            val notification = NotificationCompat.Builder(context, channelId)
-                .setSmallIcon(R.mipmap.ic_launcher)
-                .setStyle(messagingStyle)
-                .setContentTitle(senderName)
-                .setContentText(displayBody)
-                .setPriority(NotificationCompat.PRIORITY_MAX)
-                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-                .setSound(defaultSoundUri)
-                .setVibrate(longArrayOf(0, 200, 100, 250))
-                .setLights(VIBESYNC_TEAL_COLOR, 500, 1000)
-                .setColor(VIBESYNC_TEAL_COLOR)
-                .setAutoCancel(true)
-                .setContentIntent(contentPendingIntent)
-                .addAction(replyAction)
-                .addAction(markAsReadAction)
-                .apply {
-                    if (senderBitmap != null) {
-                        setLargeIcon(senderBitmap)
+    private suspend fun postChatGroupSummary(context: Context) {
+        val database = runCatching { DatingDatabase.getDatabase(context.applicationContext) }.getOrNull()
+        if (database != null) {
+            runCatching {
+                database.matchDao().getAllMatchesSync()
+                    .asSequence()
+                    .filter { it.hasUnread }
+                    .take(30)
+                    .forEach { match ->
+                        val id = match.matchId.trim()
+                        if (id.isNotBlank() && !conversationSummaries.containsKey(id)) {
+                            val mutedUntil = database.conversationNotificationPreferencesDao().getMutedUntil(id) ?: 0L
+                            if (mutedUntil <= System.currentTimeMillis()) {
+                                conversationSummaries[id] = ConversationSummary(
+                                    conversationId = id,
+                                    title = match.localContactName.ifBlank { match.profileId },
+                                    snippet = match.lastMessage.ifBlank { "New message" }.take(180),
+                                    updatedAt = match.lastMessageTime
+                                )
+                            }
+                        }
                     }
-                }
-                .build()
-
-            val notificationManager = NotificationManagerCompat.from(context)
-            try {
-                notificationManager.notify(notificationId, notification)
-            } catch (e: SecurityException) {
-                Log.w(TAG, "Notification permission missing: ${e.message}")
             }
+        }
+        val summaries = conversationSummaries.values
+            .sortedByDescending { it.updatedAt }
+            .take(5)
+        val manager = NotificationManagerCompat.from(context)
+        if (summaries.isEmpty()) {
+            manager.cancel(CHAT_GROUP_SUMMARY_NOTIFICATION_ID)
+            return
+        }
+        val inboxStyle = NotificationCompat.InboxStyle()
+            .setBigContentTitle("VibeSync")
+            .setSummaryText(
+                if (summaries.size == 1) "1 conversation" else "${summaries.size} conversations"
+            )
+        summaries.forEach { item ->
+            inboxStyle.addLine("${item.title.take(45)}: ${item.snippet.take(90)}")
+        }
+        val summaryIntent = PendingIntent.getActivity(
+            context,
+            CHAT_GROUP_SUMMARY_NOTIFICATION_ID,
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val summaryNotification = NotificationCompat.Builder(context, CHANNEL_ID_CHAT_MESSAGES)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("VibeSync")
+            .setContentText(if (summaries.size == 1) "1 conversation" else "${summaries.size} conversations")
+            .setStyle(inboxStyle)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setColor(VIBESYNC_TEAL_COLOR)
+            .setGroup(CHAT_NOTIFICATION_GROUP_KEY)
+            .setGroupSummary(true)
+            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
+            .setOnlyAlertOnce(true)
+            .setSound(null)
+            .setVibrate(null)
+            .setContentIntent(summaryIntent)
+            .build()
+        try {
+            manager.notify(CHAT_GROUP_SUMMARY_NOTIFICATION_ID, summaryNotification)
+        } catch (securityException: SecurityException) {
+            Log.w(TAG, "Unable to post grouped notification summary: ${securityException.message}")
         }
     }
 
@@ -671,7 +1036,7 @@ object AppNotificationManager {
             val matchBitmap = if (matchPhotoUrl.isNotBlank()) downloadBitmap(matchPhotoUrl) else null
 
             val notificationBuilder = NotificationCompat.Builder(context, CHANNEL_ID_MATCHES)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(android.R.drawable.sym_def_app_icon)
                 .setContentTitle(title)
                 .setContentText(subtitle)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(subtitle))
@@ -752,7 +1117,7 @@ object AppNotificationManager {
             val largeBitmap = if (likerPhotoUrl.isNotBlank()) downloadBitmap(likerPhotoUrl) else null
 
             val notificationBuilder = NotificationCompat.Builder(context, CHANNEL_ID_MATCHES)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(android.R.drawable.sym_def_app_icon)
                 .setContentTitle(title)
                 .setContentText(subtitle)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(subtitle))
@@ -829,7 +1194,7 @@ object AppNotificationManager {
             val largeBitmap = if (likerPhotoUrl.isNotBlank()) downloadBitmap(likerPhotoUrl) else null
 
             val notificationBuilder = NotificationCompat.Builder(context, CHANNEL_ID_MATCHES)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(android.R.drawable.sym_def_app_icon)
                 .setContentTitle(title)
                 .setContentText(subtitle)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(subtitle))
@@ -906,7 +1271,7 @@ object AppNotificationManager {
             val largeBitmap = if (senderPhotoUrl.isNotBlank()) downloadBitmap(senderPhotoUrl) else null
 
             val notificationBuilder = NotificationCompat.Builder(context, CHANNEL_ID_MATCHES)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(android.R.drawable.sym_def_app_icon)
                 .setContentTitle(title)
                 .setContentText(subtitle)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(subtitle))
@@ -939,66 +1304,84 @@ object AppNotificationManager {
         notificationId: Int,
         senderId: String,
         senderName: String,
-        replyText: String
+        replyText: String,
+        conversationId: String = defaultConversationId(senderId),
+        replyMessageId: String = ""
     ) {
         if (!hasNotificationPermission(context)) return
-
-        val userPerson = Person.Builder().setName("You").build()
-        val senderPerson = Person.Builder().setName(senderName).setKey(senderId).build()
-
-        val msgList = conversationHistory.getOrPut(senderId) { mutableListOf() }
-        msgList.add(NotificationCompat.MessagingStyle.Message(replyText, System.currentTimeMillis(), userPerson))
-
-        val messagingStyle = NotificationCompat.MessagingStyle(userPerson)
-            .setConversationTitle(senderName)
-            .setGroupConversation(false)
-
-        msgList.forEach { messagingStyle.addMessage(it) }
-
-        val contentIntent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra(EXTRA_NOTIFICATION_TYPE, "MESSAGE")
-            putExtra(EXTRA_TARGET_ID, senderId)
-            putExtra(EXTRA_TARGET_NAME, senderName)
-        }
-        val contentPendingIntent = PendingIntent.getActivity(
-            context,
-            notificationId,
-            contentIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val updatedNotification = NotificationCompat.Builder(context, CHANNEL_ID_MESSAGES)
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setStyle(messagingStyle)
-            .setContentTitle(senderName)
-            .setContentText("Sent: $replyText")
-            .setColor(VIBESYNC_TEAL_COLOR)
-            .setContentIntent(contentPendingIntent)
-            .setAutoCancel(true)
-            .build()
-
-        try {
-            NotificationManagerCompat.from(context).notify(notificationId, updatedNotification)
-        } catch (e: Throwable) {
-            Log.w(TAG, "Failed to update notification safely: ${e.message}")
+        val appContext = context.applicationContext
+        val threadId = conversationId.trim().ifBlank { defaultConversationId(senderId) }
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val senderTitle = senderName.ifBlank { "VibeSync contact" }
+                val senderIcon = initialsIcon(senderTitle)
+                val senderPerson = Person.Builder().setName(senderTitle).setKey(senderId.ifBlank { threadId }).setIcon(senderIcon).build()
+                val userPerson = Person.Builder().setName("You").setKey("current_user").build()
+                hydrateConversationHistory(appContext, threadId, senderPerson, userPerson)
+                appendThreadMessage(
+                    conversationId = threadId,
+                    messageId = replyMessageId,
+                    message = NotificationCompat.MessagingStyle.Message(replyText, System.currentTimeMillis(), userPerson)
+                )
+                conversationSummaries[threadId] = ConversationSummary(
+                    conversationId = threadId,
+                    title = senderTitle,
+                    snippet = "You: ${replyText.take(150)}",
+                    updatedAt = System.currentTimeMillis()
+                )
+                val channelId = messageChannelForThread(
+                    context = appContext,
+                    senderId = threadId,
+                    senderName = senderTitle,
+                    soundUri = ChatThreadPreferences.soundUri(appContext, senderId)
+                        .ifBlank { ChatThreadPreferences.soundUri(appContext, threadId) },
+                    fallbackChannelId = CHANNEL_ID_CHAT_MESSAGES
+                )
+                val notification = buildConversationNotification(
+                    context = appContext,
+                    conversationId = threadId,
+                    targetProfileId = senderId,
+                    senderName = senderTitle,
+                    senderPerson = senderPerson,
+                    userPerson = userPerson,
+                    senderBitmap = null,
+                    notificationId = notificationId,
+                    channelId = channelId,
+                    latestText = "You: $replyText"
+                )
+                NotificationManagerCompat.from(appContext).notify(notificationId, notification)
+                postChatGroupSummary(appContext)
+            } catch (failure: Throwable) {
+                Log.w(TAG, "Unable to refresh notification after inline reply.", failure)
+            }
         }
     }
 
     /**
      * Cancels a notification by ID and clears conversation history cache for that contact.
      */
-    fun clearNotification(context: Context, notificationId: Int) {
+    fun clearNotification(
+        context: Context,
+        notificationId: Int,
+        conversationId: String? = null
+    ) {
         try {
-            val notificationManager = NotificationManagerCompat.from(context)
-            notificationManager.cancel(notificationId)
+            NotificationManagerCompat.from(context).cancel(notificationId)
         } catch (e: Throwable) {
             Log.w(TAG, "Failed to cancel notification: ${e.message}")
+        }
+        conversationId?.trim()?.takeIf { it.isNotBlank() }?.let { clearConversationHistory(it) }
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching { postChatGroupSummary(context.applicationContext) }
+                .onFailure { Log.w(TAG, "Could not refresh conversation notification summary.") }
         }
     }
 
     fun clearConversationHistory(senderId: String) {
         conversationHistory.remove(senderId)
+        seenMessageIds.remove(senderId)
+        conversationMessageIds.remove(senderId)
+        conversationSummaries.remove(senderId)
     }
 
     /**
@@ -1012,6 +1395,17 @@ object AppNotificationManager {
             ) == PackageManager.PERMISSION_GRANTED
         } else {
             NotificationManagerCompat.from(context).areNotificationsEnabled()
+        }
+    }
+
+    /** Prefer VibeSync's in-memory Tink decrypt pipeline for encrypted profile avatar references. */
+    private suspend fun resolveNotificationAvatar(context: Context, reference: String): Bitmap? {
+        return if (reference.startsWith("vibesync-avatar-enc://")) {
+            runCatching {
+                ProfileAvatarStorageManager.resolveAvatarForDisplay(context.applicationContext, reference)
+            }.getOrNull()
+        } else {
+            downloadBitmap(reference)
         }
     }
 
@@ -1029,4 +1423,72 @@ object AppNotificationManager {
             null
         }
     }
+
+
+    /** Group notifications use the group title and a distinct Person identity/icon for each sender. */
+    @SuppressLint("MissingPermission")
+    fun showGroupMessageNotification(
+        context: Context,
+        groupId: String,
+        groupTitle: String,
+        senderId: String,
+        senderName: String,
+        messageText: String,
+        messageTimestamp: Long = System.currentTimeMillis()
+    ) {
+        if (!hasNotificationPermission(context) || groupId.isBlank() || messageText.isBlank()) return
+        val appContext = context.applicationContext
+        if (isAppInForeground && activeChatMatchId.equals(groupId, ignoreCase = true)) return
+        val title = groupTitle.ifBlank { "VibeSync group" }
+        val sender = senderName.ifBlank { "VibeSync member" }
+        val conversationKey = "group:$groupId"
+        val notificationId = (conversationKey.hashCode() and 0x7fffffff).coerceAtLeast(1)
+        val senderPerson = Person.Builder()
+            .setName(sender)
+            .setKey(senderId.ifBlank { sender })
+            .setIcon(initialsIcon(sender))
+            .build()
+        val currentUser = Person.Builder().setName("You").setKey("current_user").build()
+        val style = NotificationCompat.MessagingStyle(currentUser)
+            .setConversationTitle(title)
+            .setGroupConversation(true)
+            .addMessage(NotificationCompat.MessagingStyle.Message(messageText, messageTimestamp, senderPerson))
+        val intent = Intent(appContext, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_NOTIFICATION_TYPE, "GROUP_CHAT")
+            putExtra(EXTRA_TARGET_ID, groupId)
+            putExtra(EXTRA_TARGET_NAME, title)
+            putExtra(EXTRA_CONVERSATION_ID, groupId)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            appContext, notificationId, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(appContext, CHANNEL_ID_CHAT_MESSAGES)
+            .setSmallIcon(android.R.drawable.sym_def_app_icon)
+            .setContentTitle(title)
+            .setContentText("$sender: $messageText")
+            .setStyle(style)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setColor(VIBESYNC_TEAL_COLOR)
+            .setGroup(CHAT_NOTIFICATION_GROUP_KEY)
+            .setOnlyAlertOnce(false)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+        conversationSummaries[conversationKey] = ConversationSummary(
+            conversationId = conversationKey,
+            title = title,
+            snippet = "$sender: ${messageText.take(140)}",
+            updatedAt = messageTimestamp
+        )
+        try {
+            NotificationManagerCompat.from(appContext).notify(notificationId, notification)
+            CoroutineScope(Dispatchers.IO).launch { runCatching { postChatGroupSummary(appContext) } }
+        } catch (failure: SecurityException) {
+            Log.w(TAG, "Group notification permission was revoked.", failure)
+        }
+    }
+
 }

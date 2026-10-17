@@ -1,5 +1,6 @@
 package com.example.service
 
+import android.content.Context
 import android.util.Log
 import com.example.util.AppNotificationManager
 import com.google.firebase.messaging.FirebaseMessagingService
@@ -19,6 +20,54 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
 
     companion object {
         private const val TAG = "AppFirebaseMsgService"
+
+        /**
+         * Firebase auto-init is disabled in this app, so explicitly request a token after a
+         * verified VibeSync session is restored/saved. No FCM token is written to public profile
+         * rows; register_fcm_token binds it to the active custom VibeSync session in device_tokens.
+         */
+        fun refreshAndRegisterToken(context: Context) {
+            val appContext = context.applicationContext
+            if (com.example.util.VibeSyncSessionManager.getSession(appContext) == null) {
+                Log.d(TAG, "FCM token registration deferred until a VibeSync session is available.")
+                return
+            }
+            try {
+                com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+                    .addOnCompleteListener { task ->
+                        if (!task.isSuccessful || task.result.isNullOrBlank()) {
+                            Log.w(TAG, "Could not obtain FCM token: ${task.exception?.message}")
+                            return@addOnCompleteListener
+                        }
+                        registerTokenForCurrentSession(appContext, task.result)
+                    }
+            } catch (t: Throwable) {
+                Log.w(TAG, "FCM token request unavailable: ${t.message}")
+            }
+        }
+
+        /** Called from onNewToken and any cached-token refresh path. Registration is session-bound. */
+        fun registerTokenForCurrentSession(context: Context, token: String) {
+            val appContext = context.applicationContext
+            val cleanToken = token.trim()
+            if (cleanToken.length < 20) {
+                Log.w(TAG, "Ignoring empty/invalid FCM token.")
+                return
+            }
+            AppNotificationManager.updateCachedFcmToken(cleanToken)
+            if (com.example.util.VibeSyncSessionManager.getSession(appContext) == null) {
+                Log.d(TAG, "FCM token cached locally; Supabase registration will retry after session restore.")
+                return
+            }
+            CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+                val registered = com.example.util.SupabaseClientManager.registerFcmTokenRpc(cleanToken)
+                if (registered) {
+                    Log.i(TAG, "FCM token registered for the active VibeSync profile.")
+                } else {
+                    Log.w(TAG, "FCM token registration failed; token refresh/login will retry.")
+                }
+            }
+        }
     }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -26,10 +75,7 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
     override fun onNewToken(token: String) {
         super.onNewToken(token)
         Log.i(TAG, "FCM token refreshed.")
-        AppNotificationManager.updateCachedFcmToken(token)
-        serviceScope.launch {
-            com.example.util.SupabaseClientManager.registerFcmTokenRpc(token)
-        }
+        registerTokenForCurrentSession(applicationContext, token)
     }
 
     override fun onMessageReceived(remoteMessage: RemoteMessage) {
@@ -42,16 +88,107 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
         if (remoteMessage.data.isNotEmpty()) {
             val data = remoteMessage.data
             val type = data["type"] ?: "MESSAGE"
+
+            // Direct-message pushes are wake-up hints only. Never consume message bodies,
+            // ciphertext, sender names, or media URLs from FCM, including legacy message types.
+            if (com.example.util.ChatPushPayloadPolicy.requiresInboxSync(type)) {
+                val messageId = sequenceOf("message_id", "msg_id", "id")
+                    .map { data[it]?.trim().orEmpty() }
+                    .firstOrNull { it.isNotBlank() }
+                    .orEmpty()
+                val matchId = sequenceOf("match_id", "matchId")
+                    .map { data[it]?.trim().orEmpty() }
+                    .firstOrNull { it.isNotBlank() }
+                    .orEmpty()
+                val senderId = sequenceOf("sender_id", "sender_profile_id", "senderId")
+                    .map { data[it]?.trim().orEmpty() }
+                    .firstOrNull { it.isNotBlank() }
+                    .orEmpty()
+
+                // Canonical server pushes require both identifiers. A malformed canonical wake-up
+                // is ignored rather than causing an unbounded inbox scan.
+                if (type.equals("new_message", ignoreCase = true) &&
+                    (messageId.isBlank() || matchId.isBlank())
+                ) {
+                    Log.w(TAG, "Ignored metadata-only message wake-up with missing identifiers.")
+                    return
+                }
+                com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(
+                    context = applicationContext,
+                    remoteMatchId = matchId.takeIf { it.isNotBlank() },
+                    messageId = messageId.takeIf { it.isNotBlank() },
+                    senderId = senderId.takeIf { it.isNotBlank() }
+                )
+                Log.i(TAG, "Direct-chat push wake-up queued for authenticated inbox sync.")
+                return
+            }
+
+            if (type.equals("GROUP_CHAT_SYNC_WAKEUP", ignoreCase = true)) {
+                val groupId = data["group_id"].orEmpty().trim()
+                if (groupId.isNotBlank()) {
+                    GroupMessageSyncWorker.enqueue(applicationContext, groupId)
+                    Log.i(TAG, "Durable group message sync enqueued for group $groupId.")
+                } else {
+                    Log.w(TAG, "Ignored group-chat wakeup without group_id.")
+                }
+                return
+            }
             val senderOrMatchId = data["sender_id"] ?: data["match_id"] ?: "user_remote"
             val name = data["name"] ?: data["sender_name"] ?: "VibeSync Match"
             val text = data["text"] ?: data["message"] ?: data["body"] ?: "New notification"
             val photoUrl = data["photo_url"] ?: data["avatar_url"] ?: ""
-            val age = data["age"]?.toIntOrNull() ?: 24
-            val city = data["city"] ?: "Bengaluru"
-            val score = data["score"]?.toIntOrNull() ?: 94
+            val age = data["age"]?.toIntOrNull() ?: 0
+            val city = data["city"].orEmpty()
+            val score = data["score"]?.toIntOrNull() ?: 0
             val mediaType = data["media_type"] ?: "TEXT"
+            val wakeMatchId = data["match_id"].orEmpty().trim()
+            val wakeMessageId = data["message_id"].orEmpty().trim()
+            val wakeSenderId = data["sender_id"].orEmpty().trim()
+
+            if (wakeMatchId.isNotBlank() && wakeMessageId.isNotBlank()) {
+                val viewingThisChat = AppNotificationManager.isAppInForeground && (
+                    (wakeSenderId.isNotBlank() && AppNotificationManager.isUserActiveInChatWith(wakeSenderId)) ||
+                        AppNotificationManager.isUserActiveInChatWith(wakeMatchId)
+                    )
+                if (!viewingThisChat) {
+                    com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(
+                        context = applicationContext,
+                        remoteMatchId = wakeMatchId,
+                        messageId = wakeMessageId,
+                        senderId = wakeSenderId
+                    )
+                }
+                Log.i(TAG, if (viewingThisChat) {
+                    "FCM wakeup already covered by active chat UI for message_id=$wakeMessageId."
+                } else {
+                    "Targeted FCM wakeup queued for match_id=$wakeMatchId message_id=$wakeMessageId."
+                })
+                return
+            }
 
             when (type.uppercase()) {
+                "CHAT_SYNC_WAKEUP" -> {
+                    // Legacy wakeups without identifiers still pull the inbox. Notify only after
+                    // REST decryption and Room persistence, from the inbox worker.
+                    com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(applicationContext)
+                    Log.i(TAG, "Fallback inbox sync queued for a legacy FCM wake-up.")
+                }
+                "BUSINESS_BROADCAST" -> {
+                    val headline = data["title"].orEmpty().ifBlank { "Update from a business you follow" }
+                    val body = data["message"].orEmpty().ifBlank { "Open VibeSync to view this update." }
+                    val businessName = data["business_name"].orEmpty().ifBlank { "Business update" }
+                    AppNotificationManager.showMessageNotification(
+                        context = applicationContext,
+                        senderId = "business_broadcast:" + data["broadcast_id"].orEmpty(),
+                        senderName = businessName,
+                        messageText = (headline + "\n" + body).take(800),
+                        senderPhotoUrl = data["banner_url"].orEmpty(),
+                        mediaType = "BUSINESS_BROADCAST",
+                        channelId = AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES
+                    )
+                    Log.i(TAG, "Local notification posted for business broadcast " + data["broadcast_id"].orEmpty())
+                    return
+                }
                 "NEW_USER", "USER_JOINED", "JOINING" -> {
                     // One time alert inside Chat only - NO duplicate notifications for joining user
                     val database = com.example.data.database.DatingDatabase.getDatabase(applicationContext)
@@ -138,8 +275,38 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     val database = com.example.data.database.DatingDatabase.getDatabase(applicationContext)
                     val messageId = data["message_id"] ?: data["msg_id"] ?: data["id"] ?: java.util.UUID.randomUUID().toString()
                     val ciphertext = data["ciphertext"] ?: data["text"] ?: data["message"] ?: data["body"] ?: ""
-                    val senderPhone = data["sender_phone"] ?: data["sender_id"] ?: senderOrMatchId
-                    val receiverPhone = data["receiver_phone"] ?: data["receiver_id"] ?: ""
+                    val senderProfileId = sequenceOf("sender_id", "sender_profile_id", "senderId").map { data[it]?.trim().orEmpty() }.firstOrNull { it.isNotBlank() }.orEmpty()
+                    val receiverProfileId = sequenceOf("recipient_id", "recipient_profile_id", "receiver_id", "recipientId", "receiver_profile_id", "receiverId").map { data[it]?.trim().orEmpty() }.firstOrNull { it.isNotBlank() }.orEmpty()
+                    val pushMatchId = sequenceOf("match_id", "matchId").map { data[it]?.trim().orEmpty() }.firstOrNull { it.isNotBlank() }.orEmpty()
+                    val currentProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
+                    val inboundMetadata = org.json.JSONObject().apply { data.forEach { (key, value) -> put(key, value) } }
+                    val aadParticipants = com.example.util.MessageHandler.resolveAadParticipantsFromPayload(inboundMetadata, currentProfileId)
+                        ?: com.example.util.TinkCryptoManager.resolveAadParticipantIds(senderProfileId, receiverProfileId, pushMatchId, currentProfileId)
+                    val senderPhoneFallback = data["sender_phone"]?.trim().orEmpty().ifBlank { senderOrMatchId }
+                    val senderIdentity = senderProfileId.ifBlank {
+                        aadParticipants
+                            ?.let { if (currentProfileId.equals(it.first, true)) it.second else it.first }
+                            ?.takeIf { it.isNotBlank() }
+                            ?: senderPhoneFallback
+                    }
+                    val receiverPhoneFallback = data["receiver_phone"]?.trim().orEmpty()
+                    val receiverIdentity = receiverProfileId.ifBlank {
+                        aadParticipants
+                            ?.let {
+                                if (currentProfileId.equals(it.first, true) || currentProfileId.equals(it.second, true)) currentProfileId
+                                else it.second
+                            }
+                            ?.takeIf { it.isNotBlank() }
+                            ?: receiverPhoneFallback
+                    }
+                    // Room and encryption AAD must use participant profile IDs when available;
+                    // never turn a phone number into a synthetic recipient identity.
+                    val senderRoomIdentity = senderProfileId.ifBlank {
+                        aadParticipants
+                            ?.let { if (currentProfileId.equals(it.first, true)) it.second else it.first }
+                            ?.takeIf { it.isNotBlank() }
+                            ?: senderOrMatchId
+                    }
                     val timestamp = data["timestamp"]?.toLongOrNull() ?: System.currentTimeMillis()
 
                     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
@@ -148,38 +315,56 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                             if (!ciphertext.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
                                 throw SecurityException("Rejected non-Tink message payload")
                             }
+                            val participants = aadParticipants
+                                ?: throw SecurityException("Cannot resolve canonical participant context from match_id or participant IDs.")
                             val decryptedText = com.example.util.TinkCryptoManager.decryptPayload(
                                 context = applicationContext,
                                 payload = ciphertext,
-                                senderPhone = senderPhone,
-                                receiverPhone = receiverPhone
+                                senderPhone = participants.first,
+                                receiverPhone = participants.second
                             )
+                            if (decryptedText.isBlank()) {
+                                throw SecurityException("Tink decryption returned empty plaintext; delivery ACK withheld.")
+                            }
 
-                            val normSender = com.example.util.PhonebookHasher.normalizeToE164(senderPhone)
-                            val matchId = data["match_id"] ?: (if (normSender.isNotBlank()) "match_$normSender" else if (senderOrMatchId.startsWith("match_")) senderOrMatchId else "match_$senderOrMatchId")
+                            val matchedLocalConversation = database.matchDao().getMatchByProfileId(senderRoomIdentity)
+                            val fallbackMatchId = pushMatchId.ifBlank {
+                                if (senderRoomIdentity.isNotBlank() && currentProfileId.isNotBlank()) {
+                                    com.example.util.SupabaseClientManager.canonicalChatMatchId(currentProfileId, senderRoomIdentity)
+                                } else if (senderRoomIdentity.isNotBlank()) "match_$senderRoomIdentity" else senderOrMatchId
+                            }
+                            val matchId = matchedLocalConversation?.matchId ?: fallbackMatchId
 
                             val existingMsg = database.chatMessageDao().getMessageById(messageId)
-                            if (existingMsg == null) {
+                            val shouldPersistPlaintext = existingMsg == null ||
+                                existingMsg.text.isBlank() ||
+                                existingMsg.text.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)
+                            if (shouldPersistPlaintext) {
+                                // Preserve the local match key if a ciphertext placeholder was already
+                                // stored; replacing it with plaintext triggers the Room-backed chat Flow.
+                                val resolvedLocalMatchId = existingMsg?.matchId?.takeIf { it.isNotBlank() } ?: matchId
                                 val incomingEntity = com.example.data.model.ChatMessageEntity(
                                     messageId = messageId,
-                                    matchId = matchId,
-                                    senderId = normSender.ifBlank { senderOrMatchId },
+                                    matchId = resolvedLocalMatchId,
+                                    senderId = existingMsg?.senderId?.takeIf { it.isNotBlank() && it != "USER" } ?: senderRoomIdentity,
                                     text = decryptedText,
                                     mediaType = mediaType,
                                     mediaUrl = photoUrl,
                                     timestamp = timestamp,
                                     isEncrypted = true,
                                     isDelivered = true,
-                                    isRead = false
+                                    isRead = false,
+                                    deliveryState = "DELIVERED"
                                 )
-                                database.chatMessageDao().insertMessage(incomingEntity)
+                                database.chatMessageDao().upsertMessage(incomingEntity)
                                 database.messageDao().insertMessage(incomingEntity.toLocalMessage())
 
-                                val existingMatch = database.matchDao().getMatchByIdSync(matchId) ?: database.matchDao().getMatchByProfileId(normSender.ifBlank { senderOrMatchId })
+                                val existingMatch = database.matchDao().getMatchByIdSync(resolvedLocalMatchId)
+                                    ?: database.matchDao().getMatchByProfileId(senderRoomIdentity)
                                 if (existingMatch == null) {
                                     val newMatch = com.example.data.model.MatchEntity(
-                                        matchId = matchId,
-                                        profileId = normSender.ifBlank { senderOrMatchId },
+                                        matchId = resolvedLocalMatchId,
+                                        profileId = senderRoomIdentity,
                                         matchedAt = timestamp,
                                         lastMessage = decryptedText.ifBlank { if (mediaType == "VOICE") "Voice message" else "Photo" },
                                         lastMessageTime = timestamp,
@@ -197,9 +382,9 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                             }
 
                             // Execute delivery ACK back to Supabase: UPDATE public.chat_messages SET is_delivered = true WHERE id = :messageId
-                            com.example.util.SupabaseBackendManager.markMessageDelivered(messageId, senderPhone, receiverPhone)
+                            com.example.util.SupabaseBackendManager.markMessageDelivered(messageId, senderIdentity, receiverIdentity)
                         } catch (e: Exception) {
-                            Log.w(TAG, "Error processing incoming FCM E2EE message: ${e.message}")
+                            Log.e(TAG, "Error processing incoming FCM E2EE message; delivery ACK not issued: ${e.message}", e)
                         }
                     }
 
@@ -210,7 +395,7 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     } else {
                         val displayBody = if (ciphertext.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
                             try {
-                                com.example.util.TinkCryptoManager.decryptPayload(applicationContext, ciphertext, senderPhone, receiverPhone)
+                                com.example.util.TinkCryptoManager.decryptPayload(applicationContext, ciphertext, senderIdentity, receiverIdentity)
                             } catch (_: Exception) {
                                 "Encrypted message"
                             }
@@ -224,11 +409,13 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                             messageText = displayBody,
                             senderPhotoUrl = photoUrl,
                             mediaType = mediaType,
-                            channelId = if (!AppNotificationManager.isAppInForeground) {
-                                AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES
-                            } else {
-                                AppNotificationManager.CHANNEL_ID_MESSAGES
-                            }
+                            channelId = AppNotificationManager.CHANNEL_ID_CHAT_MESSAGES,
+                            conversationId = pushMatchId.ifBlank {
+                                if (senderOrMatchId.startsWith("match_", ignoreCase = true)) senderOrMatchId
+                                else "match_$senderOrMatchId"
+                            },
+                            messageId = messageId,
+                            messageTimestamp = timestamp
                         )
                     }
                 }
@@ -266,11 +453,10 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                             messageText = text,
                             senderPhotoUrl = photoUrl,
                             mediaType = mediaType,
-                            channelId = if (!AppNotificationManager.isAppInForeground) {
-                                AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES
-                            } else {
-                                AppNotificationManager.CHANNEL_ID_MESSAGES
-                            }
+                            channelId = AppNotificationManager.CHANNEL_ID_CHAT_MESSAGES,
+                            conversationId = if (senderOrMatchId.startsWith("match_", ignoreCase = true)) senderOrMatchId else "match_$senderOrMatchId",
+                            messageId = messageId,
+                            messageTimestamp = timestamp
                         )
                     }
                 }
@@ -290,9 +476,9 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     matchId = "remote_match",
                     matchName = title.substringAfter("with ", "Your New Match"),
                     matchPhotoUrl = imageUri,
-                    age = 24,
-                    city = "Bengaluru",
-                    score = 95
+                    age = 0,
+                    city = "",
+                    score = 0
                 )
             } else {
                 AppNotificationManager.showMessageNotification(
@@ -302,11 +488,7 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     messageText = body,
                     senderPhotoUrl = imageUri,
                     mediaType = "TEXT",
-                    channelId = if (!AppNotificationManager.isAppInForeground) {
-                        AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES
-                    } else {
-                        AppNotificationManager.CHANNEL_ID_MESSAGES
-                    }
+                    channelId = AppNotificationManager.CHANNEL_ID_CHAT_MESSAGES
                 )
             }
         }

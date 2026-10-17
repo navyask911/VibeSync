@@ -10,6 +10,7 @@ import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -63,6 +64,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
@@ -76,15 +78,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -115,6 +121,7 @@ import com.example.ui.theme.CoralPink
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 @Composable
 fun BusinessProfileDialog(
@@ -123,6 +130,12 @@ fun BusinessProfileDialog(
     onDismissRequest: () -> Unit
 ) {
     val context = LocalContext.current
+    val analyticsScope = rememberCoroutineScope()
+    val recordRemoteEvent: (String) -> Unit = { eventType ->
+        analyticsScope.launch {
+            com.example.util.SupabaseClientManager.recordBusinessAnalyticsEvent(business.id, eventType)
+        }
+    }
     val postsFlow = remember(business.id) { viewModel.getPostsForBusiness(business.id) }
     val posts by postsFlow.collectAsState(initial = emptyList())
     val reviewsFlow = remember(business.id) { viewModel.getBusinessReviews(business.id) }
@@ -141,6 +154,7 @@ fun BusinessProfileDialog(
     // Pure Local Room SQL: Record Profile Visit (0 Supabase Weight)
     LaunchedEffect(business.id) {
         viewModel.recordBusinessVisit(business.id)
+        recordRemoteEvent("VIEW")
     }
 
     Dialog(
@@ -200,29 +214,6 @@ fun BusinessProfileDialog(
                                     modifier = Modifier.fillMaxSize()
                                 )
                             }
-
-                            // Gradient overlays
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(100.dp)
-                                    .background(
-                                        Brush.verticalGradient(
-                                            listOf(Color.Black.copy(alpha = 0.7f), Color.Transparent)
-                                        )
-                                    )
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(120.dp)
-                                    .align(Alignment.BottomCenter)
-                                    .background(
-                                        Brush.verticalGradient(
-                                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f))
-                                        )
-                                    )
-                            )
 
                             // Swipeable Dot Indicators (if > 1 photo)
                             if (photos.size > 1) {
@@ -303,38 +294,7 @@ fun BusinessProfileDialog(
                                 }
                             }
 
-                            // Logo Emoji and Category on Banner bottom
-                            Row(
-                                modifier = Modifier
-                                    .align(Alignment.BottomStart)
-                                    .padding(16.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = MaterialTheme.colorScheme.surface,
-                                    shadowElevation = 6.dp,
-                                    modifier = Modifier.size(56.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Text(business.logoEmoji, fontSize = 28.sp)
-                                    }
-                                }
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
-                                    VerificationBadgeView(
-                                        tier = business.tierEnum,
-                                        showRank = true
-                                    )
-                                    Spacer(modifier = Modifier.height(3.dp))
-                                    Text(
-                                        text = "${business.category} • ${business.city}",
-                                        color = Color.White,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                }
-                            }
+
                         }
                     }
 
@@ -475,6 +435,26 @@ fun BusinessProfileDialog(
                                 }
                             }
 
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                color = Color(0xFF111214),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, Color(0xFF2563EB).copy(alpha = 0.55f))
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.End,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Partner Rank • ${business.tierEnum}",
+                                        color = Color(0xFF93B4FF),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
                             Spacer(modifier = Modifier.height(14.dp))
 
                             // Address & Directions
@@ -483,6 +463,7 @@ fun BusinessProfileDialog(
                                     .fillMaxWidth()
                                     .clickable {
                                         viewModel.recordBusinessNavigation(business.id)
+                                        recordRemoteEvent("LOCATION_CLICK")
                                         val geoUri = Uri.parse("geo:${business.latitude},${business.longitude}?q=${Uri.encode("${business.name}, ${business.address}")}")
                                         val mapIntent = Intent(Intent.ACTION_VIEW, geoUri)
                                         try {
@@ -545,6 +526,7 @@ fun BusinessProfileDialog(
                                 OutlinedButton(
                                     onClick = {
                                         viewModel.recordBusinessInquiry(business.id)
+                                        recordRemoteEvent("CALL_CLICK")
                                         val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${business.phoneNumber}"))
                                         context.startActivity(intent)
                                     },
@@ -559,6 +541,7 @@ fun BusinessProfileDialog(
                                 OutlinedButton(
                                     onClick = {
                                         viewModel.recordBusinessInquiry(business.id)
+                                        recordRemoteEvent("LOCATION_CLICK")
                                         val safeUrl = if (business.websiteUrl.startsWith("http")) business.websiteUrl else "https://${business.websiteUrl}"
                                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(safeUrl))
                                         context.startActivity(Intent.createChooser(intent, "Visit Website"))
@@ -577,6 +560,7 @@ fun BusinessProfileDialog(
                             Button(
                                 onClick = {
                                     viewModel.recordBusinessInquiry(business.id)
+                                    recordRemoteEvent("CHAT_INQUIRY")
                                     onDismissRequest()
                                     viewModel.startChatWithBusiness(business)
                                 },
@@ -749,7 +733,9 @@ fun BusinessProfileDialog(
                             // Tabs: Discounts & Offers vs Timeline Posts vs Verified Reviews
                             PrimaryTabRow(
                                 selectedTabIndex = selectedTab,
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier.fillMaxWidth(),
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
+                                divider = { HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)) }
                             ) {
                                 Tab(
                                     selected = selectedTab == 0,
@@ -776,11 +762,27 @@ fun BusinessProfileDialog(
                                 Tab(
                                     selected = selectedTab == 2,
                                     onClick = { selectedTab = 2 },
+                                    selectedContentColor = MaterialTheme.colorScheme.primary,
+                                    unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                     text = {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFFFFB300), modifier = Modifier.size(15.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Reviews (${reviews.size})", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = if (selectedTab == 2) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                            border = BorderStroke(1.dp, if (selectedTab == 2) MaterialTheme.colorScheme.primary.copy(alpha = 0.35f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFFFFB300), modifier = Modifier.size(15.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text(
+                                                    "Reviews (${reviews.size})",
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 11.sp,
+                                                    color = if (selectedTab == 2) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
                                         }
                                     }
                                 )
@@ -855,52 +857,73 @@ fun BusinessProfileDialog(
                             }
                         }
                         2 -> {
-                            // Verified Store Visitor Reviews (Requirement 4)
                             item {
+                                val totalRatings = reviews.size
+                                val fiveStarCount = reviews.count { it.rating.toInt().coerceIn(1, 5) == 5 }
+                                val fiveStarPercent = if (totalRatings == 0) 0 else (fiveStarCount * 100f / totalRatings).toInt()
                                 Card(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 18.dp, vertical = 8.dp),
-                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF8E1)),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFFB300)),
-                                    shape = RoundedCornerShape(14.dp)
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                                    shape = RoundedCornerShape(20.dp),
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF111214)),
+                                    border = BorderStroke(1.dp, Color(0xFF303642)),
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                                 ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(14.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth().padding(18.dp),
+                                        verticalArrangement = Arrangement.spacedBy(14.dp)
                                     ) {
-                                        Column {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFFFFB300), modifier = Modifier.size(20.dp))
-                                                Spacer(modifier = Modifier.width(4.dp))
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text("Ratings overview", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
                                                 Text(
-                                                    text = "${business.rating} / 5.0",
-                                                    fontWeight = FontWeight.ExtraBold,
-                                                    fontSize = 18.sp,
-                                                    color = Color(0xFFE65100)
+                                                    "Based on ${business.reviewCount} reviews",
+                                                    color = Color(0xFFAAB4C4),
+                                                    fontSize = 11.sp
                                                 )
-                                                Spacer(modifier = Modifier.width(8.dp))
-                                                VerificationBadgeView(tier = business.tierEnum)
                                             }
-                                            Text(
-                                                text = "Based on ${business.reviewCount} GPS-authenticated store visits",
-                                                fontSize = 11.sp,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            Button(
+                                                onClick = { showCheckInDialog = true },
+                                                shape = RoundedCornerShape(10.dp),
+                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                                            ) {
+                                                Icon(Icons.Default.RateReview, contentDescription = null, modifier = Modifier.size(15.dp))
+                                                Spacer(modifier = Modifier.width(5.dp))
+                                                Text("Rate venue", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                            verticalAlignment = Alignment.Top
+                                        ) {
+                                            BusinessMetricDonut(
+                                                modifier = Modifier.weight(1f),
+                                                progress = (business.rating.toFloat() / 5f).coerceIn(0f, 1f),
+                                                centerText = String.format(Locale.ROOT, "%.1f", business.rating),
+                                                label = "Venue rating",
+                                                detail = "out of 5.0",
+                                                accent = Color(0xFF2563EB)
+                                            )
+                                            BusinessMetricDonut(
+                                                modifier = Modifier.weight(1f),
+                                                progress = (fiveStarPercent / 100f).coerceIn(0f, 1f),
+                                                centerText = "${fiveStarPercent}%",
+                                                label = "5-star share",
+                                                detail = "${fiveStarCount} of ${totalRatings} reviews",
+                                                accent = Color(0xFF22C55E)
                                             )
                                         }
-
-                                        Button(
-                                            onClick = { showCheckInDialog = true },
-                                            shape = RoundedCornerShape(10.dp),
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE65100))
-                                        ) {
-                                            Icon(Icons.Default.RateReview, contentDescription = null, modifier = Modifier.size(14.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Check-In & Rate", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                        }
+                                        HorizontalDivider(color = Color(0xFF303642))
+                                        Text(
+                                            "The 5-star share is calculated from recorded visitor reviews.",
+                                            color = Color(0xFFAAB4C4),
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
                                     }
                                 }
                             }
@@ -1532,5 +1555,45 @@ fun CreateBusinessPostDialog(
                 }
             }
         }
+    }
+}
+
+
+@Composable
+private fun BusinessMetricDonut(
+    modifier: Modifier = Modifier,
+    progress: Float,
+    centerText: String,
+    label: String,
+    detail: String,
+    accent: Color
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Canvas(modifier = Modifier.size(88.dp)) {
+                val strokeWidth = 10.dp.toPx()
+                drawArc(
+                    color = Color(0xFF2A2F39),
+                    startAngle = -90f,
+                    sweepAngle = 360f,
+                    useCenter = false,
+                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+                )
+                drawArc(
+                    color = accent,
+                    startAngle = -90f,
+                    sweepAngle = 360f * progress.coerceIn(0f, 1f),
+                    useCenter = false,
+                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+                )
+            }
+            Text(centerText, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
+        }
+        Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        Text(detail, color = Color(0xFFAAB4C4), fontSize = 10.sp, textAlign = TextAlign.Center)
     }
 }

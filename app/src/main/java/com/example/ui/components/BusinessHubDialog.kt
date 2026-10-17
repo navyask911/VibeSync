@@ -1,6 +1,12 @@
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 package com.example.ui.components
 
+import kotlinx.coroutines.withContext
+
+import kotlinx.coroutines.Dispatchers
+
+import android.location.Geocoder
+
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
@@ -8,9 +14,13 @@ import java.util.Locale
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.DockedSearchBar
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -29,6 +39,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -95,6 +106,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -102,6 +114,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -116,6 +129,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -166,13 +180,36 @@ fun BusinessHubContent(
     onDismissRequest: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
-    var selectedTab by remember { mutableIntStateOf(initialTab) }
+    var selectedTab by remember(initialTab) { mutableIntStateOf(initialTab) }
+    var catalogScrolled by remember { mutableStateOf(false) }
     val allBusinesses by viewModel.allBusinesses.collectAsState()
-    val myCreatedBusinesses by viewModel.myCreatedBusinesses.collectAsState()
-    val primaryVenue = myCreatedBusinesses.firstOrNull() ?: allBusinesses.firstOrNull()
+    val createdBusinesses by viewModel.myCreatedBusinesses.collectAsState()
+    val preferences by viewModel.userPreferences.collectAsState()
+    val sessionProfileId = remember { com.example.util.VibeSyncSessionManager.getProfileId(context).orEmpty() }
+    val currentOwnerKeys = remember(preferences, sessionProfileId) {
+        listOf(
+            sessionProfileId,
+            preferences?.verifiedMobileNumber.orEmpty(),
+            preferences?.googleEmail.orEmpty()
+        ).map { it.trim().lowercase(java.util.Locale.ROOT) }
+            .filter { it.isNotBlank() }
+            .toSet()
+    }
+    // A user-created flag is not an ownership proof: cached public listings may be created by
+    // another account. Wallet, analytics and QR owner tools require this account's owner identity.
+    val myCreatedBusinesses = createdBusinesses.filter { business ->
+        business.isUserCreated &&
+            business.ownerUserId.trim().lowercase(java.util.Locale.ROOT) in currentOwnerKeys
+    }
+    val primaryVenue = myCreatedBusinesses.firstOrNull()
+    LaunchedEffect(myCreatedBusinesses.isEmpty(), selectedTab) {
+        // Public users can browse the catalogue or open the Join flow, not owner-only tabs.
+        if (myCreatedBusinesses.isEmpty() && selectedTab !in setOf(0, 1)) selectedTab = 0
+    }
     var selectedBusinessForProfile by remember { mutableStateOf<BusinessEntity?>(null) }
     var selectedVenueForDashboard by remember { mutableStateOf<BusinessEntity?>(null) }
     var showAdCampaignWizard by remember { mutableStateOf(false) }
+    var adCampaignBusiness by remember { mutableStateOf<BusinessEntity?>(null) }
     var activeWalletBiz by remember { mutableStateOf<BusinessEntity?>(null) }
     var activeBroadcastBiz by remember { mutableStateOf<BusinessEntity?>(null) }
     var activeDirectApiBiz by remember { mutableStateOf<BusinessEntity?>(null) }
@@ -180,7 +217,7 @@ fun BusinessHubContent(
     var activeQrStickerBiz by remember { mutableStateOf<BusinessEntity?>(null) }
     var editingBusiness by remember { mutableStateOf<BusinessEntity?>(null) }
     var globalSearchQuery by remember { mutableStateOf("") }
-    var isBusinessSearchActive by remember { mutableStateOf(false) }
+    var globalCityQuery by remember { mutableStateOf("") }
     val searchFocusRequester = remember { FocusRequester() }
 
     Surface(
@@ -217,6 +254,12 @@ fun BusinessHubContent(
                                 }
                                 Spacer(modifier = Modifier.width(4.dp))
                             }
+                            Image(
+                                painter = painterResource(id = com.example.R.drawable.ic_launcher_foreground),
+                                contentDescription = "VibeSync logo",
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
                             Column {
                                 Text(
                                     text = "VibeSync • Business Suite",
@@ -250,7 +293,7 @@ fun BusinessHubContent(
                         Spacer(modifier = Modifier.width(8.dp))
 
                         Button(
-                            onClick = { showAdCampaignWizard = true },
+                            onClick = { selectedTab = 1 },
                             colors = ButtonDefaults.buttonColors(containerColor = CoralPink),
                             elevation = ButtonDefaults.buttonElevation(defaultElevation = 3.dp),
                             shape = RoundedCornerShape(16.dp),
@@ -279,143 +322,170 @@ fun BusinessHubContent(
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // Enterprise search; filter chips remain in the content area below.
-                    DockedSearchBar(
-                        query = globalSearchQuery,
-                        onQueryChange = { query ->
-                            globalSearchQuery = query
-                            if (selectedTab != 0 && selectedTab != 2 && query.isNotBlank()) selectedTab = 0
-                        },
-                        onSearch = { isBusinessSearchActive = false },
-                        active = isBusinessSearchActive,
-                        onActiveChange = { isBusinessSearchActive = it },
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("top_pinned_search_bar"),
-                        placeholder = {
-                            Text(
-                                "Search businesses, deals, cafes, services…",
-                                fontSize = 13.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        },
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search", tint = MaterialTheme.colorScheme.primary) },
-                        trailingIcon = {
-                            if (globalSearchQuery.isNotEmpty()) {
-                                IconButton(onClick = { globalSearchQuery = "" }) {
-                                    Icon(Icons.Default.Close, contentDescription = "Clear search")
+                    if (selectedTab != 3) {
+                        AnimatedVisibility(
+                            visible = !catalogScrolled,
+                            enter = expandVertically() + fadeIn(),
+                            exit = shrinkVertically() + fadeOut()
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    OutlinedTextField(
+                                        value = globalSearchQuery,
+                                        onValueChange = { query ->
+                                            globalSearchQuery = query
+                                            if (selectedTab != 0 && selectedTab != 2 && query.isNotBlank()) selectedTab = 0
+                                        },
+                                        modifier = Modifier.weight(1f).height(40.dp).testTag("top_pinned_search_bar"),
+                                        singleLine = true,
+                                        maxLines = 1,
+                                        textStyle = MaterialTheme.typography.bodySmall,
+                                        placeholder = { Text("Search venues…", maxLines = 1, fontSize = 10.sp) },
+                                        shape = RoundedCornerShape(10.dp),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = Color(0xFF2563EB),
+                                            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                                            focusedContainerColor = MaterialTheme.colorScheme.surface,
+                                            unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                                        )
+                                    )
+                                    if (selectedTab == 0) {
+                                        OutlinedTextField(
+                                            value = globalCityQuery,
+                                            onValueChange = { globalCityQuery = it },
+                                            modifier = Modifier.weight(0.5f).height(40.dp).testTag("find_inline_city_selector"),
+                                            singleLine = true,
+                                            maxLines = 1,
+                                            textStyle = MaterialTheme.typography.bodySmall,
+                                            placeholder = { Text("City", maxLines = 1, fontSize = 10.sp) },
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedBorderColor = Color(0xFF2563EB),
+                                                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                                                focusedContainerColor = MaterialTheme.colorScheme.surface,
+                                                unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                                            )
+                                        )
+                                    }
+                                }
+                                if (globalSearchQuery.isNotBlank()) {
+                                    Text(
+                                        "Searching businesses, services and listings",
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
                                 }
                             }
                         }
-                    ) {
-                        if (globalSearchQuery.isNotBlank()) {
-                            Text(
-                                "Searching businesses, services and listings",
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                        Spacer(modifier = Modifier.height(6.dp))
                     }
 
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    // Wallet & Broadcast Dropdown Summary Chip
-                    val primaryVenue = myCreatedBusinesses.firstOrNull() ?: allBusinesses.firstOrNull()
-                    val walletPoints = primaryVenue?.walletPoints ?: 500
-                    val walletInr = walletPoints * 0.01
-                    var showWalletDropdown by remember { mutableStateOf(false) }
-
-                    Box(modifier = Modifier.fillMaxWidth()) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color(0xFFE8F5E9),
-                            border = BorderStroke(1.dp, Color(0xFFA5D6A7)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { showWalletDropdown = !showWalletDropdown }
-                                .testTag("chip_wallet_dropdown")
-                        ) {
-                            Row(
+                    if (selectedTab != 3 && myCreatedBusinesses.isNotEmpty()) {
+                        // Wallet & Broadcast Dropdown Summary Chip
+                        val primaryVenue = myCreatedBusinesses.firstOrNull()
+                        val walletPoints = primaryVenue?.walletPoints ?: 500
+                        val walletInr = walletPoints * 0.01
+                        var showWalletDropdown by remember { mutableStateOf(false) }
+    
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color(0xFFE8F5E9),
+                                border = BorderStroke(1.dp, Color(0xFFA5D6A7)),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                    .clickable { showWalletDropdown = !showWalletDropdown }
+                                    .testTag("chip_wallet_dropdown")
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("💳", fontSize = 13.sp)
-                                    Spacer(modifier = Modifier.width(6.dp))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("💳", fontSize = 13.sp)
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "Business Wallet: $walletPoints Pts (₹${String.format(Locale.getDefault(), "%.2f", walletInr)}) ▾",
+                                            fontFamily = FontFamily.Serif,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp,
+                                            color = Color(0xFF1B5E20)
+                                        )
+                                    }
                                     Text(
-                                        text = "Business Wallet: $walletPoints Pts (₹${String.format(Locale.getDefault(), "%.2f", walletInr)}) ▾",
+                                        text = if (showWalletDropdown) "Close Menu ▴" else "Manage Hub ▾",
                                         fontFamily = FontFamily.Serif,
+                                        fontSize = 10.sp,
                                         fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp,
-                                        color = Color(0xFF1B5E20)
+                                        color = Color(0xFF2E7D32)
                                     )
                                 }
-                                Text(
-                                    text = if (showWalletDropdown) "Close Menu ▴" else "Manage Hub ▾",
-                                    fontFamily = FontFamily.Serif,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF2E7D32)
+                            }
+    
+                            DropdownMenu(
+                                expanded = showWalletDropdown,
+                                onDismissRequest = { showWalletDropdown = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("⚡ Top-Up Points (+500 Pts)", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold) },
+                                    onClick = {
+                                        showWalletDropdown = false
+                                        activeWalletBiz = primaryVenue ?: BusinessEntity(
+                                            id = "biz_default",
+                                            name = "My Business",
+                                            category = "Partner",
+                                            description = "VibeSync Partner Venue",
+                                            address = "Local Hub",
+                                            walletPoints = 500
+                                        )
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("📢 Broadcast to Followers", fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold) },
+                                    onClick = {
+                                        showWalletDropdown = false
+                                        activeBroadcastBiz = primaryVenue ?: BusinessEntity(
+                                            id = "biz_default",
+                                            name = "My Business",
+                                            category = "Partner",
+                                            description = "VibeSync Partner Venue",
+                                            address = "Local Hub",
+                                            walletPoints = 500
+                                        )
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.Campaign, contentDescription = null) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("🏷️ Print Counter QR & Stickers", fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold) },
+                                    onClick = {
+                                        showWalletDropdown = false
+                                        activeQrStickerBiz = primaryVenue ?: allBusinesses.firstOrNull() ?: BusinessEntity(
+                                            id = "biz_default",
+                                            name = "My Business",
+                                            category = "Partner",
+                                            description = "VibeSync Partner Venue",
+                                            address = "Local Hub",
+                                            walletPoints = 500
+                                        )
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.QrCode2, contentDescription = null) }
                                 )
                             }
                         }
-
-                        DropdownMenu(
-                            expanded = showWalletDropdown,
-                            onDismissRequest = { showWalletDropdown = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("⚡ Top-Up Points (+500 Pts)", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold) },
-                                onClick = {
-                                    showWalletDropdown = false
-                                    activeWalletBiz = primaryVenue ?: BusinessEntity(
-                                        id = "biz_default",
-                                        name = "My Business",
-                                        category = "Partner",
-                                        description = "VibeSync Partner Venue",
-                                        address = "Local Hub",
-                                        walletPoints = 500
-                                    )
-                                },
-                                leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("📢 Broadcast to Followers", fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold) },
-                                onClick = {
-                                    showWalletDropdown = false
-                                    activeBroadcastBiz = primaryVenue ?: BusinessEntity(
-                                        id = "biz_default",
-                                        name = "My Business",
-                                        category = "Partner",
-                                        description = "VibeSync Partner Venue",
-                                        address = "Local Hub",
-                                        walletPoints = 500
-                                    )
-                                },
-                                leadingIcon = { Icon(Icons.Default.Campaign, contentDescription = null) }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("🏷️ Print Counter QR & Stickers", fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold) },
-                                onClick = {
-                                    showWalletDropdown = false
-                                    activeQrStickerBiz = primaryVenue ?: allBusinesses.firstOrNull() ?: BusinessEntity(
-                                        id = "biz_default",
-                                        name = "My Business",
-                                        category = "Partner",
-                                        description = "VibeSync Partner Venue",
-                                        address = "Local Hub",
-                                        walletPoints = 500
-                                    )
-                                },
-                                leadingIcon = { Icon(Icons.Default.QrCode2, contentDescription = null) }
-                            )
-                        }
+    
+                        Spacer(modifier = Modifier.height(6.dp))
+    
+    
                     }
-
-                    Spacer(modifier = Modifier.height(6.dp))
 
                     // Compact Segmented Navigation Tabs
                     Row(
@@ -425,13 +495,14 @@ fun BusinessHubContent(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        val tabs = listOf(
-                            Triple(0, "Nearest (${allBusinesses.size})", Icons.Default.Store),
-                            Triple(1, "Join with Us", Icons.Default.AddBusiness),
-                            Triple(2, "My Venues (${myCreatedBusinesses.size})", Icons.Default.Business),
-                            Triple(3, "Analytics", Icons.Default.ShowChart),
-                            Triple(4, "QR Stickers", Icons.Default.QrCode2)
-                        )
+                        val tabs = buildList {
+                            add(Triple(0, "Nearest (${allBusinesses.size})", Icons.Default.Store))
+                            if (myCreatedBusinesses.isNotEmpty()) {
+                                add(Triple(2, "My Venues (${myCreatedBusinesses.size})", Icons.Default.Business))
+                                add(Triple(3, "Analytics", Icons.Default.ShowChart))
+                                add(Triple(4, "QR Stickers", Icons.Default.QrCode2))
+                            }
+                        }
                         tabs.forEach { (index, title, icon) ->
                             val isSelected = selectedTab == index
                             Surface(
@@ -474,9 +545,11 @@ fun BusinessHubContent(
                     0 -> NearestBusinessesTab(
                         businesses = allBusinesses,
                         searchQuery = globalSearchQuery,
+                        cityQuery = globalCityQuery,
                         onSearchQueryChange = { globalSearchQuery = it },
                         onFollow = { viewModel.toggleFollowBusiness(it.id) },
-                        onSelect = { selectedBusinessForProfile = it }
+                        onSelect = { selectedBusinessForProfile = it },
+                        onCatalogScrolled = { catalogScrolled = it }
                     )
                     1 -> AddWithUsTab(
                         viewModel = viewModel,
@@ -499,15 +572,23 @@ fun BusinessHubContent(
                         onRestore = { viewModel.restoreUserBusinesses() }
                     )
                         3 -> {
-                            val activeVenue = selectedVenueForDashboard 
-                                ?: myCreatedBusinesses.firstOrNull() 
-                                ?: allBusinesses.firstOrNull()
-                            if (activeVenue != null) {
+                            val activeVenue = selectedVenueForDashboard
+                                ?.takeIf { selected -> myCreatedBusinesses.any { it.id == selected.id } }
+                                ?: myCreatedBusinesses.firstOrNull()
+                            if (activeVenue != null && myCreatedBusinesses.isNotEmpty()) {
                                 BusinessDashboardScreen(
                                     venue = activeVenue,
-                                    allVenues = if (myCreatedBusinesses.isNotEmpty()) myCreatedBusinesses else allBusinesses,
+                                    allVenues = myCreatedBusinesses,
                                     onSelectVenue = { selectedVenueForDashboard = it },
-                                    onNavigateBack = { selectedTab = 0 }
+                                    onNavigateBack = { selectedTab = 0 },
+                                    onOpenBroadcast = { activeBroadcastBiz = activeVenue },
+                                    onOpenWallet = { activeWalletBiz = activeVenue },
+                                    onManageListing = { editingBusiness = activeVenue },
+                                    onUpgradeBadge = { activeUpgradeBiz = activeVenue },
+                                    onAdvertiseWithUs = {
+                                        adCampaignBusiness = activeVenue
+                                        showAdCampaignWizard = true
+                                    }
                                 )
                             } else {
                                 Box(
@@ -519,7 +600,7 @@ fun BusinessHubContent(
                             }
                         }
                         4 -> {
-                            val activeVenue = primaryVenue ?: allBusinesses.firstOrNull()
+                            val activeVenue = primaryVenue
                             if (activeVenue != null) {
                                 Box(
                                     modifier = Modifier
@@ -586,10 +667,13 @@ fun BusinessHubContent(
         }
 
     if (showAdCampaignWizard) {
-        AdCampaignWizardDialog(
+        AdvertiseWithUsScreen(
             viewModel = viewModel,
-            business = myCreatedBusinesses.firstOrNull(),
-            onDismissRequest = { showAdCampaignWizard = false }
+            business = adCampaignBusiness ?: myCreatedBusinesses.firstOrNull(),
+            onDismissRequest = {
+                showAdCampaignWizard = false
+                adCampaignBusiness = null
+            }
         )
     }
 
@@ -667,12 +751,19 @@ fun BusinessHubContent(
 private fun NearestBusinessesTab(
     businesses: List<BusinessEntity>,
     searchQuery: String = "",
+    cityQuery: String = "",
     onSearchQueryChange: (String) -> Unit = {},
     onFollow: (BusinessEntity) -> Unit,
-    onSelect: (BusinessEntity) -> Unit
+    onSelect: (BusinessEntity) -> Unit,
+    onCatalogScrolled: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val venueListState = rememberLazyListState()
+    val isVenueListScrolled by remember { derivedStateOf {
+        venueListState.firstVisibleItemIndex > 0 || venueListState.firstVisibleItemScrollOffset > 72
+    } }
+    LaunchedEffect(isVenueListScrolled) { onCatalogScrolled(isVenueListScrolled) }
 
     var selectedCategory by remember { mutableStateOf(BusinessCategories.ALL) }
     var selectedSubCategory by remember { mutableStateOf<String?>(null) }
@@ -734,13 +825,14 @@ private fun NearestBusinessesTab(
     }
 
     // Filter by Search Query & Category / Subcategory
-    val filteredBusinesses = remember(processedBusinesses, searchQuery, selectedCategory, selectedSubCategory) {
+    val filteredBusinesses = remember(processedBusinesses, searchQuery, cityQuery, selectedCategory, selectedSubCategory) {
         processedBusinesses.filter { biz ->
             val matchesQuery = searchQuery.isBlank() ||
                     biz.name.contains(searchQuery, ignoreCase = true) ||
                     biz.tagline.contains(searchQuery, ignoreCase = true) ||
                     biz.address.contains(searchQuery, ignoreCase = true) ||
-                    biz.category.contains(searchQuery, ignoreCase = true)
+                    biz.category.contains(searchQuery, ignoreCase = true) ||
+                    biz.city.contains(searchQuery, ignoreCase = true)
 
             val matchesCat = BusinessCategories.matchesCategory(
                 bizCategory = biz.category,
@@ -750,92 +842,21 @@ private fun NearestBusinessesTab(
                 selectedSubCategory = selectedSubCategory
             )
 
-            matchesQuery && matchesCat
+            val matchesCity = cityQuery.isBlank() ||
+                biz.city.contains(cityQuery.trim(), ignoreCase = true) ||
+                biz.address.contains(cityQuery.trim(), ignoreCase = true)
+            matchesQuery && matchesCat && matchesCity
         }
     }
 
     LazyColumn(
+        state = venueListState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
-            // Collapsible Location & Sorting Info Accordion Drawer
-            var showLocationAccordion by remember { mutableStateOf(false) }
-
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { showLocationAccordion = !showLocationAccordion }
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.LocationOn, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "📍 Live GPS: Bengaluru (${String.format(Locale.getDefault(), "%.2f", currentCoordinate.latitude)}, ${String.format(Locale.getDefault(), "%.2f", currentCoordinate.longitude)})",
-                                fontFamily = FontFamily.Serif,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp
-                            )
-                        }
-                        Text(
-                            text = if (showLocationAccordion) "Hide Info ▴" else "Location & Sorting Info ▾",
-                            fontFamily = FontFamily.Serif,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-
-                    if (showLocationAccordion) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        HorizontalDivider()
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Sorting Priority Legend:", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                Text(
-                                    "1. Gold Verified Spots\n2. Silver Verified Venues\n3. Blue Tick Verified\n4. Proximity & Rating",
-                                    fontFamily = FontFamily.Serif,
-                                    fontSize = 10.sp,
-                                    lineHeight = 14.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Button(
-                                onClick = { refreshLocation() },
-                                shape = RoundedCornerShape(16.dp),
-                                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                modifier = Modifier.height(32.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                            ) {
-                                if (isGpsRefreshing) {
-                                    CircularProgressIndicator(color = Color.White, modifier = Modifier.size(12.dp))
-                                } else {
-                                    Text("Locate Me", fontFamily = FontFamily.Serif, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
+            // 1. Horizontal Category Bar        item {
             // 1. Horizontal Category Bar (All + 5 Parent Categories with dropdown sub-navigation)
             Row(
                 modifier = Modifier
@@ -1060,90 +1081,20 @@ private fun NearestBusinessesTab(
         }
 
         item {
-            // 3. Real-Time GPS Proximity Status & Counter Bar
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = if (currentCoordinate.isRealTimeGps) Color(0xFFE8F5E9) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-                border = if (currentCoordinate.isRealTimeGps) BorderStroke(1.dp, Color(0xFF81C784)) else null,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(
-                            if (currentCoordinate.isRealTimeGps) Icons.Default.MyLocation else Icons.Default.NearMe,
-                            contentDescription = null,
-                            tint = if (currentCoordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(14.dp)
+            UserLocationTag(
+                coordinate = currentCoordinate,
+                filteredVenueCount = filteredBusinesses.size,
+                hasLocationPermission = hasLocationPermission,
+                onEnableGps = {
+                    permissionLauncher.launch(
+                        arrayOf(
+                            android.Manifest.permission.ACCESS_FINE_LOCATION,
+                            android.Manifest.permission.ACCESS_COARSE_LOCATION
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Column {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = if (currentCoordinate.isRealTimeGps) "📍 Live GPS: ${currentCoordinate.label}" else "📍 ${currentCoordinate.label}",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (currentCoordinate.isRealTimeGps) Color(0xFF1B5E20) else MaterialTheme.colorScheme.onSurface
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Surface(
-                                    shape = RoundedCornerShape(4.dp),
-                                    color = if (currentCoordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outlineVariant
-                                ) {
-                                    Text(
-                                        text = if (currentCoordinate.isRealTimeGps) "PROXIMITY GPS" else "DEFAULT COORDS",
-                                        color = Color.White,
-                                        fontSize = 8.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                    )
-                                }
-                            }
-                            Text(
-                                text = "Priority: ⭐ Gold > 🛡️ Silver > ✓ Blue Tick > Standard, then Rating & GPS Proximity • ${filteredBusinesses.size} venues",
-                                fontSize = 10.sp,
-                                color = if (currentCoordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    if (!hasLocationPermission) {
-                        OutlinedButton(
-                            onClick = {
-                                permissionLauncher.launch(
-                                    arrayOf(
-                                        android.Manifest.permission.ACCESS_FINE_LOCATION,
-                                        android.Manifest.permission.ACCESS_COARSE_LOCATION
-                                    )
-                                )
-                            },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                            modifier = Modifier.height(28.dp),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("Enable GPS", fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                        }
-                    } else {
-                        IconButton(
-                            onClick = { refreshLocation() },
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Refresh,
-                                contentDescription = "Refresh GPS Location",
-                                tint = if (currentCoordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    }
-                }
-            }
+                    )
+                },
+                onRefreshGps = { refreshLocation() }
+            )
         }
 
         if (filteredBusinesses.isEmpty()) {
@@ -1205,148 +1156,116 @@ private fun BusinessListItemCard(
     onFollow: () -> Unit,
     onSelect: () -> Unit
 ) {
+    val obsidian = Color(0xFF111214)
+    val sapphire = Color(0xFF2563EB)
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onSelect() }
             .testTag("business_list_item_${business.id}"),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        colors = CardDefaults.cardColors(containerColor = obsidian),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         shape = RoundedCornerShape(18.dp)
     ) {
-        Column {
-            // Thumbnail Banner with Badges
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(130.dp)
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // Clean photo region: the venue image has no text, badge, gradient or metric overlays.
+            AsyncImage(
+                model = business.bannerUrl.ifBlank {
+                    "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=1000&q=80"
+                },
+                contentDescription = "${business.name} venue photo",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxWidth().height(160.dp).clickable { onSelect() }
+            )
+
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(9.dp)
             ) {
-                AsyncImage(
-                    model = business.bannerUrl.ifBlank { "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=800&q=80" },
-                    contentDescription = business.name,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-
-                // Overlay
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(Color.Black.copy(alpha = 0.4f), Color.Black.copy(alpha = 0.7f))
-                            )
-                        )
-                )
-
-                // Verification Badge, Distance, and Customer Star Rating
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        VerificationBadgeView(tier = business.tierEnum, showRank = true)
-
-                        Surface(
-                            color = Color.Black.copy(alpha = 0.75f),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(Icons.Default.LocationOn, contentDescription = null, tint = Color(0xFFFF5252), modifier = Modifier.size(12.dp))
-                                Spacer(modifier = Modifier.width(3.dp))
-                                Text("${business.distanceKm} km", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
-
-                    Surface(
-                        color = Color.Black.copy(alpha = 0.75f),
-                        shape = RoundedCornerShape(10.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFFFFD54F), modifier = Modifier.size(12.dp))
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text("${business.rating} (${business.reviewCount})", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-
-                // Business Name & Category on bottom of banner
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(business.logoEmoji, fontSize = 20.sp)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = business.name,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
                             color = Color.White,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
                             text = "${business.category} • ${business.city}",
-                            fontSize = 10.sp,
-                            color = Color.White.copy(alpha = 0.8f)
+                            color = Color(0xFFB9C4D5),
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Text(text = business.logoEmoji, fontSize = 22.sp, modifier = Modifier.padding(start = 8.dp))
+                }
+
+                if (business.tagline.isNotBlank()) {
+                    Text(
+                        text = business.tagline,
+                        color = Color(0xFFD0D6E0),
+                        fontSize = 12.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Star, contentDescription = "Rating", tint = Color(0xFFFBBF24), modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "${String.format(java.util.Locale.ROOT, "%.1f", business.rating)} • ${business.reviewCount} reviews",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.LocationOn, contentDescription = "Distance", tint = sapphire, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "${String.format(java.util.Locale.ROOT, "%.1f", business.distanceKm)} km away",
+                            color = Color(0xFFD0D6E0),
+                            fontSize = 11.sp
                         )
                     }
                 }
-            }
 
-            // Body content
-            Column(modifier = Modifier.padding(14.dp)) {
                 if (business.activeOfferSummary.isNotBlank()) {
                     Surface(
-                        color = Color(0xFFFFF3E0),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFFB300)),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Color(0xFF17243D),
+                        shape = RoundedCornerShape(10.dp)
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.LocalOffer, contentDescription = null, tint = Color(0xFFE65100), modifier = Modifier.size(14.dp))
+                            Icon(Icons.Default.LocalOffer, contentDescription = "Offer", tint = sapphire, modifier = Modifier.size(15.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = business.activeOfferSummary,
-                                color = Color(0xFFBF360C),
+                                color = Color.White,
                                 fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.height(10.dp))
                 }
-
-                Text(
-                    text = business.tagline,
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1354,18 +1273,15 @@ private fun BusinessListItemCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "👥 ${business.followerCount} followers",
+                        text = "${business.followerCount} followers",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = Color(0xFF9CA8B9)
                     )
-
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = onFollow,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (business.isFollowed) Color(0xFF2E7D32) else Color(0xFFE91E63)
-                            ),
+                            colors = ButtonDefaults.buttonColors(containerColor = if (business.isFollowed) Color(0xFF1D4ED8) else sapphire),
                             shape = RoundedCornerShape(10.dp),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                         ) {
@@ -1377,15 +1293,28 @@ private fun BusinessListItemCard(
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(if (business.isFollowed) "Following" else "Follow", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
-
                         OutlinedButton(
                             onClick = onSelect,
+                            border = BorderStroke(1.dp, sapphire),
                             shape = RoundedCornerShape(10.dp),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                         ) {
-                            Text("View Offers", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text("View Offers", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().testTag("partner_rank_footer"),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Partner Rank • ${business.tierEnum}",
+                        color = Color(0xFF93B4FF),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }
@@ -2277,7 +2206,15 @@ private fun MyBusinessesTab(
                             Text(biz.logoEmoji, fontSize = 28.sp)
                             Spacer(modifier = Modifier.width(10.dp))
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(biz.name, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                Text(
+                                    text = biz.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = Color(0xFF1E1E1E),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 16.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                                 Text("${biz.category} • ${biz.city}", fontFamily = FontFamily.Serif, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Column(horizontalAlignment = Alignment.End) {
@@ -2697,6 +2634,105 @@ fun CreateOfferDialog(
                 ) {
                     Text("Publish Offer & Broadcast Banner ✨", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 }
+            }
+        }
+    }
+}
+
+
+/** The single location badge used by Find / Nearby Businesses. */
+@Composable
+private fun UserLocationTag(
+    coordinate: GpsCoordinate,
+    filteredVenueCount: Int,
+    hasLocationPermission: Boolean,
+    onEnableGps: () -> Unit,
+    onRefreshGps: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = if (coordinate.isRealTimeGps) Color(0xFFE8F5E9) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+        border = if (coordinate.isRealTimeGps) BorderStroke(1.dp, Color(0xFF81C784)) else null,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Icon(
+                        imageVector = if (coordinate.isRealTimeGps) Icons.Default.MyLocation else Icons.Default.NearMe,
+                        contentDescription = null,
+                        tint = if (coordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = if (coordinate.isRealTimeGps) "Current Location: ${coordinate.label}" else "Search Area: ${coordinate.label}",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (coordinate.isRealTimeGps) Color(0xFF1B5E20) else MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = if (coordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outlineVariant
+                            ) {
+                                Text(
+                                    text = if (coordinate.isRealTimeGps) "GPS ACTIVE" else "SEARCH AREA",
+                                    color = Color.White,
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                        Text(
+                            text = "Priority: Gold > Silver > Blue Tick > Standard • $filteredVenueCount venues",
+                            fontSize = 10.sp,
+                            color = if (coordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                if (!hasLocationPermission) {
+                    OutlinedButton(
+                        onClick = onEnableGps,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.height(28.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) { Text("Enable GPS", fontSize = 10.sp, fontWeight = FontWeight.Bold) }
+                } else {
+                    IconButton(
+                        onClick = onRefreshGps,
+                        modifier = Modifier.size(32.dp).clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                    ) {
+                        Icon(
+                            Icons.Default.Refresh,
+                            contentDescription = "Refresh GPS Location",
+                            tint = if (coordinate.isRealTimeGps) Color(0xFF2E7D32) else MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
+            if (coordinate.isRealTimeGps) {
+                Text(
+                    text = "GPS coordinates: ${String.format(java.util.Locale.ROOT, "%.6f", coordinate.latitude)}, ${String.format(java.util.Locale.ROOT, "%.6f", coordinate.longitude)}",
+                    modifier = Modifier.fillMaxWidth().padding(top = 2.dp, end = 4.dp),
+                    textAlign = TextAlign.End,
+                    fontSize = 9.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                    maxLines = 1
+                )
             }
         }
     }

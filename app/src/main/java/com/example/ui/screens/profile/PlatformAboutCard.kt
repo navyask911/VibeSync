@@ -1,6 +1,8 @@
 package com.example.ui.screens.profile
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -115,10 +117,16 @@ fun PlatformAboutCard(
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "Supported private-message flows use Google Tink encryption; delivery and security metadata may still be processed.",
+                            text = "Supported private-message flows use Google Tink encryption; delivery, timing, routing and security metadata may still be processed.",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Image(painter = painterResource(id = com.example.R.drawable.ic_google_tink_mark), contentDescription = "Google Tink encryption mark", modifier = Modifier.size(28.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Google Tink • Encryption primitives", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
 
@@ -206,6 +214,18 @@ fun PlatformAboutCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         lineHeight = 16.sp
                     )
+                }
+            }
+
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("Grievance & Compliance Officer", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+                    Text("Vibesyncro Technologies Pvt Ltd", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface)
+                    Text("Platform: VibeSync Social App", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Official contact number: +91-XXXXXXXXXX (placeholder; replace before public launch)", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }

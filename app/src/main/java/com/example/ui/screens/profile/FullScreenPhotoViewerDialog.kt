@@ -1,5 +1,6 @@
 package com.example.ui.screens.profile
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
@@ -25,7 +26,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
+import coil.request.CachePolicy
+import coil.request.ImageRequest
+import androidx.compose.ui.platform.LocalContext
 import com.example.ui.theme.VibeSyncTeal
 
 @Composable
@@ -35,6 +39,43 @@ fun FullScreenPhotoViewerDialog(
     subtitle: String = "Full Resolution View",
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
+    val normalizedPhotoReference = remember(photoUrl) {
+        com.example.util.AvatarImageSupport.normalizeReference(photoUrl)
+    }
+    val encryptedPhoto = remember(normalizedPhotoReference) {
+        normalizedPhotoReference.startsWith("vibesync-avatar-enc://")
+    }
+    var decryptedPhoto by remember(normalizedPhotoReference) { mutableStateOf<Bitmap?>(null) }
+    var photoResolved by remember(normalizedPhotoReference) { mutableStateOf(!encryptedPhoto) }
+    LaunchedEffect(normalizedPhotoReference) {
+        if (encryptedPhoto) {
+            photoResolved = false
+            decryptedPhoto = com.example.util.ProfileAvatarStorageManager
+                .resolveAvatarForDisplay(context, normalizedPhotoReference, 0L)
+            photoResolved = true
+        } else {
+            decryptedPhoto = null
+            photoResolved = true
+        }
+    }
+    val photoRequest = remember(normalizedPhotoReference, decryptedPhoto) {
+        when {
+            decryptedPhoto != null -> ImageRequest.Builder(context)
+                .data(decryptedPhoto)
+                .diskCachePolicy(CachePolicy.DISABLED)
+                .memoryCachePolicy(CachePolicy.DISABLED)
+                .crossfade(true)
+                .build()
+            !encryptedPhoto && normalizedPhotoReference.isNotBlank() -> ImageRequest.Builder(context)
+                .data(normalizedPhotoReference)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .diskCachePolicy(CachePolicy.ENABLED)
+                .crossfade(true)
+                .build()
+            else -> null
+        }
+    }
     var scale by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
@@ -71,21 +112,30 @@ fun FullScreenPhotoViewerDialog(
                     },
                 contentAlignment = Alignment.Center
             ) {
-                if (photoUrl.isNotBlank()) {
-                    AsyncImage(
-                        model = photoUrl,
+                if (photoRequest != null) {
+                    SubcomposeAsyncImage(
+                        model = photoRequest,
                         contentDescription = title,
                         contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .fillMaxHeight(0.82f)
-                            .graphicsLayer(
-                                scaleX = scale,
-                                scaleY = scale,
-                                translationX = offsetX,
-                                translationY = offsetY
-                            )
+                        modifier = Modifier.fillMaxWidth().fillMaxHeight(0.82f).graphicsLayer(
+                            scaleX = scale, scaleY = scale, translationX = offsetX, translationY = offsetY
+                        ),
+                        loading = {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(color = VibeSyncTeal)
+                            }
+                        },
+                        error = {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                                Icon(Icons.Default.Person, contentDescription = null, tint = VibeSyncTeal, modifier = Modifier.size(72.dp))
+                                Spacer(Modifier.height(12.dp))
+                                Text("Photo unavailable", color = Color.White, fontWeight = FontWeight.SemiBold)
+                                Text("Check your connection or choose another photo.", color = Color.LightGray, textAlign = TextAlign.Center)
+                            }
+                        }
                     )
+                } else if (!photoResolved) {
+                    CircularProgressIndicator(color = VibeSyncTeal)
                 } else {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,

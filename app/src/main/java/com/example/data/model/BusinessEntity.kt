@@ -58,7 +58,10 @@ data class BusinessEntity(
     val whatsappBusinessNumber: String = "",
     val whatsappWabaId: String = "",
     val whatsappApiKey: String = "",
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val isPublished: Boolean = true,
+    val isCuratedLandmark: Boolean = false,
+    val landmarkCategory: String = "LOCAL_FAVORITE"
 )
 
 val BusinessEntity.tierEnum: VerificationTier

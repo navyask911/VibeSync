@@ -16,8 +16,8 @@ object SupabaseClientProvider {
 
     private const val TAG = "SupabaseClientProvider"
 
-    const val SUPABASE_URL = "https://imhcbgpvjwersbnlgwzq.supabase.co"
-    const val SUPABASE_ANON_KEY = "sb_publishable_U1jQSTm-S9YNQxx7RHPl-Q_w_Up-RBe"
+    val SUPABASE_URL: String = SupabaseClientManager.SUPABASE_URL
+    val SUPABASE_ANON_KEY: String = SupabaseClientManager.SUPABASE_ANON_KEY
 
     val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
@@ -42,8 +42,10 @@ object SupabaseClientProvider {
         val builder = Request.Builder()
             .url(url)
             .addHeader("apikey", SUPABASE_ANON_KEY)
-            .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
+            .addHeader("Authorization", "Bearer ${VibeSyncSessionManager.getAuthorizationToken(SUPABASE_ANON_KEY)}")
             .addHeader("Content-Type", "application/json")
+
+        VibeSyncSessionManager.getToken()?.let { builder.addHeader("x-vibesync-session", it) }
 
         if (preferHeader != null) {
             builder.addHeader("Prefer", preferHeader)

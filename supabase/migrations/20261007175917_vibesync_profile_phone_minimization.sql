@@ -1,0 +1,5 @@
+-- Legacy migration ledger marker retained for the already-applied production schema.
+-- The original SQL is no longer in this repository's migration history. This file intentionally
+-- contains no statements: changing the ledger version could cause a duplicate schema migration.
+-- Replace with an audited schema-baseline migration only through deliberate migration-history
+-- reconciliation, not by reintroducing an old one-off SQL script.

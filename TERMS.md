@@ -28,11 +28,9 @@ You grant VibeSync only the operational rights necessary to host, transmit, rend
 
 ## 5. Private messaging and encryption
 
-Encrypted messaging is intended to protect message content within the implemented protocol.
+![Google Tink encryption disclosure mark](docs/assets/google-tink-mark.svg)
 
-Security depends on correct software, trusted devices, account authentication, recipient identity, key state and the user's own device security.
-
-No claim is made that communications are invulnerable.
+VibeSync uses Google Tink cryptographic primitives in supported encrypted-message flows. Encryption depends on correct software, trusted devices, account authentication, recipient identity, key state and the user's own device security. Delivery, timing, routing and other required metadata may still be processed by service infrastructure. No claim is made that communications are invulnerable, and this disclosure does not replace an independent security review.
 
 ## 6. Contact discovery
 
@@ -106,7 +104,16 @@ VibeSync source code, architecture, UI/UX, branding, business logic and document
 
 Third-party software remains governed by its own licenses.
 
-## 17. Legal review
+## 17. Grievance and compliance
+
+**Grievance & Compliance Officer**  
+**Vibesyncro Technologies Pvt Ltd**  
+**Platform:** VibeSync Social App  
+**Official contact number:** [To be published: +91-XXXXXXXXXX]
+
+Replace this placeholder with a monitored official contact number before public launch. Do not publish a personal number in its place.
+
+## 18. Legal review
 
 These Terms are a product-policy baseline and should receive jurisdiction-specific legal review before public commercial launch.
 

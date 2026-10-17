@@ -31,7 +31,7 @@ object QrCodeGeneratorHelper {
         return try {
             val hints = EnumMap<EncodeHintType, Any>(EncodeHintType::class.java).apply {
                 put(EncodeHintType.ERROR_CORRECTION, ErrorCorrectionLevel.H)
-                put(EncodeHintType.MARGIN, 1)
+                put(EncodeHintType.MARGIN, 2)
                 put(EncodeHintType.CHARACTER_SET, "UTF-8")
             }
 

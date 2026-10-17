@@ -2,6 +2,7 @@ package com.example.data.repository
 
 import android.content.Context
 import android.util.Log
+import androidx.room.withTransaction
 import com.example.data.database.DatingDatabase
 import com.example.data.model.BusinessEntity
 import com.example.data.model.BusinessPostEntity
@@ -28,6 +29,8 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.example.util.FirebaseBackendSyncManager
 import com.example.util.SystemHealthDiagnosticsManager
 import com.example.util.backup.BackupScheduler
+import com.example.util.backup.RoomDatabaseBackupHelper
+import com.example.util.backup.DriveBackupSecretStore
 import com.example.util.backup.ChatBackupCryptoHelper
 import com.example.util.backup.ChatBackupPayload
 import com.example.util.backup.DriveBackupMetadata
@@ -37,6 +40,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -83,7 +87,67 @@ class SocialConnectRepository(
     init {
         appScope.launch(Dispatchers.IO) {
             purgeGhostNullData()
+            seedCuratedLandmarks()
+            refreshPublishedBusinessDirectory()
         }
+    }
+
+    private suspend fun refreshPublishedBusinessDirectory() {
+        val remote = com.example.util.SupabaseClientManager.fetchPublishedBusinessListings() ?: return
+        val merged = remote.map { incoming ->
+            val local = businessDao.getBusinessByIdSync(incoming.id)
+            incoming.copy(
+                isFollowed = local?.isFollowed ?: incoming.isFollowed,
+                isUserCreated = local?.isUserCreated ?: incoming.isUserCreated,
+                ownerUserId = if (local?.isUserCreated == true) local.ownerUserId else incoming.ownerUserId
+            )
+        }
+        if (merged.isNotEmpty()) businessDao.insertBusinesses(merged)
+    }
+
+    private suspend fun seedCuratedLandmarks() {
+        businessDao.insertBusinesses(listOf(
+            BusinessEntity(
+                id = "landmark_cubbon_park", name = "Cubbon Park", category = "PARK",
+                description = "A leafy public park in central Bengaluru with walking paths and open lawns.",
+                address = "Kasturba Road, Bengaluru", city = "Bengaluru", latitude = 12.9763, longitude = 77.5929,
+                rating = 0.0, reviewCount = 0,
+                bannerUrl = "https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1000&q=80",
+                logoEmoji = "🌳", isVerified = true, isUserCreated = false, ownerUserId = "system-curated",
+                activeOfferSummary = "Free public landmark", verificationTier = "STANDARD", walletPoints = 0,
+                isListingPaid = false, isPublished = true, isCuratedLandmark = true, landmarkCategory = "PARK"
+            ),
+            BusinessEntity(
+                id = "landmark_lalbagh", name = "Lalbagh Botanical Garden", category = "PARK",
+                description = "Historic botanical garden with a glass house, gardens and a lake.",
+                address = "Lalbagh Road, Bengaluru", city = "Bengaluru", latitude = 12.9507, longitude = 77.5848,
+                rating = 0.0, reviewCount = 0,
+                bannerUrl = "https://images.unsplash.com/photo-1472396961693-142e6e269027?auto=format&fit=crop&w=1000&q=80",
+                logoEmoji = "🌿", isVerified = true, isUserCreated = false, ownerUserId = "system-curated",
+                activeOfferSummary = "Free public landmark", verificationTier = "STANDARD", walletPoints = 0,
+                isListingPaid = false, isPublished = true, isCuratedLandmark = true, landmarkCategory = "PARK"
+            ),
+            BusinessEntity(
+                id = "landmark_vidhana_soudha", name = "Vidhana Soudha", category = "MONUMENT",
+                description = "Bengaluru's landmark seat of the Karnataka state legislature. Exterior viewing only.",
+                address = "Dr Ambedkar Veedhi, Bengaluru", city = "Bengaluru", latitude = 12.9799, longitude = 77.5907,
+                rating = 0.0, reviewCount = 0,
+                bannerUrl = "https://images.unsplash.com/photo-1518005020951-eccb494ad742?auto=format&fit=crop&w=1000&q=80",
+                logoEmoji = "🏛️", isVerified = true, isUserCreated = false, ownerUserId = "system-curated",
+                activeOfferSummary = "Free public landmark", verificationTier = "STANDARD", walletPoints = 0,
+                isListingPaid = false, isPublished = true, isCuratedLandmark = true, landmarkCategory = "MONUMENT"
+            ),
+            BusinessEntity(
+                id = "landmark_commercial_street", name = "Commercial Street", category = "LOCAL_FAVORITE",
+                description = "A popular central Bengaluru shopping street with independent shops and eateries.",
+                address = "Commercial Street, Bengaluru", city = "Bengaluru", latitude = 12.9831, longitude = 77.6082,
+                rating = 0.0, reviewCount = 0,
+                bannerUrl = "https://images.unsplash.com/photo-1441986300917-64674bd600d8?auto=format&fit=crop&w=1000&q=80",
+                logoEmoji = "🛍️", isVerified = true, isUserCreated = false, ownerUserId = "system-curated",
+                activeOfferSummary = "Free public landmark", verificationTier = "STANDARD", walletPoints = 0,
+                isListingPaid = false, isPublished = true, isCuratedLandmark = true, landmarkCategory = "LOCAL_FAVORITE"
+            )
+        ))
     }
 
     val allApiRequests = apiCredentialRequestDao.getAllRequestsFlow()
@@ -188,7 +252,7 @@ class SocialConnectRepository(
                     userInterests = "",
                     isLoggedIn = false,
                     isProfileCompleted = false,
-                    isFaceVerified = true,
+                    isFaceVerified = false,
                     isMobileVerified = false,
                     biometricHash = "",
                     verifiedMobileNumber = "",
@@ -259,7 +323,7 @@ class SocialConnectRepository(
         }
         matchDao.clearAllMatches()
         chatMessageDao.clearAllMessages()
-        messageDao.nukeTableOnLogout()
+        messageDao.clearAllMessages()
         statusStoryDao.clearAllStories()
         friendshipRequestDao.clearAllFriendships()
         userContactDao.clearAllContacts()
@@ -292,7 +356,7 @@ class SocialConnectRepository(
                 userInterests = "",
                 isLoggedIn = false,
                 isProfileCompleted = false,
-                isFaceVerified = true,
+                isFaceVerified = false,
                 isMobileVerified = false,
                 biometricHash = "",
                 biometricRegisteredTimestamp = 0L,
@@ -388,7 +452,11 @@ class SocialConnectRepository(
     }
 
     suspend fun cancelPendingFriendshipRequest(requestId: String) {
+        val request = friendshipRequestDao.getRequestById(requestId)
         friendshipRequestDao.deleteRequest(requestId)
+        if (request?.senderId == "current_user") {
+            com.example.util.SupabaseClientManager.deletePendingFriendshipRequestRemote(requestId)
+        }
     }
 
     suspend fun sendFriendshipRequest(targetProfileId: String): FriendshipRequestEntity =
@@ -440,13 +508,20 @@ class SocialConnectRepository(
                 dailyFriendRequestsSent = todayPrefs.dailyFriendRequestsSent + 1,
                 lastFriendRequestResetTimestamp = midnight
             ))
+            // Local flow emits immediately; server persistence lets the recipient see the request on another device.
+            val synced = com.example.util.SupabaseClientManager.createFriendshipRequestRemote(request)
+            if (!synced) Log.w("SocialConnectRepository", "Friendship request remains local-pending; next Requests & Interactions refresh retries it.")
             request
         }
 
     suspend fun acceptFriendshipRequest(requestId: String) {
         val req = friendshipRequestDao.getRequestById(requestId) ?: return
         val now = System.currentTimeMillis()
+        // Update Room first so the UI is immediate; server confirmation is retried on next refresh.
         friendshipRequestDao.acceptRequest(requestId, now)
+        if (req.receiverId == "current_user") {
+            com.example.util.SupabaseClientManager.respondToFriendshipRequestRemote(requestId, "ACCEPTED", now)
+        }
 
         val otherUserId = if (req.senderId == "current_user") req.receiverId else req.senderId
         val otherUserName = if (req.senderId == "current_user") req.receiverName else req.senderName
@@ -498,7 +573,11 @@ class SocialConnectRepository(
     }
 
     suspend fun declineFriendshipRequest(requestId: String) {
+        val request = friendshipRequestDao.getRequestById(requestId)
         friendshipRequestDao.declineRequest(requestId)
+        if (request?.receiverId == "current_user") {
+            com.example.util.SupabaseClientManager.respondToFriendshipRequestRemote(requestId, "DECLINED")
+        }
     }
 
     suspend fun getMutualFriends(profileId: String): List<ProfileEntity> {
@@ -518,10 +597,62 @@ class SocialConnectRepository(
     val userPreferences: Flow<UserPreferencesEntity?> = preferencesDao.getPreferences()
 
     val pendingOutgoingRequests: Flow<List<FriendshipRequestEntity>> = friendshipRequestDao.getPendingOutgoingRequestsForUser("current_user")
+
+    /**
+     * Reconcile sent and received requests without clearing Room on empty/error. Any local
+     * decision wins over a stale pending row, and unsynced outgoing requests are retried.
+     */
+    suspend fun syncFriendshipRequestsFromSupabase() = withContext(Dispatchers.IO) {
+        val result = com.example.util.SupabaseClientManager.fetchFriendshipRequestsForCurrentProfile()
+        val remote = result.getOrElse { failure ->
+            Log.w("SocialConnectRepository", "Friendship requests remain cached after sync failure: ${failure.message}")
+            return@withContext
+        }
+        val local = friendshipRequestDao.getAllRequestsSync().associateBy { it.id }
+        val remoteIds = remote.mapTo(mutableSetOf()) { it.id }
+        val merged = remote.map { serverRow ->
+            val cached = local[serverRow.id]
+            when {
+                cached != null && cached.status.equals("ACCEPTED", true) &&
+                    serverRow.status.equals("PENDING", true) -> cached
+                cached != null && cached.status.equals("DECLINED", true) &&
+                    serverRow.status.equals("PENDING", true) -> cached
+                else -> serverRow
+            }
+        }
+        if (merged.isNotEmpty()) friendshipRequestDao.insertRequests(merged)
+
+        // Retry local outbound PENDING writes after a successful server read (including an empty list).
+        friendshipRequestDao.getPendingOutgoingRequestsSync("current_user")
+            .filter { it.id !in remoteIds }
+            .forEach { pending ->
+                if (!com.example.util.SupabaseClientManager.createFriendshipRequestRemote(pending)) {
+                    Log.w("SocialConnectRepository", "Outgoing friendship request remains queued locally: ${pending.id}")
+                }
+            }
+
+        // Retry a target decision when Room already changed but the previous network attempt failed.
+        local.values.filter { cached ->
+            cached.receiverId == "current_user" &&
+                cached.status.uppercase() in setOf("ACCEPTED", "DECLINED") &&
+                remote.find { it.id == cached.id }?.status.equals("PENDING", ignoreCase = true)
+        }.forEach { cached ->
+            com.example.util.SupabaseClientManager.respondToFriendshipRequestRemote(
+                requestId = cached.id,
+                status = cached.status,
+                acceptedTimestamp = cached.acceptedTimestamp
+            )
+        }
+    }
+
     val allSwipes: Flow<List<SwipeEntity>> = swipeDao.getAllSwipes()
 
     suspend fun cancelFriendshipRequest(requestId: String) {
+        val request = friendshipRequestDao.getRequestById(requestId)
         friendshipRequestDao.deleteRequest(requestId)
+        if (request?.senderId == "current_user") {
+            com.example.util.SupabaseClientManager.deletePendingFriendshipRequestRemote(requestId)
+        }
     }
 
     // Filter candidate profiles by current user preferences, active status, gender preference algorithm, and location & demand ranking
@@ -536,6 +667,9 @@ class SocialConnectRepository(
         } else {
             val myFriendIds = acceptedFriendships.map { if (it.senderId == "current_user") it.receiverId else it.senderId }.toSet()
             val userInterestedIn = safePrefs.userInterestedIn.trim()
+            val minPreferredAge = safePrefs.minAge.coerceIn(18, 99)
+            val maxPreferredAge = safePrefs.maxAge.coerceIn(minPreferredAge, 99)
+            val maxDistanceKm = safePrefs.maxDistanceMiles.coerceIn(5, 150).toDouble()
             val myPhoneDigits = safePrefs.verifiedMobileNumber.filter { it.isDigit() }
             val myEmail = safePrefs.googleEmail.trim().lowercase()
             val myName = safePrefs.userName.trim().lowercase()
@@ -556,16 +690,26 @@ class SocialConnectRepository(
                         !profile.isBanned &&
                         !profile.isFlaggedSpam &&
                         (if (safePrefs.userAge < 18) profile.age in 13..17 else profile.age >= 18) &&
-                        profile.age in safePrefs.minAge..safePrefs.maxAge &&
-                        profile.distanceMiles <= minOf(safePrefs.maxDistanceMiles, 100) &&
+                        profile.age in minPreferredAge..maxPreferredAge &&
+                        // The preferences UI is in kilometres; ProfileEntity stores distance in miles.
+                        (profile.distanceMiles * 1.609344) <= maxDistanceKm &&
                         (!safePrefs.onlyVerified || profile.isVerified) &&
                         (safePrefs.goalFilter == "All" || profile.relationshipGoal.contains(safePrefs.goalFilter, ignoreCase = true)) &&
                         // Gender Referral Algorithm Filter
                         when (userInterestedIn.lowercase()) {
-                            "women", "female", "woman" -> profile.gender.contains("woman", ignoreCase = true) || profile.gender.contains("female", ignoreCase = true)
-                            "men", "male", "man" -> profile.gender.contains("man", ignoreCase = true) || profile.gender.contains("male", ignoreCase = true)
-                            "other", "non-binary" -> !profile.gender.contains("man", ignoreCase = true) && !profile.gender.contains("male", ignoreCase = true) && !profile.gender.contains("woman", ignoreCase = true) && !profile.gender.contains("female", ignoreCase = true)
-                            else -> true // "Any", "All", or unselected
+                            "women", "female", "woman" ->
+                                profile.gender.contains("woman", ignoreCase = true) ||
+                                    profile.gender.contains("female", ignoreCase = true)
+                            "men", "male", "man" ->
+                                profile.gender.contains("man", ignoreCase = true) ||
+                                    profile.gender.contains("male", ignoreCase = true)
+                            "everyone", "any", "all", "", "unselected" -> true
+                            "other", "non-binary" ->
+                                !profile.gender.contains("man", ignoreCase = true) &&
+                                    !profile.gender.contains("male", ignoreCase = true) &&
+                                    !profile.gender.contains("woman", ignoreCase = true) &&
+                                    !profile.gender.contains("female", ignoreCase = true)
+                            else -> true
                         }
             }.sortedWith(
                 compareBy<ProfileEntity> { profile ->
@@ -637,8 +781,10 @@ class SocialConnectRepository(
                 map[key] = m
             }
         }
-        map.values.sortedByDescending { it.lastMessageTime }
-    }
+        map.values
+            .distinctBy { it.matchId.trim().lowercase() }
+            .sortedByDescending { it.lastMessageTime }
+    }.distinctUntilChanged()
 
     val allProfilesForAdmin: Flow<List<ProfileEntity>> = combine(
         profileDao.getAllProfilesForAdmin(),
@@ -753,15 +899,17 @@ class SocialConnectRepository(
     }
 
     suspend fun deleteStatusStory(storyId: String) = withContext(Dispatchers.IO) {
+        val profileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
+        if (profileId.isBlank()) {
+            android.util.Log.w("VibeSyncStories", "Remote story delete skipped: verified session unavailable.")
+            return@withContext
+        }
+        val removedRemote = com.example.util.SupabaseClientManager.deleteStatusStoryRemote(storyId, profileId)
+        if (!removedRemote) {
+            android.util.Log.w("VibeSyncStories", "Supabase story delete was not acknowledged for $storyId.")
+            return@withContext
+        }
         statusStoryDao.deleteStory(storyId)
-        try {
-            val currentPrefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
-            val myPhone = currentPrefs.verifiedMobileNumber.filter { it.isDigit() }
-            if (myPhone.isNotBlank()) {
-                val db = com.google.firebase.database.FirebaseDatabase.getInstance()
-                db.getReference("stories").child(myPhone).child(storyId).removeValue()
-            }
-        } catch (_: Exception) {}
     }
 
     sealed class UploadStatusResult {
@@ -779,115 +927,128 @@ class SocialConnectRepository(
         backgroundColorEnd: Long = 0xFF128C7E,
         privacy: String = "FRIENDS_AND_MATCHES",
         backgroundMusicUri: String = ""
-    ): UploadStatusResult {
+    ): UploadStatusResult = withContext(Dispatchers.IO) {
         val currentPrefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
+        val profileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
+        if (profileId.isBlank()) {
+            return@withContext UploadStatusResult.Error("Sign in with Truecaller before publishing a story.")
+        }
+        if (mediaType !in setOf("PHOTO", "VIDEO")) {
+            return@withContext UploadStatusResult.Error("Unsupported story media type.")
+        }
+        if (mediaUrl.isBlank()) {
+            return@withContext UploadStatusResult.Error("Choose a photo or video before publishing.")
+        }
+
         val now = System.currentTimeMillis()
         val isNewDay = (now - currentPrefs.lastDailyQuotaResetTimestamp) > (24 * 60 * 60 * 1000L)
-
         var currentPhotosCount = if (isNewDay) 0 else currentPrefs.dailyPhotosUploaded
         var currentVideosCount = if (isNewDay) 0 else currentPrefs.dailyVideosUploaded
 
         if (mediaType == "PHOTO") {
             if (currentPhotosCount >= 5) {
-                return UploadStatusResult.LimitExceeded("Daily limit reached: Maximum 5 pictures per day.")
+                return@withContext UploadStatusResult.LimitExceeded("Daily limit reached: Maximum 5 pictures per day.")
             }
             currentPhotosCount += 1
-        } else if (mediaType == "VIDEO") {
+        } else {
             if (videoDurationSeconds > 60 || videoDurationSeconds <= 0) {
-                return UploadStatusResult.Error("Video duration must be below 60 seconds (1-60s).")
+                return@withContext UploadStatusResult.Error("Video duration must be between 1 and 60 seconds.")
             }
             if (currentVideosCount >= 1) {
-                return UploadStatusResult.LimitExceeded("Daily limit reached: Maximum 1 video (<60s) per day.")
+                return@withContext UploadStatusResult.LimitExceeded("Daily limit reached: Maximum 1 video per day.")
             }
             currentVideosCount += 1
         }
 
-        var uploadedBackgroundMusicUrl = ""
+        val storyId = "story_${UUID.randomUUID().toString().take(8)}"
+        val context = context ?: return@withContext UploadStatusResult.Error("Media upload context is unavailable.")
+        val mediaObjectPath: String
+        val displayMediaUrl: String
+        if (mediaUrl.startsWith("https://", ignoreCase = true) || mediaUrl.startsWith("http://", ignoreCase = true)) {
+            mediaObjectPath = mediaUrl
+            displayMediaUrl = mediaUrl
+        } else {
+            val uploaded = com.example.util.SupabaseClientManager.uploadStatusMedia(
+                context = context,
+                mediaUri = android.net.Uri.parse(mediaUrl),
+                profileId = profileId,
+                storyId = storyId
+            ).getOrElse {
+                return@withContext UploadStatusResult.Error("Story media upload failed: ${it.message ?: "storage error"}")
+            }
+            mediaObjectPath = uploaded.objectPath
+            displayMediaUrl = uploaded.signedUrl
+        }
+
+        var backgroundMusicObjectPath = ""
+        var displayBackgroundMusicUrl = ""
         if (backgroundMusicUri.isNotBlank()) {
-            try {
-                val audioUri = android.net.Uri.parse(backgroundMusicUri)
-                val ownerKey = currentPrefs.verifiedMobileNumber.filter { it.isDigit() }.ifBlank { "verified-user" }
-                val extension = audioUri.lastPathSegment?.substringAfterLast('.', "audio")
-                    ?.takeIf { it.matches(Regex("[A-Za-z0-9]{1,8}")) } ?: "audio"
-                val audioRef = com.google.firebase.storage.FirebaseStorage.getInstance().reference
-                    .child("status_music/$ownerKey/${UUID.randomUUID()}.$extension")
-                audioRef.putFile(audioUri).await()
-                uploadedBackgroundMusicUrl = audioRef.downloadUrl.await().toString()
-            } catch (e: Exception) {
-                android.util.Log.w("SocialConnectRepository", "Background music upload failed: ${e.message}")
-                return UploadStatusResult.Error("Background music could not be uploaded. Please choose a readable audio file and retry.")
+            if (backgroundMusicUri.startsWith("https://", ignoreCase = true) ||
+                backgroundMusicUri.startsWith("http://", ignoreCase = true)
+            ) {
+                backgroundMusicObjectPath = backgroundMusicUri
+                displayBackgroundMusicUrl = backgroundMusicUri
+            } else {
+                val uploadedMusic = com.example.util.SupabaseClientManager.uploadStatusMedia(
+                    context = context,
+                    mediaUri = android.net.Uri.parse(backgroundMusicUri),
+                    profileId = profileId,
+                    storyId = "${storyId}_music"
+                ).getOrElse {
+                    return@withContext UploadStatusResult.Error("Background music upload failed: ${it.message ?: "storage error"}")
+                }
+                backgroundMusicObjectPath = uploadedMusic.objectPath
+                displayBackgroundMusicUrl = uploadedMusic.signedUrl
             }
         }
 
-        // Insert status story locally with its optional cloud-hosted soundtrack.
+        val isPublicStory = privacy.trim().uppercase() in setOf("EVERYONE", "ALL_NETWORK", "PUBLIC", "ALL")
+        val contactProfileIds = if (isPublicStory) {
+            emptyList()
+        } else {
+            val fromMatchedContacts = runCatching {
+                database.matchedContactDao().getAllMatchedContacts()
+                    .mapNotNull { it.vibeSyncUserId.trim().takeIf(String::isNotBlank) }
+            }.getOrDefault(emptyList())
+            val fromMatches = matchDao.getAllMatchesSync()
+                .mapNotNull { it.profileId.trim().takeIf(String::isNotBlank) }
+            (fromMatchedContacts + fromMatches).distinct().filter { it != profileId }
+        }
+
+        val storyPostedAt = System.currentTimeMillis()
         val story = StatusStoryEntity(
-            id = "story_${UUID.randomUUID().toString().take(8)}",
-            userId = "USER",
+            id = storyId,
+            userId = profileId,
             userName = currentPrefs.userName.ifBlank { "You" },
             userAvatarEmoji = "✨",
             userAvatarUrl = currentPrefs.avatarUrl,
             mediaType = mediaType,
-            mediaUrl = mediaUrl,
+            mediaUrl = displayMediaUrl,
             videoDurationSeconds = if (mediaType == "VIDEO") videoDurationSeconds else 0,
             caption = caption.trim(),
             backgroundColorStart = backgroundColorStart,
             backgroundColorEnd = backgroundColorEnd,
-            timestamp = now,
+            timestamp = storyPostedAt,
             isViewed = true,
             viewsCount = 1,
             isMyStatus = true,
             privacy = privacy,
-            backgroundMusicUrl = uploadedBackgroundMusicUrl
+            backgroundMusicUrl = displayBackgroundMusicUrl
         )
-        statusStoryDao.insertStory(story)
 
-        // Publish to Firebase Realtime Database for mutual contact automatic discovery & sync
-        try {
-            val myPhone = currentPrefs.verifiedMobileNumber.filter { it.isDigit() }
-            if (myPhone.isNotBlank()) {
-                val db = com.google.firebase.database.FirebaseDatabase.getInstance()
-                // Collect User's contacts to verify mutual contact visibility
-                val contacts = userContactDao.getAllContactsSync()
-                val matches = matchDao.getAllMatchesSync()
-                val matchedContacts = database.matchedContactDao().getAllMatchedContacts()
-                val mySavedPhones = mutableSetOf<String>()
-                for (c in contacts) {
-                    val digits = c.phoneNumber.filter { it.isDigit() }
-                    if (digits.length >= 7) mySavedPhones.add(if (digits.length >= 10) digits.takeLast(10) else digits)
-                }
-                for (mc in matchedContacts) {
-                    val digits = mc.phoneNumber.filter { it.isDigit() }
-                    if (digits.length >= 7) mySavedPhones.add(if (digits.length >= 10) digits.takeLast(10) else digits)
-                }
-                for (m in matches) {
-                    val digits = m.profileId.filter { it.isDigit() }
-                    if (digits.length >= 7) mySavedPhones.add(if (digits.length >= 10) digits.takeLast(10) else digits)
-                }
-
-                val storyMap = hashMapOf<String, Any>(
-                    "id" to story.id,
-                    "userId" to myPhone,
-                    "userName" to story.userName,
-                    "userAvatarEmoji" to story.userAvatarEmoji,
-                    "userAvatarUrl" to story.userAvatarUrl,
-                    "mediaType" to story.mediaType,
-                    "mediaUrl" to story.mediaUrl,
-                    "backgroundMusicUrl" to story.backgroundMusicUrl,
-                    "videoDurationSeconds" to story.videoDurationSeconds,
-                    "caption" to story.caption,
-                    "backgroundColorStart" to story.backgroundColorStart,
-                    "backgroundColorEnd" to story.backgroundColorEnd,
-                    "timestamp" to story.timestamp,
-                    "privacy" to privacy,
-                    "savedPhones" to mySavedPhones.toList()
-                )
-                db.getReference("stories").child(myPhone).child(story.id).setValue(storyMap)
-            }
-        } catch (e: Exception) {
-            android.util.Log.w("SocialConnectRepository", "Story cloud broadcast notice: ${e.message}")
+        val remoteResult = com.example.util.SupabaseClientManager.upsertStatusStoryRemote(
+            context = context,
+            story = story,
+            mediaObjectPath = mediaObjectPath,
+            backgroundMusicObjectPath = backgroundMusicObjectPath,
+            allowedViewerProfileIds = contactProfileIds,
+            profileId = profileId
+        )
+        remoteResult.getOrElse {
+            return@withContext UploadStatusResult.Error("Supabase could not publish this story: ${it.message ?: "metadata insert failed"}")
         }
 
-        // Update preferences with new daily count
+        statusStoryDao.insertStory(story)
         preferencesDao.insertOrUpdate(
             currentPrefs.copy(
                 dailyPhotosUploaded = currentPhotosCount,
@@ -895,123 +1056,48 @@ class SocialConnectRepository(
                 lastDailyQuotaResetTimestamp = if (isNewDay) now else currentPrefs.lastDailyQuotaResetTimestamp
             )
         )
-
-        return UploadStatusResult.Success
+        android.util.Log.i("VibeSyncStories", "Published Supabase story $storyId for profile $profileId.")
+        UploadStatusResult.Success
     }
 
     suspend fun syncMutualFriendsStories() = withContext(Dispatchers.IO) {
         try {
-            val currentPrefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
-            val myPhone = currentPrefs.verifiedMobileNumber.filter { it.isDigit() }
+            val profileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
+            if (profileId.isBlank()) {
+                android.util.Log.w("VibeSyncStories", "Story sync deferred: verified profile session is unavailable.")
+                return@withContext
+            }
+
             val now = System.currentTimeMillis()
-
-            // 1. Gather all local contacts (phonebook, matches, matched contacts)
-            val contacts = userContactDao.getAllContactsSync()
-            val matches = matchDao.getAllMatchesSync()
-            val matchedContacts = database.matchedContactDao().getAllMatchedContacts()
-            val contactPhones = mutableSetOf<String>()
-            for (c in contacts) {
-                val digits = c.phoneNumber.filter { it.isDigit() }
-                if (digits.length >= 7) contactPhones.add(if (digits.length >= 10) digits.takeLast(10) else digits)
+            val cutoff = now - 24L * 60L * 60L * 1000L
+            val result = com.example.util.SupabaseClientManager.fetchActiveStatusStories(profileId)
+            val remoteStories = result.getOrElse {
+                android.util.Log.e("VibeSyncStories", "Supabase story fetch failed: ${it.message}", it)
+                return@withContext
             }
-            for (mc in matchedContacts) {
-                val digits = mc.phoneNumber.filter { it.isDigit() }
-                if (digits.length >= 7) contactPhones.add(if (digits.length >= 10) digits.takeLast(10) else digits)
-            }
-            for (m in matches) {
-                val digits = m.profileId.filter { it.isDigit() }
-                if (digits.length >= 7) contactPhones.add(if (digits.length >= 10) digits.takeLast(10) else digits)
-            }
-
-            // 2. Fetch remote stories from Firebase Realtime Database
-            val db = com.google.firebase.database.FirebaseDatabase.getInstance()
-            val storiesRef = db.getReference("stories")
-            val snapshot = storiesRef.get().await()
-
-            val fetchedStories = mutableListOf<StatusStoryEntity>()
-            for (userNode in snapshot.children) {
-                val posterPhone = userNode.key ?: continue
-                val posterDigits = posterPhone.filter { it.isDigit() }
-                val isMyOwn = (myPhone.isNotBlank() && posterDigits.endsWith(myPhone.takeLast(10)))
-                if (isMyOwn) continue
-
-                // Check mutual contact / phonebook presence
-                val userBHasPoster = contactPhones.any { it.endsWith(posterDigits.takeLast(10)) || posterDigits.endsWith(it) }
-
-                for (storySnap in userNode.children) {
-                    val id = storySnap.child("id").getValue(String::class.java) ?: storySnap.key ?: continue
-                    val timestamp = storySnap.child("timestamp").getValue(Long::class.java) ?: now
-                    if (now - timestamp > 24 * 60 * 60 * 1000L) continue // Discard expired stories
-
-                    val privacy = storySnap.child("privacy").getValue(String::class.java) ?: "MY_CONTACTS"
-
-                    val posterSavedPhones = storySnap.child("savedPhones").children.mapNotNull { it.getValue(String::class.java) }
-                    val posterHasUserB = if (posterSavedPhones.isNotEmpty() && myPhone.length >= 7) {
-                        val myDigits = if (myPhone.length >= 10) myPhone.takeLast(10) else myPhone
-                        posterSavedPhones.any { it.endsWith(myDigits) || myDigits.endsWith(it) }
-                    } else {
-                        true
-                    }
-
-                    // Both users have each other saved in their phone books/contacts:
-                    val isMutualContact = userBHasPoster && posterHasUserB
-
-                    // Dynamic filtering based on the posting user's privacy control settings:
-                    // "EVERYONE" / "ALL_NETWORK": Visible to everyone
-                    // "MY_CONTACTS" / "FRIENDS_AND_MATCHES": Visible only to mutual phonebook / chat contacts
-                    // "SELECTED_CONTACTS": Visible only if mutual contact
-                    val isVisible = when (privacy) {
-                        "EVERYONE", "ALL_NETWORK" -> true
-                        "SELECTED_CONTACTS" -> isMutualContact
-                        else -> isMutualContact // "MY_CONTACTS", "FRIENDS_AND_MATCHES"
-                    }
-
-                    if (isVisible) {
-                        val userName = storySnap.child("userName").getValue(String::class.java) ?: "Friend"
-                        val userAvatarEmoji = storySnap.child("userAvatarEmoji").getValue(String::class.java) ?: "✨"
-                        val userAvatarUrl = storySnap.child("userAvatarUrl").getValue(String::class.java) ?: ""
-                        val mediaType = storySnap.child("mediaType").getValue(String::class.java) ?: "PHOTO"
-                        val mediaUrl = storySnap.child("mediaUrl").getValue(String::class.java) ?: ""
-                        val backgroundMusicUrl = storySnap.child("backgroundMusicUrl").getValue(String::class.java) ?: ""
-                        val videoDurationSeconds = storySnap.child("videoDurationSeconds").getValue(Int::class.java) ?: 0
-                        val caption = storySnap.child("caption").getValue(String::class.java) ?: ""
-                        val bgStart = storySnap.child("backgroundColorStart").getValue(Long::class.java) ?: 0xFF00A884
-                        val bgEnd = storySnap.child("backgroundColorEnd").getValue(Long::class.java) ?: 0xFF128C7E
-
-                        val existing = statusStoryDao.getStoryById(id)
-                        fetchedStories.add(
-                            StatusStoryEntity(
-                                id = id,
-                                userId = posterPhone,
-                                userName = userName,
-                                userAvatarEmoji = userAvatarEmoji,
-                                userAvatarUrl = userAvatarUrl,
-                                mediaType = mediaType,
-                                mediaUrl = mediaUrl,
-                                backgroundMusicUrl = backgroundMusicUrl,
-                                videoDurationSeconds = videoDurationSeconds,
-                                caption = caption,
-                                backgroundColorStart = bgStart,
-                                backgroundColorEnd = bgEnd,
-                                timestamp = timestamp,
-                                isViewed = existing?.isViewed ?: false,
-                                viewsCount = existing?.viewsCount ?: 1,
-                                likesCount = existing?.likesCount ?: 0,
-                                isLikedByMe = existing?.isLikedByMe ?: false,
-                                isMyStatus = false,
-                                privacy = privacy
-                            )
-                        )
-                    }
+            val existingById = statusStoryDao.getAllStoriesSync().associateBy { it.id }
+            // The request above completed successfully. Reconcile the friends projection atomically;
+            // never sweep the cache on a failed/unauthenticated network read.
+            val storiesToCache = remoteStories
+                .filter { it.timestamp >= cutoff && !it.isExpired }
+                .map { remote ->
+                    val existing = existingById[remote.id]
+                    remote.copy(
+                        isMyStatus = remote.userId == profileId,
+                        isViewed = existing?.isViewed ?: false,
+                        viewsCount = existing?.viewsCount ?: 1,
+                        likesCount = existing?.likesCount ?: 0,
+                        isLikedByMe = existing?.isLikedByMe ?: false
+                    )
                 }
+            database.withTransaction {
+                statusStoryDao.deleteExpiredStories(cutoff)
+                statusStoryDao.clearFriendsStories()
+                if (storiesToCache.isNotEmpty()) statusStoryDao.insertStories(storiesToCache)
             }
-
-            if (fetchedStories.isNotEmpty()) {
-                statusStoryDao.insertStories(fetchedStories)
-                android.util.Log.i("SocialConnectRepository", "Synced ${fetchedStories.size} mutual contact stories from cloud.")
-            }
+            android.util.Log.i("VibeSyncStories", "Supabase active story sync completed: ${storiesToCache.size} rows.")
         } catch (e: Exception) {
-            android.util.Log.w("SocialConnectRepository", "Story sync notice: ${e.message}")
+            android.util.Log.e("VibeSyncStories", "Supabase story sync failed: ${e.message}", e)
         }
     }
 
@@ -1024,16 +1110,17 @@ class SocialConnectRepository(
     fun normalizePhone(p: String): String = p.replace("[^0-9]".toRegex(), "").takeLast(10)
 
     suspend fun getSymmetricMatchId(otherUserId: String): String {
-        val prefs = preferencesDao.getPreferencesSync()
-        val myPhone = prefs?.verifiedMobileNumber ?: ""
-        val myPhoneHash = com.example.util.PhonebookHasher.generate16CharHash(myPhone.ifBlank { "current_user" })
-
-        val prof = profileDao.getProfileByIdSync(otherUserId) ?: profileDao.getProfileByPhone(otherUserId)
-        val otherPhone = prof?.phoneNumber ?: otherUserId
-        val otherPhoneHash = com.example.util.PhonebookHasher.generate16CharHash(otherPhone.ifBlank { otherUserId })
-
-        val sorted = listOf(myPhoneHash, otherPhoneHash).sorted()
-        return "match_${sorted[0]}_${sorted[1]}"
+        val ownProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty().trim()
+        val cachedPeer = profileDao.getProfileByIdSync(otherUserId.trim())
+            ?: profileDao.getProfileByPhone(otherUserId.trim())
+        val candidatePeerId = cachedPeer?.id?.trim().orEmpty().ifBlank { otherUserId.trim() }
+        val canonicalPeerId = if (com.example.util.SupabaseClientManager.isPhoneNumberCandidate(candidatePeerId)) {
+            com.example.util.SupabaseClientManager.resolveProfileIdByPhoneNumber(
+                cachedPeer?.phoneNumber?.ifBlank { candidatePeerId } ?: candidatePeerId
+            ).orEmpty()
+        } else candidatePeerId
+        if (ownProfileId.isBlank() || canonicalPeerId.isBlank() || ownProfileId.equals(canonicalPeerId, true)) return ""
+        return com.example.util.SupabaseClientManager.canonicalChatMatchId(ownProfileId, canonicalPeerId)
     }
 
     suspend fun removeOwnProfileAndSelfMatches() {
@@ -1187,7 +1274,7 @@ class SocialConnectRepository(
                     gradientColorEnd = 0xFFFF9966,
                     avatarEmoji = avatarEmoji,
                     avatarUrl = avatarUrl,
-                    isVerified = true,
+                    isVerified = doc.getBoolean("isVerified") ?: false,
                     likedMe = true,
                     isSuperLikedMe = true,
                     trustScore = trustScore,
@@ -1245,31 +1332,20 @@ class SocialConnectRepository(
             }
         }
 
-        // 0. Query Supabase Database Profiles
+        // Cache registered Supabase profiles using their actual canonical profile IDs.
         try {
-            val supabaseProfiles = com.example.util.SupabaseClientManager.fetchAllProfiles()
-            val validSupabaseProfiles = supabaseProfiles.filter { sp ->
-                val phoneKey = sp.phoneNumber.ifBlank { sp.id }
-                val canonicalId = com.example.util.PhonebookHasher.generate16CharHash(phoneKey)
-                canonicalId.isNotBlank() && !canonicalId.equals("null", ignoreCase = true) &&
-                sp.name.isNotBlank() && !sp.name.equals("null", ignoreCase = true) &&
-                sp.phoneNumber.isNotBlank() && !sp.phoneNumber.equals("null", ignoreCase = true)
-            }.distinctBy { sp ->
-                val phoneKey = sp.phoneNumber.ifBlank { sp.id }
-                com.example.util.PhonebookHasher.generate16CharHash(phoneKey)
-            }
-            for (sp in validSupabaseProfiles) {
-                val phoneKey = sp.phoneNumber.ifBlank { sp.id }
-                val canonicalId = com.example.util.PhonebookHasher.generate16CharHash(phoneKey)
-                val canonicalProfile = sp.copy(id = canonicalId)
-                indexUser(canonicalProfile)
-                profileDao.insertProfile(canonicalProfile)
+            val validSupabaseProfiles = com.example.util.SupabaseClientManager.fetchAllProfiles()
+                .filter { it.id.isNotBlank() && it.name.isNotBlank() && !it.name.equals("null", true) }
+                .distinctBy { it.id }
+            for (profile in validSupabaseProfiles) {
+                indexUser(profile)
+                profileDao.insertProfile(profile)
             }
         } catch (e: Exception) {
             android.util.Log.w("SocialConnectRepository", "Supabase profile fetch note: ${e.message}")
         }
 
-        // 1. Query Firestore 'profiles' collection
+        // 1. Query Firestore 'profiles' collection        // 1. Query Firestore 'profiles' collection
         if (db != null) {
             try {
                 val snapshot = try {
@@ -1306,7 +1382,7 @@ class SocialConnectRepository(
                             avatarUrl = doc.getString("avatarUrl") ?: "",
                             phoneNumber = phone,
                             email = email,
-                            isVerified = true,
+                            isVerified = doc.getBoolean("isVerified") ?: false,
                             likedMe = true,
                             isSuperLikedMe = true,
                             isOpenForDating = doc.getBoolean("isOpenForDating") ?: false,
@@ -1825,7 +1901,7 @@ class SocialConnectRepository(
                 biometricHash = biometricHash,
                 biometricRegisteredTimestamp = now,
                 mpin = current.userMpin,
-                isVerified = true,
+                isVerified = false,
                 registrationTimestamp = now,
                 recoveryPhone = mobileNumber,
                 recoveryEmail = safeEmail
@@ -1972,13 +2048,13 @@ class SocialConnectRepository(
                 userInterests = effectiveInterests,
                 userGender = effectiveGender,
                 isMobileVerified = true,
-                isFaceVerified = true,
+                isFaceVerified = current.isFaceVerified,
                 biometricHash = account.biometricHash,
                 biometricRegisteredTimestamp = account.biometricRegisteredTimestamp,
                 userMpin = account.mpin,
                 isMpinSet = account.mpin.isNotBlank(),
                 loginTimestamp = System.currentTimeMillis(),
-                trustRating = 100,
+                trustRating = if (current.isFaceVerified && current.isMobileVerified) 100 else 60,
                 isProfileCompleted = hasRealProfile
             )
         )
@@ -2011,8 +2087,10 @@ class SocialConnectRepository(
                 kotlinx.coroutines.withTimeoutOrNull(3000L) {
                     // Try Supabase first
                     try {
-                        val phHash = com.example.util.SupabaseClientManager.getPhoneHash(cleanDigits)
-                        val sbProfiles = com.example.util.SupabaseClientManager.fetchProfilesByHashes(listOf(phHash, cleanDigits, phone))
+                        val phoneE164 = com.example.util.PhonebookHelper.normalizeToE164(phone)
+                        val sbProfiles = if (phoneE164.isNotBlank()) {
+                            com.example.util.SupabaseClientManager.fetchProfilesByE164Phones(listOf(phoneE164))
+                        } else emptyList()
                         val sbProfile = sbProfiles.firstOrNull()
                         if (sbProfile != null && sbProfile.name.isNotBlank() &&
                             sbProfile.name != "Registered Member" && sbProfile.name != "VibeSync User" && !sbProfile.name.startsWith("User ")) {
@@ -2060,7 +2138,7 @@ class SocialConnectRepository(
                                         relationshipGoal = relationshipGoal,
                                         avatarEmoji = "✨",
                                         avatarUrl = avatarUrl,
-                                        isVerified = true,
+                                        isVerified = doc.getBoolean("isVerified") ?: false,
                                         phoneNumber = phone,
                                         isDeleted = false,
                                         accountStatus = "ACTIVE"
@@ -2123,9 +2201,9 @@ class SocialConnectRepository(
                     userCity = effectiveCity,
                     userInterests = effectiveInterests,
                     userGender = effectiveGender,
-                    isFaceVerified = true,
+                    isFaceVerified = current.isFaceVerified,
                     loginTimestamp = System.currentTimeMillis(),
-                    trustRating = 100,
+                    trustRating = if (current.isFaceVerified && current.isMobileVerified) 100 else 60,
                     isProfileCompleted = true
                 )
             )
@@ -2135,6 +2213,7 @@ class SocialConnectRepository(
                 id = cleanDigits.ifBlank { "user_${System.currentTimeMillis()}" },
                 name = effectiveName,
                 age = effectiveAge,
+                dateOfBirth = current.userDob,
                 occupation = effectiveOccupation,
                 city = effectiveCity,
                 distanceMiles = 0,
@@ -2143,7 +2222,7 @@ class SocialConnectRepository(
                 relationshipGoal = finalProfile?.relationshipGoal ?: current.userRelationshipGoal,
                 avatarEmoji = "✨",
                 avatarUrl = effectiveAvatar,
-                isVerified = true,
+                isVerified = finalProfile?.isVerified ?: false,
                 phoneNumber = phone,
                 isDeleted = false,
                 accountStatus = "ACTIVE"
@@ -2163,7 +2242,7 @@ class SocialConnectRepository(
                     userInterestedIn = current.userInterestedIn.ifBlank { "Everyone" },
                     userRelationshipGoal = current.userRelationshipGoal.ifBlank { "Connection" },
                     isProfileCompleted = false, // Directs immediately to onboarding / profile setup
-                    isFaceVerified = true,
+                    isFaceVerified = current.isFaceVerified,
                     loginTimestamp = System.currentTimeMillis()
                 )
             )
@@ -2280,7 +2359,6 @@ class SocialConnectRepository(
                     "userId" to userId,
                     "name" to updatedPrefs.userName,
                     "age" to updatedPrefs.userAge,
-                    "dob" to updatedPrefs.userDob,
                     "gender" to updatedPrefs.userGender,
                     "interestedIn" to updatedPrefs.userInterestedIn,
                     "occupation" to updatedPrefs.userOccupation,
@@ -2294,15 +2372,12 @@ class SocialConnectRepository(
                     "maritalStatus" to updatedPrefs.userMaritalStatus,
                     "isOpenForDating" to updatedPrefs.isOpenForDating,
                     "avatarEmoji" to if (updatedPrefs.avatarUrl.isNotBlank()) "" else "✨",
-                    "avatarUrl" to updatedPrefs.avatarUrl,
-                    "isVerified" to true,
+                    "avatarUrl" to com.example.util.ProfileAvatarStorageManager.serverAvatarReference(userId, updatedPrefs.avatarUrl),
                     "isRealFaceVerified" to updatedPrefs.isFaceVerified,
                     "trustScore" to updatedPrefs.trustRating,
                     "phoneNumber" to updatedPrefs.verifiedMobileNumber,
                     "cleanPhone" to cleanDigits,
-                    "phone_hash" to com.example.util.PhonebookHasher.generate16CharHash(updatedPrefs.verifiedMobileNumber),
-                    "phoneHash" to com.example.util.PhonebookHasher.generate16CharHash(updatedPrefs.verifiedMobileNumber),
-                    "phoneNumberE164" to com.example.util.PhonebookHasher.normalizeToE164(updatedPrefs.verifiedMobileNumber),
+                    "phoneNumberE164" to com.example.util.PhonebookHelper.normalizeToE164(updatedPrefs.verifiedMobileNumber),
                     "googleEmail" to updatedPrefs.googleEmail,
                     "email" to updatedPrefs.googleEmail,
                     "country" to updatedPrefs.userCountry,
@@ -2313,6 +2388,8 @@ class SocialConnectRepository(
                     "accountStatus" to "ACTIVE",
                     "lastUpdated" to System.currentTimeMillis()
                 )
+                // Clear the old plaintext DOB field from prior public profile documents.
+                profileMap["dob"] = com.google.firebase.firestore.FieldValue.delete()
                 firestore.collection("profiles").document(userId).set(profileMap, com.google.firebase.firestore.SetOptions.merge())
                 firestore.collection("users").document(userId).set(profileMap, com.google.firebase.firestore.SetOptions.merge())
 
@@ -2325,6 +2402,7 @@ class SocialConnectRepository(
                     city = updatedPrefs.userCity,
                     distanceMiles = 0,
                     bio = updatedPrefs.userBio,
+                    dateOfBirth = updatedPrefs.userDob,
                     interests = updatedPrefs.userInterests,
                     relationshipGoal = updatedPrefs.userRelationshipGoal,
                     promptQuestion = "About me",
@@ -2333,7 +2411,7 @@ class SocialConnectRepository(
                     gradientColorEnd = 0xFFFF9966,
                     avatarEmoji = "✨",
                     avatarUrl = updatedPrefs.avatarUrl,
-                    isVerified = true,
+                    isVerified = false,
                     phoneNumber = updatedPrefs.verifiedMobileNumber,
                     email = updatedPrefs.googleEmail,
                     isDeleted = false,
@@ -2437,7 +2515,7 @@ class SocialConnectRepository(
         // 1. Clear active matches & chat sessions for current device session
         try {
             matchDao.clearAllMatches()
-            chatMessageDao.clearAllMessages()
+            // Chat rows remain in encrypted Room across ordinary logout/session resets.
             swipeDao.clearAllSwipes()
             statusStoryDao.clearAllStories()
             friendshipRequestDao.clearAllFriendships()
@@ -2491,7 +2569,7 @@ class SocialConnectRepository(
             verifiedMobileNumber = activePhone,
             googleEmail = activeEmail,
             isMobileVerified = true,
-            isFaceVerified = true,
+            isFaceVerified = current.isFaceVerified,
             userCountry = countryVal,
             userCountryFlag = flagVal,
             userCity = cityVal,
@@ -2513,7 +2591,8 @@ class SocialConnectRepository(
                 biometricHash = current.biometricHash.ifBlank { "BIO_HUMAN_PRIMARY_911" },
                 biometricRegisteredTimestamp = System.currentTimeMillis(),
                 mpin = current.userMpin,
-                isVerified = true,
+                isVerified = (registeredAccountDao.getAccountByPhone(activePhone)
+                    ?: registeredAccountDao.getAccountByEmail(activeEmail))?.isVerified ?: false,
                 registrationTimestamp = System.currentTimeMillis(),
                 recoveryPhone = activePhone,
                 recoveryEmail = activeEmail
@@ -2601,7 +2680,7 @@ class SocialConnectRepository(
                 isLoggedIn = false,
                 isProfileCompleted = false,
                 isMobileVerified = false,
-                isFaceVerified = true,
+                isFaceVerified = false,
                 verifiedMobileNumber = "",
                 googleEmail = "",
                 userName = "",
@@ -2692,7 +2771,8 @@ class SocialConnectRepository(
                     lastMessageTime = System.currentTimeMillis(),
                     hasUnread = true,
                     isDatingMatch = false,
-                    relationshipStatus = "FRIENDS"
+                    relationshipStatus = "FRIENDS",
+                    isAnonymousPeer = true
                 )
                 matchDao.insertMatch(match)
                 profileDao.incrementFriendsCount(profile.id)
@@ -2780,7 +2860,7 @@ class SocialConnectRepository(
                 gradientColorEnd = 0xFFFF9966,
                 avatarEmoji = "✨",
                 phoneNumber = if (profileId.filter { it.isDigit() }.length >= 10) profileId else "",
-                isVerified = true
+                isVerified = false
             )
             profileDao.insertProfile(profile)
         }
@@ -2840,102 +2920,56 @@ class SocialConnectRepository(
     suspend fun performGoogleDriveBackup(
         accountEmail: String = "",
         frequency: String = "DAILY",
-        wifiOnly: Boolean = false
+        wifiOnly: Boolean = false,
+        encryptionPassphrase: String = ""
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         val currentPrefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
         val targetEmail = accountEmail.ifBlank { currentPrefs.cloudBackupAccount.ifBlank { currentPrefs.googleEmail } }
+        val appContext = context ?: return@withContext Pair(false, "Application context is not available.")
+        if (targetEmail.isBlank()) return@withContext Pair(false, "Choose your Google Drive account before backing up.")
 
-        if (targetEmail.isBlank()) {
-            return@withContext Pair(false, "Please link a Google Account to activate Drive backup.")
+        val passphrase = encryptionPassphrase.ifBlank {
+            DriveBackupSecretStore.load(appContext, targetEmail).orEmpty()
         }
-
-        val ctx = context
-        if (ctx == null) {
-            // Local persistence fallback
-            preferencesDao.insertOrUpdate(
-                currentPrefs.copy(
-                    isGoogleCloudBackupEnabled = (frequency != "OFF"),
-                    lastCloudBackupTimestamp = System.currentTimeMillis(),
-                    cloudBackupAccount = targetEmail,
-                    backupFrequency = frequency,
-                    backupOverWifiOnly = wifiOnly,
-                    isBackupSkipped = false
-                )
-            )
-            return@withContext Pair(true, "Backup settings saved! Periodic sync configured for $targetEmail.")
+        if (passphrase.length < 8) {
+            return@withContext Pair(false, "A backup encryption passphrase of at least 8 characters is required.")
         }
 
         try {
-            // 1. Gather all local data
-            val messages = chatMessageDao.getAllMessagesSync()
-            val matches = matchDao.getAllMatchesSync()
-            val friendshipRequests = friendshipRequestDao.getAllRequestsSync()
-            val contacts = userContactDao.getAllContactsSync()
-            val myProfile = profileDao.getProfileByIdSync("current_user")
-
-            val payload = ChatBackupPayload(
-                version = 1,
-                backupTimestamp = System.currentTimeMillis(),
-                accountEmail = targetEmail,
-                totalMessages = messages.size,
-                totalMatches = matches.size,
-                totalContacts = contacts.size,
-                messages = messages,
-                matches = matches,
-                friendshipRequests = friendshipRequests,
-                userContacts = contacts,
-                myProfileSnapshot = myProfile
-            )
-
-            val jsonStr = payload.toJsonString()
-            val localBackupFile = File(ctx.cacheDir, "current_backup.enc")
-            val isEncrypted = ChatBackupCryptoHelper.encryptJsonToFile(
-                plainJson = jsonStr,
-                targetFile = localBackupFile,
-                userSeed = targetEmail.ifBlank { "VIBESYNC_VAULT_KEY" }
-            )
-
-            if (!isEncrypted || !localBackupFile.exists()) {
-                return@withContext Pair(false, "Failed to encrypt chat data locally before upload.")
+            val snapshot = RoomDatabaseBackupHelper.createEncryptedSnapshot(appContext, passphrase)
+            val snapshotSize = snapshot.length()
+            val fileId = try {
+                GoogleDriveBackupManager(appContext).uploadBackup(snapshot, targetEmail)
+            } finally {
+                snapshot.delete()
+            }
+            if (fileId.isNullOrBlank()) {
+                return@withContext Pair(false, "Encrypted database snapshot created, but Google Drive upload failed. Check account permissions and retry.")
             }
 
-            // 2. Upload to Drive AppFolder
-            val driveManager = GoogleDriveBackupManager(ctx)
-            val fileId = driveManager.uploadBackup(localBackupFile, targetEmail)
-
-            val sizeStr = formatBytes(localBackupFile.length())
-
-            // 3. Update preferences
+            DriveBackupSecretStore.save(appContext, targetEmail, passphrase)
+            val sizeText = formatBytes(snapshotSize)
             preferencesDao.insertOrUpdate(
                 currentPrefs.copy(
-                    isGoogleCloudBackupEnabled = (frequency != "OFF"),
+                    isGoogleCloudBackupEnabled = frequency != "OFF",
                     lastCloudBackupTimestamp = System.currentTimeMillis(),
                     cloudBackupAccount = targetEmail,
                     backupFrequency = frequency,
                     backupOverWifiOnly = wifiOnly,
-                    lastBackupFileSize = sizeStr,
+                    lastBackupFileSize = sizeText,
                     isBackupSkipped = false
                 )
             )
-
-            // 4. Schedule periodic WorkManager job
             val intervalDays = when (frequency) {
                 "DAILY" -> 1
                 "WEEKLY" -> 7
                 "BI_WEEKLY" -> 15
                 else -> 0
             }
-            if (intervalDays > 0) {
-                BackupScheduler.scheduleBackup(ctx, intervalDays, wifiOnly)
-            } else {
-                BackupScheduler.cancelBackup(ctx)
-            }
+            if (intervalDays > 0) BackupScheduler.scheduleBackup(appContext, intervalDays, wifiOnly)
+            else BackupScheduler.cancelBackup(appContext)
 
-            if (fileId != null) {
-                Pair(true, "✅ Secure Drive Backup successful ($sizeStr • ${messages.size} chats & ${matches.size} matches)")
-            } else {
-                Pair(true, "Encrypted backup ready locally. WorkManager will retry uploading to Google Drive.")
-            }
+            Pair(true, "Secure Google Drive Room database backup completed ($sizeText). The SQLite snapshot is encrypted with your passphrase.")
         } catch (e: Exception) {
             android.util.Log.e("SocialConnectRepository", "performGoogleDriveBackup error: ${e.message}", e)
             Pair(false, "Backup failed: ${e.localizedMessage ?: "Unknown error"}")
@@ -2943,11 +2977,10 @@ class SocialConnectRepository(
     }
 
     suspend fun checkExistingCloudBackup(accountEmail: String): DriveBackupMetadata? = withContext(Dispatchers.IO) {
-        val ctx = context ?: return@withContext null
+        val appContext = context ?: return@withContext null
         if (accountEmail.isBlank()) return@withContext null
         try {
-            val driveManager = GoogleDriveBackupManager(ctx)
-            driveManager.checkExistingBackup(accountEmail)
+            GoogleDriveBackupManager(appContext).checkExistingBackup(accountEmail)
         } catch (e: Exception) {
             android.util.Log.w("SocialConnectRepository", "checkExistingCloudBackup warning: ${e.message}")
             null
@@ -2956,85 +2989,49 @@ class SocialConnectRepository(
 
     suspend fun restoreGoogleDriveBackup(
         accountEmail: String,
-        fileId: String? = null
+        fileId: String? = null,
+        encryptionPassphrase: String = ""
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
-        val ctx = context ?: return@withContext Pair(false, "Application context not available")
-        val targetEmail = accountEmail.ifBlank {
-            preferencesDao.getPreferencesSync()?.cloudBackupAccount ?: ""
-        }
+        val appContext = context ?: return@withContext Pair(false, "Application context is not available.")
+        val prefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
+        val targetEmail = accountEmail.ifBlank { prefs.cloudBackupAccount.ifBlank { prefs.googleEmail } }
+        if (targetEmail.isBlank()) return@withContext Pair(false, "Choose the Google Drive account containing your backup.")
 
-        if (targetEmail.isBlank()) {
-            return@withContext Pair(false, "No linked Google Account found for restore.")
+        val passphrase = encryptionPassphrase.ifBlank {
+            DriveBackupSecretStore.load(appContext, targetEmail).orEmpty()
+        }
+        if (passphrase.length < 8) {
+            return@withContext Pair(false, "Enter the same backup encryption passphrase used when this snapshot was created.")
         }
 
         try {
-            val driveManager = GoogleDriveBackupManager(ctx)
-            var targetFileId = fileId
-            if (targetFileId.isNullOrBlank()) {
-                val metadata = driveManager.checkExistingBackup(targetEmail)
-                targetFileId = metadata?.fileId
+            val drive = GoogleDriveBackupManager(appContext)
+            val id = fileId ?: drive.checkExistingBackup(targetEmail)?.fileId
+                ?: return@withContext Pair(false, "No VibeSync database backup was found in this Google Drive AppData folder.")
+            val encrypted = File(appContext.cacheDir, "vibesync_restore_${System.currentTimeMillis()}.enc")
+            val downloaded = try {
+                drive.downloadBackupFile(targetEmail, id, encrypted)
+            } finally {
+                // Keep the file after the download itself; decrypt/restore below and delete after.
             }
-
-            val targetLocalFile = File(ctx.filesDir, "restored_chats.enc")
-
-            var downloaded = false
-            if (!targetFileId.isNullOrBlank()) {
-                downloaded = driveManager.downloadBackupFile(targetEmail, targetFileId, targetLocalFile)
+            if (!downloaded || !encrypted.isFile || encrypted.length() == 0L) {
+                encrypted.delete()
+                return@withContext Pair(false, "Could not download the encrypted database from Google Drive.")
             }
-
-            // If not downloaded from Drive API, check local fallback cache
-            if (!downloaded || !targetLocalFile.exists() || targetLocalFile.length() == 0L) {
-                val cached = File(ctx.cacheDir, "current_backup.enc")
-                if (cached.exists() && cached.length() > 0) {
-                    cached.copyTo(targetLocalFile, overwrite = true)
-                    downloaded = true
-                }
+            val tables = try {
+                RoomDatabaseBackupHelper.restoreEncryptedSnapshot(appContext, encrypted, passphrase)
+            } finally {
+                encrypted.delete()
             }
-
-            if (!downloaded || !targetLocalFile.exists()) {
-                return@withContext Pair(false, "No valid backup file could be downloaded from Google Drive AppFolder.")
-            }
-
-            // Decrypt payload
-            val plainJson = ChatBackupCryptoHelper.decryptFileToJson(
-                encryptedFile = targetLocalFile,
-                userSeed = targetEmail.ifBlank { "VIBESYNC_VAULT_KEY" }
-            )
-
-            if (plainJson.isNullOrBlank()) {
-                return@withContext Pair(false, "Failed to decrypt backup. Decryption key mismatch.")
-            }
-
-            // Parse payload
-            val payload = ChatBackupPayload.fromJsonString(plainJson)
-
-            // Restore into Room database
-            if (payload.messages.isNotEmpty()) {
-                chatMessageDao.insertMessages(payload.messages)
-            }
-            if (payload.matches.isNotEmpty()) {
-                matchDao.insertMatches(payload.matches)
-            }
-            if (payload.friendshipRequests.isNotEmpty()) {
-                friendshipRequestDao.insertRequests(payload.friendshipRequests)
-            }
-            if (payload.userContacts.isNotEmpty()) {
-                userContactDao.insertContacts(payload.userContacts)
-            }
-
-            val currentPrefs = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
+            DriveBackupSecretStore.save(appContext, targetEmail, passphrase)
             preferencesDao.insertOrUpdate(
-                currentPrefs.copy(
-                    lastCloudBackupTimestamp = payload.backupTimestamp,
+                prefs.copy(
+                    lastCloudBackupTimestamp = System.currentTimeMillis(),
                     cloudBackupAccount = targetEmail,
                     isRestoreSkipped = false
                 )
             )
-
-            Pair(
-                true,
-                "✅ Restored ${payload.messages.size} messages, ${payload.matches.size} matches, and ${payload.userContacts.size} contacts!"
-            )
+            Pair(true, "Restored the local Room database from Google Drive ($tables tables).")
         } catch (e: Exception) {
             android.util.Log.e("SocialConnectRepository", "restoreGoogleDriveBackup error: ${e.message}", e)
             Pair(false, "Restore failed: ${e.localizedMessage ?: "Unknown error"}")
@@ -3103,17 +3100,22 @@ class SocialConnectRepository(
     }
 
     suspend fun markMatchAsRead(matchId: String, currentUserPhone: String = "", partnerPhone: String = "") {
-        chatMessageDao.markIncomingMessagesAsReadForMatch(matchId)
+        val prefs = preferencesDao.getPreferencesSync()
+        val match = matchDao.getMatchByIdSync(matchId)
+        // Opening a chat clears the local unread dot, but disabled receipts must never send a READ ACK.
         matchDao.markAsRead(matchId)
+        if (prefs?.readReceiptsEnabled == false) return
 
+        val readAt = System.currentTimeMillis()
+        chatMessageDao.markIncomingMessagesAsReadWithExpiry(
+            matchId = matchId,
+            readAt = readAt,
+            timerSeconds = match?.disappearingTimerSeconds ?: 0
+        )
         appScope.launch(Dispatchers.IO) {
             try {
-                val prefs = preferencesDao.getPreferencesSync()
                 val myPhone = currentUserPhone.ifBlank { prefs?.verifiedMobileNumber ?: "" }
-                val targetPhone = partnerPhone.ifBlank {
-                    val m = matchDao.getMatchByIdSync(matchId)
-                    m?.profileId ?: ""
-                }
+                val targetPhone = partnerPhone.ifBlank { match?.profileId.orEmpty() }
                 if (myPhone.isNotBlank() && targetPhone.isNotBlank()) {
                     com.example.util.SupabaseBackendManager.markMessagesAsRead(myPhone, targetPhone, matchId)
                     com.example.util.SupabaseClientManager.markMessagesAsRead(myPhone, targetPhone, matchId)
@@ -3124,35 +3126,76 @@ class SocialConnectRepository(
         }
     }
 
+    suspend fun setDisappearingTimer(matchId: String, seconds: Int): Boolean {
+        if (seconds !in setOf(0, 86_400, 604_800)) return false
+        val match = matchDao.getMatchByIdSync(matchId) ?: return false
+        if (match.disappearingTimerSeconds == seconds) return true
+        matchDao.insertMatch(match.copy(disappearingTimerSeconds = seconds))
+        val peer = profileDao.getProfileByIdSync(match.profileId)
+        sendMessage(
+            matchId = matchId,
+            text = com.example.util.ChatMessageEventCodec.createDisappearingTimerEvent(seconds),
+            mediaType = com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DISAPPEARING_TIMER,
+            clientMsgId = java.util.UUID.randomUUID().toString(),
+            recipientProfileId = match.profileId,
+            recipientPhoneNumber = peer?.phoneNumber.orEmpty()
+        )
+        return true
+    }
+
     suspend fun insertReceivedChatMessage(
         message: ChatMessageEntity,
         senderPhone: String = "",
         receiverPhone: String = ""
     ) {
-        val exists = chatMessageDao.getMessageById(message.messageId) != null
-        if (!exists) {
-            chatMessageDao.upsertMessage(message)
-            messageDao.insertMessage(message.toLocalMessage())
-            
-            // Ensure match exists and update last message
-            var match = matchDao.getMatchByIdSync(message.matchId)
+        if (database.expiredChatMessageDao().isExpiredMessage(message.messageId)) return
+        val existingMessage = chatMessageDao.getMessageById(message.messageId)
+        // A replay of the original INSERT must never resurrect plaintext after a shared delete event.
+        if (existingMessage?.isDeleted == true || existingMessage?.isDeletedForEveryone == true) return
+        val safeText = com.example.util.MessageLocalRetentionPolicy.displayText(
+            message.text, existingMessage?.text
+        )
+        val canRenderText = com.example.util.MessageLocalRetentionPolicy.isRenderableText(safeText)
+        val persistedMessage = message.copy(
+            text = safeText,
+            deliveryState = if (canRenderText) message.deliveryState else "PENDING_DECRYPTION",
+            deliveryAckPending = message.deliveryAckPending && canRenderText
+        )
+
+        if (existingMessage == null ||
+            !com.example.util.MessageLocalRetentionPolicy.isRenderableText(existingMessage.text)
+        ) {
+            // Commit the primary chat row and the legacy projection atomically. remoteMessageId
+            // ensures retried deliveries replace the same projection instead of adding duplicates.
+            database.withTransaction {
+                chatMessageDao.upsertMessage(persistedMessage)
+                messageDao.insertMessage(
+                    persistedMessage.toLocalMessage().copy(remoteMessageId = persistedMessage.messageId)
+                )
+            }
+
+            val match = matchDao.getMatchByIdSync(persistedMessage.matchId)
             if (match == null) {
-                val profId = senderPhone.ifBlank { message.senderId }
+                val profId = senderPhone.ifBlank { persistedMessage.senderId }
                 val newMatch = MatchEntity(
-                    matchId = message.matchId,
+                    matchId = persistedMessage.matchId,
                     profileId = profId,
-                    matchedAt = message.timestamp,
-                    lastMessage = message.text.ifBlank { if (message.mediaType == "VOICE") "Voice message" else "Photo" },
-                    lastMessageTime = message.timestamp,
-                    hasUnread = !message.isRead
+                    matchedAt = persistedMessage.timestamp,
+                    lastMessage = persistedMessage.text.ifBlank {
+                        if (persistedMessage.mediaType == "VOICE") "Voice message" else "Photo"
+                    },
+                    lastMessageTime = persistedMessage.timestamp,
+                    hasUnread = !persistedMessage.isRead
                 )
                 matchDao.insertMatch(newMatch)
             } else {
                 matchDao.updateLastMessage(
-                    matchId = message.matchId,
-                    text = message.text.ifBlank { if (message.mediaType == "VOICE") "Voice message" else "Photo" },
-                    timestamp = message.timestamp,
-                    hasUnread = !message.isRead
+                    matchId = persistedMessage.matchId,
+                    text = persistedMessage.text.ifBlank {
+                        if (persistedMessage.mediaType == "VOICE") "Voice message" else "Photo"
+                    },
+                    timestamp = persistedMessage.timestamp,
+                    hasUnread = !persistedMessage.isRead
                 )
             }
         }
@@ -3168,14 +3211,29 @@ class SocialConnectRepository(
         replyToText: String? = null,
         replyToSender: String? = null,
         isForwarded: Boolean = false,
-        clientMsgId: String = java.util.UUID.randomUUID().toString()
+        clientMsgId: String = java.util.UUID.randomUUID().toString(),
+        recipientProfileId: String? = null,
+        recipientPhoneNumber: String = ""
     ) {
+        val explicitRecipientId = recipientProfileId.orEmpty().trim()
         var match = matchDao.getMatchByIdSync(matchId)
         if (match == null) {
-            val profId = matchId.removePrefix("match_").substringAfter("_").ifBlank { "contact_user" }
+            // Local match IDs can be pairs of phone hashes; they are not peer profile IDs.
+            val isCompositeHashMatchId = Regex("^match_[0-9a-fA-F]{16}_[0-9a-fA-F]{16}$").matches(matchId)
+            val legacyProfileId = matchId.removePrefix("match_").trim()
+                .takeIf { it.isNotBlank() && !isCompositeHashMatchId }.orEmpty()
+            val resolvedRecipientId = explicitRecipientId.ifBlank { legacyProfileId }
+            if (resolvedRecipientId.isBlank() || resolvedRecipientId.startsWith("match_")) {
+                Log.e(
+                    "VibeSyncOutbox",
+                    "Refusing to enqueue without canonical recipient profile ID: local_match_id=$matchId, " +
+                        "explicit_recipient_id=$explicitRecipientId."
+                )
+                return
+            }
             val newMatch = MatchEntity(
                 matchId = matchId,
-                profileId = profId,
+                profileId = resolvedRecipientId,
                 matchedAt = System.currentTimeMillis(),
                 lastMessage = text.ifBlank { if (mediaType == "VOICE") "Voice message" else "Photo" },
                 lastMessageTime = System.currentTimeMillis(),
@@ -3183,8 +3241,23 @@ class SocialConnectRepository(
             )
             matchDao.insertMatch(newMatch)
             match = newMatch
+        } else if (explicitRecipientId.isNotBlank() &&
+            !match.profileId.trim().equals(explicitRecipientId, ignoreCase = true)
+        ) {
+            Log.i(
+                "VibeSyncOutbox",
+                "Repairing stale local peer identity: local_match_id=$matchId, " +
+                    "old_peer_profile_id=${match.profileId}, canonical_peer_profile_id=$explicitRecipientId."
+            )
+            match = match.copy(profileId = explicitRecipientId)
+            matchDao.insertMatch(match)
         }
-        val targetProfileId = match.profileId
+
+        val targetProfileId = match.profileId.trim()
+        if (targetProfileId.isBlank() || targetProfileId.startsWith("match_")) {
+            Log.e("VibeSyncOutbox", "Refusing message with invalid recipient profile ID for local_match_id=$matchId.")
+            return
+        }
         var profile = profileDao.getProfileByIdSync(targetProfileId)
         if (profile == null) {
             val newProf = ProfileEntity(
@@ -3202,16 +3275,27 @@ class SocialConnectRepository(
                 gradientColorStart = 0xFFFF5E62,
                 gradientColorEnd = 0xFFFF9966,
                 avatarEmoji = "✨",
-                phoneNumber = if (targetProfileId.filter { it.isDigit() }.length >= 10) targetProfileId else "",
-                isVerified = true
+                phoneNumber = recipientPhoneNumber.ifBlank {
+                    if (targetProfileId.filter { it.isDigit() }.length >= 10) targetProfileId else ""
+                },
+                isVerified = false
             )
             profileDao.insertProfile(newProf)
             profile = newProf
+        } else if (
+            recipientPhoneNumber.isNotBlank() &&
+            !com.example.util.PhonebookHelper.arePhonesMatching(profile.phoneNumber, recipientPhoneNumber)
+        ) {
+            // The active chat's verified/contact phone is fresher than a stale local peer cache.
+            // Outbox resolution uses this phone to repair profile IDs through Supabase, not to
+            // address the message directly with the phone string.
+            profile = profile.copy(phoneNumber = recipientPhoneNumber.trim())
+            profileDao.insertProfile(profile)
         }
 
         val prefs = preferencesDao.getPreferencesSync()
-        val myPhone = com.example.util.PhonebookHasher.normalizeToE164(prefs?.verifiedMobileNumber ?: "")
-        val targetPhone = com.example.util.PhonebookHasher.normalizeToE164(profile.phoneNumber.ifBlank { match.profileId })
+        val myPhone = com.example.util.PhonebookHelper.normalizeToE164(prefs?.verifiedMobileNumber ?: "")
+        val targetPhone = com.example.util.PhonebookHelper.normalizeToE164(profile.phoneNumber.ifBlank { match.profileId })
 
         val userMsg = ChatMessageEntity(
             messageId = clientMsgId,
@@ -3228,76 +3312,114 @@ class SocialConnectRepository(
             timestamp = System.currentTimeMillis(),
             isEncrypted = true,
             isDelivered = false,
-            isRead = false
+            isRead = false,
+            deliveryState = "PENDING",
+            outboxOwnerProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty().trim()
         )
         chatMessageDao.insertMessage(userMsg)
-        messageDao.insertMessage(userMsg.toLocalMessage())
-        matchDao.updateLastMessage(
-            matchId = matchId,
-            text = text.ifBlank { if (mediaType == "VOICE") "Voice message" else "Photo" },
-            timestamp = userMsg.timestamp,
-            hasUnread = false
+        messageDao.insertMessage(userMsg.toLocalMessage().copy(remoteMessageId = userMsg.messageId))
+        // Encrypted protocol controls are durable outbox rows, not visible chat activity/previews.
+        val isProtocolControl = mediaType.uppercase() in setOf(
+            "PROFILE_KEY_EXCHANGE",
+            com.example.util.ChatMessageEventCodec.MEDIA_TYPE_REACTION,
+            com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DELETE,
+            com.example.util.ChatMessageEventCodec.MEDIA_TYPE_EDIT,
+            com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DISAPPEARING_TIMER
         )
-
-        // Single authoritative path: Room -> Google Tink -> Supabase -> server-side FCM.
-        appScope.launch(Dispatchers.IO) {
-            try {
-                val senderIdentity = com.example.util.SupabaseClientManager.getPhoneHash(myPhone)
-                val recipientIdentity = targetProfileId
-                val targetKey = profile.publicIdentityKey.ifBlank {
-                    com.example.util.SupabaseClientManager.fetchPublicIdentityKey(recipientIdentity).orEmpty()
-                }
-                if (targetKey.isBlank()) {
-                    android.util.Log.w("SocialConnectRepository", "Message held locally: recipient Tink public key unavailable.")
-                    return@launch
-                }
-                val cipherText = com.example.util.TinkCryptoManager.encryptForRecipient(
-                    recipientPublicKeysetJson = targetKey,
-                    rawText = text,
-                    senderPhone = senderIdentity,
-                    receiverPhone = recipientIdentity
-                )
-                if (!cipherText.startsWith(com.example.util.TinkCryptoManager.TINK_PREFIX)) {
-                    android.util.Log.e("SocialConnectRepository", "Message rejected: Tink encryption failed.")
-                    return@launch
-                }
-                val networkMsg = userMsg.copy(
-                    text = cipherText,
-                    isEncrypted = true,
-                    isDelivered = false,
-                    isRead = false
-                )
-                val success = com.example.util.SupabaseClientManager.upsertChatMessage(
-                    msg = networkMsg,
-                    senderIdentity = senderIdentity,
-                    receiverIdentity = recipientIdentity,
-                    recipientProfileId = recipientIdentity
-                )
-                if (!success) {
-                    android.util.Log.w("SocialConnectRepository", "Encrypted chat insert failed for " + clientMsgId)
-                }
-            } catch (e: Exception) {
-                android.util.Log.w("SocialConnectRepository", "Encrypted message dispatch error: " + e.message)
-            }
+        if (!isProtocolControl) {
+            matchDao.updateLastMessage(
+                matchId = matchId,
+                text = text.ifBlank { if (mediaType == "VOICE") "Voice message" else "Photo" },
+                timestamp = userMsg.timestamp,
+                hasUnread = false
+            )
         }
 
-        // No Firebase database copy or listener is started. FCM is server-side notification transport.
+        // Eager-send after the durable local Room write. WorkManager is enqueued only when the
+        // immediate attempt cannot commit, preserving a reliable retry path without delaying normal sends.
+        val queueContext = context
+        if (queueContext != null) {
+            try {
+                android.util.Log.i(
+                    "VibeSyncOutbox",
+                    "Immediate outbox attempt starting: message_id=$clientMsgId, local_match_id=$matchId."
+                )
+                when (val attempt = com.example.service.PendingMessageOutboxSender.attempt(queueContext, clientMsgId)) {
+                    is com.example.service.PendingOutboxAttempt.Sent -> {
+                        android.util.Log.i(
+                            "VibeSyncOutbox",
+                            "Immediate send completed: message_id=$clientMsgId, status=COMMITTED, " +
+                                "pending_transition=${attempt.pendingTransition}; WorkManager not needed."
+                        )
+                    }
+                    is com.example.service.PendingOutboxAttempt.NoOp -> {
+                        android.util.Log.i(
+                            "VibeSyncOutbox",
+                            "Immediate send skipped: message_id=$clientMsgId, reason=${attempt.reason}."
+                        )
+                    }
+                    is com.example.service.PendingOutboxAttempt.Retryable -> {
+                        android.util.Log.w(
+                            "VibeSyncOutbox",
+                            "Immediate send did not commit: message_id=$clientMsgId; scheduling durable fallback: ${attempt.reason}"
+                        )
+                        com.example.service.PendingMessageSyncScheduler.enqueue(queueContext, clientMsgId)
+                    }
+                    is com.example.service.PendingOutboxAttempt.Rejected -> {
+                        android.util.Log.e(
+                            "VibeSyncOutbox",
+                            "Immediate send did not commit: message_id=$clientMsgId; scheduling durable retry: ${attempt.reason}"
+                        )
+                        com.example.service.PendingMessageSyncScheduler.enqueue(queueContext, clientMsgId)
+                    }
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                // The message is already in Room; ensure cancellation/navigation cannot strand it.
+                com.example.service.PendingMessageSyncScheduler.enqueue(queueContext, clientMsgId)
+                throw cancelled
+            } catch (t: Throwable) {
+                android.util.Log.e(
+                    "VibeSyncOutbox",
+                    "Immediate send threw for $clientMsgId; scheduling durable fallback: ${t.javaClass.simpleName}: ${t.message}",
+                    t
+                )
+                com.example.service.PendingMessageSyncScheduler.enqueue(queueContext, clientMsgId)
+            }
+        } else {
+            android.util.Log.e(
+                "VibeSyncChat",
+                "Message $clientMsgId is persisted as PENDING, but repository context is unavailable; " +
+                    "the application-start outbox sweep will enqueue it."
+            )
+        }
+
+
     }
 
     suspend fun editMessage(messageId: String, newText: String): Boolean {
         val msg = chatMessageDao.getMessageById(messageId) ?: return false
         val now = System.currentTimeMillis()
-        val tenMinutesMillis = 10 * 60 * 1000L
-        if (now - msg.timestamp > tenMinutesMillis) {
-            return false // 10 minutes exceeded
-        }
-        val updated = msg.copy(
-            text = newText,
-            isEdited = true,
-            editedTimestamp = now
-        )
+        if (msg.senderId != "USER" || newText.isBlank() || now < msg.timestamp ||
+            now - msg.timestamp > 15 * 60 * 1000L || msg.isDeleted || msg.isDeletedForEveryone ||
+            msg.mediaType != "TEXT"
+        ) return false
+
+        val updated = msg.copy(text = newText, isEdited = true, editedTimestamp = now)
         chatMessageDao.updateMessage(updated)
-        matchDao.updateLastMessage(msg.matchId, newText, now, false)
+        messageDao.insertMessage(updated.toLocalMessage().copy(remoteMessageId = updated.messageId))
+        val conversation = matchDao.getMatchByIdSync(msg.matchId) ?: return false
+        if (conversation.lastMessageTime <= msg.timestamp || conversation.lastMessage == msg.text) {
+            matchDao.updateLastMessage(msg.matchId, newText, now, false)
+        }
+        val peer = profileDao.getProfileByIdSync(conversation.profileId)
+        sendMessage(
+            matchId = msg.matchId,
+            text = com.example.util.ChatMessageEventCodec.createEditEvent(messageId, newText, now),
+            mediaType = com.example.util.ChatMessageEventCodec.MEDIA_TYPE_EDIT,
+            clientMsgId = java.util.UUID.randomUUID().toString(),
+            recipientProfileId = conversation.profileId,
+            recipientPhoneNumber = peer?.phoneNumber.orEmpty()
+        )
         return true
     }
 
@@ -3311,22 +3433,70 @@ class SocialConnectRepository(
         chatMessageDao.updateMessage(msg.copy(isDeletedForMe = true))
     }
 
-    suspend fun deleteMessageForEveryone(messageId: String) {
-        val msg = chatMessageDao.getMessageById(messageId)
-        chatMessageDao.deleteMessageById(messageId)
-        if (msg != null) {
-            val remaining = chatMessageDao.getMessagesForMatchSync(msg.matchId)
-            val last = remaining.lastOrNull()
-            matchDao.updateLastMessage(
-                matchId = msg.matchId,
-                text = last?.text ?: "No messages yet",
-                timestamp = last?.timestamp ?: System.currentTimeMillis(),
-                hasUnread = false
+    suspend fun deleteMessageForEveryone(messageId: String): Boolean {
+        val msg = chatMessageDao.getMessageById(messageId) ?: return false
+        val age = System.currentTimeMillis() - msg.timestamp
+        if (msg.senderId != "USER" || age < 0L || age > 15 * 60 * 1000L ||
+            msg.isDeleted || msg.isDeletedForEveryone ||
+            msg.mediaType.uppercase() in setOf(
+                com.example.util.ChatMessageEventCodec.MEDIA_TYPE_REACTION,
+                com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DELETE
             )
-            appScope.launch(Dispatchers.IO) {
-                com.example.util.SupabaseBackendManager.deleteChatMessageForEveryone(messageId, msg.matchId)
-            }
+        ) return false
+
+        val match = matchDao.getMatchByIdSync(msg.matchId) ?: return false
+        // Keep a local tombstone so the bubble shows the deleted placeholder, not old plaintext.
+        chatMessageDao.updateMessage(msg.copy(
+            isDeleted = true,
+            isDeletedForEveryone = true,
+            text = "",
+            mediaUrl = "",
+            reactionsJson = "{}"
+        ))
+        if (match.lastMessageTime <= msg.timestamp || match.lastMessage == msg.text) {
+            matchDao.updateLastMessage(
+                msg.matchId,
+                "This message was deleted",
+                msg.timestamp,
+                false
+            )
         }
+        val recipient = profileDao.getProfileByIdSync(match.profileId)
+        sendMessage(
+            matchId = msg.matchId,
+            text = com.example.util.ChatMessageEventCodec.createDeleteEvent(messageId),
+            mediaType = com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DELETE,
+            clientMsgId = java.util.UUID.randomUUID().toString(),
+            recipientProfileId = match.profileId,
+            recipientPhoneNumber = recipient?.phoneNumber.orEmpty()
+        )
+        return true
+    }
+
+    suspend fun reactToMessage(messageId: String, emoji: String): Boolean {
+        if (emoji !in com.example.util.ChatMessageEventCodec.ALLOWED_REACTIONS) return false
+        val message = chatMessageDao.getMessageById(messageId) ?: return false
+        if (message.isDeleted || message.isDeletedForEveryone) return false
+        val match = matchDao.getMatchByIdSync(message.matchId) ?: return false
+        val recipient = profileDao.getProfileByIdSync(match.profileId)
+        val actorId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty().trim()
+        if (actorId.isBlank()) return false
+
+        val reactions = com.example.util.ChatMessageEventCodec.toggleReaction(
+            message.reactionsJson,
+            emoji,
+            actorId
+        )
+        chatMessageDao.updateMessage(message.copy(reactionsJson = reactions))
+        sendMessage(
+            matchId = message.matchId,
+            text = com.example.util.ChatMessageEventCodec.createReactionEvent(messageId, emoji),
+            mediaType = com.example.util.ChatMessageEventCodec.MEDIA_TYPE_REACTION,
+            clientMsgId = java.util.UUID.randomUUID().toString(),
+            recipientProfileId = match.profileId,
+            recipientPhoneNumber = recipient?.phoneNumber.orEmpty()
+        )
+        return true
     }
 
     suspend fun forwardMessage(targetMatchId: String, message: ChatMessageEntity) {
@@ -3349,6 +3519,7 @@ class SocialConnectRepository(
         val cleanDigits = cleanPhone.filter { it.isDigit() }
         val userId = if (cleanDigits.length >= 7) cleanPhone else if (cleanEmail.isNotBlank()) cleanEmail else "current_user"
 
+        val wasAlreadyVerified = profileDao.getProfileByIdSync(userId)?.isVerified ?: false
         val ownProf = ProfileEntity(
             id = userId,
             name = cleanName.ifBlank { "VibeSync Member" },
@@ -3365,7 +3536,7 @@ class SocialConnectRepository(
             gradientColorEnd = 0xFFFF9966,
             avatarEmoji = "✨",
             avatarUrl = preferences.avatarUrl,
-            isVerified = true,
+            isVerified = wasAlreadyVerified,
             phoneNumber = cleanPhone,
             email = cleanEmail,
             isDeleted = false,
@@ -4020,6 +4191,7 @@ class SocialConnectRepository(
         val newStatus = !biz.isFollowed
         val delta = if (newStatus) 1 else -1
         businessDao.updateFollowStatus(businessId, newStatus, delta)
+        runCatching { com.example.util.SupabaseClientManager.setBusinessFollowRemote(businessId, newStatus) }
     }
 
     suspend fun createBusinessProfile(
@@ -4088,6 +4260,13 @@ class SocialConnectRepository(
                 createdAt = System.currentTimeMillis()
             )
             businessDao.insertBusiness(business)
+
+            // Server RPC forces is_published=true and derives owner from the verified session.
+            val published = runCatching {
+                com.example.util.SupabaseClientManager.upsertBusinessListing(business)
+            }.getOrDefault(false)
+            if (!published) Log.w("SocialConnectRepository", "Business cached locally; Supabase publish was deferred.")
+            appScope.launch(Dispatchers.IO) { refreshPublishedBusinessDirectory() }
 
             try {
                 com.example.util.BusinessHubSyncManager.syncVenueToFirestore(business)
@@ -4254,6 +4433,14 @@ class SocialConnectRepository(
         val newBalance = biz.walletPoints + addedPoints
         businessDao.updateWalletPoints(businessId, newBalance)
         return newBalance
+    }
+
+    /** Apply only a balance returned by the server-authoritative wallet settlement/snapshot. */
+    suspend fun reconcileBusinessWalletBalance(businessId: String, serverBalance: Int): Int {
+        if (businessId.isBlank() || serverBalance < 0) return 0
+        val business = businessDao.getBusinessByIdSync(businessId) ?: return 0
+        businessDao.updateWalletPoints(businessId, serverBalance)
+        return serverBalance
     }
 
     suspend fun upgradeVerificationTier(businessId: String, newTier: String) {
@@ -5308,7 +5495,7 @@ class SocialConnectRepository(
                         avatarUrl = doc.getString("avatarUrl") ?: "",
                         phoneNumber = phone,
                         email = doc.getString("googleEmail") ?: "",
-                        isVerified = true,
+                        isVerified = doc.getBoolean("isVerified") ?: false,
                         likedMe = true,
                         isSuperLikedMe = true
                     )
@@ -5330,51 +5517,8 @@ class SocialConnectRepository(
                 val list = com.example.util.SupabaseClientManager.fetchProfilesByE164Phones(batch)
                 for (profile in list) {
                     result[profile.id] = profile
-                    val digits = profile.phoneNumber.filter { it.isDigit() }
-                    if (digits.isNotBlank()) {
-                        result[digits] = profile
-                        val e164 = com.example.util.PhonebookHelper.normalizeToE164(profile.phoneNumber)
-                        if (e164.isNotBlank()) result[e164] = profile
-                        val phHash = com.example.util.SupabaseClientManager.getPhoneHash(digits)
-                        result[phHash] = profile
-                        val h16 = com.example.util.PhonebookHasher.generate16CharHash(digits)
-                        result[h16] = profile
-                        val h64 = com.example.util.PhonebookHasher.hashPhoneNumberToHex(digits)
-                        result[h64] = profile
-                        for (h in com.example.util.PhonebookHasher.getAllMatchHashes(profile.phoneNumber)) {
-                            result[h] = profile
-                        }
-                    }
-                }
-            }
-        } catch (_: Exception) {}
-        return@withContext result
-    }
-
-    suspend fun fetchProfilesByHashesFromSupabase(hashes: List<String>): Map<String, ProfileEntity> = withContext(Dispatchers.IO) {
-        val result = mutableMapOf<String, ProfileEntity>()
-        val validHashes = hashes.filter { it.isNotBlank() && !it.equals("null", ignoreCase = true) }.distinct()
-        if (validHashes.isEmpty()) return@withContext result
-        try {
-            validHashes.chunked(30).forEach { batch ->
-                val list = com.example.util.SupabaseClientManager.fetchProfilesByHashes(batch)
-                for (profile in list) {
-                    result[profile.id] = profile
-                    val digits = profile.phoneNumber.filter { it.isDigit() }
-                    if (digits.isNotBlank()) {
-                        result[digits] = profile
-                        val e164 = com.example.util.PhonebookHelper.normalizeToE164(profile.phoneNumber)
-                        if (e164.isNotBlank()) result[e164] = profile
-                        val phHash = com.example.util.SupabaseClientManager.getPhoneHash(digits)
-                        result[phHash] = profile
-                        val h16 = com.example.util.PhonebookHasher.generate16CharHash(digits)
-                        result[h16] = profile
-                        val h64 = com.example.util.PhonebookHasher.hashPhoneNumberToHex(digits)
-                        result[h64] = profile
-                        for (h in com.example.util.PhonebookHasher.getAllMatchHashes(profile.phoneNumber)) {
-                            result[h] = profile
-                        }
-                    }
+                    val phoneE164 = com.example.util.PhonebookHelper.normalizeToE164(profile.phoneNumber)
+                    if (phoneE164.isNotBlank()) result[phoneE164] = profile
                 }
             }
         } catch (_: Exception) {}
@@ -5432,48 +5576,21 @@ class SocialConnectRepository(
             emptyList()
         }
 
-        val allProfiles = (localProfiles + supabaseProfiles + firestoreAccounts).distinctBy { it.id }
+        val allProfiles = (localProfiles + supabaseProfiles).distinctBy { it.id }
 
-        val hashToProfileMap = mutableMapOf<String, ProfileEntity>()
-        val phoneDigitsMap = mutableMapOf<String, ProfileEntity>()
-
+        val profilesByE164 = mutableMapOf<String, ProfileEntity>()
         for (profile in allProfiles) {
-            val phoneDigits = profile.phoneNumber.filter { it.isDigit() }
-            if (phoneDigits.isNotBlank()) {
-                val phHash = com.example.util.SupabaseClientManager.getPhoneHash(phoneDigits)
-                hashToProfileMap[phHash] = profile
-                if (phoneDigits.length >= 10) {
-                    phoneDigitsMap[phoneDigits.takeLast(10)] = profile
-                }
-            }
-            if (profile.id.length == 16) {
-                hashToProfileMap[profile.id] = profile
-            }
-            val idDigits = profile.id.filter { it.isDigit() }
-            if (idDigits.length >= 10) {
-                phoneDigitsMap[idDigits.takeLast(10)] = profile
-            }
+            val phoneE164 = com.example.util.PhonebookHelper.normalizeToE164(profile.phoneNumber)
+            if (profile.id.isNotBlank() && phoneE164.isNotBlank()) profilesByE164[phoneE164] = profile
         }
-
         val matchedResults = rawContacts.map { contact ->
-            val cleanDigits = contact.phoneNumber.filter { it.isDigit() }
-            val contactHash = if (contact.phoneHash.isNotBlank()) contact.phoneHash else com.example.util.SupabaseClientManager.getPhoneHash(cleanDigits)
-
-            val matchedProfile = hashToProfileMap[contactHash]
-                ?: (if (cleanDigits.length >= 10) phoneDigitsMap[cleanDigits.takeLast(10)] else null)
-
+            val phoneE164 = com.example.util.PhonebookHelper.normalizeToE164(contact.phoneNumber.ifBlank { contact.phoneHash })
+            val matchedProfile = profilesByE164[phoneE164]
             if (matchedProfile != null) {
-                contact.copy(
-                    phoneHash = contactHash,
-                    isOnVibeSync = true,
-                    vibeSyncUserId = matchedProfile.id,
-                    avatarEmoji = matchedProfile.avatarEmoji.ifBlank { "✨" },
-                    photoUrl = matchedProfile.avatarUrl,
-                    statusTagline = "${matchedProfile.relationshipGoal.ifBlank { "Available on VibeSync" }} • ${matchedProfile.city.ifBlank { "Active" }}"
-                )
-            } else {
-                contact.copy(phoneHash = contactHash)
-            }
+                contact.copy(phoneHash = phoneE164, isOnVibeSync = true, vibeSyncUserId = matchedProfile.id,
+                    avatarEmoji = matchedProfile.avatarEmoji.ifBlank { "✨" }, photoUrl = matchedProfile.avatarUrl,
+                    statusTagline = "${matchedProfile.relationshipGoal.ifBlank { "Available on VibeSync" }} • ${matchedProfile.city.ifBlank { "Active" }}")
+            } else contact.copy(phoneHash = phoneE164)
         }
 
         try {
@@ -5527,56 +5644,82 @@ class SocialConnectRepository(
             val prefs = preferencesDao.getPreferencesSync()
             val myPhone = com.example.util.ContactResolver.sanitizePhone(prefs?.verifiedMobileNumber ?: "")
             val myDigits = myPhone.filter { it.isDigit() }
+            val myProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty().trim()
+            if (myProfileId.isNotBlank()) {
+                for (m in matchDao.getAllMatchesSync()) {
+                    val peerProfileId = m.profileId.trim()
+                    if (peerProfileId.isBlank() || peerProfileId == "null" ||
+                        peerProfileId.equals(myProfileId, ignoreCase = true)
+                    ) continue
 
-            if (myPhone.isNotBlank() && myPhone != "null") {
-                val activeMatches = matchDao.getAllMatchesSync()
-                for (m in activeMatches) {
-                    val profId = com.example.util.ContactResolver.sanitizePhone(m.profileId)
-                    if (profId.isBlank() || profId == "null") continue
+                    val canonicalMatchId = com.example.util.SupabaseClientManager.canonicalChatMatchId(myProfileId, peerProfileId)
+                    val queryIds = listOf(canonicalMatchId, m.matchId, getSymmetricMatchId(peerProfileId))
+                        .filter { it.isNotBlank() && it != "null" }.distinct()
+                    for (queryMatchId in queryIds) {
+                        for (remote in com.example.util.SupabaseClientManager.fetchMessagesForMatch(queryMatchId)) {
+                            if (remote.messageId.isBlank()) continue
+                            val control = remote.mediaType in listOf("KEY_EXCHANGE", "HANDSHAKE", "SETUP", "PROTOCOL", "SYSTEM") ||
+                                remote.text.startsWith("KEY_EXCHANGE") || remote.text.startsWith("DH_HANDSHAKE") ||
+                                remote.text.startsWith("E2EE_SETUP") || remote.text.equals("Message", ignoreCase = true)
+                            if (control) continue
 
-                    val symmetricalId = getSymmetricMatchId(profId)
-                    val matchIdsToQuery = setOf(m.matchId, symmetricalId).filter { it.isNotBlank() && it != "null" }
-
-                    for (queryMatchId in matchIdsToQuery) {
-                        val remoteMsgs = com.example.util.SupabaseClientManager.fetchMessagesForMatch(queryMatchId)
-                        for (remoteMsg in remoteMsgs) {
-                            if (remoteMsg.text.isBlank() || remoteMsg.text == "null") continue
-                            
-                            val isControlPacket = remoteMsg.mediaType in listOf("KEY_EXCHANGE", "HANDSHAKE", "SETUP", "PROTOCOL", "SYSTEM") ||
-                                remoteMsg.text.startsWith("KEY_EXCHANGE") ||
-                                remoteMsg.text.startsWith("DH_HANDSHAKE") ||
-                                remoteMsg.text.startsWith("E2EE_SETUP") ||
-                                remoteMsg.text.equals("Message", ignoreCase = true)
-                            if (isControlPacket) continue
-
-                            val existing = chatMessageDao.getMessageById(remoteMsg.messageId)
-                            if (existing == null) {
-                                val senderDigits = remoteMsg.senderId.filter { it.isDigit() }
-                                val isMyOwn = remoteMsg.senderId == "USER" ||
-                                        remoteMsg.senderId == myPhone ||
-                                        (myDigits.length >= 7 && senderDigits.length >= 7 && senderDigits.endsWith(myDigits.takeLast(10)))
-
-                                val incomingMsg = remoteMsg.copy(
+                            val digits = remote.senderId.filter { it.isDigit() }
+                            val isMyOwn = remote.senderId == "USER" ||
+                                remote.senderId.equals(myProfileId, ignoreCase = true) ||
+                                remote.senderId == myPhone ||
+                                (myDigits.length >= 7 && digits.length >= 7 && digits.endsWith(myDigits.takeLast(10)))
+                            val existing = chatMessageDao.getMessageById(remote.messageId)
+                            val safeText = com.example.util.MessageLocalRetentionPolicy.displayText(
+                                remote.text, existing?.text
+                            )
+                            val canRenderText = com.example.util.MessageLocalRetentionPolicy.isRenderableText(safeText)
+                            if (existing == null ||
+                                !com.example.util.MessageLocalRetentionPolicy.isRenderableText(existing.text)
+                            ) {
+                                val incoming = remote.copy(
                                     matchId = m.matchId,
-                                    senderId = if (isMyOwn) "USER" else profId,
-                                    isDelivered = true,
-                                    isRead = false
+                                    senderId = if (isMyOwn) "USER" else peerProfileId,
+                                    text = safeText,
+                                    isDelivered = canRenderText && (isMyOwn || remote.isDelivered),
+                                    isRead = isMyOwn && remote.isRead,
+                                    deliveryAckPending = !isMyOwn && canRenderText && !remote.isDelivered,
+                                    deliveryState = if (!canRenderText) "PENDING_DECRYPTION"
+                                        else if (isMyOwn && remote.isRead) "READ"
+                                        else if (remote.isDelivered) "DELIVERED"
+                                        else if (isMyOwn) "SENT_TO_SERVER" else "ACK_PENDING"
                                 )
-                                chatMessageDao.insertMessage(incomingMsg)
-                                messageDao.insertMessage(incomingMsg.toLocalMessage())
-
-                                matchDao.updateLastMessage(
-                                    matchId = m.matchId,
-                                    text = remoteMsg.text,
-                                    timestamp = remoteMsg.timestamp,
-                                    hasUnread = !isMyOwn
-                                )
+                                database.withTransaction {
+                                    chatMessageDao.upsertMessage(incoming)
+                                    messageDao.insertMessage(
+                                        incoming.toLocalMessage().copy(remoteMessageId = incoming.messageId)
+                                    )
+                                }
+                                if (canRenderText) {
+                                    matchDao.updateLastMessage(m.matchId, safeText, remote.timestamp, !isMyOwn)
+                                }
+                            }
+                            // Never ACK unreadable ciphertext. Its tombstone is retained until a
+                            // future authorized decrypt succeeds; repeated sweeps are idempotent.
+                            if (!isMyOwn && canRenderText) {
+                                val acked = remote.isDelivered ||
+                                    com.example.util.SupabaseBackendManager.markMessageDelivered(
+                                        remote.messageId, remote.senderId, myProfileId
+                                    )
+                                if (acked) chatMessageDao.markMessageAsDelivered(remote.messageId)
                             }
                         }
                     }
+
+                    if (canonicalMatchId.isNotBlank()) {
+                        val states = com.example.util.SupabaseClientManager.fetchMessageDeliveryStatesForMatch(canonicalMatchId)
+                        states.filter { it.senderId.equals(myProfileId, ignoreCase = true) && it.isDelivered }
+                            .forEach { chatMessageDao.markMessageAsDelivered(it.messageId) }
+                    }
                 }
             }
-        } catch (_: Exception) {}
+        } catch (e: Throwable) {
+            android.util.Log.e("SocialConnectRepository", "Supabase E2EE message sync failed.", e)
+        }
     }
 
     fun startSupabaseMessagePollingLoop() {

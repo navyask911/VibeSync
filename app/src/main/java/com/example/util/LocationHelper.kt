@@ -16,7 +16,8 @@ data class DeviceLocationResult(
     val longitude: Double,
     val city: String,
     val fullAddress: String,
-    val country: String = "India"
+    val country: String = "India",
+    val accuracyMeters: Float = 0f
 )
 
 data class NearbyPlace(

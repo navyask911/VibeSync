@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -37,6 +38,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -69,16 +74,79 @@ fun ProfileDetailDialog(
     onBlockAndReport: (reason: String) -> Unit = {},
     onOpenReport: ((ProfileEntity) -> Unit)? = null,
     onOpenChat: ((String) -> Unit)? = null,
-    compatibility: MatchingManager.CompatibilityResult? = null
+    compatibility: MatchingManager.CompatibilityResult? = null,
+    isMutualConnection: Boolean = false
 ) {
-    val photoList = remember(profile.avatarUrl, profile.id) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val requestScope = rememberCoroutineScope()
+    var approvedPhoneRequest by remember(profile.id) { mutableStateOf(false) }
+    LaunchedEffect(profile.id) {
+        approvedPhoneRequest = withContext(Dispatchers.IO) {
+            com.example.util.SupabaseClientManager.hasAcceptedPhoneNumberRequest(profile.id)
+        }
+    }
+    // DOB can follow connection privacy; a phone number additionally requires local contact
+    // recognition or an explicit accepted phone request after a friendship is established.
+    val canRevealSensitive =
+        com.example.util.ProfilePrivacyManager.canRevealSensitiveFields(context, profile, isMutualConnection)
+    val canRevealPhone = (approvedPhoneRequest && isMutualConnection) ||
+        com.example.util.ProfilePrivacyManager.canRevealPhoneNumber(context, profile)
+    val photoList = remember(profile.avatarUrl, profile.avatarCacheVersion, profile.id) {
         profile.getPhotoList()
+            .map { com.example.util.AvatarImageSupport.normalizeReference(it) }
+            .filter(String::isNotBlank)
     }
     var currentPhotoIndex by remember(profile.id) { androidx.compose.runtime.mutableIntStateOf(0) }
     val activePhoto = if (photoList.isNotEmpty()) {
         photoList.getOrElse(currentPhotoIndex % photoList.size) { photoList[0] }
     } else {
-        profile.getEffectiveAvatarUrl()
+        ""
+    }
+    val encryptedPhotoOwnerId = remember(activePhoto) {
+        activePhoto.takeIf { it.startsWith("vibesync-avatar-enc://") }
+            ?.removePrefix("vibesync-avatar-enc://")?.substringBefore('/').orEmpty()
+    }
+    val peerPhotoVersionFlow = remember(context, encryptedPhotoOwnerId) {
+        if (encryptedPhotoOwnerId.isBlank()) kotlinx.coroutines.flow.flowOf(1)
+        else com.example.util.ProfileKeyManager.peerProfileVersionFlow(context, encryptedPhotoOwnerId)
+    }
+    val peerPhotoVersion by peerPhotoVersionFlow.collectAsState(initial = 1)
+    var resolvedActivePhoto by remember(activePhoto, profile.avatarCacheVersion) {
+        mutableStateOf(if (activePhoto.startsWith("vibesync-avatar-enc://")) "" else activePhoto)
+    }
+    var resolvedActivePhotoBitmap by remember(activePhoto, profile.avatarCacheVersion) {
+        mutableStateOf<Bitmap?>(null)
+    }
+    LaunchedEffect(activePhoto, profile.avatarCacheVersion, peerPhotoVersion) {
+        if (activePhoto.startsWith("vibesync-avatar-enc://")) {
+            resolvedActivePhoto = ""
+            resolvedActivePhotoBitmap = null
+            resolvedActivePhotoBitmap = com.example.util.ProfileAvatarStorageManager
+                .resolveAvatarForDisplay(context, activePhoto, profile.avatarCacheVersion)
+        } else {
+            resolvedActivePhoto = activePhoto
+            resolvedActivePhotoBitmap = null
+        }
+    }
+    val resolvedPhotoModel = remember(resolvedActivePhoto, resolvedActivePhotoBitmap, profile.id, profile.avatarCacheVersion) {
+        if (resolvedActivePhotoBitmap != null) {
+            // A decrypted avatar must never be written into Coil's disk or secondary memory cache.
+            ImageRequest.Builder(context)
+                .data(resolvedActivePhotoBitmap)
+                .crossfade(true)
+                .diskCachePolicy(CachePolicy.DISABLED)
+                .memoryCachePolicy(CachePolicy.DISABLED)
+                .build()
+        } else if (resolvedActivePhoto.isNotBlank()) {
+            ImageRequest.Builder(context)
+                .data(resolvedActivePhoto)
+                .memoryCacheKey("profile-avatar:${profile.id}:$resolvedActivePhoto:${profile.avatarCacheVersion}")
+                .diskCacheKey("profile-avatar:${profile.id}:$resolvedActivePhoto:${profile.avatarCacheVersion}")
+                .crossfade(true)
+                .diskCachePolicy(CachePolicy.ENABLED)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .build()
+        } else null
     }
 
     Dialog(
@@ -100,7 +168,7 @@ fun ProfileDetailDialog(
                         .fillMaxWidth()
                         .height(320.dp)
                         .then(
-                            if (activePhoto.isBlank()) {
+                            if (resolvedActivePhoto.isBlank() && resolvedActivePhotoBitmap == null) {
                                 Modifier.background(
                                     Brush.verticalGradient(
                                         colors = listOf(
@@ -114,17 +182,9 @@ fun ProfileDetailDialog(
                             }
                         )
                 ) {
-                    if (activePhoto.isNotBlank()) {
-                        val context = androidx.compose.ui.platform.LocalContext.current
+                    if (resolvedPhotoModel != null) {
                         SubcomposeAsyncImage(
-                            model = ImageRequest.Builder(context)
-                                .data(activePhoto)
-                                .memoryCacheKey("profile-avatar:${profile.id}:$activePhoto:${profile.avatarCacheVersion}")
-                                .diskCacheKey("profile-avatar:${profile.id}:$activePhoto:${profile.avatarCacheVersion}")
-                                .crossfade(true)
-                                .diskCachePolicy(CachePolicy.ENABLED)
-                                .memoryCachePolicy(CachePolicy.ENABLED)
-                                .build(),
+                            model = resolvedPhotoModel,
                             contentDescription = "${profile.name} photo",
                             modifier = Modifier
                                 .fillMaxSize()
@@ -157,7 +217,9 @@ fun ProfileDetailDialog(
                                         colorStart = profile.gradientColorStart,
                                         colorEnd = profile.gradientColorEnd,
                                         size = 120.dp,
-                                        isVerified = profile.isVerified,
+                                        isVerified = com.example.util.VerifiedBadgePolicy.shouldShow(
+                                            profile.isVerified, profile.subscriptionStatus, profile.badgePurchased
+                                        ),
                                         avatarUrl = "",
                                         avatarCacheVersion = profile.avatarCacheVersion
                                     )
@@ -190,8 +252,10 @@ fun ProfileDetailDialog(
                                 colorStart = profile.gradientColorStart,
                                 colorEnd = profile.gradientColorEnd,
                                 size = 120.dp,
-                                isVerified = profile.isVerified,
-                                avatarUrl = profile.avatarUrl,
+                                isVerified = com.example.util.VerifiedBadgePolicy.shouldShow(
+                                            profile.isVerified, profile.subscriptionStatus, profile.badgePurchased
+                                        ),
+                                avatarUrl = "",
                                 avatarCacheVersion = profile.avatarCacheVersion
                             )
                         }
@@ -271,6 +335,11 @@ fun ProfileDetailDialog(
                             fontWeight = FontWeight.Medium
                         )
                     )
+                    Text(
+                        text = com.example.util.ProfilePrivacyManager.ageAndDobLabel(profile, canRevealSensitive),
+                        style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
+                        modifier = Modifier.padding(top = 5.dp)
+                    )
 
                     Spacer(modifier = Modifier.height(18.dp))
 
@@ -303,15 +372,9 @@ fun ProfileDetailDialog(
                         Spacer(modifier = Modifier.height(16.dp))
                     }
 
-                    // Contact Phone Details & Privacy Control
+                    // Always render the privacy card when a number exists; the shared policy decides disclosure.
                     val displayPhone = if (profile.phoneNumber.isNotBlank()) profile.phoneNumber else if (profile.id.filter { it.isDigit() }.length >= 10) profile.id else ""
-                    val context = androidx.compose.ui.platform.LocalContext.current
-                    val isContactSaved = remember(displayPhone, profile.id) {
-                        if (displayPhone.isBlank()) false
-                        else com.example.util.ContactResolver.fetchContactNameByPhoneNumber(context, displayPhone) != null
-                    }
                     var isPhoneAccessRequested by remember(profile.id) { mutableStateOf(false) }
-                    var isPhoneRevealed by remember(profile.id) { mutableStateOf(false) }
 
                     if (displayPhone.isNotBlank()) {
                         Card(
@@ -344,13 +407,13 @@ fun ProfileDetailDialog(
                                             )
                                         )
                                     }
-                                    if (isContactSaved || isPhoneRevealed) {
+                                    if (canRevealPhone) {
                                         Surface(
                                             shape = RoundedCornerShape(12.dp),
                                             color = LikeGreen.copy(alpha = 0.15f)
                                         ) {
                                             Text(
-                                                text = if (isContactSaved) "Phone Contact" else "Access Granted",
+                                                text = if (isMutualConnection) "Connected" else "Trusted Contact",
                                                 color = LikeGreen,
                                                 fontSize = 11.sp,
                                                 fontWeight = FontWeight.Bold,
@@ -385,7 +448,7 @@ fun ProfileDetailDialog(
                                 }
                                 Spacer(modifier = Modifier.height(10.dp))
 
-                                if (isContactSaved || isPhoneRevealed) {
+                                if (canRevealPhone) {
                                     // Full number display for known contacts or after granted access
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
@@ -424,11 +487,15 @@ fun ProfileDetailDialog(
                                             }
                                             IconButton(
                                                 onClick = {
-                                                    com.example.util.PhonebookHelper.sendInstantMessagingInvite(
-                                                        context = context,
-                                                        phoneNumber = displayPhone,
-                                                        message = "Hi ${profile.name}! Connecting with you on VibeSync."
-                                                    )
+                                                    if (onOpenChat != null) {
+                                                        onOpenChat.invoke(profile.id)
+                                                    } else {
+                                                        com.example.util.PhonebookHelper.sendInstantMessagingInvite(
+                                                            context = context,
+                                                            phoneNumber = displayPhone,
+                                                            message = "Hi ${profile.name}! Connecting with you on VibeSync."
+                                                        )
+                                                    }
                                                 },
                                                 modifier = Modifier.size(36.dp)
                                             ) {
@@ -444,13 +511,7 @@ fun ProfileDetailDialog(
                                 } else {
                                     // Masked phone number with Request Phone Number action
                                     val maskedPhone = remember(displayPhone) {
-                                        if (displayPhone.startsWith("+")) {
-                                            val parts = displayPhone.trim().split(" ")
-                                            val cc = if (parts.isNotEmpty() && parts[0].startsWith("+")) parts[0] else "+91"
-                                            "$cc XXXXX XXXXX"
-                                        } else {
-                                            "+91 XXXXX XXXXX"
-                                        }
+                                        com.example.util.ProfilePrivacyManager.maskedPhone(displayPhone)
                                     }
                                     Column(
                                         modifier = Modifier.fillMaxWidth(),
@@ -470,7 +531,13 @@ fun ProfileDetailDialog(
                                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
                                         )
                                         Spacer(modifier = Modifier.height(2.dp))
-                                        if (isPhoneAccessRequested) {
+                                        if (approvedPhoneRequest && !isMutualConnection) {
+                                            Text(
+                                                text = "Request accepted. Phone sharing unlocks when the friendship is accepted.",
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        } else if (isPhoneAccessRequested) {
                                             Row(
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 modifier = Modifier
@@ -496,12 +563,24 @@ fun ProfileDetailDialog(
                                         } else {
                                             Button(
                                                 onClick = {
-                                                    isPhoneAccessRequested = true
-                                                    android.widget.Toast.makeText(
-                                                        context,
-                                                        "Phone number request sent to ${profile.name}!",
-                                                        android.widget.Toast.LENGTH_SHORT
-                                                    ).show()
+                                                    requestScope.launch {
+                                                        val requesterName = withContext(Dispatchers.IO) {
+                                                            runCatching {
+                                                                com.example.data.database.DatingDatabase.getDatabase(context)
+                                                                    .userPreferencesDao().getPreferencesSync()?.userName
+                                                            }.getOrNull().orEmpty()
+                                                        }.ifBlank { "VibeSync member" }
+                                                        val result = com.example.util.SupabaseClientManager.createPhoneNumberAccessRequest(
+                                                            targetProfileId = profile.id,
+                                                            requesterName = requesterName
+                                                        )
+                                                        isPhoneAccessRequested = result.isSuccess
+                                                        android.widget.Toast.makeText(
+                                                            context,
+                                                            if (result.isSuccess) "Phone number request sent to ${profile.name}." else "Request could not be sent. Please retry.",
+                                                            android.widget.Toast.LENGTH_SHORT
+                                                        ).show()
+                                                    }
                                                 },
                                                 modifier = Modifier.fillMaxWidth(),
                                                 shape = RoundedCornerShape(12.dp),

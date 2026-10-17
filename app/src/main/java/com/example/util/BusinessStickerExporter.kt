@@ -180,7 +180,7 @@ object BusinessStickerExporter {
             canvas.drawBitmap(qrBitmap, qrBoxLeft + 25f, qrBoxTop + 25f, null)
 
             if (showLogo) {
-                val centerBadgeSize = 88f
+                val centerBadgeSize = 56f
                 val centerLeft = (size - centerBadgeSize) / 2f
                 val centerTop = qrBoxTop + (qrBoxSize - centerBadgeSize) / 2f
                 val centerRect = RectF(centerLeft, centerTop, centerLeft + centerBadgeSize, centerTop + centerBadgeSize)

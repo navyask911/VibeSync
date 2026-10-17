@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -12,6 +13,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,6 +49,73 @@ fun DatingAvatar(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    // Profile metadata can contain a delimiter-separated photo gallery. Resolve the active first
+    // encrypted pointer rather than passing the combined metadata string into the decryptor.
+    val activeAvatarReference = remember(avatarUrl) {
+        com.example.util.AvatarImageSupport.normalizeReference(
+            avatarUrl.split("|||").firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+        )
+    }
+    val encryptedOwnerId = remember(activeAvatarReference) {
+        activeAvatarReference.takeIf { it.startsWith("vibesync-avatar-enc://") }
+            ?.removePrefix("vibesync-avatar-enc://")?.substringBefore('/').orEmpty()
+    }
+    val peerVersionFlow = remember(context, encryptedOwnerId) {
+        if (encryptedOwnerId.isBlank()) kotlinx.coroutines.flow.flowOf(0)
+        else com.example.util.ProfileKeyManager.peerProfileKeyRevisionFlow(context, encryptedOwnerId)
+    }
+    val peerKeyRevision by peerVersionFlow.collectAsState(initial = 0)
+    var resolvedAvatarBitmap by remember(activeAvatarReference, avatarCacheVersion) {
+        mutableStateOf<Bitmap?>(null)
+    }
+    var resolvedAvatarUrl by remember(activeAvatarReference, avatarCacheVersion) {
+        mutableStateOf(if (activeAvatarReference.startsWith("vibesync-avatar-enc://")) "" else activeAvatarReference)
+    }
+    LaunchedEffect(activeAvatarReference, avatarCacheVersion, peerKeyRevision) {
+        if (activeAvatarReference.startsWith("vibesync-avatar-enc://")) {
+            resolvedAvatarUrl = ""
+            resolvedAvatarBitmap = null
+            resolvedAvatarBitmap = com.example.util.ProfileAvatarStorageManager
+                .resolveAvatarForDisplay(context, activeAvatarReference, avatarCacheVersion)
+        } else {
+            resolvedAvatarBitmap = null
+            resolvedAvatarUrl = com.example.util.AvatarImageSupport.normalizeReference(activeAvatarReference)
+        }
+    }
+    val avatarImageModel = remember(resolvedAvatarUrl, resolvedAvatarBitmap, activeAvatarReference, avatarCacheVersion) {
+        when {
+            resolvedAvatarBitmap != null -> ImageRequest.Builder(context)
+                .data(resolvedAvatarBitmap)
+                .crossfade(true)
+                .diskCachePolicy(CachePolicy.DISABLED)
+                .memoryCachePolicy(CachePolicy.DISABLED)
+                .build()
+            resolvedAvatarUrl.isNotBlank() -> ImageRequest.Builder(context)
+                .data(resolvedAvatarUrl)
+                .memoryCacheKey("profile-avatar:$resolvedAvatarUrl:$avatarCacheVersion")
+                .diskCacheKey("profile-avatar:$resolvedAvatarUrl:$avatarCacheVersion")
+                .crossfade(true)
+                .diskCachePolicy(CachePolicy.ENABLED)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .build()
+            else -> null
+        }
+    }
+    var imageLoadFailed by remember(avatarImageModel) { mutableStateOf(false) }
+    LaunchedEffect(avatarImageModel) { imageLoadFailed = false }
+    val fallbackLabel = remember(name, emoji) {
+        val cleanEmoji = emoji.trim()
+        if (cleanEmoji.isNotBlank() && cleanEmoji !in setOf("✨", "👤", "🙂", "😀")) {
+            cleanEmoji
+        } else {
+            name.trim().split(Regex("\\s+"))
+                .filter { it.isNotBlank() }
+                .take(2)
+                .mapNotNull { it.firstOrNull()?.uppercaseChar() }
+                .joinToString("")
+                .ifBlank { "?" }
+        }
+    }
     Box(
         modifier = modifier.size(size),
         contentAlignment = Alignment.Center
@@ -59,25 +133,20 @@ fun DatingAvatar(
                 .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape),
             contentAlignment = Alignment.Center
         ) {
-            if (avatarUrl.isNotBlank()) {
+            val fallbackSize = (size.value * if (fallbackLabel.length > 1) 0.36f else 0.45f).sp
+            Text(
+                text = fallbackLabel,
+                fontSize = fallbackSize,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            if (avatarImageModel != null && !imageLoadFailed) {
                 AsyncImage(
-                    model = ImageRequest.Builder(context)
-                        .data(avatarUrl)
-                        .memoryCacheKey("profile-avatar:$avatarUrl:$avatarCacheVersion")
-                        .diskCacheKey("profile-avatar:$avatarUrl:$avatarCacheVersion")
-                        .crossfade(true)
-                        .diskCachePolicy(CachePolicy.ENABLED)
-                        .memoryCachePolicy(CachePolicy.ENABLED)
-                        .build(),
+                    model = avatarImageModel,
                     contentDescription = "$name's profile photo",
-                    modifier = Modifier.size(size),
-                    contentScale = ContentScale.Crop
-                )
-            } else {
-                val emojiSize = (size.value * 0.45f).sp
-                Text(
-                    text = emoji,
-                    fontSize = emojiSize
+                    modifier = Modifier.size(size).clip(CircleShape),
+                    contentScale = ContentScale.Crop,
+                    onError = { imageLoadFailed = true }
                 )
             }
         }

@@ -1,0 +1,38 @@
+project_id = "imhcbgpvjwersbnlgwzq"
+
+[functions.verify-truecaller]
+verify_jwt = false
+
+# These endpoints perform VibeSync session validation inside the handler. They accept
+# the app's custom verified-session JWT and x-vibesync-session, not a Supabase Auth login.
+[functions.get-ice-config]
+verify_jwt = false
+
+[functions.report-bandwidth]
+verify_jwt = false
+
+[functions.vibesync-send-encrypted-message]
+verify_jwt = false
+
+[functions.vibesync-call-admission]
+verify_jwt = false
+
+# These handlers validate custom VibeSync sessions or cryptographic provider signatures internally.
+[functions.export-vault]
+verify_jwt = false
+
+[functions.razorpay-webhook]
+verify_jwt = false
+
+[functions.vibesync-wallet-payment]
+verify_jwt = false
+
+# Add the application claims hook for local environments. The migrations workflow also
+# configures this hook on the hosted project through the Supabase Management API.
+[auth.hook.custom_access_token]
+enabled = true
+uri = "pg-functions://postgres/public/custom_access_token_hook"
+
+# This endpoint validates the app's VibeSync session and applies a per-profile daily quota internally.
+[functions.vibesync-ai-image-preview]
+verify_jwt = false

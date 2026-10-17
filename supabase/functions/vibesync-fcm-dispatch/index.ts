@@ -220,14 +220,12 @@ async function dispatchStoredMessage(
   try {
     for (const row of tokens) {
       try {
+        // FCM is a wake-up signal only. Message ciphertext stays in Supabase and is fetched
+        // by the recipient's authenticated sync worker; never put encrypted chat content in push data.
         await sendFcm(sa, row.fcm_token, {
-          type: "NEW_E2EE_MESSAGE",
+          type: "new_message",
           message_id: String(message.message_id),
           match_id: String(message.match_id ?? ""),
-          sender_id: String(message.sender_id),
-          receiver_id: String(message.receiver_id),
-          ciphertext: message.ciphertext,
-          media_type: String(message.media_type ?? "TEXT"),
         });
         delivered++;
       } catch (e) {
@@ -275,6 +273,100 @@ async function dispatchStoredMessage(
   }
 }
 
+
+
+async function dispatchStoredGroupEnvelope(
+  adminClient: ReturnType<typeof createClient>,
+  sa: ServiceAccount,
+  groupId: string,
+  messageId: string,
+  recipientProfileId: string,
+  expectedSenderId: string,
+): Promise<Response> {
+  const { data: envelope, error: envelopeError } = await adminClient
+    .from("chat_group_message_envelopes")
+    .select("group_id,message_id,recipient_profile_id,ciphertext,dispatch_status,dispatch_attempts")
+    .eq("group_id", groupId).eq("message_id", messageId)
+    .eq("recipient_profile_id", recipientProfileId).maybeSingle();
+  if (envelopeError || !envelope) return json({ error: "group_envelope_not_found" }, 404);
+  if (!String(envelope.ciphertext ?? "").startsWith("TINK_ENC:")) {
+    return json({ error: "encrypted_group_payload_required" }, 422);
+  }
+
+  const { data: metadata, error: metadataError } = await adminClient
+    .from("chat_group_messages").select("group_id,message_id,sender_profile_id")
+    .eq("group_id", groupId).eq("message_id", messageId).maybeSingle();
+  if (metadataError || !metadata) return json({ error: "group_message_not_found" }, 404);
+  const senderProfileId = String(metadata.sender_profile_id ?? "");
+  if (!senderProfileId || senderProfileId !== expectedSenderId) return json({ error: "group_sender_mismatch" }, 403);
+  if (senderProfileId === recipientProfileId) {
+    return json({ ok: true, message_id: messageId, skipped: "sender_device_not_notified" });
+  }
+
+  const { data: membership, error: membershipError } = await adminClient
+    .from("chat_group_members").select("profile_id").eq("group_id", groupId)
+    .eq("profile_id", recipientProfileId).is("left_at", null).maybeSingle();
+  if (membershipError) return json({ error: "group_membership_lookup_failed" }, 500);
+  if (!membership) return json({ ok: true, message_id: messageId, skipped: "recipient_not_active_member" });
+
+  const attempts = Number(envelope.dispatch_attempts ?? 0);
+  const { data: claim, error: claimError } = await adminClient
+    .from("chat_group_message_envelopes")
+    .update({ dispatch_status: "SENDING", dispatch_attempts: attempts + 1 })
+    .eq("group_id", groupId).eq("message_id", messageId)
+    .eq("recipient_profile_id", recipientProfileId).eq("dispatch_status", "PENDING")
+    .select("message_id").maybeSingle();
+  if (claimError) return json({ error: "group_dispatch_claim_failed" }, 500);
+  if (!claim) return json({ ok: true, message_id: messageId, skipped: "already_claimed_or_dispatched" });
+
+  const { data: tokens, error: tokenError } = await adminClient
+    .from("device_tokens").select("id,fcm_token").eq("profile_id", recipientProfileId);
+  if (tokenError || !tokens?.length) {
+    await adminClient.from("chat_group_message_envelopes")
+      .update({ dispatch_status: "PENDING" })
+      .eq("group_id", groupId).eq("message_id", messageId)
+      .eq("recipient_profile_id", recipientProfileId).eq("dispatch_status", "SENDING");
+    return tokenError ? json({ error: "group_token_lookup_failed" }, 500)
+      : json({ ok: true, message_id: messageId, delivered_to_devices: 0 });
+  }
+
+  let delivered = 0;
+  const staleTokenIds: string[] = [];
+  try {
+    for (const tokenRow of tokens) {
+      try {
+        await sendFcm(sa, tokenRow.fcm_token, {
+          type: "GROUP_CHAT_SYNC_WAKEUP",
+          group_id: groupId, message_id: messageId,
+          sender_id: senderProfileId, recipient_profile_id: recipientProfileId,
+        });
+        delivered++;
+      } catch (error) {
+        const detail = String((error as Error)?.message ?? error);
+        if (/registration-token-not-registered|invalid-registration-token|UNREGISTERED/i.test(detail)) {
+          staleTokenIds.push(String(tokenRow.id));
+        }
+      }
+    }
+    if (staleTokenIds.length) await adminClient.from("device_tokens").delete().in("id", staleTokenIds);
+    const { error: statusError } = await adminClient.from("chat_group_message_envelopes")
+      .update({ dispatch_status: delivered > 0 ? "SENT" : "PENDING",
+        delivered_at: delivered > 0 ? new Date().toISOString() : null })
+      .eq("group_id", groupId).eq("message_id", messageId)
+      .eq("recipient_profile_id", recipientProfileId).eq("dispatch_status", "SENDING");
+    if (statusError) console.error("Could not update group FCM dispatch status:", statusError.message);
+    return json({ ok: true, message_id: messageId, group_id: groupId,
+      delivered_to_devices: delivered, stale_tokens_removed: staleTokenIds.length });
+  } catch (error) {
+    await adminClient.from("chat_group_message_envelopes")
+      .update({ dispatch_status: "PENDING", dispatch_attempts: attempts })
+      .eq("group_id", groupId).eq("message_id", messageId)
+      .eq("recipient_profile_id", recipientProfileId).eq("dispatch_status", "SENDING");
+    console.error("Group FCM dispatch error:", String((error as Error)?.message ?? error));
+    return json({ error: "group_fcm_dispatch_failed" }, 502);
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
   if (!supabaseUrl || !serviceRoleKey) return json({ error: "server_configuration_incomplete" }, 503);
@@ -311,18 +403,27 @@ Deno.serve(async (req) => {
       ? body.record as Record<string, unknown>
       : null;
 
-    if (!["INSERT", "UPDATE"].includes(eventType) || schema !== "public" || table !== "chat_messages" || !record) {
+    if (!["INSERT", "UPDATE"].includes(eventType) || schema !== "public" || !record) {
       return json({ error: "invalid_row_change_payload" }, 400);
     }
+    const sa = parseFirebaseServiceAccount();
+    if (!sa) return json({ error: "invalid_fcm_server_credential" }, 503);
+
+    if (table === "chat_group_message_envelopes") {
+      const groupId = String(record.group_id ?? "").trim();
+      const messageId = String(record.message_id ?? "").trim();
+      const recipientProfileId = String(record.recipient_profile_id ?? "").trim();
+      const senderProfileId = String(record.sender_profile_id ?? "").trim();
+      if (!groupId || !messageId || !recipientProfileId || !senderProfileId) {
+        return json({ error: "group_id_message_id_recipient_and_sender_required" }, 400);
+      }
+      return await dispatchStoredGroupEnvelope(adminClient, sa, groupId, messageId, recipientProfileId, senderProfileId);
+    }
+    if (table !== "chat_messages") return json({ error: "unsupported_row_change_table" }, 400);
 
     const messageId = String(record.message_id ?? "").trim();
     const senderId = String(record.sender_id ?? "").trim();
     if (!messageId || !senderId) return json({ error: "message_id_and_sender_id_required" }, 400);
-
-    const sa = parseFirebaseServiceAccount();
-    if (!sa) return json({ error: "invalid_fcm_server_credential" }, 503);
-
-    // Re-read the authoritative row; do not trust payload fields for FCM delivery.
     return await dispatchStoredMessage(adminClient, sa, messageId, senderId, true);
   }
 

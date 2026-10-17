@@ -168,6 +168,35 @@ class ContactResolver(private val context: Context) {
          * Fetches a contact's saved name for a specific phone number using ContactsContract.PhoneLookup
          * and CommonDataKinds.Phone.
          */
+        /**
+         * Strict ContactsContract lookup for private-field visibility; cached/demo aliases do not count.
+         */
+        fun isNumberSavedOnDevice(context: Context, phoneNumber: String): Boolean {
+            val digits = phoneNumber.filter { it.isDigit() }
+            if (digits.length < 7) return false
+            return try {
+                val lookupUri = android.net.Uri.withAppendedPath(
+                    ContactsContract.PhoneLookup.CONTENT_FILTER_URI,
+                    android.net.Uri.encode(phoneNumber.trim())
+                )
+                val direct = context.contentResolver.query(
+                    lookupUri, arrayOf(ContactsContract.PhoneLookup._ID), null, null, null
+                )?.use { it.moveToFirst() } == true
+                if (direct) return true
+                val selection = "${ContactsContract.CommonDataKinds.Phone.NUMBER} LIKE ?"
+                val args = arrayOf("%" + digits.takeLast(10) + "%")
+                context.contentResolver.query(
+                    ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                    arrayOf(ContactsContract.CommonDataKinds.Phone._ID),
+                    selection, args, null
+                )?.use { it.moveToFirst() } == true
+            } catch (_: SecurityException) {
+                false
+            } catch (_: Throwable) {
+                false
+            }
+        }
+
         fun fetchContactNameByPhoneNumber(context: Context?, phoneNumber: String): String? {
             if (phoneNumber.isBlank()) return null
             val clean = phoneNumber.trim()
@@ -360,14 +389,24 @@ class ContactResolver(private val context: Context) {
                 }
             }
 
-            // 3. If local saved contact name was found, the contact exists in local address book!
+            // Prefer a saved address-book photo URI, then use the public profile's avatar URL.
+            val localPhotoUri = if (ctx != null && isPhoneNumberString(phoneKey)) {
+                fetchContactPhotoByPhoneNumber(ctx, phoneKey)
+            } else null
+            val resolvedAvatarUrl = localPhotoUri?.takeIf { it.isNotBlank() } ?: participant.avatarUrl
+
+            // A local address-book display name takes precedence over the public profile label.
             if (!localSavedName.isNullOrBlank()) {
                 val cleanPhone = if (isGarbledOrEncrypted(participant.phoneNumber)) {
                     formatPhoneNumberForDisplay(phoneKey)
                 } else {
                     participant.phoneNumber
                 }
-                return participant.copy(name = localSavedName, phoneNumber = cleanPhone)
+                return participant.copy(
+                    name = localSavedName,
+                    phoneNumber = cleanPhone,
+                    avatarUrl = resolvedAvatarUrl
+                )
             }
 
             // 4. Contact is NOT saved in local address book (Unsaved Contact):
@@ -384,10 +423,15 @@ class ContactResolver(private val context: Context) {
             }
             val formattedCleanPhone = formatPhoneNumberForDisplay(candidatePhone)
 
-            val resolvedName = if (isCipherOrGarbled || isPhoneNumberString(rawName)) {
-                formattedCleanPhone
-            } else {
+            val isGenericPlaceholder = rawName.equals("VibeSync Match", ignoreCase = true) ||
+                rawName.equals("VibeSync Contact", ignoreCase = true) ||
+                rawName.equals("VibeSync Friend", ignoreCase = true) ||
+                rawName.equals("VibeSync User", ignoreCase = true)
+            // Preserve a clean public.profiles display name when no local contact exists.
+            val resolvedName = if (!isCipherOrGarbled && !isPhoneNumberString(rawName) && !isGenericPlaceholder) {
                 rawName.trim()
+            } else {
+                "VibeSync User"
             }
 
             val sanitizedPhone = if (isGarbledOrEncrypted(participant.phoneNumber)) {
@@ -398,7 +442,8 @@ class ContactResolver(private val context: Context) {
 
             return participant.copy(
                 name = resolvedName,
-                phoneNumber = sanitizedPhone
+                phoneNumber = sanitizedPhone,
+                avatarUrl = resolvedAvatarUrl
             )
         }
 
@@ -479,42 +524,11 @@ class ContactResolver(private val context: Context) {
             val cleanName = displayName.trim()
             val trimmedNumber = rawNumber.trim()
             targetMap[trimmedNumber] = cleanName
-
-            // Index 16-character phone hash of the raw number
-            val rawHash = com.example.util.PhonebookHasher.generate16CharHash(trimmedNumber)
-            if (rawHash.isNotBlank()) {
-                targetMap[rawHash] = cleanName
-            }
-
-            // Digits-only indexing
+            val normalizedE164 = PhonebookHelper.normalizeToE164(trimmedNumber)
+            if (normalizedE164.isNotBlank()) targetMap[normalizedE164] = cleanName
             val digitsOnly = trimmedNumber.filter { it.isDigit() }
-            if (digitsOnly.isNotBlank()) {
-                targetMap[digitsOnly] = cleanName
-                val digitsHash = com.example.util.PhonebookHasher.generate16CharHash(digitsOnly)
-                if (digitsHash.isNotBlank()) {
-                    targetMap[digitsHash] = cleanName
-                }
-                if (digitsOnly.length >= 10) {
-                    val last10 = digitsOnly.takeLast(10)
-                    targetMap[last10] = cleanName
-                    val last10Hash = com.example.util.PhonebookHasher.generate16CharHash(last10)
-                    if (last10Hash.isNotBlank()) {
-                        targetMap[last10Hash] = cleanName
-                    }
-                }
-            }
-
-            // Without country code '+' indexing
-            val withoutPlus = trimmedNumber.replace("+", "").trim()
-            if (withoutPlus.isNotBlank()) {
-                targetMap[withoutPlus] = cleanName
-                val withoutPlusHash = com.example.util.PhonebookHasher.generate16CharHash(withoutPlus)
-                if (withoutPlusHash.isNotBlank()) {
-                    targetMap[withoutPlusHash] = cleanName
-                }
-            }
-
-            // Standardized with +91 and 91
+            if (digitsOnly.isNotBlank()) targetMap[digitsOnly] = cleanName
+            if (digitsOnly.length >= 10) targetMap[digitsOnly.takeLast(10)] = cleanName
             if (digitsOnly.length == 10) {
                 targetMap["+91$digitsOnly"] = cleanName
                 targetMap["91$digitsOnly"] = cleanName
@@ -693,23 +707,43 @@ class ContactResolver(private val context: Context) {
                     android.net.Uri.encode(clean)
                 )
                 val projection = arrayOf(
+                    android.provider.ContactsContract.PhoneLookup._ID,
                     android.provider.ContactsContract.PhoneLookup.PHOTO_THUMBNAIL_URI,
                     android.provider.ContactsContract.PhoneLookup.PHOTO_URI
                 )
                 context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
                     if (cursor.moveToFirst()) {
+                        val idIdx = cursor.getColumnIndex(android.provider.ContactsContract.PhoneLookup._ID)
                         val thumbIdx = cursor.getColumnIndex(android.provider.ContactsContract.PhoneLookup.PHOTO_THUMBNAIL_URI)
                         val fullIdx = cursor.getColumnIndex(android.provider.ContactsContract.PhoneLookup.PHOTO_URI)
-                        
+                        val contactId = if (idIdx >= 0) cursor.getLong(idIdx) else -1L
+
                         var photoUri: String? = null
-                        if (thumbIdx >= 0) {
-                            photoUri = cursor.getString(thumbIdx)
-                        }
-                        if (photoUri.isNullOrBlank() && fullIdx >= 0) {
-                            photoUri = cursor.getString(fullIdx)
-                        }
-                        if (!photoUri.isNullOrBlank()) {
-                            return photoUri
+                        if (thumbIdx >= 0) photoUri = cursor.getString(thumbIdx)
+                        if (photoUri.isNullOrBlank() && fullIdx >= 0) photoUri = cursor.getString(fullIdx)
+                        if (!photoUri.isNullOrBlank()) return photoUri
+
+                        if (contactId > 0L) {
+                            val contactUri = android.content.ContentUris.withAppendedId(
+                                android.provider.ContactsContract.Contacts.CONTENT_URI,
+                                contactId
+                            )
+                            context.contentResolver.query(
+                                contactUri,
+                                arrayOf(android.provider.ContactsContract.Contacts.PHOTO_URI),
+                                null,
+                                null,
+                                null
+                            )?.use { photoCursor ->
+                                if (photoCursor.moveToFirst()) {
+                                    val photoIndex = photoCursor.getColumnIndex(
+                                        android.provider.ContactsContract.Contacts.PHOTO_URI
+                                    )
+                                    if (photoIndex >= 0) {
+                                        photoCursor.getString(photoIndex)?.takeIf { it.isNotBlank() }?.let { return it }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

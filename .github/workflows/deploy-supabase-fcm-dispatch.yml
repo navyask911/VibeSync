@@ -5,8 +5,11 @@ on:
     branches:
       - main
       - vibesync-hardening-2026-10-07
+      - fix/release-startup-icons-ci
     paths:
       - 'supabase/functions/vibesync-fcm-dispatch/**'
+      - 'supabase/functions/vibesync-business-broadcast/**'
+      - 'supabase/functions/vibesync-wallet-payment/**'
       - '.github/workflows/deploy-supabase-fcm-dispatch.yml'
   workflow_dispatch:
 
@@ -26,6 +29,8 @@ jobs:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_PROJECT_REF: imhcbgpvjwersbnlgwzq
       FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+      RAZORPAY_KEY_ID: ${{ secrets.RAZORPAY_KEY_ID }}
+      RAZORPAY_KEY_SECRET: ${{ secrets.RAZORPAY_KEY_SECRET }}
 
     steps:
       - name: Checkout
@@ -54,6 +59,10 @@ jobs:
             try {
               const account = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
               if (!account.client_email || !account.private_key || !account.project_id) process.exit(2);
+              if (account.project_id !== "vibesync-chat-social-connect") {
+                console.error("FIREBASE_SERVICE_ACCOUNT belongs to a different Google Cloud project.");
+                process.exit(3);
+              }
             } catch (_) {
               process.exit(2);
             }
@@ -69,10 +78,32 @@ jobs:
           supabase secrets set \
             --project-ref "$SUPABASE_PROJECT_REF" \
             "FIREBASE_SERVICE_ACCOUNT_JSON=$FIREBASE_SERVICE_ACCOUNT"
+          if [[ -n "${RAZORPAY_KEY_ID:-}" && -n "${RAZORPAY_KEY_SECRET:-}" ]]; then
+            supabase secrets set \
+              --project-ref "$SUPABASE_PROJECT_REF" \
+              "RAZORPAY_KEY_ID=$RAZORPAY_KEY_ID" \
+              "RAZORPAY_KEY_SECRET=$RAZORPAY_KEY_SECRET"
+          else
+            echo "::warning::Razorpay key secrets are not configured; the payment Edge Function will fail closed until RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are added."
+          fi
 
-      - name: Deploy only the FCM dispatch Edge Function
+      - name: Deploy data-only FCM dispatch Edge Function
         run: >-
           supabase functions deploy
           --project-ref "$SUPABASE_PROJECT_REF"
           --no-verify-jwt
           vibesync-fcm-dispatch
+
+      - name: Deploy business broadcast Edge Function
+        run: >-
+          supabase functions deploy
+          --project-ref "$SUPABASE_PROJECT_REF"
+          --no-verify-jwt
+          vibesync-business-broadcast
+
+      - name: Deploy Razorpay payment Edge Function
+        run: >-
+          supabase functions deploy
+          --project-ref "$SUPABASE_PROJECT_REF"
+          --no-verify-jwt
+          vibesync-wallet-payment

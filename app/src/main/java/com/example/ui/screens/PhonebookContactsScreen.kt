@@ -85,6 +85,8 @@ fun PhonebookContactsScreen(
     onRefreshContacts: () -> Unit,
     onBack: () -> Unit,
     onStartChatWithNumber: (String) -> Unit = {},
+    phoneNumberRequests: List<com.example.data.model.PhoneNumberAccessRequest> = emptyList(),
+    onRespondToPhoneNumberRequest: (requestId: String, accept: Boolean) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -243,6 +245,44 @@ fun PhonebookContactsScreen(
                 containerColor = VibeSyncTeal
             )
         )
+
+        if (phoneNumberRequests.isNotEmpty()) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                phoneNumberRequests.take(3).forEach { request ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().testTag("banner_phone_request_${request.id}"),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                text = "${request.requesterName.ifBlank { "Someone" }} requested your phone number",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Accept to share after the friendship is accepted, or block future requests from this profile.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                OutlinedButton(
+                                    onClick = { onRespondToPhoneNumberRequest(request.id, false) },
+                                    modifier = Modifier.weight(1f).height(34.dp)
+                                ) { Text("Block", fontSize = 12.sp) }
+                                Button(
+                                    onClick = { onRespondToPhoneNumberRequest(request.id, true) },
+                                    modifier = Modifier.weight(1f).height(34.dp)
+                                ) { Text("Accept", fontSize = 12.sp) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
@@ -503,29 +543,15 @@ private fun ContactOnVibeSyncItem(
             contentAlignment = Alignment.Center
         ) {
             val contactPhoto = contact.photoUrl.ifBlank { contact.vibeSyncUser?.avatarUrl ?: "" }
-            if (contactPhoto.isNotBlank()) {
-                coil.compose.AsyncImage(
-                    model = contactPhoto,
-                    contentDescription = contact.name,
-                    modifier = Modifier
-                        .size(46.dp)
-                        .clip(CircleShape),
-                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                )
-            } else {
-                Surface(
-                    shape = CircleShape,
-                    color = VibeSyncTeal.copy(alpha = 0.15f),
-                    modifier = Modifier.size(46.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(
-                            text = contact.avatarEmoji.ifBlank { "👤" },
-                            fontSize = 22.sp
-                        )
-                    }
-                }
-            }
+            DatingAvatar(
+                name = contact.name.ifBlank { "VibeSync contact" },
+                emoji = contact.avatarEmoji.ifBlank { "👤" },
+                colorStart = 0xFF00A884,
+                colorEnd = 0xFF128C7E,
+                size = 46.dp,
+                avatarUrl = contactPhoto,
+                avatarCacheVersion = contact.vibeSyncUser?.avatarCacheVersion ?: 0L
+            )
 
             // Green Online / VibeSync Verified indicator
             Surface(

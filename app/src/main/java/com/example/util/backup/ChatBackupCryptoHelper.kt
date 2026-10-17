@@ -2,6 +2,8 @@ package com.example.util.backup
 
 import android.util.Base64
 import java.io.File
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
@@ -11,6 +13,8 @@ import javax.crypto.Cipher
 import javax.crypto.CipherInputStream
 import javax.crypto.CipherOutputStream
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.PBEKeySpec
+import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.SecretKeySpec
 
 /**
@@ -22,6 +26,78 @@ object ChatBackupCryptoHelper {
     private const val ALGORITHM = "AES/GCM/NoPadding"
     private const val TAG_LENGTH_BIT = 128
     private const val IV_LENGTH_BYTE = 12
+    private val ROOM_BACKUP_MAGIC = byteArrayOf(0x56, 0x53, 0x44, 0x32) // VSD2
+    private const val ROOM_BACKUP_SALT_BYTES = 16
+    private const val ROOM_BACKUP_IV_BYTES = 12
+    private const val ROOM_BACKUP_PBKDF_ROUNDS = 240_000
+
+    private fun derivePassphraseKey(passphrase: String, salt: ByteArray): SecretKeySpec {
+        require(passphrase.length >= 8) { "Backup passphrase must contain at least 8 characters." }
+        val spec = PBEKeySpec(passphrase.toCharArray(), salt, ROOM_BACKUP_PBKDF_ROUNDS, 256)
+        return try {
+            SecretKeySpec(
+                SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded,
+                "AES"
+            )
+        } finally {
+            spec.clearPassword()
+        }
+    }
+
+    /** Encrypts a portable Room SQLite file with a user-controlled, per-file salted AES-256-GCM key. */
+    fun encryptFileToFile(sourceFile: File, encryptedFile: File, passphrase: String): Boolean {
+        return try {
+            require(sourceFile.isFile && sourceFile.length() > 0L) { "Database snapshot is empty." }
+            require(passphrase.length >= 8) { "Backup passphrase must contain at least 8 characters." }
+            val random = SecureRandom()
+            val salt = ByteArray(ROOM_BACKUP_SALT_BYTES).also(random::nextBytes)
+            val iv = ByteArray(ROOM_BACKUP_IV_BYTES).also(random::nextBytes)
+            val cipher = Cipher.getInstance(ALGORITHM)
+            cipher.init(Cipher.ENCRYPT_MODE, derivePassphraseKey(passphrase, salt), GCMParameterSpec(TAG_LENGTH_BIT, iv))
+            encryptedFile.parentFile?.mkdirs()
+            DataOutputStream(FileOutputStream(encryptedFile)).use { header ->
+                header.write(ROOM_BACKUP_MAGIC)
+                header.write(salt)
+                header.write(iv)
+                CipherOutputStream(header, cipher).use { encrypted ->
+                    FileInputStream(sourceFile).use { input -> input.copyTo(encrypted, 64 * 1024) }
+                }
+            }
+            encryptedFile.exists() && encryptedFile.length() > ROOM_BACKUP_MAGIC.size + ROOM_BACKUP_SALT_BYTES + ROOM_BACKUP_IV_BYTES
+        } catch (e: Exception) {
+            android.util.Log.e("ChatBackupCryptoHelper", "Database encryption failed: ${e.message}", e)
+            encryptedFile.delete()
+            false
+        }
+    }
+
+    /** Authenticates and decrypts a versioned database snapshot. Invalid tags/phrases fail closed. */
+    fun decryptFileToFile(encryptedFile: File, targetFile: File, passphrase: String): Boolean {
+        return try {
+            require(encryptedFile.isFile && encryptedFile.length() > ROOM_BACKUP_MAGIC.size + ROOM_BACKUP_SALT_BYTES + ROOM_BACKUP_IV_BYTES) {
+                "Encrypted backup is missing or incomplete."
+            }
+            require(passphrase.length >= 8) { "Backup passphrase must contain at least 8 characters." }
+            DataInputStream(FileInputStream(encryptedFile)).use { input ->
+                val magic = ByteArray(ROOM_BACKUP_MAGIC.size)
+                input.readFully(magic)
+                require(magic.contentEquals(ROOM_BACKUP_MAGIC)) { "Unsupported backup format." }
+                val salt = ByteArray(ROOM_BACKUP_SALT_BYTES).also(input::readFully)
+                val iv = ByteArray(ROOM_BACKUP_IV_BYTES).also(input::readFully)
+                val cipher = Cipher.getInstance(ALGORITHM)
+                cipher.init(Cipher.DECRYPT_MODE, derivePassphraseKey(passphrase, salt), GCMParameterSpec(TAG_LENGTH_BIT, iv))
+                targetFile.parentFile?.mkdirs()
+                CipherInputStream(input, cipher).use { decrypted ->
+                    FileOutputStream(targetFile).use { output -> decrypted.copyTo(output, 64 * 1024) }
+                }
+            }
+            targetFile.exists() && targetFile.length() > 0L
+        } catch (e: Exception) {
+            android.util.Log.w("ChatBackupCryptoHelper", "Database decrypt/authentication failed: ${e.message}")
+            targetFile.delete()
+            false
+        }
+    }
 
     // Derives a cryptographic AES-256 key from user account identity & seed
     private fun deriveKey(seed: String): SecretKeySpec {

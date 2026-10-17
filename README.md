@@ -46,7 +46,7 @@ VibeSync follows data minimization:
 
 - raw device address books remain on the device;
 - contact discovery uses locally derived pseudonymous representations;
-- plain SHA-256 phone hashing is not described as formal zero-knowledge cryptography;
+- contact discovery sends normalized E.164 phone numbers over authenticated SSL/TLS (HTTPS) to Supabase for matching against its restricted indexed phone directory; phone matching is not covered by chat E2EE;
 - phone numbers are not the primary account identity;
 - Truecaller-verified phone identity is the sign-in anchor;
 - private-message transport rejects plaintext where encrypted transport is required.

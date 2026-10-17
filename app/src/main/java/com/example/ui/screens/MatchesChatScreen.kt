@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -40,6 +41,8 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MarkUnreadChatAlt
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Sms
@@ -53,6 +56,8 @@ import com.example.ui.components.DatingAvatar
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -62,6 +67,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -74,7 +80,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -85,6 +95,7 @@ import com.example.data.model.ProfileEntity
 import com.example.ui.theme.CoralPink
 import com.example.ui.theme.LikeGreen
 import com.example.ui.theme.RomanticViolet
+import com.example.ui.theme.VibeSyncBlue
 import com.example.ui.theme.VibeSyncBlueTick
 import com.example.ui.theme.VibeSyncLightGreen
 import com.example.ui.theme.VibeSyncTeal
@@ -93,6 +104,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun MatchesChatScreen(
     matches: List<MatchEntity>,
@@ -103,12 +115,72 @@ fun MatchesChatScreen(
     onSelectChatContact: (PhoneContact) -> Unit = {},
     onInviteContact: (PhoneContact) -> Unit = {},
     onRefreshContacts: () -> Unit = {},
+    onOpenProfile: () -> Unit = {},
     onOpenAdmin: () -> Unit = {},
     onOpenInteractionsModal: () -> Unit = {},
     profiles: List<ProfileEntity> = emptyList(),
-    modifier: Modifier = Modifier
+    onOpenProfileDetail: (ProfileEntity) -> Unit = {},
+    modifier: Modifier = Modifier,
+    currentUserName: String = "You",
+    onOpenNoteToSelf: () -> Unit = {}
+) {
+    IncognitoKeyboard {
+        MatchesChatScreenContent(
+            matches = matches,
+            phonebookContacts = phonebookContacts,
+            onOpenChat = onOpenChat,
+            getProfileSync = getProfileSync,
+            onOpenPhonebook = onOpenPhonebook,
+            onSelectChatContact = onSelectChatContact,
+            onInviteContact = onInviteContact,
+            onRefreshContacts = onRefreshContacts,
+            onOpenProfile = onOpenProfile,
+            onOpenAdmin = onOpenAdmin,
+            onOpenInteractionsModal = onOpenInteractionsModal,
+            profiles = profiles,
+            onOpenProfileDetail = onOpenProfileDetail,
+            modifier = modifier,
+            currentUserName = currentUserName,
+            onOpenNoteToSelf = onOpenNoteToSelf
+        )
+    }
+}
+
+@Composable
+private fun MatchesChatScreenContent(
+    matches: List<MatchEntity>,
+    phonebookContacts: List<PhoneContact>,
+    onOpenChat: (MatchEntity, ProfileEntity) -> Unit,
+    getProfileSync: suspend (String) -> ProfileEntity?,
+    onOpenPhonebook: () -> Unit,
+    onSelectChatContact: (PhoneContact) -> Unit,
+    onInviteContact: (PhoneContact) -> Unit,
+    onRefreshContacts: () -> Unit,
+    onOpenProfile: () -> Unit,
+    onOpenAdmin: () -> Unit,
+    onOpenInteractionsModal: () -> Unit,
+    profiles: List<ProfileEntity>,
+    onOpenProfileDetail: (ProfileEntity) -> Unit,
+    modifier: Modifier,
+    currentUserName: String,
+    onOpenNoteToSelf: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val publishedBusinesses by remember(context) {
+        com.example.data.database.DatingDatabase.getDatabase(context).businessDao().getAllBusinesses()
+    }.collectAsState(initial = emptyList())
+    val noteToSelfPreferences = remember(context) {
+        context.getSharedPreferences("vibesync_note_to_self_preferences", android.content.Context.MODE_PRIVATE)
+    }
+    var noteToSelfPinned by remember(noteToSelfPreferences) {
+        mutableStateOf(noteToSelfPreferences.getBoolean("pinned", true))
+    }
+    fun toggleNoteToSelfPin() {
+        val nextPinned = !noteToSelfPinned
+        noteToSelfPinned = nextPinned
+        noteToSelfPreferences.edit().putBoolean("pinned", nextPinned).apply()
+    }
+
     // Room-backed state keeps chat avatars and labels synchronized with other profile surfaces.
     val profileMap = remember { mutableStateMapOf<String, ProfileEntity>() }
 
@@ -116,7 +188,37 @@ fun MatchesChatScreen(
         profiles.forEach { profile -> profileMap[profile.id] = profile }
     }
     val syncedLocalPhotos = remember { androidx.compose.runtime.mutableStateMapOf<String, String>() }
+
+    // Link opaque profile IDs to this device's address-book entries before rendering conversations.
+    fun resolveConversationProfile(match: MatchEntity, baseProfile: ProfileEntity): ProfileEntity {
+        val linkedContact = phonebookContacts.firstOrNull { contact ->
+            contact.vibeSyncProfileId?.equals(match.profileId, ignoreCase = true) == true ||
+                contact.vibeSyncUser?.id?.equals(match.profileId, ignoreCase = true) == true ||
+                contact.vibeSyncProfileId?.equals(baseProfile.id, ignoreCase = true) == true ||
+                contact.vibeSyncUser?.id?.equals(baseProfile.id, ignoreCase = true) == true ||
+                (baseProfile.phoneNumber.isNotBlank() && contact.phoneNumber.isNotBlank() &&
+                    com.example.util.PhonebookHelper.arePhonesMatching(contact.phoneNumber, baseProfile.phoneNumber))
+        }
+        val linkedProfile = if (linkedContact != null) {
+            baseProfile.copy(
+                name = linkedContact.name.trim().ifBlank { baseProfile.name },
+                phoneNumber = linkedContact.phoneNumber.trim().ifBlank { baseProfile.phoneNumber },
+                avatarUrl = linkedContact.photoUrl.trim().ifBlank {
+                    linkedContact.vibeSyncUser?.avatarUrl?.trim().orEmpty().ifBlank { baseProfile.avatarUrl }
+                },
+                avatarEmoji = linkedContact.avatarEmoji.ifBlank { baseProfile.avatarEmoji }
+            )
+        } else baseProfile
+        val resolved = com.example.util.ContactResolver.matchChatSessionParticipant(context, linkedProfile)
+        // Persisted local contact identity takes precedence over a re-query of public profile data.
+        return resolved.copy(
+            name = match.localContactName.trim().ifBlank { resolved.name },
+            avatarUrl = match.localPhotoUri.trim().ifBlank { resolved.avatarUrl }
+        )
+    }
+
     var searchQuery by remember { mutableStateOf("") }
+    var showTopBarMenu by remember { mutableStateOf(false) }
     // Connect-first chat filters: All, Unread, Contacts, Groups, Connect
     var selectedFilter by remember { mutableStateOf("All") }
 
@@ -180,16 +282,14 @@ fun MatchesChatScreen(
             matchesSearch && matchesFilter
         }
 
-        // Additional STRICT deduplication block in UI using 16-character phone_hash as canonical key
+        // Conversation identity is the canonical Supabase profile ID, never a phone-derived hash.
         val map = mutableMapOf<String, MatchEntity>()
-        for (m in filtered) {
-            val profId = com.example.util.ContactResolver.sanitizePhone(m.profileId)
-            val profile = profileMap[m.profileId]
-            val partnerPhone = profile?.phoneNumber ?: profId
-            val key = com.example.util.PhonebookHasher.generate16CharHash(partnerPhone)
-            val existing = map[key]
-            if (existing == null || m.lastMessageTime > existing.lastMessageTime) {
-                map[key] = m
+        for (match in filtered) {
+            val canonicalProfileId = match.profileId.trim()
+            if (canonicalProfileId.isBlank()) continue
+            val existing = map[canonicalProfileId]
+            if (existing == null || match.lastMessageTime > existing.lastMessageTime) {
+                map[canonicalProfileId] = match
             }
         }
         map.values.sortedByDescending { it.lastMessageTime }
@@ -252,14 +352,20 @@ fun MatchesChatScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Gradient VibeSync Brand Logo & Verified Genuine Badge
+                    // Same colorful mark as Connect, Find, Business Suite and onboarding.
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        Image(
+                            painter = painterResource(id = com.example.R.drawable.ic_launcher_foreground),
+                            contentDescription = "VibeSync logo",
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Spacer(Modifier.width(5.dp))
                         Text(
                             text = "VibeSync",
                             style = MaterialTheme.typography.titleLarge.copy(
-                                fontWeight = FontWeight.Black,
-                                brush = Brush.linearGradient(listOf(CoralPink, RomanticViolet, Color(0xFF00F2FE))),
-                                letterSpacing = (-0.5).sp
+                                fontWeight = FontWeight.SemiBold,
+                                brush = Brush.horizontalGradient(listOf(Color(0xFF00F0FF), Color(0xFFFF1393), Color(0xFFFF9E00))),
+                                letterSpacing = 0.sp
                             ),
                             modifier = Modifier.testTag("app_logo_chats")
                         )
@@ -269,7 +375,7 @@ fun MatchesChatScreen(
                             color = LikeGreen.copy(alpha = 0.15f)
                         ) {
                             Text(
-                                text = "100% GENUINE",
+                                text = "100% PRIVACY",
                                 color = LikeGreen,
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontWeight = FontWeight.ExtraBold,
@@ -285,21 +391,6 @@ fun MatchesChatScreen(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        IconButton(
-                            onClick = onOpenPhonebook,
-                            modifier = Modifier
-                                .size(36.dp)
-                                .testTag("btn_open_contacts_top")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.PersonAdd,
-                                contentDescription = "New Chat / Contacts",
-                                tint = VibeSyncTeal,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-
-
                         IconButton(
                             onClick = { showSyncDiagDialog = true },
                             modifier = Modifier
@@ -341,7 +432,51 @@ fun MatchesChatScreen(
                                 modifier = Modifier.size(20.dp)
                             )
                         }
+                        Box {
+                            IconButton(
+                                onClick = { showTopBarMenu = true },
+                                modifier = Modifier.size(36.dp).testTag("btn_more_menu_chat")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = "Profile and settings menu",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showTopBarMenu,
+                                onDismissRequest = { showTopBarMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Profile") },
+                                    onClick = {
+                                        showTopBarMenu = false
+                                        onOpenProfile()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Settings") },
+                                    onClick = {
+                                        showTopBarMenu = false
+                                        onOpenProfile()
+                                    }
+                                )
+                            }
+                        }
                     }
+                }
+            }
+
+            // Pinned notes stay above search. Unpinned notes move into the normal conversation list.
+            if (noteToSelfPinned) {
+                item(key = "note_to_self_pinned") {
+                    NoteToSelfPinnedConversation(
+                        displayName = currentUserName,
+                        isPinned = true,
+                        onClick = onOpenNoteToSelf,
+                        onTogglePin = { toggleNoteToSelfPin() }
+                    )
                 }
             }
 
@@ -396,9 +531,9 @@ fun MatchesChatScreen(
                 )
 
                 Surface(
-                    color = Color(0xFF000000),
-                    shape = RoundedCornerShape(20.dp),
-                    border = BorderStroke(1.dp, Color(0xFF262626)),
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(18.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(bottom = 12.dp)
@@ -414,12 +549,12 @@ fun MatchesChatScreen(
                             val isSelected = selectedFilter == tab.name
                             Surface(
                                 shape = RoundedCornerShape(22.dp),
-                                color = if (isSelected) Color(0xFF005C4B) else Color(0xFF141414),
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
                                 border = BorderStroke(
-                                    width = if (isSelected) 1.5.dp else 1.dp,
-                                    color = if (isSelected) Color(0xFF00E676) else Color(0xFF2C2C2C)
+                                    width = 1.dp,
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
                                 ),
-                                shadowElevation = if (isSelected) 4.dp else 0.dp,
+                                shadowElevation = 0.dp,
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(22.dp))
                                     .clickable { selectedFilter = tab.name }
@@ -433,22 +568,22 @@ fun MatchesChatScreen(
                                     Icon(
                                         imageVector = tab.icon,
                                         contentDescription = null,
-                                        tint = if (isSelected) Color.White else Color(0xFFE0E0E0),
+                                        tint = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.size(16.dp)
                                     )
 
                                     Text(
                                         text = tab.name,
                                         style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color.White,
+                                        fontWeight = FontWeight.Medium,
+                                        color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
                                         fontSize = 13.sp
                                     )
 
                                     if (tab.count > 0 && tab.name != "All") {
                                         Surface(
                                             shape = CircleShape,
-                                            color = if (tab.name == "Unread") Color(0xFF00E676) else if (isSelected) Color.White else Color(0xFF005C4B),
+                                            color = if (isSelected) MaterialTheme.colorScheme.onPrimary else if (tab.name == "Unread") VibeSyncBlue.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant,
                                             modifier = Modifier.height(20.dp).widthIn(min = 20.dp)
                                         ) {
                                             Box(
@@ -459,7 +594,7 @@ fun MatchesChatScreen(
                                                     text = if (tab.count > 99) "99+" else "${tab.count}",
                                                     fontSize = 10.5.sp,
                                                     fontWeight = FontWeight.ExtraBold,
-                                                    color = if (tab.name == "Unread") Color.Black else if (isSelected) Color(0xFF005C4B) else Color.White
+                                                    color = if (isSelected) MaterialTheme.colorScheme.primary else if (tab.name == "Unread") VibeSyncBlue else MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
                                             }
                                         }
@@ -468,6 +603,17 @@ fun MatchesChatScreen(
                             }
                         }
                     }
+                }
+            }
+
+            if (!noteToSelfPinned) {
+                item(key = "note_to_self_unpinned") {
+                    NoteToSelfPinnedConversation(
+                        displayName = currentUserName,
+                        isPinned = false,
+                        onClick = onOpenNoteToSelf,
+                        onTogglePin = { toggleNoteToSelfPin() }
+                    )
                 }
             }
 
@@ -620,9 +766,30 @@ fun MatchesChatScreen(
                         )
                     }
                     items(contactsOnVibeSync, key = { "contacts_tab_${it.id}" }) { contact ->
+                        val linkedProfile = contact.vibeSyncUser
+                            ?: contact.vibeSyncProfileId?.let { id ->
+                                profiles.firstOrNull { it.id.equals(id, ignoreCase = true) }
+                            }
+                            ?: profiles.firstOrNull { it.id.equals(contact.id, ignoreCase = true) }
+                            ?: profiles.firstOrNull {
+                                it.phoneNumber.isNotBlank() && contact.phoneNumber.isNotBlank() &&
+                                    com.example.util.PhonebookHelper.arePhonesMatching(it.phoneNumber, contact.phoneNumber)
+                            }
                         ContactOnVibeSyncRow(
                             contact = contact,
-                            onClick = { onSelectChatContact(contact) },
+                            linkedProfile = linkedProfile,
+                            onViewProfile = onOpenProfileDetail,
+                            onClick = {
+                                if (linkedProfile != null) {
+                                    onOpenProfileDetail(
+                                        linkedProfile.copy(
+                                            name = contact.name.ifBlank { linkedProfile.name },
+                                            phoneNumber = contact.phoneNumber.ifBlank { linkedProfile.phoneNumber },
+                                            avatarUrl = contact.photoUrl.ifBlank { linkedProfile.avatarUrl }
+                                        )
+                                    )
+                                } else onSelectChatContact(contact)
+                            },
                             syncedLocalPhotos = syncedLocalPhotos
                         )
                     }
@@ -682,40 +849,20 @@ fun MatchesChatScreen(
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "Connections & Phonebook Contacts",
+                                    text = "App Connections & Matches",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 13.5.sp,
                                     color = Color.White
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = "All your connected friends and direct phonebook contacts who are active on VibeSync are unified here for easy conversation.",
+                                    text = "Confirmed app-connected and matched users are listed here.",
                                     fontSize = 11.sp,
                                     color = Color.White.copy(alpha = 0.8f),
                                     lineHeight = 15.sp
                                 )
                             }
                         }
-                    }
-                }
-
-                // Direct phonebook contacts on VibeSync
-                if (contactsOnVibeSync.isNotEmpty()) {
-                    item {
-                        Text(
-                            text = "Contacts on VibeSync (${contactsOnVibeSync.size})",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = VibeSyncTeal,
-                            modifier = Modifier.padding(top = 6.dp, bottom = 4.dp)
-                        )
-                    }
-                    items(contactsOnVibeSync, key = { "friends_contact_${it.id}" }) { contact ->
-                        ContactOnVibeSyncRow(
-                            contact = contact,
-                            onClick = { onSelectChatContact(contact) },
-                            syncedLocalPhotos = syncedLocalPhotos
-                        )
                     }
                 }
 
@@ -749,19 +896,21 @@ fun MatchesChatScreen(
                             phoneNumber = if (match.profileId.length >= 10 && match.profileId.all { it.isDigit() || it == '+' }) match.profileId else "",
                             isVerified = true
                         )
-                        val profile = com.example.util.ContactResolver.matchChatSessionParticipant(context, baseProfile)
+                        val profile = resolveConversationProfile(match, baseProfile)
 
                         VibeSyncConversationItem(
                             match = match,
                             profile = profile,
                             latestMessage = latestMessageMap[match.matchId],
                             onClick = { onOpenChat(match, profile) },
-                            syncedLocalPhotos = syncedLocalPhotos
+                            onViewProfile = onOpenProfileDetail,
+                            syncedLocalPhotos = syncedLocalPhotos,
+                            publishedBusinesses = publishedBusinesses
                         )
                     }
                 }
 
-                if (filteredMatches.isEmpty() && contactsOnVibeSync.isEmpty()) {
+                if (filteredMatches.isEmpty()) {
                     item {
                         Box(
                             modifier = Modifier
@@ -891,14 +1040,16 @@ fun MatchesChatScreen(
                         )
 
                         // Match contact name from ContactsContract against chat participant, overriding remote strings
-                        val profile = com.example.util.ContactResolver.matchChatSessionParticipant(context, baseProfile)
+                        val profile = resolveConversationProfile(match, baseProfile)
 
                         VibeSyncConversationItem(
                             match = match,
                             profile = profile,
                             latestMessage = latestMessageMap[match.matchId],
                             onClick = { onOpenChat(match, profile) },
-                            syncedLocalPhotos = syncedLocalPhotos
+                            onViewProfile = onOpenProfileDetail,
+                            syncedLocalPhotos = syncedLocalPhotos,
+                            publishedBusinesses = publishedBusinesses
                         )
                     }
                 }
@@ -963,12 +1114,13 @@ fun MatchesChatScreen(
             CreateGroupDialog(
                 availableMembers = availableMembers,
                 onDismiss = { showCreateGroupDialog = false },
-                onCreateGroup = { name, desc, emoji, members ->
+                onCreateGroup = { name, desc, emoji, members, avatarUri ->
                     val newGroup = GroupModel(
                         id = java.util.UUID.randomUUID().toString(),
                         name = name,
                         description = desc,
                         emoji = emoji,
+                        avatarUrl = avatarUri?.toString().orEmpty(),
                         adminName = "You",
                         members = listOf("You") + members,
                         lastMessage = "Group created",
@@ -980,6 +1132,53 @@ fun MatchesChatScreen(
                     activeGroup = newGroup
                 }
             )
+        }
+    }
+}
+
+@Composable
+private fun NoteToSelfPinnedConversation(
+    displayName: String,
+    isPinned: Boolean,
+    onClick: () -> Unit,
+    onTogglePin: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)),
+        border = BorderStroke(1.dp, VibeSyncTeal.copy(alpha = 0.55f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 6.dp)
+            .clickable(onClick = onClick)
+            .testTag("conversation_note_to_self")
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(shape = CircleShape, color = VibeSyncTeal.copy(alpha = 0.16f), modifier = Modifier.size(22.dp)) {
+                Box(contentAlignment = Alignment.Center) { Text("📝", fontSize = 12.sp) }
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Note to Self", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
+                Text(
+                    if (isPinned) "Pinned · Encrypted notes only you can read" else "Unpinned · Encrypted notes only you can read",
+                    fontSize = 9.sp,
+                    lineHeight = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+            IconButton(onClick = onTogglePin, modifier = Modifier.size(26.dp).testTag("btn_toggle_note_to_self_pin")) {
+                Icon(
+                    imageVector = Icons.Default.PushPin,
+                    contentDescription = if (isPinned) "Unpin Note to Self" else "Pin Note to Self",
+                    tint = if (isPinned) VibeSyncTeal else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(15.dp)
+                )
+            }
         }
     }
 }
@@ -1092,12 +1291,23 @@ private fun PhonebookContactsInlineHeader(
 @Composable
 private fun ContactOnVibeSyncRow(
     contact: PhoneContact,
+    linkedProfile: ProfileEntity?,
+    onViewProfile: (ProfileEntity) -> Unit,
     onClick: () -> Unit,
     syncedLocalPhotos: androidx.compose.runtime.snapshots.SnapshotStateMap<String, String>
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val contactDisplayName = remember(contact.id, contact.phoneNumber, contact.name) {
         com.example.util.ContactResolver.resolveParticipantDisplayName(context, contact.phoneNumber.ifBlank { contact.id }, contact.name)
+    }
+    val localPhotoKey = contact.phoneNumber.ifBlank { contact.id }
+    LaunchedEffect(contact.phoneNumber, contact.photoUrl) {
+        if (localPhotoKey.isNotBlank() && syncedLocalPhotos[localPhotoKey].isNullOrBlank()) {
+            val localPhotoUri = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.example.util.ContactResolver.fetchContactPhotoByPhoneNumber(context, localPhotoKey)
+            }
+            if (!localPhotoUri.isNullOrBlank()) syncedLocalPhotos[localPhotoKey] = localPhotoUri
+        }
     }
 
     Row(
@@ -1113,42 +1323,29 @@ private fun ContactOnVibeSyncRow(
             modifier = Modifier
                 .size(46.dp)
                 .clickable {
-                    val phone = contact.phoneNumber.ifBlank { contact.id }
-                    val photoUri = com.example.util.ContactResolver.fetchContactPhotoByPhoneNumber(context, phone)
-                    if (!photoUri.isNullOrBlank()) {
-                        syncedLocalPhotos[phone] = photoUri
-                        android.widget.Toast.makeText(context, "🔄 Profile picture successfully synced from your local device contacts!", android.widget.Toast.LENGTH_SHORT).show()
-                    } else {
-                        android.widget.Toast.makeText(context, "ℹ️ No photo set for this contact in your device's address book.", android.widget.Toast.LENGTH_SHORT).show()
-                    }
+                    if (linkedProfile != null) {
+                        onViewProfile(
+                            linkedProfile.copy(
+                                name = contactDisplayName.ifBlank { linkedProfile.name },
+                                phoneNumber = contact.phoneNumber.ifBlank { linkedProfile.phoneNumber },
+                                avatarUrl = contact.photoUrl.ifBlank { linkedProfile.avatarUrl }
+                            )
+                        )
+                    } else onClick()
                 },
             contentAlignment = Alignment.Center
         ) {
-            val contactPhoto = syncedLocalPhotos[contact.phoneNumber.ifBlank { contact.id }] ?: contact.photoUrl.ifBlank { contact.vibeSyncUser?.avatarUrl ?: "" }
-            if (contactPhoto.isNotBlank()) {
-                coil.compose.AsyncImage(
-                    model = contactPhoto,
-                    contentDescription = contactDisplayName,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape),
-                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .background(
-                            Brush.linearGradient(
-                                listOf(CoralPink, RomanticViolet)
-                            )
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(text = contact.avatarEmoji.ifBlank { "👤" }, fontSize = 20.sp)
-                }
-            }
+            val contactPhoto = syncedLocalPhotos[contact.phoneNumber.ifBlank { contact.id }]
+                ?: contact.photoUrl.ifBlank { contact.vibeSyncUser?.avatarUrl.orEmpty() }
+            DatingAvatar(
+                name = contactDisplayName.ifBlank { contact.name },
+                emoji = contact.avatarEmoji.ifBlank { "👤" },
+                colorStart = contact.vibeSyncUser?.gradientColorStart ?: 0xFFFF5E62,
+                colorEnd = contact.vibeSyncUser?.gradientColorEnd ?: 0xFFFF9966,
+                size = 44.dp,
+                avatarUrl = contactPhoto,
+                avatarCacheVersion = contact.vibeSyncUser?.avatarCacheVersion ?: 0L
+            )
 
             Box(
                 modifier = Modifier
@@ -1212,6 +1409,15 @@ private fun ContactToInviteRow(
     syncedLocalPhotos: androidx.compose.runtime.snapshots.SnapshotStateMap<String, String>
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val localPhotoKey = contact.phoneNumber.ifBlank { contact.id }
+    LaunchedEffect(contact.phoneNumber, contact.photoUrl) {
+        if (localPhotoKey.isNotBlank() && syncedLocalPhotos[localPhotoKey].isNullOrBlank()) {
+            val localPhotoUri = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.example.util.ContactResolver.fetchContactPhotoByPhoneNumber(context, localPhotoKey)
+            }
+            if (!localPhotoUri.isNullOrBlank()) syncedLocalPhotos[localPhotoKey] = localPhotoUri
+        }
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1238,31 +1444,39 @@ private fun ContactToInviteRow(
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center
         ) {
-            val contactPhoto = syncedLocalPhotos[contact.phoneNumber.ifBlank { contact.id }] ?: ""
-            if (contactPhoto.isNotBlank()) {
-                coil.compose.AsyncImage(
-                    model = contactPhoto,
-                    contentDescription = contact.name,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape),
-                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                )
-            } else {
-                Text(text = contact.avatarEmoji.ifBlank { "👤" }, fontSize = 20.sp)
-            }
+            val contactPhoto = syncedLocalPhotos[localPhotoKey]
+                ?: contact.photoUrl.ifBlank { contact.vibeSyncUser?.avatarUrl.orEmpty() }
+            DatingAvatar(
+                name = contact.name.ifBlank { "VibeSync contact" },
+                emoji = contact.avatarEmoji.ifBlank { "👤" },
+                colorStart = contact.vibeSyncUser?.gradientColorStart ?: 0xFFFF5E62,
+                colorEnd = contact.vibeSyncUser?.gradientColorEnd ?: 0xFFFF9966,
+                size = 44.dp,
+                avatarUrl = contactPhoto,
+                avatarCacheVersion = contact.vibeSyncUser?.avatarCacheVersion ?: 0L
+            )
         }
 
         Spacer(modifier = Modifier.width(12.dp))
 
         Column(modifier = Modifier.weight(1f)) {
+            val contactNameParts = contact.name.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+            val firstName = contactNameParts.firstOrNull().orEmpty()
+            val remainingName = contactNameParts.drop(1).joinToString(" ")
+            val compactLastName = if (contact.name.trim().length > 14) {
+                remainingName.firstOrNull()?.let { " ${it.uppercaseChar()}." }.orEmpty()
+            } else {
+                remainingName.takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty()
+            }
             Text(
-                text = contact.name,
-                style = MaterialTheme.typography.titleMedium.copy(
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp
-                ),
-                color = MaterialTheme.colorScheme.onSurface
+                text = buildAnnotatedString {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(firstName) }
+                    append(compactLastName)
+                },
+                style = MaterialTheme.typography.titleMedium.copy(fontSize = 14.sp),
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
             Text(
                 text = "${contact.phoneNumber} • Invite candidate",
@@ -1330,9 +1544,34 @@ private fun VibeSyncConversationItem(
     profile: ProfileEntity,
     latestMessage: com.example.data.model.ChatMessageEntity?,
     onClick: () -> Unit,
-    syncedLocalPhotos: androidx.compose.runtime.snapshots.SnapshotStateMap<String, String>
+    onViewProfile: (ProfileEntity) -> Unit,
+    syncedLocalPhotos: androidx.compose.runtime.snapshots.SnapshotStateMap<String, String>,
+    publishedBusinesses: List<com.example.data.model.BusinessEntity>
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val chatBusiness = remember(profile.id, publishedBusinesses) {
+        publishedBusinesses.firstOrNull { business ->
+            business.isPublished && (
+                business.ownerUserId.equals(profile.id, ignoreCase = true) ||
+                    business.ownerUserId.equals(profile.phoneNumber, ignoreCase = true) ||
+                    business.id.equals(profile.id, ignoreCase = true)
+            )
+        }
+    }
+    val conversationTitle = chatBusiness?.name?.takeIf { it.isNotBlank() } ?: profile.name
+    val conversationTier = chatBusiness?.verificationTier?.uppercase().orEmpty()
+    val avatarLookupKey = profile.phoneNumber.ifBlank { profile.id }
+    val contactLookupPhone = profile.phoneNumber.ifBlank {
+        profile.id.takeIf { com.example.util.SupabaseClientManager.isPhoneNumberCandidate(it) }.orEmpty()
+    }
+    LaunchedEffect(profile.id, contactLookupPhone) {
+        if (contactLookupPhone.isNotBlank() && syncedLocalPhotos[avatarLookupKey].isNullOrBlank()) {
+            val localPhotoUri = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.example.util.ContactResolver.fetchContactPhotoByPhoneNumber(context, contactLookupPhone)
+            }
+            if (!localPhotoUri.isNullOrBlank()) syncedLocalPhotos[avatarLookupKey] = localPhotoUri
+        }
+    }
     val timeFormatted = remember(match.lastMessageTime) {
         val diff = System.currentTimeMillis() - match.lastMessageTime
         val minutes = diff / (60 * 1000)
@@ -1356,25 +1595,16 @@ private fun VibeSyncConversationItem(
     ) {
         // Avatar with real photo or stylized emoji
         DatingAvatar(
-            name = profile.name,
+            name = conversationTitle,
             emoji = profile.avatarEmoji,
             colorStart = profile.gradientColorStart,
             colorEnd = profile.gradientColorEnd,
             size = 48.dp,
             isVerified = profile.isVerified,
             isOnline = profile.activityStatus.contains("Online", ignoreCase = true) || profile.activityStatus.contains("Active", ignoreCase = true),
-            avatarUrl = syncedLocalPhotos[profile.phoneNumber.ifBlank { profile.id }] ?: profile.avatarUrl,
+            avatarUrl = syncedLocalPhotos[avatarLookupKey] ?: profile.avatarUrl,
             avatarCacheVersion = profile.avatarCacheVersion,
-            modifier = Modifier.clickable {
-                val phone = profile.phoneNumber.ifBlank { profile.id }
-                val photoUri = com.example.util.ContactResolver.fetchContactPhotoByPhoneNumber(context, phone)
-                if (!photoUri.isNullOrBlank()) {
-                    syncedLocalPhotos[phone] = photoUri
-                    android.widget.Toast.makeText(context, "🔄 Profile picture successfully synced from your local device contacts!", android.widget.Toast.LENGTH_SHORT).show()
-                } else {
-                    android.widget.Toast.makeText(context, "ℹ️ No photo set for this contact in your device's address book.", android.widget.Toast.LENGTH_SHORT).show()
-                }
-            }
+            modifier = Modifier.clickable { onViewProfile(profile) }
         )
 
         Spacer(modifier = Modifier.width(13.dp))
@@ -1391,7 +1621,7 @@ private fun VibeSyncConversationItem(
                     modifier = Modifier.weight(1f, fill = false)
                 ) {
                     Text(
-                        text = profile.name,
+                        text = conversationTitle,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = if (match.hasUnread) FontWeight.Bold else FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface,
@@ -1400,14 +1630,14 @@ private fun VibeSyncConversationItem(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    if (profile.isVerified) {
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Icon(
-                            imageVector = Icons.Default.Verified,
-                            contentDescription = "Verified Human",
-                            tint = VibeSyncTeal,
-                            modifier = Modifier.size(15.dp)
-                        )
+                    when (conversationTier) {
+                        "GOLD" -> { Spacer(modifier = Modifier.width(4.dp)); Text("👑", fontSize = 13.sp) }
+                        "SILVER" -> { Spacer(modifier = Modifier.width(4.dp)); Text("♛", fontSize = 14.sp, color = Color(0xFF9AA4B2)) }
+                        "BLUE_TICK" -> { Spacer(modifier = Modifier.width(4.dp)); Icon(Icons.Default.Verified, contentDescription = "Verified business", tint = Color(0xFF1DA1F2), modifier = Modifier.size(15.dp)) }
+                        else -> if (profile.isVerified) {
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(imageVector = Icons.Default.Verified, contentDescription = "Verified Human", tint = VibeSyncTeal, modifier = Modifier.size(15.dp))
+                        }
                     }
                 }
 

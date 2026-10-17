@@ -96,6 +96,9 @@ data class UserPreferencesEntity(
     val hidePhoneNumber: Boolean = true,
     val hideOccupation: Boolean = false,
     val hideFriendsList: Boolean = false, // User security: show friends and hide friends option enable in user security
+    /** Privacy defaults preserve familiar read/typing feedback; both can be disabled independently. */
+    @androidx.room.ColumnInfo(defaultValue = "1") val readReceiptsEnabled: Boolean = true,
+    @androidx.room.ColumnInfo(defaultValue = "1") val typingIndicatorsEnabled: Boolean = true,
     // 5 Visual Themes & Backgrounds (Light, Dark, Sunlight, Afternoon, Evening Dusk)
     val selectedThemePreset: String = "PURE_LIGHT",
     // In-App Sound Alerts & Ringtone Customization
@@ -103,7 +106,12 @@ data class UserPreferencesEntity(
     val vibrationAlertsEnabled: Boolean = true,
     val messageSoundTone: String = "DEFAULT", // "DEFAULT", "CLASSIC_CHIME", "CRYSTAL_DROP", "WHISTLE_BREEZE", "GENTLE_VIBE", "SILENT"
     val matchSoundTone: String = "CELEBRATION", // "CELEBRATION", "COSMIC_MATCH", "SWEET_BELL", "SILENT"
-    val callRingtone: String = "STANDARD_RING" // "STANDARD_RING", "DIGITAL_WAVE", "MARIMBA", "SILENT"
+    val callRingtone: String = "STANDARD_RING", // "STANDARD_RING", "DIGITAL_WAVE", "MARIMBA", "SILENT"
+    // Stored in the SQLCipher-encrypted Room database. Screenshot capture is opt-in.
+    @androidx.room.ColumnInfo(defaultValue = "0") val screenshotSecurityEnabled: Boolean = false,
+    @androidx.room.ColumnInfo(defaultValue = "0") val isVerified: Boolean = false,
+    @androidx.room.ColumnInfo(defaultValue = "'inactive'") val subscriptionStatus: String = "inactive",
+    @androidx.room.ColumnInfo(defaultValue = "0") val badgePurchased: Boolean = false
 ) {
     val remainingSuperLikesToday: Int
         get() {

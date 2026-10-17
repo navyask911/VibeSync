@@ -5,7 +5,6 @@ import android.util.Log
 import com.example.data.model.PhoneContact
 import com.example.data.model.ProfileEntity
 import com.example.util.ContactResolver
-import com.example.util.PhonebookHasher
 import com.example.util.PhonebookHelper
 import com.example.util.SupabaseClientManager
 import kotlinx.coroutines.CoroutineScope
@@ -35,9 +34,8 @@ data class SupabaseSyncState(
  * SupabaseSyncRepository
  *
  * Runs VibeSync entirely on Supabase database.
- * Manages profile synchronization, 16-character SHA-256 phone hash lookups via PhonebookHasher,
- * and the zero-knowledge contact matching pipeline that queries Supabase tables directly,
- * overriding any remote encrypted strings with the local phonebook saved contact name.
+ * Manages profile synchronization and delegates discovery to the authenticated HTTPS phone-match
+ * RPC, caching canonical profile identities in Room and keeping local contact names on-device.
  */
 object SupabaseSyncRepository {
 
@@ -65,13 +63,12 @@ object SupabaseSyncRepository {
     }
 
     /**
-     * Syncs own profile to Supabase 'profiles' table with 16-character SHA-256 phone_hash.
+     * Syncs the canonical profile to Supabase; E.164 contact matching is indexed server-side without client-derived lookup tokens.
      */
     suspend fun syncOwnProfile(profile: ProfileEntity): Boolean = withContext(Dispatchers.IO) {
         val success = SupabaseClientManager.upsertProfile(profile)
         if (success) {
-            val hash16 = PhonebookHasher.generate16CharHash(profile.phoneNumber.ifBlank { profile.id })
-            addLog("✅ Upserted own profile to Supabase 'profiles' (id: ${profile.id}, phone_hash: $hash16)")
+            addLog("✅ Upserted own profile to Supabase 'profiles' (canonical profile ID stored).")
         } else {
             addLog("❌ Failed upserting own profile to Supabase")
         }
@@ -92,21 +89,19 @@ object SupabaseSyncRepository {
     }
 
     /**
-     * Queries Supabase 'profiles' table directly by phone hashes (strict limit 50).
+     * Queries the indexed E.164 contact directory through the authenticated HTTPS RPC.
      */
-    suspend fun fetchProfilesByHashes(hashes: List<String>): List<ProfileEntity> = withContext(Dispatchers.IO) {
-        if (hashes.isEmpty()) return@withContext emptyList()
-        val list = SupabaseClientManager.fetchProfilesByHashes(hashes)
-        addLog("🔍 Queried Supabase by ${hashes.size} hash(es) -> Found ${list.size} matching profile(s)")
-        list
+    suspend fun fetchProfilesByPhones(phones: List<String>): List<ProfileEntity> = withContext(Dispatchers.IO) {
+        if (phones.isEmpty()) return@withContext emptyList()
+        val profiles = SupabaseClientManager.fetchProfilesByE164Phones(phones)
+        addLog("🔍 HTTPS phone matching checked ${phones.size} contact(s), returning ${profiles.size} profile(s).")
+        profiles
     }
 
     /**
-     * Zero-Knowledge Contact Matching Pipeline:
-     * 1. Normalizes phone numbers to standard last 10 digits and hashes them locally with SHA-256 (64-char hex / 32-byte binary).
-     * 2. Calls Supabase PostgREST RPC 'match_contacts' in batches of 50 to query the indexed 'phone_sync' BYTEA table (<2ms).
-     * 3. Overrides remote contact names with the local device saved contact name via ContactResolver.
-     * 4. Completely preserves zero-knowledge privacy and prevents cloud leakage.
+     * Sends normalized E.164 phone numbers by HTTPS to the authenticated Supabase match RPC.
+     * Supabase returns canonical profile IDs and minimal metadata; Room caches the returned matches.
+     * Private chat message and media payloads remain separately end-to-end encrypted with Google Tink.
      */
     suspend fun matchContactsAgainstSupabase(
         context: Context,

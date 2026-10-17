@@ -35,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.ui.components.DatingAvatar
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import com.example.data.model.UserPreferencesEntity
@@ -75,23 +76,65 @@ fun EditProfileDialog(
     var photo1 by remember { mutableStateOf(preferences.avatarUrl) }
     var photo2 by remember { mutableStateOf(preferences.getPhotoList().getOrNull(1) ?: "") }
     var photo3 by remember { mutableStateOf(preferences.getPhotoList().getOrNull(2) ?: "") }
+    var photo1Preview by remember { mutableStateOf(preferences.avatarUrl) }
+    var photo2Preview by remember { mutableStateOf(preferences.getPhotoList().getOrNull(1) ?: "") }
+    var photo3Preview by remember { mutableStateOf(preferences.getPhotoList().getOrNull(2) ?: "") }
+    var unsyncedAvatarSlots by remember { mutableStateOf(setOf<Int>()) }
     var activePhotoSlot by remember { mutableIntStateOf(1) }
+    val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var isUploadingAvatar by remember { mutableStateOf(false) }
 
     val slotPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            val uriStr = uri.toString()
-            when (activePhotoSlot) {
-                1 -> photo1 = uriStr
-                2 -> photo2 = uriStr
-                3 -> photo3 = uriStr
+            val targetSlot = activePhotoSlot
+            coroutineScope.launch {
+                isUploadingAvatar = true
+                try {
+                    val profileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty()
+                    val prepared = com.example.util.ProfileAvatarStorageManager.preparePickedAvatar(context, uri, profileId, targetSlot)
+                    // Render the compressed internal cache file before starting Storage upload.
+                    when (targetSlot) {
+                        1 -> photo1Preview = prepared.uri
+                        2 -> photo2Preview = prepared.uri
+                        3 -> photo3Preview = prepared.uri
+                    }
+                    unsyncedAvatarSlots = unsyncedAvatarSlots + targetSlot
+                    val remoteUrl = com.example.util.ProfileAvatarStorageManager.uploadPreparedAvatar(prepared)
+                    if (remoteUrl.isNullOrBlank()) {
+                        // Do not keep a staged plaintext file after upload failure; the user can
+                        // choose the image again, while the last successfully uploaded avatar stays.
+                        prepared.file.delete()
+                        prepared.encryptedFile?.delete()
+                        when (targetSlot) {
+                            1 -> photo1Preview = photo1
+                            2 -> photo2Preview = photo2
+                            3 -> photo3Preview = photo3
+                        }
+                        unsyncedAvatarSlots = unsyncedAvatarSlots - targetSlot
+                        android.widget.Toast.makeText(
+                            context,
+                            "Encrypted photo upload failed. Please choose the photo again.",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        // Keep only the encrypted storage reference after the plaintext staging file is removed.
+                        when (targetSlot) {
+                            1 -> { photo1 = remoteUrl; photo1Preview = remoteUrl }
+                            2 -> { photo2 = remoteUrl; photo2Preview = remoteUrl }
+                            3 -> { photo3 = remoteUrl; photo3Preview = remoteUrl }
+                        }
+                        unsyncedAvatarSlots = unsyncedAvatarSlots - targetSlot
+                        android.widget.Toast.makeText(context, "Avatar compressed to ${prepared.byteCount / 1024} KiB and synced.", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                } catch (_: Throwable) {
+                    android.widget.Toast.makeText(context, "Could not save that photo. Please choose it again.", android.widget.Toast.LENGTH_LONG).show()
+                } finally { isUploadingAvatar = false }
             }
         }
     }
-
-    val coroutineScope = rememberCoroutineScope()
-    val context = androidx.compose.ui.platform.LocalContext.current
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -272,7 +315,7 @@ fun EditProfileDialog(
                 ) {
                     // Slot 1
                     EditPhotoSlot(
-                        photoUrl = photo1,
+                        photoUrl = photo1Preview,
                         avatarCacheVersion = preferences.avatarCacheVersion,
                         slotNumber = 1,
                         label = "Main Photo",
@@ -281,11 +324,11 @@ fun EditProfileDialog(
                             activePhotoSlot = 1
                             slotPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                         },
-                        onRemove = { photo1 = "" }
+                        onRemove = { photo1 = ""; photo1Preview = ""; unsyncedAvatarSlots = unsyncedAvatarSlots - 1 }
                     )
                     // Slot 2
                     EditPhotoSlot(
-                        photoUrl = photo2,
+                        photoUrl = photo2Preview,
                         avatarCacheVersion = preferences.avatarCacheVersion,
                         slotNumber = 2,
                         label = "Photo 2",
@@ -294,11 +337,11 @@ fun EditProfileDialog(
                             activePhotoSlot = 2
                             slotPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                         },
-                        onRemove = { photo2 = "" }
+                        onRemove = { photo2 = ""; photo2Preview = ""; unsyncedAvatarSlots = unsyncedAvatarSlots - 2 }
                     )
                     // Slot 3
                     EditPhotoSlot(
-                        photoUrl = photo3,
+                        photoUrl = photo3Preview,
                         avatarCacheVersion = preferences.avatarCacheVersion,
                         slotNumber = 3,
                         label = "Photo 3",
@@ -307,7 +350,7 @@ fun EditProfileDialog(
                             activePhotoSlot = 3
                             slotPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                         },
-                        onRemove = { photo3 = "" }
+                        onRemove = { photo3 = ""; photo3Preview = ""; unsyncedAvatarSlots = unsyncedAvatarSlots - 3 }
                     )
                 }
 
@@ -416,6 +459,7 @@ fun EditProfileDialog(
         },
         confirmButton = {
             Button(
+                enabled = !isUploadingAvatar && unsyncedAvatarSlots.isEmpty(),
                 onClick = {
                     val finalPhotoList = listOf(photo1, photo2, photo3).filter { it.isNotBlank() }
                     val effectiveAvatar = finalPhotoList.firstOrNull() ?: preferences.avatarUrl
@@ -492,19 +536,31 @@ private fun EditPhotoSlot(
     ) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             if (photoUrl.isNotBlank()) {
-                AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
-                        .data(photoUrl)
-                        .memoryCacheKey("user-avatar:$photoUrl:$avatarCacheVersion")
-                        .diskCacheKey("user-avatar:$photoUrl:$avatarCacheVersion")
-                        .crossfade(true)
-                        .diskCachePolicy(CachePolicy.ENABLED)
-                        .memoryCachePolicy(CachePolicy.ENABLED)
-                        .build(),
-                    contentDescription = label,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp))
-                )
+                if (photoUrl.startsWith("vibesync-avatar-enc://")) {
+                    DatingAvatar(
+                        name = label,
+                        emoji = "👤",
+                        colorStart = 0xFF14B8A6,
+                        colorEnd = 0xFFEC4899,
+                        size = 94.dp,
+                        avatarUrl = photoUrl,
+                        avatarCacheVersion = avatarCacheVersion
+                    )
+                } else {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(photoUrl)
+                            .memoryCacheKey("user-avatar:$photoUrl:$avatarCacheVersion")
+                            .diskCacheKey("user-avatar:$photoUrl:$avatarCacheVersion")
+                            .crossfade(true)
+                            .diskCachePolicy(CachePolicy.ENABLED)
+                            .memoryCachePolicy(CachePolicy.ENABLED)
+                            .build(),
+                        contentDescription = label,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp))
+                    )
+                }
 
                 IconButton(
                     onClick = onRemove,

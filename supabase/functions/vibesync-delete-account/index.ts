@@ -50,7 +50,13 @@ Deno.serve(async (req) => {
     const profileId = String(session.profile_id);
 
     await adminClient.from("device_tokens").delete().eq("profile_id", profileId);
-    await adminClient.from("phone_sync").delete().eq("user_id", profileId);
+    // The previous contact index was retired; remove the server-side E.164 match index
+    // before deleting the profile row that owns it.
+    const { error: phoneLookupError } = await adminClient
+      .from("phone_lookup_index")
+      .delete()
+      .eq("profile_id", profileId);
+    if (phoneLookupError) throw phoneLookupError;
     await adminClient.from("chat_messages").delete().eq("sender_id", profileId);
     await adminClient.from("chat_messages").delete().eq("receiver_id", profileId);
     await adminClient.from("registered_accounts").delete().eq("id", profileId);

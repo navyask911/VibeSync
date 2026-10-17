@@ -74,6 +74,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -93,9 +94,11 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.ui.theme.CoralPink
 import com.example.ui.theme.RomanticViolet
+import com.example.ui.components.DatingAvatar
 import com.example.ui.theme.VibeSyncTeal
 import com.example.util.DeviceSimAndIpCountryHelper
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -128,7 +131,8 @@ fun RegistrationProfileScreen(
         city: String,
         locationCoords: String,
         avatarEmoji: String,
-        photos: List<String>
+        photos: List<String>,
+        pendingAvatar: com.example.util.ProfileAvatarStorageManager.PreparedAvatar?
     ) -> Unit
 ) {
     val context = LocalContext.current
@@ -138,13 +142,75 @@ fun RegistrationProfileScreen(
         onBackToLogin()
     }
 
-    // 1. Profile Photo
+    // 1. Profile photo: prepare a private local preview only.
+    // Encryption and Storage I/O are deliberately deferred until after profile creation.
     var avatarUri by remember { mutableStateOf(initialAvatarUrl) }
+    var avatarPreviewUri by remember { mutableStateOf(initialAvatarUrl) }
+    var pendingPreparedAvatar by remember {
+        mutableStateOf<com.example.util.ProfileAvatarStorageManager.PreparedAvatar?>(null)
+    }
+    var isAvatarUploading by remember { mutableStateOf(false) }
+    val photoPreparationScope = rememberCoroutineScope()
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
         if (uri != null) {
-            avatarUri = uri.toString()
+            photoPreparationScope.launch {
+                val previousAvatar = avatarUri
+                val previousPreviewUri = avatarPreviewUri
+                val previousPreparedAvatar = pendingPreparedAvatar
+                isAvatarUploading = true
+                try {
+                    val profileId = com.example.util.VibeSyncSessionManager.getProfileId(context).orEmpty().trim()
+                    val prepared = com.example.util.ProfileAvatarStorageManager.preparePickedAvatarForRegistration(
+                        context = context,
+                        sourceUri = uri,
+                        profileId = profileId,
+                        slot = 1
+                    )
+                    // Keep the sanitized JPEG locally for an uninterrupted preview.
+                    // The encrypted upload worker is queued only when a verified profile ID exists.
+                    avatarUri = prepared.uri
+                    avatarPreviewUri = prepared.uri
+                    pendingPreparedAvatar = prepared.takeIf { profileId.isNotBlank() }
+                    if (previousPreparedAvatar != null &&
+                        previousPreparedAvatar.file.canonicalPath != prepared.file.canonicalPath
+                    ) {
+                        previousPreparedAvatar.file.delete()
+                        previousPreparedAvatar.encryptedFile?.delete()
+                    }
+                    if (profileId.isBlank()) {
+                        Toast.makeText(
+                            context,
+                            "Photo preview saved on this device. Complete registration; secure sync will require a verified session.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        Toast.makeText(
+                            context,
+                            "Photo preview saved. Encrypted avatar sync will run after registration.",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                } catch (t: Throwable) {
+                    // Image preparation is optional. Preserve the current selection/preview and
+                    // never couple account creation to avatar encoding or encryption.
+                    avatarUri = previousAvatar
+                    avatarPreviewUri = previousPreviewUri
+                    pendingPreparedAvatar = previousPreparedAvatar
+                    Toast.makeText(
+                        context,
+                        "Could not prepare the photo yet. You can still complete registration and add it later.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    android.util.Log.w(
+                        "VibeSyncRegistration",
+                        "Avatar preview preparation failed: " + t.javaClass.simpleName
+                    )
+                } finally {
+                    isAvatarUploading = false
+                }
+            }
         }
     }
 
@@ -271,7 +337,7 @@ fun RegistrationProfileScreen(
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
-                text = "Set up your public persona and zero-knowledge contact matching",
+                text = "Set up your public profile and encrypted HTTPS contact matching",
                 fontSize = 13.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -298,9 +364,19 @@ fun RegistrationProfileScreen(
                     color = MaterialTheme.colorScheme.surfaceVariant,
                     border = BorderStroke(2.dp, Brush.linearGradient(listOf(CoralPink, VibeSyncTeal)))
                 ) {
-                    if (avatarUri.isNotBlank()) {
+                    if (avatarPreviewUri.startsWith("vibesync-avatar-enc://")) {
+                        DatingAvatar(
+                            name = "Profile",
+                            emoji = "👤",
+                            colorStart = 0xFF14B8A6,
+                            colorEnd = 0xFFEC4899,
+                            size = 104.dp,
+                            avatarUrl = avatarPreviewUri,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else if (avatarPreviewUri.isNotBlank()) {
                         AsyncImage(
-                            model = avatarUri,
+                            model = avatarPreviewUri,
                             contentDescription = "Profile Photo",
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize()
@@ -572,19 +648,23 @@ fun RegistrationProfileScreen(
             ) {
                 presetInterests.take(5).forEach { tag ->
                     val cleanTag = tag.substringBefore(" ")
-                    val isAlreadyPresent = interestsText.contains(cleanTag, ignoreCase = true)
+                    val isAlreadyPresent = com.example.util.OnboardingStatePolicy.containsCsvSelection(
+                        interestsText,
+                        cleanTag
+                    )
                     Surface(
                         shape = RoundedCornerShape(8.dp),
                         color = if (isAlreadyPresent) VibeSyncTeal.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant,
                         border = if (isAlreadyPresent) BorderStroke(1.dp, VibeSyncTeal) else null,
                         modifier = Modifier.clickable {
-                            if (!isAlreadyPresent) {
-                                interestsText = if (interestsText.isBlank()) cleanTag else "$interestsText, $cleanTag"
-                            }
+                            interestsText = com.example.util.OnboardingStatePolicy.toggleCsvSelection(
+                                interestsText,
+                                cleanTag
+                            )
                         }
                     ) {
                         Text(
-                            text = "+ $tag",
+                            text = if (isAlreadyPresent) "✓ $tag" else "+ $tag",
                             fontSize = 11.sp,
                             color = if (isAlreadyPresent) VibeSyncTeal else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -595,7 +675,7 @@ fun RegistrationProfileScreen(
 
             Spacer(modifier = Modifier.height(18.dp))
 
-            // 8. Discovery & Zero-Knowledge Contact Matching Toggle
+            // 8. Direct HTTPS Contact Matching Toggle
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(
@@ -633,7 +713,7 @@ fun RegistrationProfileScreen(
                             fontSize = 14.sp
                         )
                         Text(
-                            text = "Allow your saved contacts on VibeSync to find and chat with you securely",
+                            text = "Let people who have your number find you. Matching uses HTTPS; their phone numbers are sent to Supabase securely. Private chats remain end-to-end encrypted.",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -651,7 +731,7 @@ fun RegistrationProfileScreen(
                 }
             }
 
-            // Zero-Knowledge Privacy Badge
+            // Encrypted HTTPS Contact Matching Disclosure
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -667,19 +747,34 @@ fun RegistrationProfileScreen(
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                    text = "Protected by Zero-Knowledge SHA-256 E2EE hashing",
+                    text = "Phone numbers sent securely over SSL/TLS (HTTPS)",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
-            // 9. Full-Width Primary Save & Register Button
+            // 9. Full-width registration action. Avatar upload is handled after profile creation.
             Button(
                 onClick = {
                     if (isFormValid) {
+                        val stagedAvatar = pendingPreparedAvatar
+                        val photoForRegistration = when {
+                            stagedAvatar != null ->
+                                com.example.util.ProfileAvatarStorageManager.encryptedAvatarReference(
+                                    stagedAvatar.profileId, stagedAvatar.slot
+                                )
+                            avatarUri.startsWith("vibesync-avatar-enc://") -> avatarUri
+                            avatarUri.startsWith("https://") || avatarUri.startsWith("http://") -> avatarUri
+                            else -> ""
+                        }
                         val finalBio = bioText.ifBlank { "Hey there! I am using VibeSync ✨" }
-                        val finalPhotoList = if (avatarUri.isNotBlank()) listOf(avatarUri) else emptyList()
-
+                        // Keep the local JPEG URI in Room's photo list for local fallback. The avatar
+                        // field itself is an opaque encrypted-object reference, never a private file URI.
+                        val finalPhotoList = when {
+                            stagedAvatar != null -> listOf(stagedAvatar.uri)
+                            photoForRegistration.isNotBlank() -> listOf(photoForRegistration)
+                            else -> emptyList()
+                        }
                         onCompleteRegistration(
                             fullName.trim(),
                             calculatedAge,
@@ -696,17 +791,18 @@ fun RegistrationProfileScreen(
                             interestsText,
                             "Not specified",
                             isDiscoveryEnabled,
-                            "$detectedCity, $detectedState",
+                            detectedCity + ", " + detectedState,
                             detectedCity,
                             detectedCoords,
-                            if (avatarUri.isBlank()) "✨" else avatarUri,
-                            finalPhotoList
+                            if (photoForRegistration.isBlank()) "✨" else photoForRegistration,
+                            finalPhotoList,
+                            stagedAvatar
                         )
                     } else {
                         Toast.makeText(context, "Please enter your name and select date of birth.", Toast.LENGTH_SHORT).show()
                     }
                 },
-                enabled = isFormValid,
+                enabled = isFormValid && !isAvatarUploading,
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = VibeSyncTeal,

@@ -7,6 +7,7 @@ import androidx.room.Query
 import androidx.room.Update
 import com.example.data.model.BlockEntity
 import com.example.data.model.ChatMessageEntity
+import com.example.data.model.ExpiredChatMessageEntity
 import com.example.data.model.FriendshipRequestEntity
 import com.example.data.model.MatchEntity
 import com.example.data.model.ProfileEntity
@@ -176,19 +177,23 @@ interface MatchDao {
 
 @Dao
 interface ChatMessageDao {
-    @Query("SELECT * FROM chat_messages ORDER BY timestamp ASC")
-    suspend fun getAllMessagesSync(): List<ChatMessageEntity>
+    @Query("SELECT * FROM chat_messages WHERE expiresAt = 0 OR expiresAt > :now ORDER BY timestamp ASC")
+    suspend fun getAllMessagesSync(now: Long = System.currentTimeMillis()): List<ChatMessageEntity>
 
-    @Query("SELECT * FROM chat_messages WHERE matchId = :matchId ORDER BY timestamp ASC")
-    fun getMessagesForMatch(matchId: String): Flow<List<ChatMessageEntity>>
+    @Query("SELECT * FROM chat_messages WHERE matchId = :matchId AND (expiresAt = 0 OR expiresAt > :now) ORDER BY timestamp ASC")
+    fun getMessagesForMatch(matchId: String, now: Long = System.currentTimeMillis()): Flow<List<ChatMessageEntity>>
 
-    @Query("SELECT * FROM chat_messages WHERE matchId = :matchId ORDER BY timestamp ASC")
-    suspend fun getMessagesForMatchSync(matchId: String): List<ChatMessageEntity>
+    @Query("SELECT * FROM chat_messages WHERE matchId = :matchId AND (expiresAt = 0 OR expiresAt > :now) ORDER BY timestamp ASC")
+    suspend fun getMessagesForMatchSync(matchId: String, now: Long = System.currentTimeMillis()): List<ChatMessageEntity>
+
+    /** Strict self-note inbox: a note must be addressed to the same profile that owns it. */
+    @Query("SELECT * FROM chat_messages WHERE matchId = :matchId AND recipient_id = :currentUserId AND (expiresAt = 0 OR expiresAt > :now) ORDER BY timestamp ASC")
+    fun getMessagesForNoteToSelf(matchId: String, currentUserId: String, now: Long = System.currentTimeMillis()): Flow<List<ChatMessageEntity>>
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertMessage(message: ChatMessageEntity)
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertMessage(message: ChatMessageEntity)
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -197,26 +202,59 @@ interface ChatMessageDao {
     @Update
     suspend fun updateMessage(message: ChatMessageEntity)
 
-    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1 WHERE messageId = :messageId")
-    suspend fun markMessageAsRead(messageId: String)
+    @Query("UPDATE chat_messages SET senderDisplayName = :displayName, senderPhotoUri = :photoUri WHERE matchId = :matchId AND senderId != 'USER'")
+    suspend fun persistIncomingContactMetadata(matchId: String, displayName: String, photoUri: String)
 
-    @Query("UPDATE chat_messages SET isDelivered = 1 WHERE messageId = :messageId")
-    suspend fun markMessageAsDelivered(messageId: String)
+    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryAckPending = 0, deliveryState = 'READ', deliveredAt = CASE WHEN deliveredAt = 0 THEN :readAt ELSE deliveredAt END, readAt = :readAt WHERE messageId = :messageId")
+    suspend fun markMessageAsRead(messageId: String, readAt: Long = System.currentTimeMillis())
 
-    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1 WHERE matchId = :matchId AND senderId != 'USER'")
+    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryAckPending = 0, deliveryState = 'READ', deliveredAt = CASE WHEN deliveredAt = 0 THEN :readAt ELSE deliveredAt END, readAt = :readAt, expiresAt = CASE WHEN :timerSeconds > 0 AND expiresAt = 0 THEN :readAt + (:timerSeconds * 1000) ELSE expiresAt END WHERE messageId = :messageId")
+    suspend fun markMessageAsReadWithExpiry(messageId: String, readAt: Long, timerSeconds: Int)
+
+    @Query("UPDATE chat_messages SET isDelivered = 1, deliveryAckPending = 0, deliveredAt = CASE WHEN deliveredAt = 0 THEN :deliveredAt ELSE deliveredAt END, deliveryState = CASE WHEN deliveryState = 'READ' THEN 'READ' ELSE 'DELIVERED' END WHERE messageId = :messageId")
+    suspend fun markMessageAsDelivered(messageId: String, deliveredAt: Long = System.currentTimeMillis())
+
+    @Query("UPDATE chat_messages SET deliveryState = 'FAILED', lastSyncError = 'Recipient could not decrypt this message', lastSyncAttemptAt = :failedAt WHERE messageId = :messageId AND senderId = 'USER'")
+    suspend fun markMessageDeliveryFailed(messageId: String, failedAt: Long = System.currentTimeMillis())
+
+    @Query("UPDATE chat_messages SET deliveryState = 'PENDING', isDelivered = 0, isRead = 0, deliveredAt = 0, readAt = 0, lastSyncError = '', lastSyncAttemptAt = 0 WHERE messageId = :messageId AND senderId = 'USER'")
+    suspend fun resetFailedMessageForRetry(messageId: String)
+
+    @Query("SELECT * FROM chat_messages WHERE matchId = :matchId AND senderId != 'USER' AND deliveryAckPending = 1 ORDER BY timestamp ASC")
+    suspend fun getPendingDeliveryAcksForMatch(matchId: String): List<ChatMessageEntity>
+
+    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryAckPending = 0, deliveryState = 'READ' WHERE matchId = :matchId AND senderId != 'USER'")
     suspend fun markIncomingMessagesAsReadForMatch(matchId: String)
 
-    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1 WHERE matchId = :matchId")
+    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryAckPending = 0, deliveryState = 'READ', expiresAt = CASE WHEN :timerSeconds > 0 AND expiresAt = 0 THEN :readAt + (:timerSeconds * 1000) ELSE expiresAt END WHERE matchId = :matchId AND senderId != 'USER'")
+    suspend fun markIncomingMessagesAsReadWithExpiry(matchId: String, readAt: Long, timerSeconds: Int)
+
+    @Query("UPDATE chat_messages SET isRead = 1, isDelivered = 1, deliveryAckPending = 0, deliveryState = 'READ' WHERE matchId = :matchId")
     suspend fun markAllMessagesAsReadForMatch(matchId: String)
 
     @Query("SELECT * FROM chat_messages WHERE messageId = :messageId LIMIT 1")
     suspend fun getMessageById(messageId: String): ChatMessageEntity?
+
+    @Query("SELECT * FROM chat_messages WHERE senderId = 'USER' AND deliveryState = 'PENDING' AND outboxOwnerProfileId = :ownerProfileId ORDER BY timestamp ASC")
+    suspend fun getPendingOutgoingMessagesForOwner(ownerProfileId: String): List<ChatMessageEntity>
+
+    @Query("UPDATE chat_messages SET deliveryState = 'SENT_TO_SERVER', syncAttempts = syncAttempts + 1, lastSyncError = '', lastSyncAttemptAt = :attemptedAt WHERE messageId = :messageId AND deliveryState = 'PENDING'")
+    suspend fun markOutboxSentToServerIfPending(messageId: String, attemptedAt: Long): Int
+
+    @Query("UPDATE chat_messages SET syncAttempts = syncAttempts + 1, lastSyncError = :error, lastSyncAttemptAt = :attemptedAt WHERE messageId = :messageId AND deliveryState = 'PENDING'")
+    suspend fun recordOutboxFailure(messageId: String, error: String, attemptedAt: Long): Int
 
     @Query("SELECT COUNT(*) FROM chat_messages WHERE messageId = :messageId")
     suspend fun hasMessage(messageId: String): Int
 
     @Query("DELETE FROM chat_messages WHERE messageId = :messageId")
     suspend fun deleteMessageById(messageId: String)
+
+    @Query("SELECT messageId FROM chat_messages WHERE expiresAt > 0 AND expiresAt <= :now")
+    suspend fun getExpiredMessageIds(now: Long): List<String>
+
+    @Query("DELETE FROM chat_messages WHERE expiresAt > 0 AND expiresAt <= :now")
+    suspend fun purgeExpiredMessages(now: Long): Int
 
     @Query("DELETE FROM chat_messages WHERE matchId = :matchId")
     suspend fun clearMessagesForMatch(matchId: String)
@@ -227,14 +265,12 @@ interface ChatMessageDao {
     @Query("DELETE FROM chat_messages")
     suspend fun clearAllMessages()
 
-    @Query("SELECT * FROM chat_messages ORDER BY timestamp ASC")
+    @Query("SELECT * FROM chat_messages WHERE expiresAt = 0 OR expiresAt > CAST(strftime('%s','now') AS INTEGER) * 1000 ORDER BY timestamp ASC")
     fun getAllMessagesFlow(): Flow<List<ChatMessageEntity>>
 
     @Query("DELETE FROM chat_messages WHERE matchId = 'null' OR LOWER(matchId) = 'null' OR senderId = 'null' OR LOWER(senderId) = 'null' OR text = 'null' OR LOWER(text) = 'null' OR TRIM(matchId) = '' OR TRIM(senderId) = ''")
     suspend fun purgeGhostNullMessages()
 
-    @Query("DELETE FROM chat_messages")
-    suspend fun nukeTableOnLogout()
 }
 
 @Dao
@@ -296,11 +332,20 @@ interface StatusStoryDao {
     @Query("SELECT * FROM status_stories ORDER BY timestamp DESC")
     fun getAllStories(): Flow<List<StatusStoryEntity>>
 
+    @Query("SELECT * FROM status_stories ORDER BY timestamp DESC")
+    suspend fun getAllStoriesSync(): List<StatusStoryEntity>
+
     @Query("SELECT * FROM status_stories WHERE isMyStatus = 1 ORDER BY timestamp DESC")
     fun getMyStories(): Flow<List<StatusStoryEntity>>
 
     @Query("SELECT * FROM status_stories WHERE isMyStatus = 0 ORDER BY timestamp DESC")
     fun getFriendsStories(): Flow<List<StatusStoryEntity>>
+
+    @Query("DELETE FROM status_stories WHERE isMyStatus = 0")
+    suspend fun clearFriendsStories()
+
+    @Query("DELETE FROM status_stories WHERE timestamp < :cutoffTimestamp")
+    suspend fun deleteExpiredStories(cutoffTimestamp: Long)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertStory(story: StatusStoryEntity)
@@ -308,7 +353,9 @@ interface StatusStoryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertStories(stories: List<StatusStoryEntity>)
 
-    @Query("UPDATE status_stories SET isViewed = 1, viewsCount = viewsCount + 1 WHERE id = :storyId")
+    // Mark once only: the Room Flow updates the Recent Stories ring immediately without
+    // incrementing viewsCount again when an already-viewed story is reopened.
+    @Query("UPDATE status_stories SET isViewed = 1, viewsCount = viewsCount + 1 WHERE id = :storyId AND isViewed = 0")
     suspend fun markStoryViewed(storyId: String)
 
     @Query("UPDATE status_stories SET likesCount = CASE WHEN isLikedByMe = 1 THEN MAX(0, likesCount - 1) ELSE likesCount + 1 END, isLikedByMe = CASE WHEN isLikedByMe = 1 THEN 0 ELSE 1 END WHERE id = :storyId")
@@ -442,3 +489,17 @@ interface ReportDao {
 }
 
 
+
+
+/** Persistent content-free IDs so expired ciphertext cannot reappear through delayed sync. */
+@Dao
+interface ExpiredChatMessageDao {
+    @Query("SELECT EXISTS(SELECT 1 FROM expired_chat_messages WHERE messageId = :messageId)")
+    suspend fun isExpiredMessage(messageId: String): Boolean
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertExpiredMessage(message: ExpiredChatMessageEntity)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertExpiredMessages(messages: List<ExpiredChatMessageEntity>)
+}

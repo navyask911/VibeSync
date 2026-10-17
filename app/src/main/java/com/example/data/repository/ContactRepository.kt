@@ -8,28 +8,24 @@ import com.example.data.model.ProfileEntity
 import com.example.data.model.UserContactEntity
 import com.example.data.model.VibeContactEntity
 import com.example.util.ContactResolver
-import com.example.util.PhonebookHasher
+import com.example.util.PhonebookHelper
 import com.example.util.SupabaseClientManager
+import com.example.util.TinkCryptoManager
+import com.example.util.TinkKeyRepository
+import com.example.service.VibeSyncOutboxWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import java.util.HashSet
 import java.util.concurrent.ConcurrentHashMap
 
 /**
  * ContactRepository
  *
- * Dedicated Contact Synchronization & Matching Engine:
- * 1. BULLETPROOF 10-DIGIT NUMBER NORMALIZATION (normalize10Digit helper).
- * 2. Generates BOTH variations (10-digit suffix & E.164 +91 format) into a deduplicated HashSet.
- * 3. BATCH LOOKUP QUERY: Chunks candidate numbers into lists of 100 (candidateList.chunked(100)).
- *    Runs privacy-preserving lookup through the authenticated Supabase contact-match RPC.
- * 4. Compares 10-digit suffixes with the phone contact list to map registeredVibeContacts.
- * 5. IMMEDIATE UI LOAD & ROOM PERSISTENCE:
- *    Stores matched contacts in local Room database (VibeContactEntity).
- *    Provides getCachedRoomContacts() for instantaneous UI rendering on screen open.
+ * Canonical pipeline: UI/ViewModel -> ContactRepository -> authenticated Supabase HTTPS RPC -> Room.
+ * E.164 numbers are sent in the POST body for friend matching; canonical profile IDs and minimal
+ * match metadata are persisted locally. The legacy Room phoneHash column stores E.164 text only.
  */
 class ContactRepository(
     private val database: DatingDatabase
@@ -78,12 +74,11 @@ class ContactRepository(
     }
 
     /**
-     * Executes the complete contact sync pipeline:
-     * - Bulletproof 10-digit number normalization
-     * - Dual variation candidate generation (10-digit suffix and E.164 +91 format)
-     * - Batch lookups in chunks of 100 on Dispatchers.IO
-     * - Suffix matching to map registeredVibeContacts
-     * - Persistence to local Room database (VibeContactEntity)
+     * Synchronizes local contacts using the direct E.164 discovery flow:
+     * - Normalize phone numbers locally and discard invalid E.164 candidates.
+     * - Submit batches of normalized numbers to the authenticated Supabase HTTPS RPC.
+     * - Bind the canonical profile IDs returned by Supabase to local contacts.
+     * - Persist matches and minimal profile metadata into Room.
      */
     suspend fun syncAndMatchPhonebookContacts(
         context: Context,
@@ -103,78 +98,77 @@ class ContactRepository(
                 }
             }
 
-            // 1. BULLETPROOF 10-DIGIT NUMBER NORMALIZATION & CANDIDATE GENERATION
-            // For every contact number, generate BOTH variations to search for:
-            // * The last 10 digits (e.g. "9876543210")
-            // * The E.164 +91 format (e.g. "+919876543210")
-            // Collect all these candidate numbers into a HashSet to eliminate duplicates.
-            val candidateSet = HashSet<String>()
-            val tenDigitToContactsMap = ConcurrentHashMap<String, MutableList<PhoneContact>>()
+            // Normalize once, then submit direct E.164 values in the authenticated HTTPS POST body.
+            val requestedPhones = deviceContacts.map { PhonebookHelper.normalizeToE164(it.phoneNumber) }
+                .filter { it.matches(Regex("^\\+[1-9][0-9]{7,14}$")) }
+                .distinct()
+            val matchedProfilesByPhone = ConcurrentHashMap<String, ProfileEntity>()
+            val matchedProfilesById = ConcurrentHashMap<String, ProfileEntity>()
 
-            for (contact in deviceContacts) {
-                val tenDigit = normalize10Digit(contact.phoneNumber)
-                if (tenDigit.length == 10) {
-                    candidateSet.add(tenDigit)
-                    candidateSet.add("+91$tenDigit")
-                    tenDigitToContactsMap.getOrPut(tenDigit) { mutableListOf() }.add(contact)
-                } else if (tenDigit.isNotBlank()) {
-                    candidateSet.add(tenDigit)
-                    tenDigitToContactsMap.getOrPut(tenDigit) { mutableListOf() }.add(contact)
-                }
-
-                val cleanDigits = contact.phoneNumber.filter { it.isDigit() }
-                if (cleanDigits.isNotBlank()) {
-                    candidateSet.add(cleanDigits)
-                    if (contact.phoneNumber.trim().startsWith("+")) {
-                        candidateSet.add(contact.phoneNumber.trim())
-                    }
-                }
-            }
-
-            val candidateList = candidateSet.toList()
-            Log.i(TAG, "⚡ Generated ${candidateList.size} candidate variations from ${deviceContacts.size} contacts")
-
-            // 2. PRIVATE BATCH LOOKUP QUERY (SUPABASE RPC)
-            // Chunk candidate numbers into lists of 100: candidateList.chunked(100)
-            val chunks = candidateList.chunked(100)
-            val matchedProfilesMap = ConcurrentHashMap<String, ProfileEntity>()
-
-            // Query existing cached profiles in local Room database
             try {
-                val localProfiles = profileDao.getAllProfilesSync()
-                for (p in localProfiles) {
-                    val p10 = normalize10Digit(p.phoneNumber)
-                    if (p10.length == 10) {
-                        matchedProfilesMap[p10] = p
-                    }
-                    if (p.id.isNotBlank()) {
-                        matchedProfilesMap[p.id] = p
-                    }
+                profileDao.getAllProfilesSync().forEach { profile ->
+                    if (profile.id.isNotBlank()) matchedProfilesById[profile.id] = profile
+                    val phone = PhonebookHelper.normalizeToE164(profile.phoneNumber)
+                    if (phone.isNotBlank()) matchedProfilesByPhone[phone] = profile
                 }
             } catch (e: Exception) {
                 Log.d(TAG, "Notice checking local profile cache: ${e.message}")
             }
 
-            // Run authenticated Supabase private-match RPCs in parallel chunks of 50 on Dispatchers.IO
             coroutineScope {
-                chunks.map { chunk ->
+                requestedPhones.chunked(100).map { chunk ->
                     async(Dispatchers.IO) {
-                        val profilesFromSupabase = fetchSupabaseProfilesForChunk(chunk)
-                        for ((phoneHash, p) in profilesFromSupabase) {
-                            if (phoneHash.length == 64) {
-                                matchedProfilesMap[phoneHash] = p
-                            }
-                            if (p.id.isNotBlank()) {
-                                matchedProfilesMap[p.id] = p
+                        SupabaseClientManager.matchContactsByPhoneNumbers(chunk).forEach { match ->
+                            val phone = PhonebookHelper.normalizeToE164(match.phoneE164)
+                            if (match.id.isNotBlank() && phone.isNotBlank()) {
+                                val profile = ProfileEntity(
+                                    id = match.id,
+                                    name = match.name,
+                                    age = 24,
+                                    phoneNumber = phone,
+                                    avatarUrl = match.photoUrl.orEmpty(),
+                                    avatarEmoji = match.avatarEmoji,
+                                    isVerified = true
+                                )
+                                matchedProfilesByPhone[phone] = profile
+                                matchedProfilesById[match.id] = profile
                             }
                         }
                     }
                 }.awaitAll()
             }
 
-            // No Firebase database fallback: contact discovery is Supabase RPC-only.
+            // Refresh keys only for peers with pending outgoing messages, avoiding key lookups for
+            // every contact on every phonebook sync.
+            val pendingRecipientIds = VibeSyncOutboxWorker.pendingRecipientProfileIds(context)
+            val recipientsWithFreshKeys = mutableSetOf<String>()
+            pendingRecipientIds.forEach { pendingPeerId ->
+                val cachedPeer = matchedProfilesById[pendingPeerId]
+                    ?: matchedProfilesById.entries.firstOrNull { it.key.equals(pendingPeerId, ignoreCase = true) }?.value
+                val localPeer = cachedPeer ?: runCatching {
+                    profileDao.getProfileByIdSync(pendingPeerId)
+                }.getOrNull()?.let { stored ->
+                    val phoneKey = PhonebookHelper.normalizeToE164(stored.phoneNumber)
+                    matchedProfilesByPhone[phoneKey] ?: stored
+                }
+                if (localPeer != null) {
+                    val key = TinkKeyRepository.fetchRecipientPublicKey(
+                        profileId = localPeer.id,
+                        fallbackPhoneNumber = localPeer.phoneNumber
+                    )?.takeIf { TinkCryptoManager.validatePublicKeysetJson(it) }
+                    if (!key.isNullOrBlank()) {
+                        val updatedPeer = localPeer.copy(publicIdentityKey = key)
+                        matchedProfilesById[updatedPeer.id] = updatedPeer
+                        val normalizedPhone = PhonebookHelper.normalizeToE164(updatedPeer.phoneNumber)
+                        if (normalizedPhone.isNotBlank()) matchedProfilesByPhone[normalizedPhone] = updatedPeer
+                        recipientsWithFreshKeys.add(pendingPeerId)
+                        Log.i(TAG, "Refreshed recipient Tink public key during contact sync; key material remains public-only.")
+                    }
+                }
+            }
 
-            // 3. Compare 10-digit suffix with phone contact list & map to registeredVibeContacts
+            // No raw-phone profile-table query or Firestore fallback is used.
+            // Bind each local contact to the canonical profile ID returned by Supabase.
             val registeredVibeContacts = mutableListOf<PhoneContact>()
             val allResolvedContacts = mutableListOf<PhoneContact>()
             val vibeContactEntitiesToSave = mutableListOf<VibeContactEntity>()
@@ -184,10 +178,9 @@ class ContactRepository(
             val now = System.currentTimeMillis()
 
             for (contact in deviceContacts) {
-                val tenDigit = normalize10Digit(contact.phoneNumber)
-                val lookupHash = PhonebookHasher.hashPhoneNumberToHex(contact.phoneNumber)
-                val matchedProfile = matchedProfilesMap[lookupHash]
-                    ?: matchedProfilesMap[contact.id]
+                val phoneE164 = PhonebookHelper.normalizeToE164(contact.phoneNumber)
+                val matchedProfile = matchedProfilesByPhone[phoneE164]
+                    ?: contact.vibeSyncProfileId?.let { matchedProfilesById[it] }
 
                 val isOnVibeSync = matchedProfile != null
                 val vibeSyncUserId = matchedProfile?.id ?: contact.vibeSyncProfileId ?: contact.id
@@ -196,10 +189,11 @@ class ContactRepository(
                     isOnVibeSync = isOnVibeSync,
                     vibeSyncProfileId = vibeSyncUserId,
                     avatarEmoji = matchedProfile?.avatarEmoji ?: contact.avatarEmoji,
-                    photoUrl = matchedProfile?.avatarUrl?.ifBlank { "" } ?: contact.photoUrl,
+                    photoUrl = matchedProfile?.avatarUrl?.takeIf { it.isNotBlank() } ?: contact.photoUrl,
                     statusTagline = matchedProfile?.bio?.ifBlank { "" } ?: contact.statusTagline,
                     vibeSyncUser = matchedProfile ?: contact.vibeSyncUser,
-                    phoneHash = lookupHash
+                    // Compatibility field only: E.164 value, no client-side hash.
+                    phoneHash = phoneE164
                 )
 
                 allResolvedContacts.add(resolvedContact)
@@ -211,8 +205,8 @@ class ContactRepository(
                     val entity = VibeContactEntity(
                         id = resolvedContact.id,
                         contactName = resolvedContact.name,
-                        phoneNumber = if (tenDigit.length == 10) "+91$tenDigit" else resolvedContact.phoneNumber,
-                        phoneHash = lookupHash,
+                        phoneNumber = phoneE164.ifBlank { resolvedContact.phoneNumber },
+                        phoneHash = phoneE164,
                         vibeSyncUserId = vibeSyncUserId,
                         isOnVibeSync = true,
                         matchedAt = now,
@@ -254,6 +248,11 @@ class ContactRepository(
                 userContactDao.insertContacts(userContactEntities)
             }
 
+            // Room commits first; then immediately replace any WorkManager retry in backoff.
+            recipientsWithFreshKeys.forEach { recipientId ->
+                VibeSyncOutboxWorker.signalKeyAvailable(context, recipientId)
+            }
+
             val elapsedMs = System.currentTimeMillis() - startTime
             Log.i(TAG, "🚀 Contact sync completed in ${elapsedMs}ms: ${registeredVibeContacts.size} on VibeSync out of ${deviceContacts.size} contacts.")
 
@@ -264,35 +263,6 @@ class ContactRepository(
         }
     }
 
-    /**
-     * Executes PostgREST bulk lookup against Supabase 'profiles' table for a chunk of up to 100 numbers.
-     */
-    private suspend fun fetchSupabaseProfilesForChunk(chunk: List<String>): List<Pair<String, ProfileEntity>> = withContext(Dispatchers.IO) {
-        if (chunk.isEmpty()) return@withContext emptyList()
-        try {
-            val hashes = chunk.distinct().take(50)
-                .map { PhonebookHasher.hashPhoneNumberToHex(it) }
-                .filter { it.length == 64 }
-            if (hashes.isEmpty()) return@withContext emptyList()
-            SupabaseClientManager.matchContactsRpc(hashes).mapNotNull { match ->
-                if (match.phoneHash.length != 64) null else {
-                    val profile = ProfileEntity(
-                        id = match.id,
-                        name = match.name,
-                        age = 24,
-                        phoneNumber = "",
-                        avatarUrl = match.photoUrl.orEmpty(),
-                        avatarEmoji = match.avatarEmoji,
-                        isVerified = false
-                    )
-                    match.phoneHash to profile
-                }
-            }
-        } catch (e: Exception) {
-            Log.d(TAG, "Private contact RPC notice: " + e.message)
-            emptyList()
-        }
-    }
     // Contact discovery has no raw-phone Firebase fallback.
     /**
      * Queries Firestore users matching candidate variations as resilient fallback.

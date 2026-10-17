@@ -9,8 +9,7 @@ import kotlinx.coroutines.flow.Flow
 
 /**
  * MessageDao
- * Room DAO for LocalMessage queries supporting reactive Flow updates, insertion,
- * and complete instant local table wipe upon logout.
+ * Room DAO for local message projections keyed by stable remote message IDs.
  */
 @Dao
 interface MessageDao {
@@ -20,7 +19,7 @@ interface MessageDao {
     @Query("SELECT * FROM local_messages WHERE matchId = :matchId ORDER BY timestamp ASC")
     fun getMessagesForMatch(matchId: String): Flow<List<LocalMessage>>
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessage(message: LocalMessage)
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -29,6 +28,10 @@ interface MessageDao {
     @Query("DELETE FROM local_messages WHERE matchId = 'null' OR LOWER(matchId) = 'null' OR senderUid = 'null' OR LOWER(senderUid) = 'null' OR textContent = 'null' OR LOWER(textContent) = 'null' OR TRIM(matchId) = '' OR TRIM(senderUid) = ''")
     suspend fun purgeGhostNullLocalMessages()
 
+    @Query("DELETE FROM local_messages WHERE remoteMessageId = :messageId")
+    suspend fun deleteRemoteMessage(messageId: String)
+
     @Query("DELETE FROM local_messages")
-    suspend fun nukeTableOnLogout()
+    suspend fun clearAllMessages()
+
 }

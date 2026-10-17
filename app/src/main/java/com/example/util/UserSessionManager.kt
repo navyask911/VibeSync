@@ -10,43 +10,27 @@ object UserSessionManager {
 
     fun clearStaleAuthSessions(context: Context) {
         try {
-            Log.i(TAG, "Purging stale / corrupted local verification state")
-            val sp: SharedPreferences = context.getSharedPreferences(PREFS_AUTH_SESSION, Context.MODE_PRIVATE)
-            sp.edit().clear().apply()
-
-            VibeSyncSessionManager.clear(context)
-
-            // Also clear default shared preferences auth keys if any exist
+            // Clear only obsolete transient/legacy keys. Do not touch the current encrypted
+            // VibeSync session here: startup storage issues are not proof of logout/revocation.
+            Log.i(TAG, "Cleaning legacy auth markers while preserving the encrypted VibeSync session")
             val defaultSp = context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE)
             defaultSp.edit()
                 .remove("pending_auth_token")
                 .remove("stale_session_token")
                 .apply()
-
         } catch (e: Exception) {
-            Log.w(TAG, "Error purging auth sessions: ${e.message}")
+            Log.w(TAG, "Error cleaning legacy auth markers: ${e.message}")
         }
     }
 
     fun sanitizeCorruptedStorageAndCache(context: Context) {
         try {
-            Log.w(TAG, "Sanitizing corrupted local storage & app cache keys...")
+            // Recovery is deliberately non-destructive. A failed preferences/keystore read must
+            // not wipe the secure session, the user's profile, or the Room database.
+            Log.w(TAG, "Running non-destructive local auth recovery")
             clearStaleAuthSessions(context)
-            val defaultSp = context.getSharedPreferences(context.packageName + "_preferences", Context.MODE_PRIVATE)
-            defaultSp.edit().clear().apply()
-
-            // Delete corrupted database file if unreadable/locked to prevent cold-launch hangs
-            try {
-                val dbFile = context.getDatabasePath("dating_app.db")
-                if (dbFile.exists()) {
-                    context.deleteDatabase("dating_app.db")
-                    Log.i(TAG, "Successfully purged corrupted dating_app.db database file.")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error purging corrupted database file: ${e.message}", e)
-            }
         } catch (e: Exception) {
-            Log.e(TAG, "Error sanitizing corrupted storage: ${e.message}", e)
+            Log.e(TAG, "Error cleaning legacy auth markers: ${e.message}", e)
         }
     }
 
@@ -55,29 +39,42 @@ object UserSessionManager {
         phoneNumber: String,
         sessionToken: String,
         profileId: String,
-        expiresAtEpochSeconds: Long
+        expiresAtEpochSeconds: Long,
+        accessToken: String = ""
     ) {
+        // Persist the security-critical session first. Optional identity-key or legacy
+        // preference work must never prevent Realtime credentials from being stored.
+        VibeSyncSessionManager.saveSession(
+            context = context.applicationContext,
+            sessionToken = sessionToken,
+            profileId = profileId,
+            phoneNumber = phoneNumber,
+            expiresAtEpochSeconds = expiresAtEpochSeconds,
+            accessToken = accessToken
+        )
+
         try {
-            val publicKeyset = TinkCryptoManager.getMyPublicKeysetJson(context)
-            val sp: SharedPreferences = context.getSharedPreferences(PREFS_AUTH_SESSION, Context.MODE_PRIVATE)
+            val app = context.applicationContext
+            val sp: SharedPreferences = app.getSharedPreferences(PREFS_AUTH_SESSION, Context.MODE_PRIVATE)
             sp.edit()
                 .putString("verified_phone_number", phoneNumber)
                 .putLong("verified_timestamp", System.currentTimeMillis())
                 .putBoolean("is_authenticated", true)
                 .apply()
-            if (publicKeyset.isNotBlank()) {
-                sp.edit().putString("public_identity_key", publicKeyset).apply()
+
+            // The profile/identity key is useful but optional; a local keyset issue must
+            // not roll back the already-persisted verified session.
+            try {
+                val publicKeyset = TinkCryptoManager.getMyPublicKeysetJson(app)
+                if (publicKeyset.isNotBlank()) {
+                    sp.edit().putString("public_identity_key", publicKeyset).apply()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Optional identity keyset persistence notice: ${e.message}")
             }
-            VibeSyncSessionManager.saveSession(
-                context = context,
-                sessionToken = sessionToken,
-                profileId = profileId,
-                phoneNumber = phoneNumber,
-                expiresAtEpochSeconds = expiresAtEpochSeconds
-            )
             Log.i(TAG, "Saved local Truecaller verification state and encrypted VibeSync session.")
         } catch (e: Exception) {
-            Log.e(TAG, "Error saving verified session: ${e.message}", e)
+            Log.w(TAG, "Optional local verification metadata notice: ${e.message}")
         }
     }
 

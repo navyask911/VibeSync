@@ -51,8 +51,8 @@ fun ProfileScreen(
     onLogout: () -> Unit = {},
     superLikesCount: Int = 5,
     isSpotlightActive: Boolean = false,
-    onSyncCloudBackup: () -> Unit = {},
-    onRestoreCloudBackup: () -> Unit = {},
+    onSyncCloudBackup: (email: String, encryptionPassphrase: String) -> Unit = { _, _ -> },
+    onRestoreCloudBackup: (email: String, encryptionPassphrase: String) -> Unit = { _, _ -> },
     onUpdateSchedule: (frequency: String, wifiOnly: Boolean) -> Unit = { _, _ -> },
     isBackupInProgress: Boolean = false,
     isRestoreInProgress: Boolean = false,
@@ -71,6 +71,7 @@ fun ProfileScreen(
     onUpdatePhoneNumber: (String) -> Unit = {},
     onSyncFrontLoginToBackend: () -> Unit = {},
     onRefreshAllSettings: () -> Unit = {},
+    onBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val prefs = preferences ?: UserPreferencesEntity()
@@ -137,15 +138,43 @@ fun ProfileScreen(
                     color = MaterialTheme.colorScheme.onSurface
                 )
             },
+            navigationIcon = {
+                onBack?.let { back ->
+                    IconButton(onClick = back) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back to VibeSync")
+                    }
+                }
+            },
             actions = {
-                IconButton(onClick = { showQrCodeDialog = true }, modifier = Modifier.testTag("btn_qr_code")) {
-                    Icon(Icons.Default.QrCode, contentDescription = "QR Code", tint = MaterialTheme.colorScheme.onSurface)
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f)),
+                    modifier = Modifier.padding(end = 4.dp)
+                ) {
+                    IconButton(onClick = { showQrCodeDialog = true }, modifier = Modifier.size(40.dp).testTag("btn_profile_top_qr")) {
+                        Icon(Icons.Default.QrCode, contentDescription = "QR Code", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
-                IconButton(onClick = { showEditDialog = true }, modifier = Modifier.testTag("btn_edit_profile_top")) {
-                    Icon(Icons.Default.Edit, contentDescription = "Edit Profile", tint = VibeSyncTeal)
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f)),
+                    modifier = Modifier.padding(end = 4.dp)
+                ) {
+                    IconButton(onClick = { showEditDialog = true }, modifier = Modifier.size(40.dp).testTag("btn_profile_top_edit")) {
+                        Icon(Icons.Default.Edit, contentDescription = "Edit Profile", tint = MaterialTheme.colorScheme.primary)
+                    }
                 }
-                IconButton(onClick = onRefreshAllSettings, modifier = Modifier.testTag("btn_refresh_settings")) {
-                    Icon(Icons.Default.Sync, contentDescription = "Sync", tint = VibeSyncTeal)
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f)),
+                    modifier = Modifier.padding(end = 4.dp)
+                ) {
+                    IconButton(onClick = onRefreshAllSettings, modifier = Modifier.size(40.dp).testTag("btn_profile_top_sync")) {
+                        Icon(Icons.Default.Sync, contentDescription = "Sync settings", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             },
             colors = TopAppBarDefaults.topAppBarColors(
@@ -196,6 +225,8 @@ fun ProfileScreen(
                 testTag = "drawer_privacy"
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    PrivacySecurityControls(preferences = preferences, onUpdatePreferences = onUpdatePreferences)
+
                     // Open for Connect Toggle
                     Card(
                         shape = RoundedCornerShape(14.dp),
@@ -277,6 +308,8 @@ fun ProfileScreen(
                         isExpanded = true,
                         onToggleExpand = {}
                     )
+
+                    VerificationBadgeRequestCard()
 
                     // Discovery Preferences
                     DiscoveryPreferencesCard(

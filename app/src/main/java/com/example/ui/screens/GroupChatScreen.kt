@@ -1,50 +1,59 @@
 package com.example.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
-import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.*
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
-import com.example.data.model.FriendshipRequestEntity
-import com.example.data.model.ProfileEntity
-import com.example.ui.theme.CoralPink
-import com.example.ui.theme.LikeGreen
-import com.example.ui.theme.PassRed
+import com.example.data.database.DatingDatabase
+import com.example.data.model.ChatMessageEntity
 import com.example.ui.theme.RomanticViolet
-import com.example.util.GroupMeshWebRTCManager
+import com.example.util.GroupMember
+import com.example.util.GroupMessagePayload
 import com.example.util.GroupMessagingManager
-import java.text.SimpleDateFormat
+import com.example.util.RemoteChatGroup
+import com.example.util.VibeSyncSessionManager
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.time.Instant
 import java.util.Date
+import java.text.SimpleDateFormat
 import java.util.Locale
-import java.util.UUID
 
 data class GroupModel(
     val id: String,
@@ -55,221 +64,389 @@ data class GroupModel(
     val members: List<String>,
     var lastMessage: String,
     var lastMessageTime: Long,
-    var unreadCount: Int = 0
-)
+    var unreadCount: Int = 0,
+    val avatarUrl: String = "",
+    val inviteCode: String = "",
+    val role: String = "member",
+    val adminsOnlyMessages: Boolean = false,
+    val adminsOnlyInfoEditing: Boolean = true,
+    val isPinned: Boolean = false,
+    val isMutedUntil: String? = null,
+    val memberCount: Int = members.size
+) {
+    companion object {
+        fun fromRemote(remote: RemoteChatGroup, roster: List<GroupMember> = emptyList()): GroupModel =
+            GroupModel(
+                id = remote.id, name = remote.title, description = remote.description, emoji = "👥",
+                adminName = remote.createdBy, members = roster.map { it.displayName },
+                lastMessage = "End-to-end encrypted group", lastMessageTime = System.currentTimeMillis(),
+                avatarUrl = remote.avatarUrl, inviteCode = remote.inviteCode, role = remote.role,
+                adminsOnlyMessages = remote.adminsOnlyMessages, adminsOnlyInfoEditing = remote.adminsOnlyInfoEditing,
+                isPinned = remote.isPinned, isMutedUntil = remote.isMutedUntil, memberCount = remote.memberCount
+            )
+    }
+}
+
+data class ForwardTargetChat(val matchId: String, val profileId: String, val displayName: String)
 
 data class GroupMessageModel(
-    val id: String,
-    val groupId: String,
-    val senderId: String,
-    val senderName: String,
-    val text: String,
-    val timestamp: Long,
-    val isMe: Boolean
-)
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun GroupChatScreen(
-    group: GroupModel,
-    myUserName: String,
-    onBack: () -> Unit
+    val id: String, val groupId: String, val senderId: String, val senderName: String,
+    val text: String, val timestamp: Long, val isMe: Boolean,
+    val isForwarded: Boolean = false, val forwardCount: Int = 0,
+    val mediaType: String = "TEXT", val mediaUrl: String = "", val voiceDurationSeconds: Int = 0
 ) {
-    val context = LocalContext.current
-    var messageInput by remember { mutableStateOf("") }
-    var messages by remember {
-        mutableStateOf(
-            listOf(
-                GroupMessageModel("m1", group.id, "u1", "Aarav", "Hey everyone! Welcome to ${group.name} 👋", System.currentTimeMillis() - 120_000, false),
-                GroupMessageModel("m2", group.id, "u2", "Ananya", "Great to connect! Shall we plan a group hangout this weekend?", System.currentTimeMillis() - 60_000, false),
-                GroupMessageModel("m3", group.id, "me", myUserName.ifBlank { "You" }, "Sounds wonderful! Let's do it 🎉", System.currentTimeMillis() - 30_000, true)
-            )
+    companion object {
+        fun fromRemote(message: GroupMessagePayload, currentProfileId: String) = GroupMessageModel(
+            id = message.id, groupId = message.groupId, senderId = message.senderId,
+            senderName = message.senderName, text = message.text, timestamp = message.timestamp,
+            isMe = message.senderId == currentProfileId,
+            isForwarded = message.isForwarded, forwardCount = message.forwardCount,
+            mediaType = message.mediaType, mediaUrl = message.mediaUrl,
+            voiceDurationSeconds = message.voiceDurationSeconds
         )
     }
+}
 
-    var showGroupVoiceCall by remember { mutableStateOf(false) }
-    var showGroupVideoCall by remember { mutableStateOf(false) }
-    var showGroupInfoDialog by remember { mutableStateOf(false) }
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable
+fun GroupChatScreen(group: GroupModel, myUserName: String, onBack: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val database = remember(context) { DatingDatabase.getDatabase(context) }
+    val currentProfileId = VibeSyncSessionManager.getProfileId().orEmpty()
+    var messageInput by remember(group.id) { mutableStateOf("") }
+    var messages by remember(group.id) { mutableStateOf(emptyList<GroupMessageModel>()) }
+    var roster by remember(group.id) { mutableStateOf(emptyList<GroupMember>()) }
+    var groupState by remember(group.id) { mutableStateOf(group) }
+    var showInfo by remember { mutableStateOf(false) }
+    var showEditInfo by remember { mutableStateOf(false) }
+    var editedTitle by remember { mutableStateOf(group.name) }
+    var editedDescription by remember { mutableStateOf(group.description) }
+    var editedAvatarUri by remember { mutableStateOf<Uri?>(null) }
+    val groupAvatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { editedAvatarUri = it }
+    var sending by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var errorText by remember { mutableStateOf<String?>(null) }
+    var forwardingMessage by remember(group.id) { mutableStateOf<GroupMessageModel?>(null) }
+    var selectedForwardChatIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var selectedForwardGroupIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var forwardableDirectChats by remember { mutableStateOf(emptyList<ForwardTargetChat>()) }
+    var forwardableGroups by remember { mutableStateOf(emptyList<GroupModel>()) }
+    var forwardLoadError by remember { mutableStateOf<String?>(null) }
 
-    BackHandler {
-        onBack()
+    LaunchedEffect(forwardingMessage?.id) {
+        selectedForwardChatIds = emptySet()
+        selectedForwardGroupIds = emptySet()
+        forwardLoadError = null
+        if (forwardingMessage == null) {
+            forwardableDirectChats = emptyList()
+            forwardableGroups = emptyList()
+        } else {
+            try {
+                val matches = database.matchDao().getAllMatchesSync()
+                forwardableDirectChats = matches.mapNotNull { match ->
+                    val peerId = match.profileId.trim()
+                    if (peerId.isBlank() || peerId.equals(currentProfileId, ignoreCase = true)) {
+                        null
+                    } else {
+                        val peer = database.profileDao().getProfileByIdSync(peerId)
+                        ForwardTargetChat(
+                            matchId = match.matchId,
+                            profileId = peerId,
+                            displayName = peer?.name?.takeIf { it.isNotBlank() }
+                                ?: match.localContactName.takeIf { it.isNotBlank() }
+                                ?: peerId
+                        )
+                    }
+                }.distinctBy { it.matchId }
+                forwardableGroups = GroupMessagingManager.fetchMyGroups()
+                    .map { GroupModel.fromRemote(it) }
+                    .filterNot { it.id == group.id }
+                    .distinctBy { it.id }
+            } catch (failure: Throwable) {
+                forwardLoadError = failure.message ?: "Unable to load forwarding destinations."
+            }
+        }
     }
+
+    fun forwardDepth(message: GroupMessageModel): Int =
+        maxOf(message.forwardCount, if (message.isForwarded) 1 else 0)
+
+    fun showForwardRuleToast(message: String) {
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    }
+
+    fun toggleForwardChat(targetId: String, message: GroupMessageModel) {
+        if (targetId in selectedForwardChatIds) {
+            selectedForwardChatIds = selectedForwardChatIds - targetId
+            return
+        }
+        val nextTotal = selectedForwardChatIds.size + selectedForwardGroupIds.size + 1
+        if (forwardDepth(message) >= 5 && nextTotal > 1) {
+            showForwardRuleToast("Forwarded many times. You can only forward to 1 chat at a time.")
+            return
+        }
+        if (nextTotal > 5) {
+            showForwardRuleToast("You can only share with up to 5 chats")
+            return
+        }
+        selectedForwardChatIds = selectedForwardChatIds + targetId
+    }
+
+    fun toggleForwardGroup(targetId: String, message: GroupMessageModel) {
+        if (targetId in selectedForwardGroupIds) {
+            selectedForwardGroupIds = selectedForwardGroupIds - targetId
+            return
+        }
+        val nextTotal = selectedForwardChatIds.size + selectedForwardGroupIds.size + 1
+        val depth = forwardDepth(message)
+        if (depth >= 5 && nextTotal > 1) {
+            showForwardRuleToast("Forwarded many times. You can only forward to 1 chat at a time.")
+            return
+        }
+        if (depth >= 1 && selectedForwardGroupIds.isNotEmpty()) {
+            showForwardRuleToast("Forwarded messages can only be shared with 1 group at a time.")
+            return
+        }
+        if (nextTotal > 5) {
+            showForwardRuleToast("You can only share with up to 5 chats")
+            return
+        }
+        selectedForwardGroupIds = selectedForwardGroupIds + targetId
+    }
+
+    LaunchedEffect(group.id) {
+        com.example.util.AppNotificationManager.setActiveChatSession(null, group.id)
+        try {
+            roster = GroupMessagingManager.fetchGroupMembers(group.id)
+            GroupMessagingManager.fetchMyGroups().firstOrNull { it.id == group.id }?.let {
+                groupState = GroupModel.fromRemote(it, roster)
+            }
+            while (true) {
+                GroupMessagingManager.fetchGroupMessages(context, group.id, groupState.name).onSuccess { remote ->
+                    messages = remote.map { GroupMessageModel.fromRemote(it, currentProfileId) }
+                }.onFailure { errorText = it.message ?: "Unable to refresh group messages." }
+                delay(5_000)
+            }
+        } finally {
+            com.example.util.AppNotificationManager.clearActiveChatSession()
+        }
+    }
+
+    fun perform(label: String, action: suspend () -> Unit, onSuccess: () -> Unit = {}) {
+        if (busy) return
+        scope.launch {
+            busy = true
+            errorText = null
+            try {
+                action()
+                onSuccess()
+                roster = GroupMessagingManager.fetchGroupMembers(group.id)
+                GroupMessagingManager.fetchMyGroups().firstOrNull { it.id == group.id }?.let {
+                    groupState = GroupModel.fromRemote(it, roster)
+                }
+                Toast.makeText(context, label, Toast.LENGTH_SHORT).show()
+            } catch (failure: Throwable) {
+                errorText = failure.message ?: "That group action failed."
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    fun shareInvite() {
+        if (groupState.role !in setOf("owner", "admin")) {
+            Toast.makeText(context, "Only a group admin can create an invite link.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        scope.launch {
+            busy = true
+            try {
+                val invite = groupState.inviteCode.ifBlank {
+                    GroupMessagingManager.rotateInvite(group.id).orEmpty()
+                }
+                check(invite.isNotBlank()) { "No active invite code was returned." }
+                groupState = groupState.copy(inviteCode = invite)
+                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, "Join ${groupState.name} on VibeSync: https://vibesync.app/g/$invite")
+                }
+                context.startActivity(Intent.createChooser(sendIntent, "Share group invite"))
+            } catch (failure: Throwable) {
+                errorText = failure.message ?: "Unable to create the invite link."
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    androidx.activity.compose.BackHandler(enabled = showInfo, onBack = { showInfo = false })
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { showGroupInfoDialog = true }
-                    ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = RomanticViolet.copy(alpha = 0.2f),
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(group.emoji, fontSize = 22.sp)
+                    Row(Modifier.fillMaxWidth().clickable { showInfo = true }, verticalAlignment = Alignment.CenterVertically) {
+                        if (groupState.avatarUrl.isNotBlank()) {
+                            AsyncImage(groupState.avatarUrl, contentDescription = "Group avatar",
+                                modifier = Modifier.size(40.dp).clip(CircleShape))
+                        } else {
+                            Surface(shape = CircleShape, color = RomanticViolet.copy(alpha = 0.18f), modifier = Modifier.size(40.dp)) {
+                                Box(contentAlignment = Alignment.Center) { Text(groupState.emoji, fontSize = 22.sp) }
                             }
                         }
-
-                        Spacer(modifier = Modifier.width(10.dp))
-
+                        Spacer(Modifier.width(10.dp))
                         Column {
-                            Text(
-                                text = group.name,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp,
-                                maxLines = 1
-                            )
-                            Text(
-                                text = "${group.members.size} participants • Tap for info",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Text(groupState.name, fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1)
+                            Text("${roster.size} members • End-to-end encrypted", fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                         }
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
                 },
                 actions = {
-                    // Group Voice Call Action
-                    IconButton(
-                        onClick = {
-                            GroupMeshWebRTCManager.startOrJoinGroupMeshCall(context, group.id, "me", group.members)
-                            showGroupVoiceCall = true
-                        },
-                        modifier = Modifier.testTag("btn_group_voice_call")
-                    ) {
-                        Icon(imageVector = Icons.Default.Phone, contentDescription = "Group Voice Call", tint = LikeGreen)
+                    IconButton(onClick = { showInfo = true }, enabled = !busy) {
+                        Icon(Icons.Default.Settings, contentDescription = "Group info and settings")
                     }
-
-                    // Group Video Call Action
-                    IconButton(
-                        onClick = {
-                            GroupMeshWebRTCManager.startOrJoinGroupMeshCall(context, group.id, "me", group.members)
-                            showGroupVideoCall = true
-                        },
-                        modifier = Modifier.testTag("btn_group_video_call")
-                    ) {
-                        Icon(imageVector = Icons.Default.Videocam, contentDescription = "Group Video Call", tint = Color(0xFF00E5FF))
+                    IconButton(onClick = {
+                        perform(if (groupState.isPinned) "Group unpinned" else "Group pinned",
+                            action = { GroupMessagingManager.setPreferences(group.id, !groupState.isPinned, groupState.isMutedUntil) })
+                    }, enabled = !busy) {
+                        Icon(Icons.Default.PushPin, contentDescription = if (groupState.isPinned) "Unpin group" else "Pin group",
+                            tint = if (groupState.isPinned) RomanticViolet else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
+                }
             )
         },
         bottomBar = {
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 4.dp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+            Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp,
+                modifier = Modifier.fillMaxWidth().navigationBarsPadding()) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
-                        value = messageInput,
-                        onValueChange = { messageInput = it },
-                        placeholder = { Text("Message group...", fontSize = 13.sp) },
-                        shape = RoundedCornerShape(24.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("input_group_message"),
-                        maxLines = 3
+                        value = messageInput, onValueChange = { messageInput = it },
+                        placeholder = { Text(if (groupState.adminsOnlyMessages && groupState.role == "member") "Admins only can message" else "Message group…") },
+                        enabled = !sending && !(groupState.adminsOnlyMessages && groupState.role == "member"),
+                        shape = RoundedCornerShape(24.dp), modifier = Modifier.weight(1f).testTag("input_group_message"),
+                        maxLines = 4, keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = {
+                            if (messageInput.isNotBlank() && !sending) {
+                                val textToSend = messageInput.trim()
+                                sending = true
+                                scope.launch {
+                                    GroupMessagingManager.sendGroupMessage(context, group.id, textToSend, database.chatMessageDao())
+                                        .onSuccess { msg ->
+                                            messages = (messages.filterNot { it.id == msg.id } + GroupMessageModel.fromRemote(msg, currentProfileId))
+                                                .sortedBy { it.timestamp }
+                                            messageInput = ""
+                                        }.onFailure { errorText = it.message ?: "Message could not be sent." }
+                                    sending = false
+                                }
+                            }
+                        })
                     )
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
+                    Spacer(Modifier.width(8.dp))
                     IconButton(
+                        enabled = messageInput.isNotBlank() && !sending && !(groupState.adminsOnlyMessages && groupState.role == "member"),
                         onClick = {
-                            if (messageInput.isNotBlank()) {
-                                val newMsg = GroupMessageModel(
-                                    id = UUID.randomUUID().toString(),
-                                    groupId = group.id,
-                                    senderId = "me",
-                                    senderName = myUserName.ifBlank { "You" },
-                                    text = messageInput.trim(),
-                                    timestamp = System.currentTimeMillis(),
-                                    isMe = true
-                                )
-                                messages = messages + newMsg
-                                group.lastMessage = messageInput.trim()
-                                group.lastMessageTime = System.currentTimeMillis()
-                                messageInput = ""
+                            val textToSend = messageInput.trim()
+                            sending = true
+                            scope.launch {
+                                GroupMessagingManager.sendGroupMessage(context, group.id, textToSend, database.chatMessageDao())
+                                    .onSuccess { msg ->
+                                        messages = (messages.filterNot { it.id == msg.id } + GroupMessageModel.fromRemote(msg, currentProfileId))
+                                            .sortedBy { it.timestamp }
+                                        messageInput = ""
+                                        errorText = null
+                                    }.onFailure { errorText = it.message ?: "Message could not be sent." }
+                                sending = false
                             }
                         },
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(CircleShape)
-                            .background(RomanticViolet)
-                            .testTag("btn_send_group_message")
+                        modifier = Modifier.size(48.dp).clip(CircleShape).background(RomanticViolet).testTag("btn_send_group_message")
                     ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Send,
-                            contentDescription = "Send",
-                            tint = Color.White,
-                            modifier = Modifier.size(18.dp)
-                        )
+                        if (sending) CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                        else Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = Color.White)
                     }
                 }
             }
         }
-    ) { innerPadding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .padding(horizontal = 14.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items(messages) { msg ->
-                val isMe = msg.isMe
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = if (isMe) Arrangement.End else Arrangement.Start
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(
-                            topStart = 16.dp,
-                            topEnd = 16.dp,
-                            bottomStart = if (isMe) 16.dp else 4.dp,
-                            bottomEnd = if (isMe) 4.dp else 16.dp
-                        ),
-                        color = if (isMe) RomanticViolet else MaterialTheme.colorScheme.surfaceVariant,
-                        modifier = Modifier.widthIn(max = 280.dp)
-                    ) {
-                        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                            if (!isMe) {
-                                Text(
-                                    text = msg.senderName,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = CoralPink
+    ) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            if (errorText != null) {
+                Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
+                    Text(errorText.orEmpty(), modifier = Modifier.padding(10.dp), color = MaterialTheme.colorScheme.onErrorContainer,
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            if (messages.isEmpty()) {
+                Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Default.Group, contentDescription = null, tint = RomanticViolet, modifier = Modifier.size(46.dp))
+                        Spacer(Modifier.height(10.dp))
+                        Text("Your private group starts here", fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(4.dp))
+                        Text("Messages are encrypted for each group member’s device key.",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            } else {
+                LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    items(messages, key = { it.id }) { message ->
+                        val self = message.isMe
+                        val tint = if (self) MaterialTheme.colorScheme.primary else senderTint(message.senderId)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = if (self) Arrangement.End else Arrangement.Start) {
+                            Surface(
+                                color = tint.copy(alpha = if (self) 0.96f else 0.12f),
+                                shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp,
+                                    bottomStart = if (self) 16.dp else 4.dp, bottomEnd = if (self) 4.dp else 16.dp),
+                                modifier = Modifier.widthIn(max = 300.dp).combinedClickable(
+                                    onClick = { },
+                                    onLongClick = { forwardingMessage = message }
                                 )
-                                Spacer(modifier = Modifier.height(2.dp))
+                            ) {
+                                Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                    if (!self) {
+                                        Text(message.senderName, color = tint, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        Spacer(Modifier.height(3.dp))
+                                    }
+                                    if (message.isForwarded || message.forwardCount > 0) {
+                                        Text(
+                                            if (message.forwardCount >= 5) "⏩ Forwarded many times" else "↪ Forwarded",
+                                            fontSize = 10.sp,
+                                            fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                                            color = if (self) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f)
+                                            else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Spacer(Modifier.height(3.dp))
+                                    }
+                                    when {
+                                        message.mediaType.uppercase() in setOf("IMAGE", "PHOTO", "VIDEO") && message.mediaUrl.isNotBlank() -> {
+                                            AsyncImage(
+                                                model = message.mediaUrl,
+                                                contentDescription = message.mediaType,
+                                                modifier = Modifier.widthIn(max = 260.dp).heightIn(max = 220.dp),
+                                                contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                                            )
+                                            if (message.text.isNotBlank()) Text(
+                                                message.text,
+                                                color = if (self) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+                                        message.mediaType.uppercase() in setOf("VOICE", "AUDIO") -> Text(
+                                            if (message.text.isBlank()) "Voice message" else message.text,
+                                            color = if (self) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                                        )
+                                        else -> Text(message.text, color = if (self) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface)
+                                    }
+                                    Spacer(Modifier.height(3.dp))
+                                    Text(SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(message.timestamp)),
+                                        modifier = Modifier.align(Alignment.End), fontSize = 10.sp,
+                                        color = if (self) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.75f)
+                                        else MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
                             }
-                            Text(
-                                text = msg.text,
-                                fontSize = 13.5.sp,
-                                color = if (isMe) Color.White else MaterialTheme.colorScheme.onSurface
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(msg.timestamp)),
-                                fontSize = 9.5.sp,
-                                color = if (isMe) Color.White.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.align(Alignment.End)
-                            )
                         }
                     }
                 }
@@ -277,509 +454,460 @@ fun GroupChatScreen(
         }
     }
 
-    // Group Voice Call Modal
-    if (showGroupVoiceCall) {
-        GroupVoiceCallDialog(
-            group = group,
-            onEndCall = { showGroupVoiceCall = false }
-        )
-    }
-
-    // Group Video Call Modal
-    if (showGroupVideoCall) {
-        GroupVideoCallDialog(
-            group = group,
-            onEndCall = { showGroupVideoCall = false }
-        )
-    }
-
-    // Group Info Dialog
-    if (showGroupInfoDialog) {
+    forwardingMessage?.let { message ->
+        val depth = forwardDepth(message)
+        val frequentlyForwarded = depth >= 5
+        val selectedTotal = selectedForwardChatIds.size + selectedForwardGroupIds.size
         AlertDialog(
-            onDismissRequest = { showGroupInfoDialog = false },
+            onDismissRequest = { forwardingMessage = null },
+            title = { Text("Forward Message", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(
+                    Modifier.fillMaxWidth().heightIn(max = 440.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        "Share with up to ${if (frequentlyForwarded) 1 else 5} chats",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "“${message.text.take(48)}${if (message.text.length > 48) "…" else ""}”",
+                        fontSize = 12.sp,
+                        fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                        maxLines = 2
+                    )
+                    Text("Chats", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    if (forwardableDirectChats.isEmpty()) {
+                        Text("No direct chats available.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.heightIn(max = 150.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            items(forwardableDirectChats, key = { "fwd-chat:${it.matchId}" }) { target ->
+                                val selected = target.matchId in selectedForwardChatIds
+                                Row(
+                                    Modifier.fillMaxWidth().clip(RoundedCornerShape(9.dp))
+                                        .clickable { toggleForwardChat(target.matchId, message) }
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(target.displayName, modifier = Modifier.weight(1f), fontSize = 13.sp, maxLines = 1)
+                                    Checkbox(checked = selected, onCheckedChange = null)
+                                }
+                            }
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Groups", fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                        Text("${forwardableGroups.size}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (forwardLoadError != null) {
+                        Text(forwardLoadError.orEmpty(), color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
+                    }
+                    if (forwardableGroups.isEmpty()) {
+                        Text("No other groups available.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.heightIn(max = 135.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            items(forwardableGroups, key = { "fwd-group:${it.id}" }) { target ->
+                                val selected = target.id in selectedForwardGroupIds
+                                Row(
+                                    Modifier.fillMaxWidth().clip(RoundedCornerShape(9.dp))
+                                        .clickable { toggleForwardGroup(target.id, message) }
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(target.name, modifier = Modifier.weight(1f), fontSize = 13.sp, maxLines = 1)
+                                    Checkbox(checked = selected, onCheckedChange = null)
+                                }
+                            }
+                        }
+                    }
+                    Text("$selectedTotal selected", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = selectedTotal in 1..(if (frequentlyForwarded) 1 else 5),
+                    onClick = {
+                        val source = ChatMessageEntity(
+                            messageId = message.id,
+                            matchId = message.groupId,
+                            senderId = if (message.isMe) "USER" else message.senderId,
+                            text = message.text,
+                            timestamp = message.timestamp,
+                            isEncrypted = true,
+                            mediaType = message.mediaType,
+                            mediaUrl = message.mediaUrl,
+                            voiceDurationSeconds = message.voiceDurationSeconds,
+                            isForwarded = message.isForwarded,
+                            forwardCount = message.forwardCount
+                        )
+                        val directTargets = forwardableDirectChats
+                            .filter { it.matchId in selectedForwardChatIds }
+                            .map { it.matchId to it.profileId }
+                        val groups = selectedForwardGroupIds.toList()
+                        forwardingMessage = null
+                        scope.launch {
+                            GroupMessagingManager.forwardMessageBatch(
+                                context = context,
+                                message = source,
+                                directTargets = directTargets,
+                                targetGroupIds = groups,
+                                chatMessageDao = database.chatMessageDao()
+                            ).onSuccess { count ->
+                                Toast.makeText(
+                                    context,
+                                    "Message forwarded to $count chat${if (count == 1) "" else "s"} ↪",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }.onFailure { failure ->
+                                Toast.makeText(
+                                    context,
+                                    failure.message ?: "Message could not be forwarded.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                        selectedForwardChatIds = emptySet()
+                        selectedForwardGroupIds = emptySet()
+                    }
+                ) { Text("Forward ($selectedTotal)") }
+            },
+            dismissButton = {
+                TextButton(onClick = { forwardingMessage = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showInfo) {
+        AlertDialog(
+            onDismissRequest = { showInfo = false },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(group.emoji, fontSize = 24.sp)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(group.name, fontWeight = FontWeight.Bold)
+                    if (groupState.avatarUrl.isNotBlank()) AsyncImage(groupState.avatarUrl, null, modifier = Modifier.size(40.dp).clip(CircleShape))
+                    else Text(groupState.emoji, fontSize = 26.sp)
+                    Spacer(Modifier.width(8.dp))
+                    Column {
+                        Text(groupState.name, fontWeight = FontWeight.Bold)
+                        Text("${roster.size} participants", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(group.description, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    HorizontalDivider()
-                    Text("Participants (${group.members.size}):", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    group.members.forEach { member ->
+                Column(Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (groupState.description.isNotBlank()) Text(groupState.description, style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Your role", fontWeight = FontWeight.SemiBold)
+                        AssistChip(onClick = {}, label = { Text(if (groupState.role == "owner") "Owner" else if (groupState.role == "admin") "Admin" else "Member") })
+                    }
+                    if (groupState.role in setOf("owner", "admin") || !groupState.adminsOnlyInfoEditing) {
+                        OutlinedButton(onClick = {
+                            editedTitle = groupState.name
+                            editedDescription = groupState.description
+                            editedAvatarUri = null
+                            showInfo = false
+                            showEditInfo = true
+                        }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Edit group info") }
+                    }
+                    if (groupState.role in setOf("owner", "admin")) {
+                        Button(onClick = { showInfo = false; shareInvite() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.Link, contentDescription = null); Spacer(Modifier.width(6.dp)); Text("Share invite link")
+                        }
+                        OutlinedButton(onClick = {
+                            perform("Invite link revoked", action = { GroupMessagingManager.rotateInvite(group.id, revoke = true) },
+                                onSuccess = { groupState = groupState.copy(inviteCode = "") })
+                        }, enabled = !busy && groupState.inviteCode.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
+                            Text("Revoke invite link")
+                        }
+                        HorizontalDivider()
+                        Text("Permissions", fontWeight = FontWeight.Bold)
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(imageVector = Icons.Default.Person, contentDescription = null, modifier = Modifier.size(16.dp), tint = RomanticViolet)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(member, fontSize = 13.sp)
+                            Column(Modifier.weight(1f)) {
+                                Text("Admins only can send", fontWeight = FontWeight.Medium)
+                                Text("Restrict group announcements to admins", style = MaterialTheme.typography.bodySmall)
+                            }
+                            Switch(checked = groupState.adminsOnlyMessages, enabled = !busy,
+                                onCheckedChange = { checked ->
+                                    perform("Group permissions updated", action = {
+                                        GroupMessagingManager.updateGroupSettings(group.id, checked, groupState.adminsOnlyInfoEditing)
+                                    }, onSuccess = { groupState = groupState.copy(adminsOnlyMessages = checked) })
+                                })
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Admins only can edit info", fontWeight = FontWeight.Medium)
+                                Text("Limit title, description and avatar changes", style = MaterialTheme.typography.bodySmall)
+                            }
+                            Switch(checked = groupState.adminsOnlyInfoEditing, enabled = !busy,
+                                onCheckedChange = { checked ->
+                                    perform("Group permissions updated", action = {
+                                        GroupMessagingManager.updateGroupSettings(group.id, groupState.adminsOnlyMessages, checked)
+                                    }, onSuccess = { groupState = groupState.copy(adminsOnlyInfoEditing = checked) })
+                                })
+                        }
+                    }
+                    HorizontalDivider()
+                    Text("Participants", fontWeight = FontWeight.Bold)
+                    roster.forEach { member ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Surface(shape = CircleShape, color = senderTint(member.profileId).copy(alpha = 0.17f), modifier = Modifier.size(34.dp)) {
+                                Box(contentAlignment = Alignment.Center) { Text(member.displayName.firstOrNull()?.uppercase() ?: "V", fontWeight = FontWeight.Bold) }
+                            }
+                            Column(Modifier.weight(1f)) {
+                                Text(member.displayName + if (member.isYou) " · You" else "", fontWeight = FontWeight.Medium, maxLines = 1)
+                                Text(when (member.role) { "owner" -> "Owner"; "admin" -> "Admin"; else -> "Member" },
+                                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            val actorIsOwner = groupState.role == "owner"
+                            val canManageMember = !member.isYou && member.role != "owner" &&
+                                (actorIsOwner || (groupState.role == "admin" && member.role == "member"))
+                            if (canManageMember && member.role == "member") {
+                                TextButton(onClick = {
+                                    perform("Admin role granted", action = { GroupMessagingManager.setMemberRole(group.id, member.profileId, "admin") })
+                                }, enabled = !busy) { Text("Make admin") }
+                            } else if (actorIsOwner && member.role == "admin" && !member.isYou) {
+                                TextButton(onClick = {
+                                    perform("Admin role removed", action = { GroupMessagingManager.setMemberRole(group.id, member.profileId, "member") })
+                                }, enabled = !busy) { Text("Dismiss") }
+                            }
+                            if (canManageMember) {
+                                TextButton(onClick = {
+                                    perform("Member removed", action = { GroupMessagingManager.removeMember(group.id, member.profileId) })
+                                }, enabled = !busy) { Text("Remove") }
+                            }
+                        }
+                    }
+                    HorizontalDivider()
+                    Text("Chat preferences", fontWeight = FontWeight.Bold)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(if (groupState.isPinned) "Pinned to top" else "Pin group")
+                            Text("Only changes your own chat list", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Switch(checked = groupState.isPinned, enabled = !busy, onCheckedChange = { value ->
+                            perform(if (value) "Group pinned" else "Group unpinned",
+                                action = { GroupMessagingManager.setPreferences(group.id, value, groupState.isMutedUntil) },
+                                onSuccess = { groupState = groupState.copy(isPinned = value) })
+                        })
+                    }
+                    Text("Mute notifications", fontWeight = FontWeight.Medium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.fillMaxWidth()) {
+                        TextButton(onClick = {
+                            val until = Instant.now().plusSeconds(8 * 3600).toString()
+                            perform("Muted for 8 hours", action = { GroupMessagingManager.setPreferences(group.id, groupState.isPinned, until) },
+                                onSuccess = { groupState = groupState.copy(isMutedUntil = until) })
+                        }, enabled = !busy) { Text("8 hours") }
+                        TextButton(onClick = {
+                            val until = Instant.now().plusSeconds(7 * 24 * 3600).toString()
+                            perform("Muted for 1 week", action = { GroupMessagingManager.setPreferences(group.id, groupState.isPinned, until) },
+                                onSuccess = { groupState = groupState.copy(isMutedUntil = until) })
+                        }, enabled = !busy) { Text("1 week") }
+                        TextButton(onClick = {
+                            val until = "2099-01-01T00:00:00Z"
+                            perform("Muted until changed", action = { GroupMessagingManager.setPreferences(group.id, groupState.isPinned, until) },
+                                onSuccess = { groupState = groupState.copy(isMutedUntil = until) })
+                        }, enabled = !busy) { Text("Always") }
+                    }
+                    TextButton(onClick = {
+                        perform("Group notifications unmuted", action = { GroupMessagingManager.setPreferences(group.id, groupState.isPinned, null) },
+                            onSuccess = { groupState = groupState.copy(isMutedUntil = null) })
+                    }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Unmute") }
+                    HorizontalDivider()
+                    if (groupState.role == "owner") {
+                        TextButton(onClick = {
+                            perform("Group deleted", action = { GroupMessagingManager.deleteGroup(group.id) }, onSuccess = {
+                                showInfo = false
+                                onBack()
+                            })
+                        }, enabled = !busy, modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
+                            Text("Delete group for everyone")
+                        }
+                    } else {
+                        TextButton(onClick = {
+                            perform("You left the group", action = { GroupMessagingManager.leaveGroup(group.id) }, onSuccess = {
+                                showInfo = false
+                                onBack()
+                            })
+                        }, enabled = !busy, modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
+                            Text("Leave group")
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showInfo = false }) { Text("Close") } }
+        )
+    }
+
+    if (showEditInfo) {
+        AlertDialog(
+            onDismissRequest = { showEditInfo = false },
+            title = { Text("Edit group info", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(Modifier.fillMaxWidth().heightIn(max = 450.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(value = editedTitle, onValueChange = { editedTitle = it.take(80) },
+                        label = { Text("Group name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = editedDescription, onValueChange = { editedDescription = it.take(500) },
+                        label = { Text("Description") }, maxLines = 4, modifier = Modifier.fillMaxWidth())
+                    if (groupState.role in setOf("owner", "admin")) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (editedAvatarUri != null) {
+                                AsyncImage(model = editedAvatarUri, contentDescription = "New group avatar",
+                                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                                    modifier = Modifier.size(54.dp).clip(CircleShape))
+                            } else if (groupState.avatarUrl.isNotBlank()) {
+                                AsyncImage(model = groupState.avatarUrl, contentDescription = "Current group avatar",
+                                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                                    modifier = Modifier.size(54.dp).clip(CircleShape))
+                            } else {
+                                Surface(shape = CircleShape, color = RomanticViolet.copy(alpha = 0.16f), modifier = Modifier.size(54.dp)) {
+                                    Box(contentAlignment = Alignment.Center) { Text(groupState.emoji, fontSize = 24.sp) }
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text("Group avatar", fontWeight = FontWeight.SemiBold)
+                                Text("512 × 512 WebP", style = MaterialTheme.typography.bodySmall)
+                            }
+                            OutlinedButton(onClick = {
+                                groupAvatarPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                            }) { Text("Choose") }
                         }
                     }
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showGroupInfoDialog = false }) { Text("Close") }
-            }
+                Button(enabled = !busy && editedTitle.isNotBlank(), onClick = {
+                    val nextTitle = editedTitle.trim()
+                    val nextDescription = editedDescription.trim()
+                    val selectedAvatar = editedAvatarUri
+                    busy = true
+                    scope.launch {
+                        try {
+                            GroupMessagingManager.updateGroupInfo(group.id, title = nextTitle, description = nextDescription)
+                            val newAvatarUrl = if (selectedAvatar != null) {
+                                GroupMessagingManager.uploadGroupAvatar(context, group.id, selectedAvatar).getOrThrow()
+                            } else groupState.avatarUrl
+                            groupState = groupState.copy(name = nextTitle, description = nextDescription, avatarUrl = newAvatarUrl)
+                            showEditInfo = false
+                            Toast.makeText(context, "Group info updated", Toast.LENGTH_SHORT).show()
+                        } catch (failure: Throwable) {
+                            errorText = failure.message ?: "Group info could not be updated."
+                        } finally {
+                            busy = false
+                        }
+                    }
+                }) { Text("Save changes") }
+            },
+            dismissButton = { TextButton(onClick = { showEditInfo = false }) { Text("Cancel") } }
         )
     }
+
 }
 
-@Composable
-fun GroupVoiceCallDialog(
-    group: GroupModel,
-    onEndCall: () -> Unit
-) {
-    var isMuted by remember { mutableStateOf(false) }
-    var isSpeakerOn by remember { mutableStateOf(true) }
-
-    Dialog(
-        onDismissRequest = onEndCall,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = Color(0xFF10121A)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .padding(20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.SpaceBetween
-            ) {
-                // Header
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = LikeGreen.copy(alpha = 0.15f)
-                    ) {
-                        Text(
-                            text = "📞 E2EE GROUP VOICE CALL",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = LikeGreen,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(group.name, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                    Text("${group.members.size} connected participants", fontSize = 13.sp, color = Color(0xFF8E9BAE))
-                }
-
-                // Grid of Connected Participants
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    val participants = group.members.take(6)
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        participants.take(3).forEach { member ->
-                            ParticipantVoiceAvatar(name = member, isSpeaking = member.length % 2 == 0)
-                        }
-                    }
-                    if (participants.size > 3) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            participants.drop(3).forEach { member ->
-                                ParticipantVoiceAvatar(name = member, isSpeaking = member.length % 2 != 0)
-                            }
-                        }
-                    }
-                }
-
-                // Control Bar
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(
-                        onClick = { isMuted = !isMuted },
-                        modifier = Modifier
-                            .size(54.dp)
-                            .clip(CircleShape)
-                            .background(if (isMuted) PassRed else Color(0xFF262C3D))
-                    ) {
-                        Icon(
-                            imageVector = if (isMuted) Icons.Default.MicOff else Icons.Default.Mic,
-                            contentDescription = "Mute",
-                            tint = Color.White
-                        )
-                    }
-
-                    // End Call
-                    IconButton(
-                        onClick = onEndCall,
-                        modifier = Modifier
-                            .size(64.dp)
-                            .clip(CircleShape)
-                            .background(PassRed)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CallEnd,
-                            contentDescription = "End Call",
-                            tint = Color.White,
-                            modifier = Modifier.size(32.dp)
-                        )
-                    }
-
-                    IconButton(
-                        onClick = { isSpeakerOn = !isSpeakerOn },
-                        modifier = Modifier
-                            .size(54.dp)
-                            .clip(CircleShape)
-                            .background(if (isSpeakerOn) LikeGreen else Color(0xFF262C3D))
-                    ) {
-                        Icon(
-                            imageVector = if (isSpeakerOn) Icons.Default.VolumeUp else Icons.Default.VolumeDown,
-                            contentDescription = "Speaker",
-                            tint = Color.White
-                        )
-                    }
-                }
-            }
-        }
-    }
+private fun senderTint(senderId: String): Color {
+    val palette = listOf(Color(0xFFB45309), Color(0xFF0F766E), Color(0xFF7C3AED), Color(0xFFBE185D),
+        Color(0xFF0369A1), Color(0xFF4D7C0F), Color(0xFF9D174D))
+    return palette[(senderId.hashCode() and Int.MAX_VALUE) % palette.size]
 }
 
-@Composable
-private fun ParticipantVoiceAvatar(name: String, isSpeaking: Boolean) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(
-            modifier = Modifier
-                .size(72.dp)
-                .clip(CircleShape)
-                .background(Color(0xFF202738))
-                .border(
-                    width = if (isSpeaking) 3.dp else 1.dp,
-                    color = if (isSpeaking) LikeGreen else Color(0xFF35405A),
-                    shape = CircleShape
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = name.take(1),
-                fontSize = 24.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color.White
-            )
-            if (isSpeaking) {
-                Surface(
-                    shape = CircleShape,
-                    color = LikeGreen,
-                    modifier = Modifier
-                        .size(14.dp)
-                        .align(Alignment.BottomEnd)
-                ) {}
-            }
-        }
-        Spacer(modifier = Modifier.height(6.dp))
-        Text(name, fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Medium)
-    }
-}
-
-@Composable
-fun GroupVideoCallDialog(
-    group: GroupModel,
-    onEndCall: () -> Unit
-) {
-    var isMuted by remember { mutableStateOf(false) }
-    var isVideoOff by remember { mutableStateOf(false) }
-    var isFrontCamera by remember { mutableStateOf(true) }
-
-    Dialog(
-        onDismissRequest = onEndCall,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = Color.Black
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.SpaceBetween
-            ) {
-                // Header
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(group.name, fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
-                        Text("📹 E2EE Group Video (${group.members.size} active)", color = Color(0xFF00E5FF), fontSize = 11.sp)
-                    }
-
-                    IconButton(
-                        onClick = { isFrontCamera = !isFrontCamera },
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFF1E2433))
-                    ) {
-                        Icon(imageVector = Icons.Default.Cameraswitch, contentDescription = "Switch Camera", tint = Color.White)
-                    }
-                }
-
-                // 2x2 or 2x3 Grid of Live Video Tiles
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .padding(vertical = 10.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    val members = group.members.take(4)
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        VideoTile(name = "You", isVideoOff = isVideoOff, modifier = Modifier.weight(1f))
-                        if (members.isNotEmpty()) {
-                            VideoTile(name = members[0], isVideoOff = false, modifier = Modifier.weight(1f))
-                        }
-                    }
-                    if (members.size > 1) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            VideoTile(name = members[1], isVideoOff = false, modifier = Modifier.weight(1f))
-                            if (members.size > 2) {
-                                VideoTile(name = members[2], isVideoOff = false, modifier = Modifier.weight(1f))
-                            }
-                        }
-                    }
-                }
-
-                // Video Control Bar
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(
-                        onClick = { isMuted = !isMuted },
-                        modifier = Modifier
-                            .size(50.dp)
-                            .clip(CircleShape)
-                            .background(if (isMuted) PassRed else Color(0xFF1E2433))
-                    ) {
-                        Icon(
-                            imageVector = if (isMuted) Icons.Default.MicOff else Icons.Default.Mic,
-                            contentDescription = "Mute",
-                            tint = Color.White
-                        )
-                    }
-
-                    IconButton(
-                        onClick = { isVideoOff = !isVideoOff },
-                        modifier = Modifier
-                            .size(50.dp)
-                            .clip(CircleShape)
-                            .background(if (isVideoOff) PassRed else Color(0xFF1E2433))
-                    ) {
-                        Icon(
-                            imageVector = if (isVideoOff) Icons.Default.VideocamOff else Icons.Default.Videocam,
-                            contentDescription = "Video",
-                            tint = Color.White
-                        )
-                    }
-
-                    // End Call
-                    IconButton(
-                        onClick = onEndCall,
-                        modifier = Modifier
-                            .size(60.dp)
-                            .clip(CircleShape)
-                            .background(PassRed)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CallEnd,
-                            contentDescription = "End Call",
-                            tint = Color.White,
-                            modifier = Modifier.size(30.dp)
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun VideoTile(name: String, isVideoOff: Boolean, modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier
-            .fillMaxHeight()
-            .clip(RoundedCornerShape(16.dp))
-            .background(Color(0xFF161B26))
-            .border(1.dp, Color(0xFF263044), RoundedCornerShape(16.dp)),
-        contentAlignment = Alignment.Center
-    ) {
-        if (isVideoOff) {
-            Surface(
-                shape = CircleShape,
-                color = RomanticViolet,
-                modifier = Modifier.size(54.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(name.take(1), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                }
-            }
-        } else {
-            // Simulated live video stream background
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        brush = Brush.verticalGradient(
-                            listOf(Color(0xFF1F2B3E), Color(0xFF0F1522))
-                        )
-                    )
-            )
-            Icon(
-                imageVector = Icons.Default.Face,
-                contentDescription = null,
-                tint = Color.White.copy(alpha = 0.35f),
-                modifier = Modifier.size(60.dp)
-            )
-        }
-
-        Surface(
-            shape = RoundedCornerShape(8.dp),
-            color = Color.Black.copy(alpha = 0.6f),
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(8.dp)
-        ) {
-            Text(
-                text = name,
-                color = Color.White,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-            )
-        }
-    }
-}
-
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreateGroupDialog(
     availableMembers: List<String>,
+    memberProfileIdsByName: Map<String, String> = emptyMap(),
     onDismiss: () -> Unit,
-    onCreateGroup: (name: String, desc: String, emoji: String, members: List<String>) -> Unit
+    onCreateGroup: (name: String, desc: String, emoji: String, members: List<String>, avatarUri: Uri?) -> Unit
 ) {
     var name by remember { mutableStateOf("") }
     var desc by remember { mutableStateOf("") }
     var emoji by remember { mutableStateOf("👥") }
+    var avatarUri by remember { mutableStateOf<Uri?>(null) }
     var selectedMembers by remember { mutableStateOf(setOf<String>()) }
-
-    val emojis = listOf("👥", "🎉", "☕", "🚀", "🍸", "⚽", "🎶", "🎬")
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { avatarUri = it }
+    val emojis = listOf("👥", "🎉", "☕", "🚀", "⚽", "🎶", "🎬", "🧑‍💻")
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Create New Group", fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+        title = { Text("Create an encrypted group", fontWeight = FontWeight.Bold) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Group Name") },
-                    placeholder = { Text("e.g. Weekend Explorers") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().testTag("input_group_name")
-                )
-
-                // Select Emoji
-                Text("Select Group Icon:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Column(Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(value = name, onValueChange = { name = it.take(80) },
+                    label = { Text("Group name") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("input_group_name"))
+                OutlinedTextField(value = desc, onValueChange = { desc = it.take(500) },
+                    label = { Text("Description") }, maxLines = 3, modifier = Modifier.fillMaxWidth())
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (avatarUri != null) {
+                        AsyncImage(model = avatarUri, contentDescription = "Selected group avatar",
+                            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                            modifier = Modifier.size(60.dp).clip(CircleShape))
+                    } else {
+                        Surface(shape = CircleShape, color = RomanticViolet.copy(alpha = 0.16f), modifier = Modifier.size(60.dp)) {
+                            Box(contentAlignment = Alignment.Center) { Text(emoji, fontSize = 28.sp) }
+                        }
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Text("Group photo", fontWeight = FontWeight.SemiBold)
+                        Text("Cropped to 512 × 512 WebP", style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    OutlinedButton(onClick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }) { Text("Choose") }
+                }
+                Text("Group icon", style = MaterialTheme.typography.labelLarge)
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(emojis) { em ->
-                        Surface(
-                            shape = CircleShape,
-                            color = if (emoji == em) RomanticViolet.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant,
-                            border = androidx.compose.foundation.BorderStroke(1.5.dp, if (emoji == em) RomanticViolet else Color.Transparent),
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .clickable { emoji = em }
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(em, fontSize = 18.sp)
+                    items(emojis) { item ->
+                        Surface(shape = CircleShape,
+                            color = if (emoji == item) RomanticViolet.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.size(38.dp).clickable { emoji = item; avatarUri = null }) {
+                            Box(contentAlignment = Alignment.Center) { Text(item, fontSize = 20.sp) }
+                        }
+                    }
+                }
+                Text("Add VibeSync members (${selectedMembers.size})", fontWeight = FontWeight.SemiBold)
+                if (availableMembers.isEmpty()) {
+                    Text("No synced VibeSync contacts are available yet. Sync contacts and try again.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    LazyColumn(Modifier.heightIn(max = 190.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        items(availableMembers.distinct().sorted(), key = { it }) { member ->
+                            val checked = member in selectedMembers
+                            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable {
+                                selectedMembers = if (checked) selectedMembers - member else selectedMembers + member
+                            }.padding(horizontal = 6.dp, vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = checked, onCheckedChange = {
+                                    selectedMembers = if (it) selectedMembers + member else selectedMembers - member
+                                })
+                                Spacer(Modifier.width(8.dp))
+                                Text(member, modifier = Modifier.weight(1f))
+                                Text("E2EE", color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.labelSmall)
                             }
                         }
                     }
                 }
-
-                OutlinedTextField(
-                    value = desc,
-                    onValueChange = { desc = it },
-                    label = { Text("Description / Topic") },
-                    placeholder = { Text("What is this group about?") },
-                    maxLines = 2,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Text("Add Participants (${selectedMembers.size}):", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                LazyColumn(modifier = Modifier.height(130.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    items(availableMembers) { member ->
-                        val isSelected = member in selectedMembers
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable {
-                                    selectedMembers = if (isSelected) selectedMembers - member else selectedMembers + member
-                                }
-                                .padding(vertical = 4.dp, horizontal = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Checkbox(
-                                checked = isSelected,
-                                onCheckedChange = {
-                                    selectedMembers = if (isSelected) selectedMembers - member else selectedMembers + member
-                                }
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(member, fontSize = 13.sp)
-                        }
-                    }
-                }
+                Text("Only contacts with a known VibeSync profile ID can be added.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },
         confirmButton = {
-            Button(
-                onClick = {
-                    if (name.isNotBlank()) {
-                        onCreateGroup(name.trim(), desc.trim().ifBlank { "Group conversation" }, emoji, selectedMembers.toList())
-                    }
-                },
-                enabled = name.isNotBlank(),
+            Button(onClick = {
+                val selected = selectedMembers.filter { memberProfileIdsByName[it].orEmpty().isNotBlank() }
+                if (name.isNotBlank()) onCreateGroup(name.trim(), desc.trim(), emoji, selected, avatarUri)
+            }, enabled = name.isNotBlank(),
                 colors = ButtonDefaults.buttonColors(containerColor = RomanticViolet),
-                modifier = Modifier.testTag("btn_confirm_create_group")
-            ) {
-                Text("Create Group", fontWeight = FontWeight.Bold)
-            }
+                modifier = Modifier.testTag("btn_confirm_create_group")) { Text("Create group") }
         },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        }
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }

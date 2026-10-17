@@ -12,9 +12,8 @@ import androidx.fragment.app.FragmentActivity
  */
 object BiometricAuthHelper {
 
-    fun isBiometricAvailable(context: Context): Boolean {
-        return false
-    }
+    fun isBiometricAvailable(context: Context): Boolean =
+        BiometricAuthManager.isBiometricAvailable(context)
 
     fun promptBiometric(
         activity: FragmentActivity,
@@ -24,6 +23,19 @@ object BiometricAuthHelper {
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
-        onSuccess()
+        BiometricAuthManager.authenticate(
+            activity = activity,
+            title = title,
+            subtitle = subtitle,
+            negativeButtonText = negativeButtonText,
+            allowDeviceCredential = true
+        ) { result ->
+            when (result) {
+                BiometricAuthManager.BiometricResult.Success -> onSuccess()
+                is BiometricAuthManager.BiometricResult.Error -> onError(result.errorMessage)
+                BiometricAuthManager.BiometricResult.Failed -> onError("Biometric authentication failed.")
+                BiometricAuthManager.BiometricResult.Cancelled -> onError("Authentication was cancelled.")
+            }
+        }
     }
 }

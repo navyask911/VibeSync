@@ -13,6 +13,9 @@ data class ProfileEntity(
     val occupation: String = "",
     val city: String = "",
     val distanceMiles: Int = 0,
+    /** Latitude/longitude of the registered location; zero means unknown. */
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
     val bio: String = "",
     val interests: String = "", // Comma separated, e.g. "Photography, Rock Climbing, Vinyl"
     // Legacy persisted field retained for Room compatibility; new profiles use neutral Connect wording.
@@ -26,6 +29,8 @@ data class ProfileEntity(
     /** Server updated_at epoch millis, used to invalidate avatar image cache when a profile is refreshed. */
     val avatarCacheVersion: Long = 0L,
     val isVerified: Boolean = false,
+    @androidx.room.ColumnInfo(defaultValue = "'inactive'") val subscriptionStatus: String = "inactive",
+    @androidx.room.ColumnInfo(defaultValue = "0") val badgePurchased: Boolean = false,
     val likedMe: Boolean = false, // Has this person already liked current user? (100% Free to view!)
     val isSuperLikedMe: Boolean = false,
     val activityStatus: String = "Active today",
@@ -60,7 +65,9 @@ data class ProfileEntity(
     val friendIds: String = "", // Comma-separated list of confirmed friend profile IDs
     val phoneNumber: String = "",
     val email: String = "",
-    val publicIdentityKey: String = ""
+    val publicIdentityKey: String = "",
+    /** Private DOB from registration; never serialized into public profile fields. */
+    @androidx.room.ColumnInfo(defaultValue = "''") val dateOfBirth: String = ""
 ) {
     fun getInterestList(): List<String> {
         return interests.split(",").map { it.trim() }.filter { it.isNotEmpty() }
@@ -75,10 +82,10 @@ data class ProfileEntity(
         if (avatarUrl.isNotBlank()) {
             if (avatarUrl.contains("|||")) {
                 list.addAll(avatarUrl.split("|||").map { it.trim() }.filter { it.isNotBlank() })
-            } else if (avatarUrl.contains(",")) {
-                list.addAll(avatarUrl.split(",").map { it.trim() }.filter { it.isNotBlank() })
             } else {
-                list.add(avatarUrl)
+                // URL query strings can contain commas; only the explicit gallery delimiter
+                // represents multiple profile images.
+                list.add(avatarUrl.trim())
             }
         }
         if (list.isEmpty()) {
@@ -95,6 +102,6 @@ data class ProfileEntity(
      * fabricated stock portraits inferred from profile IDs or gender.
      */
     fun getEffectiveAvatarUrl(): String {
-        return avatarUrl.split("|||", ",").firstOrNull()?.trim().orEmpty()
+        return avatarUrl.split("|||").firstOrNull()?.trim().orEmpty()
     }
 }

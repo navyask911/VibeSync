@@ -11,31 +11,48 @@ plugins {
   alias(libs.plugins.google.services)
 }
 
+// Truecaller Client ID is public OAuth client configuration (not the partner secret).
+// Supply it through VIBESYNC_TRUECALLER_CLIENT_ID or -PVIBESYNC_TRUECALLER_CLIENT_ID.
+val truecallerClientId = providers.environmentVariable("VIBESYNC_TRUECALLER_CLIENT_ID")
+  .orElse(providers.gradleProperty("VIBESYNC_TRUECALLER_CLIENT_ID"))
+  .orElse("UNCONFIGURED_TRUECALLER_CLIENT_ID")
+  .get()
+val escapedTruecallerClientId = truecallerClientId
+  .replace("\\", "\\\\")
+  .replace("\"", "\\\"")
+
 android {
   namespace = "com.example"
-  compileSdk = 35
+  compileSdk = 36
 
   defaultConfig {
     applicationId = "com.aistudio.freedating.mkwvxq"
     minSdk = 24
     targetSdk = 35
-    versionCode = 4
-    versionName = "1.1.0"
+    versionCode = 6
+    versionName = "1.2.1"
+
+    buildConfigField("String", "TRUECALLER_CLIENT_ID", "\"$escapedTruecallerClientId\"")
+    manifestPlaceholders["truecallerClientId"] = truecallerClientId
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
   signingConfigs {
+    // Release credentials are supplied only through the CI/local process environment.
+    // Never read signing passwords from tracked Gradle properties or a committed properties file.
     val releaseKeystorePath = System.getenv("KEYSTORE_PATH")
-    val releaseStorePassword = System.getenv("STORE_PASSWORD")
+    val releaseStorePassword = System.getenv("KEYSTORE_PASSWORD")
     val releaseKeyPassword = System.getenv("KEY_PASSWORD")
+    val releaseKeyAlias = System.getenv("KEY_ALIAS")
     if (!releaseKeystorePath.isNullOrBlank() &&
         !releaseStorePassword.isNullOrBlank() &&
-        !releaseKeyPassword.isNullOrBlank()) {
+        !releaseKeyPassword.isNullOrBlank() &&
+        !releaseKeyAlias.isNullOrBlank()) {
       create("release") {
         storeFile = file(releaseKeystorePath)
         storePassword = releaseStorePassword
-        keyAlias = System.getenv("KEY_ALIAS") ?: "upload"
+        keyAlias = releaseKeyAlias
         keyPassword = releaseKeyPassword
       }
     }
@@ -44,8 +61,12 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
-      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+      isMinifyEnabled = true
+      isShrinkResources = true
+      proguardFiles(
+        getDefaultProguardFile("proguard-android-optimize.txt"),
+        "proguard-rules.pro"
+      )
       if (signingConfigs.names.contains("release")) signingConfig = signingConfigs.getByName("release")
     }
     debug { signingConfig = signingConfigs.getByName("debug") }
@@ -62,16 +83,19 @@ android {
   }
 
   packaging {
+    jniLibs {
+      // Keep all dependency-provided ABIs; compress JNI libraries in the APK.
+      useLegacyPackaging = true
+      keepDebugSymbols.clear()
+    }
     resources {
-      excludes += listOf(
+      excludes += setOf(
         "META-INF/DEPENDENCIES",
-        "META-INF/LICENSE",
-        "META-INF/LICENSE.txt",
-        "META-INF/license.txt",
-        "META-INF/NOTICE",
-        "META-INF/NOTICE.txt",
-        "META-INF/notice.txt",
-        "META-INF/INDEX.LIST"
+        "META-INF/INDEX.LIST",
+        "META-INF/io.netty.versions.properties",
+        "META-INF/*.kotlin_module",
+        "META-INF/LICENSE*",
+        "META-INF/NOTICE*"
       )
     }
   }
@@ -116,6 +140,7 @@ googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.W
 // This makes it easy to add them back in the future if needed.
 dependencies {
   val roomVersion = "2.7.0"
+  implementation("com.razorpay:checkout:1.6.41")
 
   implementation(platform(libs.androidx.compose.bom))
   implementation(platform(libs.firebase.bom))
@@ -133,13 +158,17 @@ dependencies {
   implementation(libs.androidx.compose.ui.graphics)
   implementation(libs.androidx.compose.ui.tooling.preview)
   implementation(libs.androidx.core.ktx)
-  // implementation(libs.androidx.datastore.preferences)
+  implementation("androidx.browser:browser:1.8.0")
+  implementation("androidx.emoji2:emoji2:1.5.0")
+  implementation(libs.androidx.datastore.preferences)
   implementation(libs.androidx.lifecycle.runtime.compose)
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.lifecycle.viewmodel.compose)
   implementation(libs.androidx.navigation.compose)
   implementation("androidx.room:room-runtime:$roomVersion")
   implementation("androidx.room:room-ktx:$roomVersion")
+  implementation("net.zetetic:sqlcipher-android:4.19.1@aar")
+  implementation("androidx.sqlite:sqlite:2.7.0")
   implementation("androidx.work:work-runtime-ktx:2.9.0")
   implementation("com.google.apis:google-api-services-drive:v3-rev20240123-2.0.0") {
     exclude(group = "org.apache.httpcomponents")
@@ -169,7 +198,7 @@ dependencies {
   implementation("com.google.mlkit:face-detection:16.1.7")
   implementation("com.google.zxing:core:3.5.3")
   implementation("androidx.print:print:1.0.0")
-  implementation("com.google.crypto.tink:tink-android:1.13.0")
+  implementation("com.google.crypto.tink:tink-android:1.15.0")
   implementation("com.truecaller.android.sdk:truecaller-sdk:3.2.1")
   implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)

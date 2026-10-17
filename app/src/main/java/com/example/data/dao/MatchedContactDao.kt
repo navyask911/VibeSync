@@ -18,9 +18,6 @@ interface MatchedContactDao {
     @Query("SELECT * FROM matched_contacts ORDER BY isOnVibeSync DESC, contactName ASC")
     suspend fun getAllMatchedContacts(): List<MatchedContactEntity>
 
-    @Query("SELECT * FROM matched_contacts WHERE phoneHash IN (:hashes)")
-    suspend fun getContactsByHashes(hashes: List<String>): List<MatchedContactEntity>
-
     @Query("DELETE FROM matched_contacts")
     suspend fun deleteAll()
 }

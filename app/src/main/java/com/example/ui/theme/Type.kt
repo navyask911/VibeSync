@@ -2,104 +2,81 @@ package com.example.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
-import com.example.R
 
-// VibeSync Standard Clean, Attractive & Highly Legible Font Family
-val VibeSyncFontFamily = FontFamily(
-    Font(R.font.inter, FontWeight.Normal),
-    Font(R.font.inter, FontWeight.Medium),
-    Font(R.font.inter, FontWeight.SemiBold),
-    Font(R.font.inter, FontWeight.Bold)
-)
-
-// VibeSync Clean, Crisp & High-Readability Typography
 val Typography = Typography(
     headlineLarge = TextStyle(
-        fontFamily = VibeSyncFontFamily,
-        fontWeight = FontWeight.Bold,
-        fontSize = 30.sp,
-        lineHeight = 36.sp,
-        letterSpacing = (-0.25).sp
+        fontFamily = FontFamily.Serif,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 24.sp,
+        lineHeight = 30.sp
     ),
     headlineMedium = TextStyle(
-        fontFamily = VibeSyncFontFamily,
-        fontWeight = FontWeight.Bold,
-        fontSize = 26.sp,
-        lineHeight = 32.sp,
-        letterSpacing = 0.sp
-    ),
-    headlineSmall = TextStyle(
-        fontFamily = VibeSyncFontFamily,
+        fontFamily = FontFamily.Serif,
         fontWeight = FontWeight.SemiBold,
         fontSize = 22.sp,
-        lineHeight = 28.sp,
-        letterSpacing = 0.sp
+        lineHeight = 28.sp
+    ),
+    headlineSmall = TextStyle(
+        fontFamily = FontFamily.Serif,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 20.sp,
+        lineHeight = 26.sp
     ),
     titleLarge = TextStyle(
-        fontFamily = VibeSyncFontFamily,
-        fontWeight = FontWeight.Bold,
-        fontSize = 21.sp,
-        lineHeight = 27.sp,
-        letterSpacing = 0.sp
+        fontFamily = FontFamily.Serif,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 18.sp,
+        lineHeight = 24.sp
     ),
     titleMedium = TextStyle(
-        fontFamily = VibeSyncFontFamily,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 17.5.sp,
-        lineHeight = 23.sp,
-        letterSpacing = 0.15.sp
+        fontFamily = FontFamily.Serif,
+        fontWeight = FontWeight.Medium,
+        fontSize = 16.sp,
+        lineHeight = 22.sp
     ),
     titleSmall = TextStyle(
-        fontFamily = VibeSyncFontFamily,
+        fontFamily = FontFamily.Serif,
         fontWeight = FontWeight.Medium,
         fontSize = 15.sp,
-        lineHeight = 21.sp,
-        letterSpacing = 0.1.sp
+        lineHeight = 20.sp
     ),
     bodyLarge = TextStyle(
-        fontFamily = VibeSyncFontFamily,
+        fontFamily = FontFamily.Serif,
         fontWeight = FontWeight.Normal,
-        fontSize = 16.5.sp,
-        lineHeight = 23.sp,
-        letterSpacing = 0.2.sp
+        fontSize = 15.sp,
+        lineHeight = 20.sp
     ),
     bodyMedium = TextStyle(
-        fontFamily = VibeSyncFontFamily,
+        fontFamily = FontFamily.Serif,
         fontWeight = FontWeight.Normal,
-        fontSize = 15.sp,
-        lineHeight = 21.sp,
-        letterSpacing = 0.25.sp
+        fontSize = 14.sp,
+        lineHeight = 20.sp
     ),
     bodySmall = TextStyle(
-        fontFamily = VibeSyncFontFamily,
+        fontFamily = FontFamily.Serif,
         fontWeight = FontWeight.Normal,
-        fontSize = 13.5.sp,
-        lineHeight = 18.sp,
-        letterSpacing = 0.3.sp
+        fontSize = 12.sp,
+        lineHeight = 16.sp
     ),
     labelLarge = TextStyle(
-        fontFamily = VibeSyncFontFamily,
+        fontFamily = FontFamily.Serif,
         fontWeight = FontWeight.Medium,
-        fontSize = 15.sp,
-        lineHeight = 21.sp,
-        letterSpacing = 0.1.sp
+        fontSize = 14.sp,
+        lineHeight = 18.sp
     ),
     labelMedium = TextStyle(
-        fontFamily = VibeSyncFontFamily,
-        fontWeight = FontWeight.Medium,
-        fontSize = 13.sp,
-        lineHeight = 18.sp,
-        letterSpacing = 0.4.sp
-    ),
-    labelSmall = TextStyle(
-        fontFamily = VibeSyncFontFamily,
+        fontFamily = FontFamily.Serif,
         fontWeight = FontWeight.Medium,
         fontSize = 12.sp,
-        lineHeight = 16.sp,
-        letterSpacing = 0.4.sp
+        lineHeight = 16.sp
+    ),
+    labelSmall = TextStyle(
+        fontFamily = FontFamily.Serif,
+        fontWeight = FontWeight.Medium,
+        fontSize = 11.sp,
+        lineHeight = 14.sp
     )
 )

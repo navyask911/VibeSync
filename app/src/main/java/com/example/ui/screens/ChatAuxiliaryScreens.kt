@@ -1,0 +1,879 @@
+package com.example.ui.screens
+
+import android.Manifest
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.content.ContentUris
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import com.example.data.model.ChatMessageEntity
+import com.example.data.model.ProfileEntity
+import com.example.data.model.UserPreferencesEntity
+import com.example.ui.components.DatingAvatar
+import com.example.util.ProfilePrivacyManager
+import com.example.util.ProfileAvatarStorageManager
+import com.example.util.ImageCompressorHelper
+import java.util.Locale
+
+@Composable
+fun DateSeparatorPill(label: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.Center) {
+        Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.94f), shape = RoundedCornerShape(20.dp), tonalElevation = 2.dp) {
+            Text(label, Modifier.padding(horizontal = 13.dp, vertical = 5.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+fun messageDayKey(timestamp: Long): String =
+    java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).format(java.util.Date(timestamp))
+
+fun dateSeparatorLabel(dateKey: String): String {
+    val todayKey = messageDayKey(System.currentTimeMillis())
+    val yesterdayKey = messageDayKey(java.util.Calendar.getInstance().apply {
+        add(java.util.Calendar.DAY_OF_YEAR, -1)
+    }.timeInMillis)
+    return when (dateKey) {
+        todayKey -> "Today"
+        yesterdayKey -> "Yesterday"
+        else -> runCatching {
+            val parsed = java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(dateKey)
+            if (parsed == null) dateKey
+            else java.text.SimpleDateFormat("MMMM d, yyyy", Locale.getDefault()).format(parsed)
+        }.getOrDefault(dateKey)
+    }
+}
+
+fun formatRelativeMessageTime(timestamp: Long): String {
+    val age = (System.currentTimeMillis() - timestamp).coerceAtLeast(0L)
+    return when {
+        age < 60_000L -> "Now"
+        age < 60L * 60_000L -> "${age / 60_000L}m"
+        age < 24L * 60L * 60_000L -> "${age / (60L * 60_000L)}h"
+        else -> java.text.SimpleDateFormat("MMM d", Locale.getDefault()).format(java.util.Date(timestamp))
+    }
+}
+
+@Composable
+fun RecentDeviceMediaStrip(onPick: (Uri) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var recentPhotos by remember { mutableStateOf<List<Pair<Uri, String>>>(emptyList()) }
+    LaunchedEffect(context) {
+        recentPhotos = withContext(Dispatchers.IO) {
+            runCatching {
+                val canRead = when {
+                    Build.VERSION.SDK_INT >= 34 -> ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED ||
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == PackageManager.PERMISSION_GRANTED
+                    Build.VERSION.SDK_INT >= 33 -> ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
+                    else -> ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+                }
+                if (!canRead) return@runCatching emptyList<Pair<Uri, String>>()
+                val values = mutableListOf<Pair<Uri, String>>()
+                val projection = arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME)
+                context.contentResolver.query(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    projection,
+                    null,
+                    null,
+                    MediaStore.Images.Media.DATE_ADDED + " DESC"
+                )?.use { cursor ->
+                    val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+                    val nameColumn = cursor.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
+                    while (cursor.moveToNext() && values.size < 12) {
+                        val id = cursor.getLong(idColumn)
+                        val name = if (nameColumn >= 0) cursor.getString(nameColumn).orEmpty() else "Photo"
+                        values += ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id) to name
+                    }
+                }
+                values
+            }.getOrElse { emptyList() }
+        }
+    }
+    Text("Recent photos on this device", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    if (recentPhotos.isEmpty()) {
+        Text("No accessible recent photos. Use Gallery to browse and select an image.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    } else {
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 3.dp)) {
+            items(recentPhotos, key = { it.first.toString() }) { (uri, name) ->
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier.size(76.dp).clickable { onPick(uri) }
+                ) {
+                    Box {
+                        AsyncImage(model = uri, contentDescription = name, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Decrypt locally for search and media indexing; never fall back to displaying a ciphertext envelope. */
+private fun resolveMessageBodyForAuxiliaryUi(message: ChatMessageEntity): String {
+    val original = message.text.trim()
+    val encrypted = original.startsWith("V2_SIG:") || original.startsWith("V1_ENC:") || original.startsWith("ENC:")
+    var body = if (encrypted) {
+        com.example.util.MessageHandler.verifyAndDecryptPayload(message.senderId, original)
+    } else original
+    if (encrypted && (body == original || body.startsWith("V2_SIG:") || body.startsWith("V1_ENC:") || body.startsWith("ENC:"))) {
+        return ""
+    }
+    if (body.startsWith("{") && body.endsWith("}")) {
+        try {
+            val json = org.json.JSONObject(body)
+            if (json.has("vibesync_event")) return ""
+            val extracted = sequenceOf("message_text", "text", "message", "content", "caption", "body")
+                .map { json.optString(it, "") }
+                .firstOrNull { it.isNotBlank() }
+            if (!extracted.isNullOrBlank()) body = extracted
+            else if (encrypted) return ""
+        } catch (_: Exception) {
+            if (encrypted) return ""
+        }
+    }
+    return body.trim()
+}
+
+private data class EmojiCategory(val name: String, val icon: androidx.compose.ui.graphics.vector.ImageVector, val values: List<Pair<String, String>>)
+private val emojiCategories = listOf(
+    EmojiCategory("Recently Used", Icons.Default.AccessTime, emptyList()),
+    EmojiCategory("Smileys & People", Icons.Default.SentimentSatisfiedAlt, listOf(
+        "😀" to "smile happy", "😃" to "happy", "😄" to "laugh", "😁" to "grin", "😆" to "laugh", "🥹" to "touched grateful", "😂" to "laugh tears", "🤣" to "rolling",
+        "😊" to "blush", "😍" to "love heart eyes", "🥰" to "love", "😘" to "kiss", "😎" to "cool sunglasses", "🤔" to "think", "🙄" to "eye roll", "😴" to "sleep",
+        "😭" to "cry", "😢" to "sad", "😡" to "angry", "🥳" to "party", "🤗" to "hug", "🙏" to "thanks please prayer", "👏" to "clap", "👍" to "thumbs up like",
+        "👎" to "thumbs down", "❤️" to "red heart love", "💙" to "blue heart", "💚" to "green heart", "💔" to "broken heart", "🔥" to "fire hot", "✨" to "sparkles", "💯" to "perfect", "✅" to "check"
+    )),
+    EmojiCategory("Animals", Icons.Default.Pets, listOf(
+        "🐶" to "dog puppy", "🐱" to "cat", "🐭" to "mouse", "🐰" to "rabbit bunny", "🦊" to "fox", "🐻" to "bear", "🐼" to "panda", "🐨" to "koala", "🐯" to "tiger", "🦁" to "lion", "🐮" to "cow", "🐸" to "frog", "🐵" to "monkey", "🐧" to "penguin", "🦋" to "butterfly", "🐬" to "dolphin"
+    )),
+    EmojiCategory("Food", Icons.Default.Restaurant, listOf(
+        "🍎" to "apple fruit", "🍌" to "banana", "🍉" to "watermelon", "🍇" to "grapes", "🍓" to "strawberry", "🥑" to "avocado", "🍕" to "pizza", "🍔" to "burger", "🍟" to "fries", "🌮" to "taco", "🍜" to "noodles", "🍣" to "sushi", "🍩" to "donut", "🍪" to "cookie", "🎂" to "cake birthday", "☕" to "coffee", "🧋" to "bubble tea"
+    )),
+    EmojiCategory("Sports", Icons.Default.SportsSoccer, listOf(
+        "⚽" to "football soccer", "🏀" to "basketball", "🏈" to "american football", "⚾" to "baseball", "🎾" to "tennis", "🏐" to "volleyball", "🏏" to "cricket", "🏓" to "ping pong", "🏸" to "badminton", "🥊" to "boxing", "🥇" to "gold medal", "🏆" to "trophy", "🚴" to "cycling", "🏊" to "swimming", "🎯" to "target"
+    )),
+    EmojiCategory("Objects", Icons.Default.Lightbulb, listOf(
+        "💡" to "idea bulb", "📱" to "phone", "💻" to "computer", "⌚" to "watch", "🎧" to "headphones", "📷" to "camera", "🎁" to "gift", "🎉" to "celebration", "🎵" to "music", "📚" to "books", "✉️" to "email", "🔒" to "lock secure", "🔑" to "key", "🧸" to "teddy bear", "💎" to "diamond"
+    )),
+    EmojiCategory("Flags", Icons.Default.Flag, listOf("🇮🇳" to "india indian", "🇺🇸" to "united states america", "🇬🇧" to "united kingdom britain", "🇨🇦" to "canada", "🇦🇺" to "australia", "🇯🇵" to "japan", "🇰🇷" to "south korea", "🇫🇷" to "france", "🇩🇪" to "germany", "🇧🇷" to "brazil")),
+    EmojiCategory("Settings", Icons.Default.Settings, listOf("⚙️" to "settings gear", "🔧" to "wrench tools", "🛠️" to "tools", "🧰" to "toolbox", "🛡️" to "security shield", "🔔" to "notifications"))
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun EmojiStickerPickerSheet(onDismiss: () -> Unit, onEmojiSelected: (String) -> Unit, onStickerSelected: (String) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val prefs = remember { context.getSharedPreferences("vibesync_emoji_picker", android.content.Context.MODE_PRIVATE) }
+    var query by remember { mutableStateOf("") }
+    var category by remember { mutableStateOf("Recently Used") }
+    var mode by remember { mutableStateOf("Emoji") }
+    var recent by remember { mutableStateOf(prefs.getString("recent", "").orEmpty().split("|").filter { it.isNotBlank() }.take(24)) }
+    val entries = when {
+        query.isNotBlank() -> emojiCategories.filterNot { it.name == "Recently Used" }.flatMap { it.values }.distinctBy { it.first }
+        category == "Recently Used" -> recent.map { it to "recent frequently used" }
+        else -> emojiCategories.first { it.name == category }.values
+    }
+    val visible = entries.filter { (symbol, keywords) -> query.isBlank() || (symbol + " " + keywords).contains(query.trim(), true) }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Emoji & Stickers", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                TextButton(onClick = onDismiss) { Text("Done") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = mode == "Emoji", onClick = { mode = "Emoji" }, label = { Text("Emoji") })
+                FilterChip(selected = mode == "Stickers", onClick = { mode = "Stickers" }, label = { Text("Stickers") })
+            }
+            OutlinedTextField(value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, shape = RoundedCornerShape(24.dp), placeholder = { Text("Search emoji") }, leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) })
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(vertical = 2.dp)) {
+                items(emojiCategories, key = { it.name }) { item ->
+                    FilterChip(selected = category == item.name, onClick = { category = item.name }, label = { Text(item.name, maxLines = 1) }, leadingIcon = { Icon(item.icon, contentDescription = null, modifier = Modifier.size(17.dp)) })
+                }
+            }
+            if (visible.isEmpty()) {
+                Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) { Text("No matching emoji", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            } else {
+                LazyVerticalGrid(columns = GridCells.Adaptive(minSize = if (mode == "Stickers") 72.dp else 44.dp), modifier = Modifier.fillMaxWidth().height(270.dp), contentPadding = PaddingValues(bottom = 20.dp), horizontalArrangement = Arrangement.spacedBy(5.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    gridItems(visible, key = { it.first }) { (symbol, _) ->
+                        Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f), shape = RoundedCornerShape(if (mode == "Stickers") 18.dp else 10.dp), modifier = Modifier.aspectRatio(1f).clickable {
+                            val updated = (listOf(symbol) + recent.filterNot { it == symbol }).take(24)
+                            recent = updated
+                            prefs.edit().putString("recent", updated.joinToString("|")).apply()
+                            if (mode == "Stickers") onStickerSelected(symbol) else onEmojiSelected(symbol)
+                        }) {
+                            Box(contentAlignment = Alignment.Center) { Text(symbol, fontSize = if (mode == "Stickers") 38.sp else 27.sp, textAlign = TextAlign.Center) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Resolve media references stored in the active conversation's Room rows. Photo bodies may be
+ * inline IMG_B64, local file/content URIs, network URLs, or opaque Google Tink avatar references.
+ */
+private fun resolveMediaReferenceForAuxiliaryUi(message: ChatMessageEntity): String {
+    val direct = message.mediaUrl.trim()
+    val raw = direct.ifBlank { message.text.trim() }
+    val decoded = if (
+        raw.startsWith("V2_SIG:") || raw.startsWith("V1_ENC:") || raw.startsWith("ENC:")
+    ) {
+        com.example.util.MessageHandler.verifyAndDecryptPayload(message.senderId, raw).trim()
+    } else raw
+    if (decoded.isBlank() || decoded.startsWith("V2_SIG:") || decoded.startsWith("V1_ENC:") || decoded.startsWith("ENC:")) return ""
+    if (decoded.startsWith("IMG_B64:") || decoded.startsWith("IMG_URL:") ||
+        decoded.startsWith("vibesync-avatar-enc://") || decoded.startsWith("http://") ||
+        decoded.startsWith("https://") || decoded.startsWith("file://") ||
+        decoded.startsWith("content://") || decoded.startsWith("data:image/")
+    ) return decoded
+    if (decoded.startsWith("{") && decoded.endsWith("}")) {
+        return runCatching {
+            val json = org.json.JSONObject(decoded)
+            sequenceOf("media_url", "mediaUrl", "image_url", "imageUrl", "attachment_url", "url")
+                .map { json.optString(it, "").trim() }
+                .firstOrNull { value ->
+                    value.startsWith("IMG_B64:") || value.startsWith("IMG_URL:") ||
+                        value.startsWith("vibesync-avatar-enc://") || value.startsWith("http://") ||
+                        value.startsWith("https://") || value.startsWith("file://") ||
+                        value.startsWith("content://") || value.startsWith("data:image/")
+                }.orEmpty()
+        }.getOrDefault("")
+    }
+    return ""
+}
+
+@Composable
+private fun AllMediaThumbnail(
+    reference: String,
+    cacheVersion: Long,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current.applicationContext
+    var bitmap by remember(reference, cacheVersion) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(reference, cacheVersion) {
+        bitmap = withContext(Dispatchers.IO) {
+            runCatching {
+                when {
+                    reference.startsWith("IMG_B64:") ->
+                        ImageCompressorHelper.decodeBase64ToBitmap(reference)
+                    reference.startsWith("data:image/") && reference.contains("base64,") ->
+                        ImageCompressorHelper.decodeBase64ToBitmap("IMG_B64:" + reference.substringAfter("base64,"))
+                    reference.startsWith("vibesync-avatar-enc://") ->
+                        ProfileAvatarStorageManager.resolveAvatarForDisplay(context, reference, cacheVersion)
+                    reference.startsWith("file://") || reference.startsWith("content://") ->
+                        context.contentResolver.openInputStream(Uri.parse(reference))?.use { stream ->
+                            BitmapFactory.decodeStream(stream)
+                        }
+                    else -> null
+                }
+            }.getOrNull()
+        }
+    }
+    val networkReference = reference.removePrefix("IMG_URL:")
+    when {
+        bitmap != null -> Image(
+            bitmap = bitmap!!.asImageBitmap(),
+            contentDescription = "Shared photo",
+            modifier = modifier,
+            contentScale = ContentScale.Crop
+        )
+        networkReference.startsWith("http://") || networkReference.startsWith("https://") ->
+            AsyncImage(
+                model = networkReference,
+                contentDescription = "Shared photo",
+                modifier = modifier,
+                contentScale = ContentScale.Crop
+            )
+        else -> Box(
+            modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Icon(Icons.Default.Image, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Photo", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+fun AllMediaScreen(messages: List<ChatMessageEntity>, onBack: () -> Unit, onOpenMedia: (String, String) -> Unit) {
+    var category by remember { mutableStateOf("All") }
+    var gridMode by remember { mutableStateOf(true) }
+    var sortExpanded by remember { mutableStateOf(false) }
+    var newestFirst by remember { mutableStateOf(true) }
+    val linkRegex = remember { Regex("https?://[^\\s]+", RegexOption.IGNORE_CASE) }
+    val resolvedBodies = remember(messages) { messages.associate { it.messageId to resolveMessageBodyForAuxiliaryUi(it) } }
+    val mediaReferences = remember(messages) { messages.associate { it.messageId to resolveMediaReferenceForAuxiliaryUi(it) } }
+    val attachments = messages.filter { message ->
+        !message.isDeleted && !message.isDeletedForEveryone && (
+            message.mediaType !in setOf("TEXT", "MESSAGE_DELETE", "MESSAGE_EDIT", "REACTION") ||
+                linkRegex.containsMatchIn(resolvedBodies[message.messageId].orEmpty()) ||
+                mediaReferences[message.messageId].orEmpty().isNotBlank()
+        )
+    }
+    val filtered = attachments.filter { msg ->
+        val type = msg.mediaType.uppercase(Locale.ROOT)
+        when (category) {
+            "Media" -> type in setOf("IMAGE", "VIDEO", "PHOTO")
+            "Files" -> type in setOf("DOCUMENT", "FILE", "PDF")
+            "Audio" -> type in setOf("VOICE", "AUDIO")
+            "Links" -> linkRegex.containsMatchIn(resolvedBodies[msg.messageId].orEmpty()) ||
+                linkRegex.containsMatchIn(mediaReferences[msg.messageId].orEmpty())
+            else -> true
+        }
+    }.let { if (newestFirst) it.sortedByDescending { msg -> msg.timestamp } else it.sortedBy { msg -> msg.timestamp } }
+
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+            Column(Modifier.weight(1f)) {
+                Text("All Media", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(filtered.size.toString() + " shared item(s)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            IconButton(onClick = { gridMode = true }) { Icon(Icons.Default.GridView, contentDescription = "Grid view", tint = if (gridMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) }
+            IconButton(onClick = { gridMode = false }) { Icon(Icons.Default.List, contentDescription = "List view", tint = if (!gridMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) }
+            Box {
+                TextButton(onClick = { sortExpanded = true }) { Text(if (newestFirst) "Newest ↓" else "Oldest ↑", maxLines = 1) }
+                DropdownMenu(expanded = sortExpanded, onDismissRequest = { sortExpanded = false }) {
+                    DropdownMenuItem(text = { Text("Newest ↓") }, onClick = { newestFirst = true; sortExpanded = false })
+                    DropdownMenuItem(text = { Text("Oldest ↑") }, onClick = { newestFirst = false; sortExpanded = false })
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            items(listOf("Media", "Files", "Audio", "Links", "All")) { value ->
+                FilterChip(selected = category == value, onClick = { category = value }, label = { Text(value) })
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        if (filtered.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = CircleShape, modifier = Modifier.size(86.dp)) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.VideoLibrary, contentDescription = null, modifier = Modifier.size(42.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    Text("No media", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text("Photos, videos, files, audio and links shared in this chat will appear here.", color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+                }
+            }
+        } else if (gridMode) {
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(108.dp),
+                contentPadding = PaddingValues(bottom = 24.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                gridItems(filtered, key = { it.messageId }) { msg ->
+                    val mediaReference = mediaReferences[msg.messageId].orEmpty()
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.aspectRatio(0.92f).clickable {
+                            onOpenMedia(mediaReference.ifBlank { resolvedBodies[msg.messageId].orEmpty() }, msg.mediaType)
+                        }
+                    ) {
+                        Box {
+                            if (msg.mediaType.uppercase(Locale.ROOT) in setOf("IMAGE", "VIDEO", "PHOTO")) {
+                                AllMediaThumbnail(reference = mediaReference, cacheVersion = msg.timestamp, modifier = Modifier.fillMaxSize())
+                            }
+                            Column(Modifier.align(Alignment.BottomStart).fillMaxWidth().background(Color.Black.copy(alpha = 0.56f)).padding(7.dp)) {
+                                Text(msg.mediaType, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                Text(resolvedBodies[msg.messageId].orEmpty().ifBlank { msg.mediaType }, color = Color.White, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
+                items(filtered, key = { it.messageId }) { msg ->
+                    val mediaReference = mediaReferences[msg.messageId].orEmpty()
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f),
+                        modifier = Modifier.fillMaxWidth().clickable {
+                            onOpenMedia(mediaReference.ifBlank { resolvedBodies[msg.messageId].orEmpty() }, msg.mediaType)
+                        }
+                    ) {
+                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(when (msg.mediaType.uppercase(Locale.ROOT)) {
+                                "VOICE", "AUDIO" -> Icons.Default.AudioFile
+                                "LINK" -> Icons.Default.InsertLink
+                                "IMAGE", "VIDEO", "PHOTO" -> Icons.Default.Image
+                                else -> Icons.Default.Description
+                            }, contentDescription = null, modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(resolvedBodies[msg.messageId].orEmpty().ifBlank { msg.mediaType }, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+                                Text(msg.mediaType + " • " + java.text.SimpleDateFormat("MMM d, yyyy", Locale.getDefault()).format(java.util.Date(msg.timestamp)), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ChatSearchDialog(messages: List<ChatMessageEntity>, onDismiss: () -> Unit, onOpenMessage: (ChatMessageEntity) -> Unit) {
+    var query by remember { mutableStateOf("") }
+    val results = remember(messages, query) {
+        if (query.isBlank()) emptyList()
+        else messages.filter {
+            !it.isDeleted && !it.isDeletedForEveryone &&
+                resolveMessageBodyForAuxiliaryUi(it).contains(query.trim(), ignoreCase = true)
+        }.sortedByDescending { it.timestamp }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Search in chat") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(value = query, onValueChange = { query = it }, placeholder = { Text("Search messages") }, leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                if (query.isNotBlank() && results.isEmpty()) Text("No messages found", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else LazyColumn(Modifier.height(280.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(results, key = { it.messageId }) { msg ->
+                        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth().clickable { onOpenMessage(msg) }) {
+                            Column(Modifier.padding(10.dp)) {
+                                Text(resolveMessageBodyForAuxiliaryUi(msg).ifBlank { msg.mediaType }, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                Text(java.text.SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(java.util.Date(msg.timestamp)), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChatThreadSettingsSheet(
+    profile: ProfileEntity,
+    preferences: UserPreferencesEntity?,
+    displayName: String,
+    phoneNumber: String,
+    businessName: String = "",
+    businessPhoneNumber: String = "",
+    businessVerificationTier: String = "",
+    isMuted: Boolean,
+    nickname: String,
+    onUpdatePreferences: (UserPreferencesEntity) -> Unit,
+    onVideoCall: () -> Unit,
+    onAudioCall: () -> Unit,
+    onToggleMute: () -> Unit,
+    onSearch: () -> Unit,
+    onDisappearingMessages: () -> Unit,
+    onNickname: () -> Unit,
+    onChatColor: () -> Unit,
+    onWallpaper: () -> Unit,
+    onNotificationSound: () -> Unit,
+    onContactInfo: () -> Unit,
+    onSafetyNumber: () -> Unit,
+    onBlockReport: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val canRevealPhone = remember(profile.id, profile.phoneNumber) {
+        ProfilePrivacyManager.canRevealPhoneNumber(context, profile)
+    }
+    val safePhoneLabel = when {
+        phoneNumber.isBlank() -> "Phone number unavailable"
+        canRevealPhone -> phoneNumber
+        else -> ProfilePrivacyManager.maskedPhone(phoneNumber)
+    }
+    val prefs = preferences
+
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                TopAppBar(
+                    title = { Text("Profile details") },
+                    navigationIcon = {
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Default.Close, contentDescription = "Close profile details")
+                        }
+                    }
+                )
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 18.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(13.dp)
+                ) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            DatingAvatar(
+                                name = displayName.ifBlank { profile.name },
+                                emoji = profile.avatarEmoji,
+                                colorStart = profile.gradientColorStart,
+                                colorEnd = profile.gradientColorEnd,
+                                size = 76.dp,
+                                isVerified = profile.isVerified,
+                                isOnline = profile.activityStatus.contains("online", ignoreCase = true),
+                                avatarUrl = profile.avatarUrl,
+                                avatarCacheVersion = profile.avatarCacheVersion
+                            )
+                            Spacer(Modifier.width(14.dp))
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = displayName.ifBlank { profile.name },
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    when (businessVerificationTier.uppercase()) {
+                                        "GOLD" -> { Spacer(Modifier.width(5.dp)); Text("👑", fontSize = 17.sp) }
+                                        "SILVER" -> { Spacer(Modifier.width(5.dp)); Text("♛", fontSize = 18.sp, color = Color(0xFF9AA4B2)) }
+                                        "BLUE_TICK" -> { Spacer(Modifier.width(5.dp)); Icon(Icons.Default.Verified, contentDescription = "Verified business", tint = Color(0xFF1DA1F2), modifier = Modifier.size(18.dp)) }
+                                        else -> if (profile.isVerified) {
+                                            Spacer(Modifier.width(5.dp))
+                                            Icon(Icons.Default.Verified, contentDescription = "Verified", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                        }
+                                    }
+                                }
+                                Text(
+                                    text = profile.activityStatus.ifBlank { "VibeSync contact" },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = if (businessName.isNotBlank()) "Business listing · contact details below" else safePhoneLabel,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    if (businessName.isNotBlank()) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(18.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.48f)),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.22f))
+                        ) {
+                            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Business Profile / Info", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Text(businessName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                Text("Contact Details", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    businessPhoneNumber.ifBlank { "Business phone not published" },
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Button(
+                                    onClick = {
+                                        if (businessPhoneNumber.isNotBlank()) {
+                                            runCatching {
+                                                context.startActivity(
+                                                    android.content.Intent(
+                                                        android.content.Intent.ACTION_DIAL,
+                                                        Uri.fromParts("tel", businessPhoneNumber.trim(), null)
+                                                    )
+                                                )
+                                            }
+                                        }
+                                    },
+                                    enabled = businessPhoneNumber.isNotBlank(),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(17.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Call Business")
+                                }
+                                Text(
+                                    "The business number is shown here only, not in the conversation title bar.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        ThreadActionButton("Video", "▣", onVideoCall)
+                        ThreadActionButton("Audio", "☎", onAudioCall)
+                        ThreadActionButton(if (isMuted) "Unmute" else "Mute", if (isMuted) "🔔" else "🔕", onToggleMute)
+                        ThreadActionButton("Search", "⌕", onSearch)
+                    }
+
+                    Text("About", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                            Text(
+                                profile.bio.ifBlank { "No bio added yet." },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            val occupationAndCity = listOf(profile.occupation, profile.city)
+                                .map { it.trim() }.filter { it.isNotBlank() }.joinToString(" · ")
+                            if (occupationAndCity.isNotBlank()) {
+                                Text(
+                                    occupationAndCity,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            val interests = profile.getInterestList().take(12)
+                            if (interests.isNotEmpty()) {
+                                Text(
+                                    interests.joinToString("  •  "),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+
+                    Text("Privacy & security", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    if (prefs != null) {
+                        PrivacySecurityControls(
+                            preferences = prefs,
+                            onUpdatePreferences = onUpdatePreferences,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        ProfilePrivacyToggle(
+                            title = "Hide phone number",
+                            description = "Keep your number hidden on your public profile.",
+                            checked = prefs.hidePhoneNumber,
+                            enabled = true,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(hidePhoneNumber = it)) }
+                        )
+                        ProfilePrivacyToggle(
+                            title = "Hide occupation",
+                            description = "Do not show your occupation on your public profile.",
+                            checked = prefs.hideOccupation,
+                            enabled = true,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(hideOccupation = it)) }
+                        )
+                        ProfilePrivacyToggle(
+                            title = "Hide friends list",
+                            description = "Keep your connections list private.",
+                            checked = prefs.hideFriendsList,
+                            enabled = true,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(hideFriendsList = it)) }
+                        )
+                        ProfilePrivacyToggle(
+                            title = "Hide exact location",
+                            description = "Only share approximate location rather than exact coordinates.",
+                            checked = prefs.hideExactLocation,
+                            enabled = true,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(hideExactLocation = it)) }
+                        )
+                        ProfilePrivacyToggle(
+                            title = "Profile lock",
+                            description = "Restrict profile visibility to approved connections.",
+                            checked = prefs.isProfileLocked,
+                            enabled = true,
+                            onCheckedChange = { onUpdatePreferences(prefs.copy(isProfileLocked = it)) }
+                        )
+                        ProfilePrivacyChoiceRow(
+                            title = "Location visibility",
+                            description = "Choose who can see your location.",
+                            value = when (prefs.locationVisibility.uppercase()) {
+                                "EVERYONE" -> "Everyone"
+                                "PHONE_CONTACTS" -> "Phone contacts"
+                                "FRIENDS_ONLY" -> "Friends only"
+                                "SELECTED_PERSONS" -> "Selected people"
+                                else -> "No one"
+                            },
+                            onClick = {
+                                val next = when (prefs.locationVisibility.uppercase()) {
+                                    "NO_ONE", "" -> "FRIENDS_ONLY"
+                                    "FRIENDS_ONLY" -> "PHONE_CONTACTS"
+                                    "PHONE_CONTACTS" -> "EVERYONE"
+                                    else -> "NO_ONE"
+                                }
+                                onUpdatePreferences(prefs.copy(locationVisibility = next))
+                            }
+                        )
+                    } else {
+                        Text(
+                            "Privacy settings are loading. Reopen this screen in a moment to edit them.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+
+                    Text("Conversation settings", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    ThreadSettingRow("Disappearing Messages", "Off, 24 hours or 7 days", "◷", onDisappearingMessages)
+                    ThreadSettingRow("Nickname", nickname.ifBlank { "Set a local display name" }, "✎", onNickname)
+                    ThreadSettingRow("Chat Color", "Choose a local conversation color", "🎨", onChatColor)
+                    ThreadSettingRow("Chat Wallpaper", "Set a picture behind this conversation", "▧", onWallpaper)
+                    ThreadSettingRow("Sounds & Notifications", if (isMuted) "Muted for this conversation" else "Choose this chat's alert tone", "♫", onNotificationSound)
+                    if (businessName.isBlank()) {
+                        ThreadSettingRow("Phone Contact Info", safePhoneLabel, "☎", onContactInfo)
+                    }
+                    ThreadSettingRow("View Safety Number", "Verify the public-key fingerprint / QR code", "▦", onSafetyNumber)
+                    ThreadSettingRow("Block / Report Spam", "Block this contact or report abuse", "⚠", onBlockReport, danger = true)
+                    Spacer(Modifier.height(24.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfilePrivacyToggle(
+    title: String,
+    description: String,
+    checked: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
+        }
+    }
+}
+
+@Composable
+private fun ProfilePrivacyChoiceRow(
+    title: String,
+    description: String,
+    value: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text(value, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+            Spacer(Modifier.width(4.dp))
+            Icon(Icons.Default.ChevronRight, contentDescription = "Change $title")
+        }
+    }
+}
+
+@Composable
+private fun ThreadActionButton(label: String, glyph: String, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable(onClick = onClick).padding(4.dp)) {
+        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.size(54.dp)) { Box(contentAlignment = Alignment.Center) { Text(glyph, fontSize = 24.sp) } }
+        Text(label, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 5.dp))
+    }
+}
+
+@Composable
+private fun ThreadSettingRow(title: String, subtitle: String, glyph: String, onClick: () -> Unit, danger: Boolean = false) {
+    Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f), modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
+        Row(Modifier.padding(horizontal = 13.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(glyph, fontSize = 21.sp, modifier = Modifier.width(32.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, fontWeight = FontWeight.SemiBold, color = if (danger) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+@Composable
+fun LocalNicknameDialog(currentValue: String, onSave: (String) -> Unit, onDismiss: () -> Unit) {
+    var value by remember(currentValue) { mutableStateOf(currentValue) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Local nickname") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Only you see this name. It does not change the other person's profile.")
+            OutlinedTextField(value = value, onValueChange = { value = it }, singleLine = true, label = { Text("Nickname") }, modifier = Modifier.fillMaxWidth())
+        } },
+        confirmButton = { Button(onClick = { onSave(value.trim()) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}

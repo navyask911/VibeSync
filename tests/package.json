@@ -9,7 +9,11 @@
     "test:wscat": "bash websocket/wscat_debug.sh",
     "test:autobahn": "python3 websocket/autobahn_test.py",
     "test:appium": "python3 ../app/tests/appium_test_suite.py",
-    "test:biometrics": "python3 ../scripts/biometric_face_analyzer.py"
+    "test:biometrics": "python3 ../scripts/biometric_face_analyzer.py",
+    "bench:supavisor-rest": "k6 run k6/supavisor_directory_stress.js",
+    "bench:supavisor-pool": "python3 benchmarks/supavisor_pool_stress.py",
+    "bench:row-index": "python3 benchmarks/row_index_storage_benchmark.py",
+    "test:edge-rate-limit": "k6 run k6/verify_truecaller_burst.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",
