@@ -728,6 +728,9 @@ class PendingMessageInboxSyncWorker(
                         is com.example.util.IncomingNotificationDispatchResult.Suppressed -> {
                             Log.i(TAG, "Inbox notification result=SUPPRESSED: message_id=${target.messageId}, reason=${dispatchResult.reason}, work_request_id=$workRequestId.")
                         }
+                        is com.example.util.IncomingNotificationDispatchResult.PresentedInApp -> {
+                            Log.i(TAG, "Inbox notification result=PRESENTED_IN_APP: message_id=${target.messageId}, reason=${dispatchResult.reason}, work_request_id=$workRequestId.")
+                        }
                         is com.example.util.IncomingNotificationDispatchResult.RetryableFailure -> {
                             Log.w(TAG, "Inbox notification result=RETRY: message_id=${target.messageId}, reason=${dispatchResult.reason}, work_request_id=$workRequestId, run_attempt=$runAttemptCount.")
                             return@withContext Result.retry()
