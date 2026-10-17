@@ -1267,6 +1267,107 @@ object SupabaseClientManager {
     }
 
     /**
+     * Authenticated self-profile lookup. Unlike vibesync_profiles_public, the base-table query
+     * is protected by profiles_truecaller_jwt_select_own and can read only this JWT's profile ID.
+     */
+    suspend fun lookupAuthenticatedSelfProfileById(profileId: String): ProfileLookupResult =
+        withContext(Dispatchers.IO) {
+            val requestedId = profileId.trim()
+            val activeId = VibeSyncSessionManager.getProfileId().orEmpty().trim()
+            if (requestedId.isBlank() || activeId.isBlank() ||
+                !requestedId.equals(activeId, ignoreCase = true) ||
+                VibeSyncSessionManager.getAccessToken().isNullOrBlank() ||
+                VibeSyncSessionManager.getToken().isNullOrBlank()
+            ) {
+                Log.w(TAG, "Self-profile recovery lookup blocked: authenticated identity is incomplete.")
+                return@withContext ProfileLookupResult.Failed(
+                    ProfileLookupResult.FailureReason.AUTHORIZATION
+                )
+            }
+
+            lookupProfileEndpoint(
+                profileId = requestedId,
+                endpointName = "profiles",
+                endpoint = "profiles?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,marital_status,avatar_emoji,avatar_url,account_status,is_verified,is_deleted,updated_at,public_identity_key&id=eq.${java.net.URLEncoder.encode(requestedId, Charsets.UTF_8.name())}&limit=1",
+                lookupLabel = "authenticated-self"
+            )
+        }
+
+    /**
+     * Best-effort fallback for legacy phone-derived IDs. This reads only the existing public view;
+     * it never queries contacts or bypasses RLS to inspect someone else's base-table row.
+     */
+    suspend fun lookupPublicLegacyProfileById(profileId: String): ProfileLookupResult =
+        withContext(Dispatchers.IO) {
+            val requestedId = profileId.trim()
+            if (requestedId.isBlank() || requestedId == "null") {
+                return@withContext ProfileLookupResult.NotFound
+            }
+            lookupProfileEndpoint(
+                profileId = requestedId,
+                endpointName = "vibesync_profiles_public",
+                endpoint = "vibesync_profiles_public?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key,latitude,longitude,subscription_status,badge_purchased,is_discoverable&id=eq.${java.net.URLEncoder.encode(requestedId, Charsets.UTF_8.name())}&limit=1",
+                lookupLabel = "legacy-public"
+            )
+        }
+
+    private suspend fun lookupProfileEndpoint(
+        profileId: String,
+        endpointName: String,
+        endpoint: String,
+        lookupLabel: String
+    ): ProfileLookupResult {
+        return try {
+            val request = buildRequest(endpoint = endpoint, method = "GET")
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val reason = when (response.code) {
+                        401, 403 -> ProfileLookupResult.FailureReason.AUTHORIZATION
+                        in 500..599, 408, 425, 429 -> ProfileLookupResult.FailureReason.BACKEND
+                        else -> ProfileLookupResult.FailureReason.BACKEND
+                    }
+                    Log.w(TAG, "Profile recovery lookup failed: source=$lookupLabel status=${response.code}.")
+                    return@use ProfileLookupResult.Failed(reason)
+                }
+
+                val body = response.body?.string().orEmpty()
+                val rows = runCatching { JSONArray(body) }.getOrElse {
+                    Log.w(TAG, "Profile recovery lookup returned invalid data: source=$lookupLabel.")
+                    return@use ProfileLookupResult.Failed(
+                        ProfileLookupResult.FailureReason.INVALID_RESPONSE
+                    )
+                }
+                if (rows.length() == 0) {
+                    Log.i(TAG, "Profile recovery lookup result: source=$lookupLabel outcome=not_found.")
+                    return@use ProfileLookupResult.NotFound
+                }
+                val profile = parseProfileEntityFromJson(rows.getJSONObject(0))
+                if (profile == null || !profile.id.equals(profileId, ignoreCase = true)) {
+                    Log.w(TAG, "Profile recovery lookup returned mismatched identity: source=$lookupLabel.")
+                    ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.INVALID_RESPONSE)
+                } else {
+                    Log.i(TAG, "Profile recovery lookup result: source=$lookupLabel outcome=found.")
+                    ProfileLookupResult.Found(profile)
+                }
+            }
+        } catch (e: java.net.SocketTimeoutException) {
+            Log.w(TAG, "Profile recovery lookup timed out: source=$lookupLabel.")
+            ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.TIMEOUT)
+        } catch (e: java.net.UnknownHostException) {
+            Log.w(TAG, "Profile recovery lookup network unavailable: source=$lookupLabel.")
+            ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.NETWORK)
+        } catch (e: java.io.IOException) {
+            Log.w(TAG, "Profile recovery lookup network error: source=$lookupLabel type=${e.javaClass.simpleName}.")
+            ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.NETWORK)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Log.w(TAG, "Profile recovery lookup failed: source=$lookupLabel type=${e.javaClass.simpleName}.")
+            ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.BACKEND)
+        }
+    }
+
+    /**
      * Fetches one public profile by its opaque VibeSync profile ID.
      * No phone number is queried or returned through this endpoint.
      */
