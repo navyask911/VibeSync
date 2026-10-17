@@ -653,7 +653,8 @@ class PendingMessageInboxSyncWorker(
                     decryptionSucceeded = true,
                     clearHistoryBarrierPassed = clearBarrierPassed,
                     isControlMessage = isControlMessage,
-                    isAlreadyRead = target.isRead || target.deliveryState.equals("READ", ignoreCase = true)
+                    isAlreadyRead = target.isRead || target.deliveryState.equals("READ", ignoreCase = true),
+                    appInForeground = com.example.util.AppNotificationManager.isAppInForeground
                 )
                 val eligibilityReason = com.example.util.IncomingMessageNotificationPolicy.blockedReason(candidate)
                 if (eligibilityReason != null) {

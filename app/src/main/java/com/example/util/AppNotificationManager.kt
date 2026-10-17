@@ -617,6 +617,7 @@ object AppNotificationManager {
                         isAlreadyRead = messageAlreadyRead,
                         conversationMuted = conversationMuted,
                         activeChat = activeChat,
+                        appInForeground = isAppInForeground,
                         postNotificationsGranted = hasRuntimePostNotificationPermission(appContext),
                         appNotificationsEnabled = appNotificationsEnabled,
                         channelEnabled = channelBlockReason == null,
@@ -631,6 +632,8 @@ object AppNotificationManager {
                                 "app notifications disabled in Android settings"
                             IncomingMessageNotificationPolicy.BlockReason.CHANNEL_DISABLED ->
                                 channelBlockReason ?: "notification channel disabled"
+                            IncomingMessageNotificationPolicy.BlockReason.APP_FOREGROUND ->
+                                "app foreground policy"
                             else -> blocked.name.lowercase()
                         }
                         Log.i(TAG, "Incoming notification suppressed: reason=$reason message_id=${safeMessageId}, conversation_id=${threadId}.")

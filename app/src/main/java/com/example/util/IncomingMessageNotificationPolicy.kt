@@ -5,7 +5,7 @@ internal object IncomingMessageNotificationPolicy {
     enum class BlockReason {
         MISSING_MESSAGE_ID, OUTGOING_MESSAGE, NOT_PERSISTED, DECRYPTION_FAILED,
         CLEAR_CHAT_BARRIER, CONTROL_MESSAGE, ALREADY_READ, CONVERSATION_MUTED,
-        ACTIVE_CHAT, POST_NOTIFICATIONS_DENIED, APP_NOTIFICATIONS_DISABLED,
+        ACTIVE_CHAT, APP_FOREGROUND, POST_NOTIFICATIONS_DENIED, APP_NOTIFICATIONS_DISABLED,
         CHANNEL_DISABLED, ALREADY_NOTIFIED
     }
 
@@ -19,6 +19,7 @@ internal object IncomingMessageNotificationPolicy {
         val isAlreadyRead: Boolean = false,
         val conversationMuted: Boolean = false,
         val activeChat: Boolean = false,
+        val appInForeground: Boolean = false,
         val postNotificationsGranted: Boolean = true,
         val appNotificationsEnabled: Boolean = true,
         val channelEnabled: Boolean = true,
@@ -35,6 +36,7 @@ internal object IncomingMessageNotificationPolicy {
         candidate.isAlreadyRead -> BlockReason.ALREADY_READ
         candidate.conversationMuted -> BlockReason.CONVERSATION_MUTED
         candidate.activeChat -> BlockReason.ACTIVE_CHAT
+        candidate.appInForeground -> BlockReason.APP_FOREGROUND
         !candidate.postNotificationsGranted -> BlockReason.POST_NOTIFICATIONS_DENIED
         !candidate.appNotificationsEnabled -> BlockReason.APP_NOTIFICATIONS_DISABLED
         !candidate.channelEnabled -> BlockReason.CHANNEL_DISABLED
