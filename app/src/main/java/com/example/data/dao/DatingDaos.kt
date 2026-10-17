@@ -153,6 +153,13 @@ interface MatchDao {
     @Query("UPDATE matches SET lastMessage = :text, lastMessageTime = :timestamp, hasUnread = :hasUnread WHERE matchId = :matchId")
     suspend fun updateLastMessage(matchId: String, text: String, timestamp: Long, hasUnread: Boolean)
 
+    /** Update a preview without replacing the conversation's independently-derived unread state. */
+    @Query("UPDATE matches SET lastMessage = :text, lastMessageTime = :timestamp WHERE matchId = :matchId")
+    suspend fun updateLastMessagePreservingUnread(matchId: String, text: String, timestamp: Long)
+
+    @Query("UPDATE matches SET hasUnread = :hasUnread WHERE matchId = :matchId")
+    suspend fun setHasUnread(matchId: String, hasUnread: Boolean)
+
     @Query("UPDATE matches SET hasUnread = 0 WHERE matchId = :matchId")
     suspend fun markAsRead(matchId: String)
 
