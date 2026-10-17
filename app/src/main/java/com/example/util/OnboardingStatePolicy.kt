@@ -50,7 +50,8 @@ object OnboardingStatePolicy {
                 "vibesync user",
                 "vibesync match",
                 "vibesync contact",
-                "vibesync friend"
+                "vibesync friend",
+                "vibesync member"
             )
         ) return false
         return !normalized.startsWith("user ") && !normalized.startsWith("user0")
@@ -60,14 +61,71 @@ object OnboardingStatePolicy {
      * Room completion is trusted only for the same verified phone. The encrypted-session marker
      * is bound to the authenticated profile ID; a real recovered profile repairs older installs.
      */
+    /**
+     * Truecaller provisions a minimal profile row before registration. A name or avatar alone is
+     * therefore not proof that the user completed onboarding. Only explicit registration fields,
+     * an identity-checked legacy phone profile, or an account-bound persisted completion marker
+     * can recover a completed account.
+     */
+    fun hasRegistrationDetails(
+        bio: String,
+        city: String,
+        occupation: String,
+        place: String,
+        qualification: String,
+        interests: String = ""
+    ): Boolean {
+        fun meaningful(value: String, placeholders: Set<String> = emptySet()): Boolean {
+            val normalized = value.trim().lowercase()
+            return normalized.isNotBlank() && normalized !in placeholders
+        }
+
+        return meaningful(
+            bio,
+            setOf("hey there! secure with vibesync e2ee.", "vibesync connection", "about me")
+        ) ||
+            meaningful(city, setOf("online", "active", "unknown", "not specified")) ||
+            meaningful(occupation, setOf("member", "user", "not specified")) ||
+            meaningful(place, setOf("downtown metro", "unknown", "not specified")) ||
+            meaningful(qualification, setOf("verified", "master of science", "not specified")) ||
+            meaningful(interests, setOf("friendship, chat", "chat, friendship"))
+    }
+
+    /** Phone-derived IDs used by older VibeSync releases; values stay in memory and are never logged. */
+    fun legacyPhoneProfileIdCandidates(phone: String): Set<String> {
+        val digits = phone.filter(Char::isDigit)
+        if (digits.length < 10) return emptySet()
+        val national = digits.takeLast(10)
+        return listOf(
+            digits,
+            national,
+            "0$national",
+            "91$national",
+            "+$digits",
+            "+91$national"
+        ).map(String::trim).filter(String::isNotBlank).toSet()
+    }
+
+    fun isLegacyPhoneProfileId(profileId: String, verifiedPhone: String): Boolean =
+        profileId.trim().let { candidate ->
+            candidate.isNotBlank() && legacyPhoneProfileIdCandidates(verifiedPhone).any {
+                it.equals(candidate, ignoreCase = true)
+            }
+        }
+
     fun shouldTreatAsCompleted(
         storedCompleted: Boolean,
         storedPhone: String,
         verifiedPhone: String,
         secureSessionMarker: Boolean,
-        recoveredProfileName: String? = null
+        recoveredProfileName: String? = null,
+        recoveredProfileHasRegistrationDetails: Boolean = false,
+        legacyPhoneProfileIdentityMatched: Boolean = false
     ): Boolean =
         secureSessionMarker ||
             (storedCompleted && sameVerifiedPhone(storedPhone, verifiedPhone)) ||
-            isMeaningfulProfileName(recoveredProfileName.orEmpty())
+            (
+                isMeaningfulProfileName(recoveredProfileName.orEmpty()) &&
+                    (recoveredProfileHasRegistrationDetails || legacyPhoneProfileIdentityMatched)
+            )
 }

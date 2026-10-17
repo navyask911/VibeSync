@@ -75,13 +75,23 @@ class OnboardingStatePolicyTest {
                 secureSessionMarker = true
             )
         )
-        assertTrue(
+        assertFalse(
             OnboardingStatePolicy.shouldTreatAsCompleted(
                 storedCompleted = false,
                 storedPhone = "",
                 verifiedPhone = "+91 97430 40335",
                 secureSessionMarker = false,
                 recoveredProfileName = "Suresh Kumar"
+            )
+        )
+        assertTrue(
+            OnboardingStatePolicy.shouldTreatAsCompleted(
+                storedCompleted = false,
+                storedPhone = "",
+                verifiedPhone = "+91 97430 40335",
+                secureSessionMarker = false,
+                recoveredProfileName = "Suresh Kumar",
+                recoveredProfileHasRegistrationDetails = true
             )
         )
         assertFalse(
