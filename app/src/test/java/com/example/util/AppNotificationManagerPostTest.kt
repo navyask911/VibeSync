@@ -49,34 +49,45 @@ class AppNotificationManagerPostTest {
         assertNotNull(shadowOf(manager).getNotification(notificationId))
     }
 
-    @Test
-    @Config(sdk = [33])
-    fun deniedAndroid13NotificationPermissionBlocksPost() {
-        shadowOf(RuntimeEnvironment.getApplication()).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
-        AppNotificationManager.initChannels(context)
-
-        val posted = AppNotificationManager.postNotificationIfAllowed(
-            context = context,
-            notificationId = 41_235,
-            notification = newNotification(),
-            diagnosticMessageId = "message-permission-test",
-            diagnosticWorkRequestId = "work-permission-test"
-        )
-
-        assertFalse(posted)
-        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        assertNotNull(manager)
-        assertFalse(NotificationManagerCompat.from(context).areNotificationsEnabled() &&
-            !NotificationPermissionPolicy.canPostNotification(
-                apiLevel = 33,
-                permissionGranted = false
-            ))
-    }
-
     private fun newNotification(): Notification =
         NotificationCompat.Builder(context, AppNotificationManager.CHANNEL_ID_CHAT_MESSAGES)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle("VibeSync test")
             .setContentText("Notification dispatch contract test")
             .build()
+}
+
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [33], manifest = Config.NONE)
+class AppNotificationManagerPermissionTest {
+    @Test
+    fun deniedAndroid13NotificationPermissionBlocksPost() {
+        val context = RuntimeEnvironment.getApplication()
+        AppNotificationManager.setAppForegroundState(false)
+        AppNotificationManager.clearActiveChatSession()
+        AppNotificationManager.initChannels(context)
+        shadowOf(context).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
+
+        val notificationId = 41_235
+        val notification = NotificationCompat.Builder(
+            context, AppNotificationManager.CHANNEL_ID_CHAT_MESSAGES
+        )
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentTitle("VibeSync test")
+            .setContentText("Notification permission contract test")
+            .build()
+
+        val posted = AppNotificationManager.postNotificationIfAllowed(
+            context = context,
+            notificationId = notificationId,
+            notification = notification,
+            diagnosticMessageId = "message-permission-test",
+            diagnosticWorkRequestId = "work-permission-test"
+        )
+
+        assertFalse(posted)
+        assertFalse(
+            NotificationManagerCompat.from(context).activeNotifications.any { it.id == notificationId }
+        )
+    }
 }
