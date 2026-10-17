@@ -26,10 +26,39 @@ object ChatDeliveryPresentation {
         else -> State.PENDING
     }
 
+    /** Resolve transient UI status against durable receipt state before drawing a tick. */
+    fun effectiveState(
+        persistedState: String?,
+        optimisticState: String?,
+        isDelivered: Boolean = false,
+        isRead: Boolean = false
+    ): State {
+        val persisted = normalizeState(persistedState)
+        val optimistic = normalizeState(optimisticState)
+
+        // Only durable receipt state (or durable Room flags) confirms SENT, DELIVERED, or READ.
+        // Local Compose/outbox status is not proof that the server or recipient acknowledged a message.
+        if (isRead || persisted == State.READ) return State.READ
+        if (isDelivered || persisted == State.DELIVERED) return State.DELIVERED
+        if (persisted == State.SENT_TO_SERVER) return State.SENT_TO_SERVER
+        if (persisted == State.FAILED) {
+            val retrying = optimisticState?.trim()?.uppercase(Locale.ROOT) in setOf("SENDING", "PENDING")
+            return if (retrying) State.PENDING else State.FAILED
+        }
+
+        // Optimistic state may explain that a retry is in progress, but cannot promote a stale
+        // durable PENDING row to SENT_TO_SERVER, DELIVERED, or READ.
+        return when (optimistic) {
+            State.PENDING -> persisted
+            State.FAILED -> State.FAILED
+            else -> persisted
+        }
+    }
+
     fun tick(rawState: String?): Tick = when (val state = normalizeState(rawState)) {
         State.PENDING -> Tick(state, Glyph.CLOCK, 0xFF9E9E9E, "Pending")
         State.SENT_TO_SERVER -> Tick(state, Glyph.SINGLE_CHECK, 0xFFE53935, "Sent to server")
-        State.DELIVERED -> Tick(state, Glyph.DOUBLE_CHECK, 0xFF9E9E9E, "Delivered")
+        State.DELIVERED -> Tick(state, Glyph.DOUBLE_CHECK, 0xFFE53935, "Delivered")
         State.READ -> Tick(state, Glyph.DOUBLE_CHECK, 0xFF2E7D32, "Read")
         State.FAILED -> Tick(state, Glyph.EXCLAMATION, 0xFFE53935, "Failed to deliver")
     }

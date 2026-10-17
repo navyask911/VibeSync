@@ -1040,7 +1040,8 @@ object SupabaseClientManager {
             country = country,
             countryFlag = obj.optSafeString("country_flag", "🇺🇸"),
             place = place,
-            qualification = qualification
+            qualification = qualification,
+            isDiscoverable = obj.optBoolean("is_discoverable", true)
         )
     }
 
@@ -1085,6 +1086,7 @@ object SupabaseClientManager {
                 put("occupation", ContactResolver.sanitizeName(profile.occupation, "Member"))
                 put("qualification", ContactResolver.sanitizeName(profile.qualification, "Verified"))
                 put("marital_status", ContactResolver.sanitizeName(profile.maritalStatus, "Single"))
+                put("is_discoverable", profile.isDiscoverable)
             }
 
             val request = buildRequest(
@@ -1240,7 +1242,7 @@ object SupabaseClientManager {
         try {
             val safeLimit = limit.coerceIn(1, 50)
             val request = buildRequest(
-                endpoint = "vibesync_profiles_public?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key,latitude,longitude,subscription_status,badge_purchased&order=updated_at.desc&limit=$safeLimit",
+                endpoint = "vibesync_profiles_public?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key,latitude,longitude,subscription_status,badge_purchased,is_discoverable&order=updated_at.desc&limit=$safeLimit",
                 method = "GET"
             )
 
@@ -1265,6 +1267,204 @@ object SupabaseClientManager {
     }
 
     /**
+     * Authenticated self-profile lookup. Unlike vibesync_profiles_public, the base-table query
+     * is protected by profiles_truecaller_jwt_select_own and can read only this JWT's profile ID.
+     */
+    suspend fun lookupAuthenticatedSelfProfileById(profileId: String): ProfileLookupResult =
+        withContext(Dispatchers.IO) {
+            val requestedId = profileId.trim()
+            val activeId = VibeSyncSessionManager.getProfileId().orEmpty().trim()
+            if (requestedId.isBlank() || activeId.isBlank() ||
+                !requestedId.equals(activeId, ignoreCase = true) ||
+                VibeSyncSessionManager.getAccessToken().isNullOrBlank() ||
+                VibeSyncSessionManager.getToken().isNullOrBlank()
+            ) {
+                Log.w(TAG, "Self-profile recovery lookup blocked: authenticated identity is incomplete.")
+                return@withContext ProfileLookupResult.Failed(
+                    ProfileLookupResult.FailureReason.AUTHORIZATION
+                )
+            }
+
+            lookupProfileEndpoint(
+                profileId = requestedId,
+                endpointName = "profiles",
+                endpoint = "profiles?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,marital_status,avatar_emoji,avatar_url,account_status,is_verified,is_deleted,updated_at,public_identity_key&id=eq.${java.net.URLEncoder.encode(requestedId, Charsets.UTF_8.name())}&limit=1",
+                lookupLabel = "authenticated-self"
+            )
+        }
+
+    /**
+     * Best-effort fallback for legacy phone-derived IDs. This reads only the existing public view;
+     * it never queries contacts or bypasses RLS to inspect someone else's base-table row.
+     */
+    suspend fun lookupPublicLegacyProfileById(profileId: String): ProfileLookupResult =
+        withContext(Dispatchers.IO) {
+            val requestedId = profileId.trim()
+            if (requestedId.isBlank() || requestedId == "null") {
+                return@withContext ProfileLookupResult.NotFound
+            }
+            lookupProfileEndpoint(
+                profileId = requestedId,
+                endpointName = "vibesync_profiles_public",
+                endpoint = "vibesync_profiles_public?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key,latitude,longitude,subscription_status,badge_purchased,is_discoverable&id=eq.${java.net.URLEncoder.encode(requestedId, Charsets.UTF_8.name())}&limit=1",
+                lookupLabel = "legacy-public"
+            )
+        }
+
+    private suspend fun lookupProfileEndpoint(
+        profileId: String,
+        endpointName: String,
+        endpoint: String,
+        lookupLabel: String
+    ): ProfileLookupResult {
+        return try {
+            val request = buildRequest(endpoint = endpoint, method = "GET")
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val reason = when (response.code) {
+                        401, 403 -> ProfileLookupResult.FailureReason.AUTHORIZATION
+                        in 500..599, 408, 425, 429 -> ProfileLookupResult.FailureReason.BACKEND
+                        else -> ProfileLookupResult.FailureReason.BACKEND
+                    }
+                    Log.w(TAG, "Profile recovery lookup failed: source=$lookupLabel status=${response.code}.")
+                    return@use ProfileLookupResult.Failed(reason)
+                }
+
+                val body = response.body?.string().orEmpty()
+                val rows = runCatching { JSONArray(body) }.getOrElse {
+                    Log.w(TAG, "Profile recovery lookup returned invalid data: source=$lookupLabel.")
+                    return@use ProfileLookupResult.Failed(
+                        ProfileLookupResult.FailureReason.INVALID_RESPONSE
+                    )
+                }
+                if (rows.length() == 0) {
+                    Log.i(TAG, "Profile recovery lookup result: source=$lookupLabel outcome=not_found.")
+                    return@use ProfileLookupResult.NotFound
+                }
+                val profile = parseProfileEntityFromJson(rows.getJSONObject(0))
+                if (profile == null || !profile.id.equals(profileId, ignoreCase = true)) {
+                    Log.w(TAG, "Profile recovery lookup returned mismatched identity: source=$lookupLabel.")
+                    ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.INVALID_RESPONSE)
+                } else {
+                    Log.i(TAG, "Profile recovery lookup result: source=$lookupLabel outcome=found.")
+                    ProfileLookupResult.Found(profile)
+                }
+            }
+        } catch (e: java.net.SocketTimeoutException) {
+            Log.w(TAG, "Profile recovery lookup timed out: source=$lookupLabel.")
+            ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.TIMEOUT)
+        } catch (e: java.net.UnknownHostException) {
+            Log.w(TAG, "Profile recovery lookup network unavailable: source=$lookupLabel.")
+            ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.NETWORK)
+        } catch (e: java.io.IOException) {
+            Log.w(TAG, "Profile recovery lookup network error: source=$lookupLabel type=${e.javaClass.simpleName}.")
+            ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.NETWORK)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Log.w(TAG, "Profile recovery lookup failed: source=$lookupLabel type=${e.javaClass.simpleName}.")
+            ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.BACKEND)
+        }
+    }
+
+    /**
+     * Legacy-only phone-index recovery. The authenticated self-profile query always runs first.
+     * This RPC deliberately excludes the canonical caller; a returned row is accepted only when
+     * its profile ID is a deterministic legacy alias of the verified phone.
+     */
+    suspend fun lookupLegacyProfileByE164Phone(phone: String): ProfileLookupResult =
+        withContext(Dispatchers.IO) {
+            val normalized = PhonebookHelper.normalizeToE164(phone)
+            if (!normalized.matches(Regex("^\\+[1-9][0-9]{7,14}$"))) {
+                return@withContext ProfileLookupResult.Failed(
+                    ProfileLookupResult.FailureReason.INVALID_RESPONSE
+                )
+            }
+            if (VibeSyncSessionManager.getAccessToken().isNullOrBlank() ||
+                VibeSyncSessionManager.getToken().isNullOrBlank() ||
+                VibeSyncSessionManager.getProfileId().isNullOrBlank()
+            ) {
+                return@withContext ProfileLookupResult.Failed(
+                    ProfileLookupResult.FailureReason.AUTHORIZATION
+                )
+            }
+            try {
+                val phones = JSONArray().put(normalized)
+                val request = buildRequest(
+                    endpoint = "rpc/match_contacts_by_phone_numbers",
+                    method = "POST",
+                    bodyJson = JSONObject().put("phone_numbers", phones).toString()
+                )
+                httpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        val reason = when (response.code) {
+                            401, 403 -> ProfileLookupResult.FailureReason.AUTHORIZATION
+                            408, 425, 429 -> ProfileLookupResult.FailureReason.BACKEND
+                            in 500..599 -> ProfileLookupResult.FailureReason.BACKEND
+                            else -> ProfileLookupResult.FailureReason.BACKEND
+                        }
+                        Log.w(TAG, "Legacy E.164 identity lookup failed: HTTP ${response.code}.")
+                        return@use ProfileLookupResult.Failed(reason)
+                    }
+                    val rows = runCatching {
+                        JSONArray(response.body?.string().orEmpty())
+                    }.getOrElse {
+                        return@use ProfileLookupResult.Failed(
+                            ProfileLookupResult.FailureReason.INVALID_RESPONSE
+                        )
+                    }
+                    if (rows.length() == 0) {
+                        Log.i(TAG, "Legacy E.164 identity lookup outcome=not_found.")
+                        return@use ProfileLookupResult.NotFound
+                    }
+                    for (index in 0 until rows.length()) {
+                        val row = rows.optJSONObject(index) ?: continue
+                        val legacyId = row.optSafeString("id", "").trim()
+                        val returnedPhone = PhonebookHelper.normalizeToE164(
+                            row.optSafeString("phone_e164", "")
+                        )
+                        if (legacyId.isBlank() || returnedPhone != normalized) continue
+                        val rawName = row.optSafeString("name", "VibeSync Member")
+                        val decodedName = runCatching {
+                            HackFreeSecurityShield.decrypt(rawName)
+                        }.getOrDefault(rawName)
+                        val safeName = ContactResolver.sanitizeName(decodedName, "VibeSync Member")
+                        val avatar = row.optSafeString("profile_photo_url", "").ifBlank { "" }
+                        Log.i(TAG, "Legacy E.164 identity lookup found a phone-index row; profile details will be verified separately.")
+                        return@use ProfileLookupResult.Found(
+                            ProfileEntity(
+                                id = legacyId,
+                                name = safeName,
+                                age = 24,
+                                phoneNumber = returnedPhone,
+                                avatarUrl = avatar,
+                                avatarEmoji = row.optSafeString("avatar_emoji", "✨")
+                            )
+                        )
+                    }
+                    // Empty is handled above as a confirmed miss. A non-empty payload that has
+                    // no verifiable E.164 row is malformed/stale and must never imply "new user".
+                    Log.w(TAG, "Legacy E.164 identity lookup returned no verifiable row.")
+                    ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.INVALID_RESPONSE)
+                }
+            } catch (e: java.net.SocketTimeoutException) {
+                Log.w(TAG, "Legacy E.164 identity lookup timed out.")
+                ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.TIMEOUT)
+            } catch (e: java.net.UnknownHostException) {
+                Log.w(TAG, "Legacy E.164 identity lookup network unavailable.")
+                ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.NETWORK)
+            } catch (e: java.io.IOException) {
+                Log.w(TAG, "Legacy E.164 identity lookup network error: ${e.javaClass.simpleName}.")
+                ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.NETWORK)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Log.w(TAG, "Legacy E.164 identity lookup failed: ${e.javaClass.simpleName}.")
+                ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.BACKEND)
+            }
+        }
+
+    /**
      * Fetches one public profile by its opaque VibeSync profile ID.
      * No phone number is queried or returned through this endpoint.
      */
@@ -1273,7 +1473,7 @@ object SupabaseClientManager {
         try {
             val encodedId = java.net.URLEncoder.encode(profileId, Charsets.UTF_8.name())
             val request = buildRequest(
-                endpoint = "vibesync_profiles_public?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key,latitude,longitude,subscription_status,badge_purchased&id=eq.$encodedId&limit=1",
+                endpoint = "vibesync_profiles_public?select=id,name,bio,age,gender,city,country,country_flag,place,occupation,qualification,avatar_emoji,avatar_url,marital_status,account_status,is_verified,is_deleted,updated_at,public_identity_key,latitude,longitude,subscription_status,badge_purchased,is_discoverable&id=eq.$encodedId&limit=1",
                 method = "GET"
             )
             httpClient.newCall(request).execute().use { response ->
@@ -2379,7 +2579,10 @@ object SupabaseClientManager {
         afterCreatedAtMs: Long,
         afterCreatedAtRaw: String = "",
         afterMessageId: String = "",
-        onPeerPublicKeyRefreshed: (suspend (String, String) -> Unit)? = null
+        onPeerPublicKeyRefreshed: (suspend (String, String) -> Unit)? = null,
+        localMatchId: String = "",
+        clearBarrierContext: android.content.Context? = null,
+        clearBarrierDatabase: com.example.data.database.DatingDatabase? = null
     ): MessageDeltaBatch? = withContext(Dispatchers.IO) {
         val records = mutableListOf<MessageDeltaRecord>()
         var complete = true
@@ -2390,7 +2593,11 @@ object SupabaseClientManager {
         val pageSize = 500
         val maxPages = 20
         val currentProfileId = VibeSyncSessionManager.getProfileId().orEmpty().trim()
-        val context = AppNotificationManager.appContext ?: MessageHandler.appContext
+        val context = clearBarrierContext?.applicationContext
+            ?: AppNotificationManager.appContext ?: MessageHandler.appContext
+        val barrierDatabase = clearBarrierDatabase ?: context?.let {
+            runCatching { com.example.data.database.DatingDatabase.getDatabase(it) }.getOrNull()
+        }
         val safeMatch = java.net.URLEncoder.encode(matchId, "UTF-8")
         val afterFilter = when {
             afterCreatedAtRaw.isNotBlank() && afterMessageId.isNotBlank() -> {
@@ -2449,6 +2656,15 @@ object SupabaseClientManager {
                         complete = false
                         continue
                     }
+
+                    // Advance the ordered cursor, but skip obsolete rows before Tink decryption,
+                    // media-only tombstone creation, retry metadata, or receipt side effects.
+                    if (context != null && barrierDatabase != null &&
+                        MessageHistoryClearBarrier.shouldSuppress(
+                            context, barrierDatabase, localMatchId.ifBlank { remoteMatch },
+                            createdAt.takeIf { it > 0L }, currentProfileId
+                        )
+                    ) continue
 
                     // Server-side deletions still advance only after the row identity/timestamp is known.
                     val mediaType = row.optSafeString("media_type", "TEXT")
@@ -2555,7 +2771,10 @@ object SupabaseClientManager {
     suspend fun fetchMessagesForMatch(
         matchId: String,
         currentUserPhone: String = "",
-        partnerPhone: String = ""
+        partnerPhone: String = "",
+        localMatchId: String = "",
+        clearBarrierContext: android.content.Context? = null,
+        clearBarrierDatabase: com.example.data.database.DatingDatabase? = null
     ): List<ChatMessageEntity> = withContext(Dispatchers.IO) {
         val list = mutableListOf<ChatMessageEntity>()
         try {
@@ -2567,9 +2786,12 @@ object SupabaseClientManager {
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext list
                 val rows = JSONArray(response.body?.string() ?: "[]")
-                val context = AppNotificationManager.appContext ?: MessageHandler.appContext
+                val context = clearBarrierContext?.applicationContext
+                    ?: AppNotificationManager.appContext ?: MessageHandler.appContext
                 val localProfileId = VibeSyncSessionManager.getProfileId().orEmpty().trim()
-                val database = context?.let { runCatching { com.example.data.database.DatingDatabase.getDatabase(it) }.getOrNull() }
+                val database = clearBarrierDatabase ?: context?.let {
+                    runCatching { com.example.data.database.DatingDatabase.getDatabase(it) }.getOrNull()
+                }
                 for (index in 0 until rows.length()) {
                     val row = rows.optJSONObject(index) ?: continue
                     val messageId = row.optSafeString("message_id", row.optSafeString("id", ""))
@@ -2577,7 +2799,16 @@ object SupabaseClientManager {
                     val receiverId = row.optSafeString("receiver_id", "")
                     val ciphertext = row.optSafeString("ciphertext", "")
                     val remoteMatchId = row.optSafeString("match_id", matchId)
-                    if (messageId.isBlank() || ciphertext.isBlank()) continue
+                    val authoritativeCreatedAtMs = MessageHistoryClearBarrier.parseServerTimestampMillis(row)
+                    if (messageId.isBlank()) continue
+                    // Reject old ciphertext before decrypt/recovery can refresh keys or create tombstones.
+                    if (context != null && database != null &&
+                        MessageHistoryClearBarrier.shouldSuppress(
+                            context, database, localMatchId.ifBlank { remoteMatchId },
+                            authoritativeCreatedAtMs, localProfileId
+                        )
+                    ) continue
+                    if (ciphertext.isBlank()) continue
                     val ownMessage = MessageDecryptionPolicy.isOwnOutgoingMessage(senderId, localProfileId)
                     val existingLocal = if (ownMessage && database != null) {
                         runCatching { database.chatMessageDao().getMessageById(messageId) }.getOrNull()
@@ -2609,7 +2840,12 @@ object SupabaseClientManager {
                     val mediaUrl = row.optSafeString("media_url", "")
                     val rendered = MessageLocalRetentionPolicy.isRenderableText(displayedText)
                     val storedText = if (rendered) displayedText else ""
-                    val timestamp = row.optLong("timestamp", 0L).takeIf { it > 0L } ?: System.currentTimeMillis()
+                    // created_at is authoritative server ordering metadata. Keep unknown timestamps
+                    // unknown in serverCreatedAt rather than making an old row look newly created
+                    // by substituting this device's clock before the clear-history barrier runs.
+                    val timestamp = authoritativeCreatedAtMs
+                        ?: row.optLong("timestamp", 0L).takeIf { it > 0L }
+                        ?: System.currentTimeMillis()
                     val localMessage = existingLocal?.takeIf { ownMessage }?.let { existing ->
                         existing.copy(
                             isDelivered = row.optBoolean("is_delivered", false) || existing.isDelivered,
@@ -2627,6 +2863,7 @@ object SupabaseClientManager {
                         encryptedPayload = ciphertext,
                         decryptState = if (rendered) MessageLocalRetentionPolicy.DECRYPT_STATE_OK else MessageLocalRetentionPolicy.FAILED_RETRYABLE,
                         timestamp = timestamp,
+                        serverCreatedAt = authoritativeCreatedAtMs ?: 0L,
                         isDelivered = row.optBoolean("is_delivered", false),
                         isRead = row.optBoolean("is_read", false),
                         mediaUrl = mediaUrl,

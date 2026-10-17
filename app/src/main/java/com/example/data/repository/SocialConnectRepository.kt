@@ -895,7 +895,7 @@ class SocialConnectRepository(
             isEncrypted = true
         )
         chatMessageDao.insertMessage(userMsg)
-        matchDao.updateLastMessage(match.matchId, userMsg.text, userMsg.timestamp, true)
+        matchDao.updateLastMessagePreservingUnread(match.matchId, userMsg.text, userMsg.timestamp)
     }
 
     suspend fun deleteStatusStory(storyId: String) = withContext(Dispatchers.IO) {
@@ -1663,7 +1663,8 @@ class SocialConnectRepository(
                                 val msgId = (data["messageId"] as? String) ?: docChange.document.id
                                 val senderId = (data["senderId"] as? String) ?: ""
                                 val text = (data["text"] as? String) ?: ""
-                                val timestamp = (data["timestamp"] as? Long) ?: System.currentTimeMillis()
+                                val authoritativeTimestamp = (data["timestamp"] as? Long)?.takeIf { it > 0L }
+                                val timestamp = authoritativeTimestamp ?: System.currentTimeMillis()
                                 val mediaType = (data["mediaType"] as? String) ?: "TEXT"
                                 val mediaUrl = (data["mediaUrl"] as? String) ?: ""
                                 val voiceDurationSeconds = (data["voiceDurationSeconds"] as? Long)?.toInt() ?: 0
@@ -1706,73 +1707,118 @@ class SocialConnectRepository(
                                     continue
                                 }
 
-                                val existing = chatMessageDao.getMessageById(msgId)
-                                if (existing == null) {
-                                    val incomingMsg = ChatMessageEntity(
-                                        messageId = msgId,
-                                        matchId = matchId,
-                                        senderId = senderId,
-                                        text = text,
-                                        mediaType = mediaType,
-                                        mediaUrl = mediaUrl,
-                                        voiceDurationSeconds = voiceDurationSeconds,
-                                        timestamp = timestamp,
-                                        isEncrypted = true
+                                val appContext = context ?: AppNotificationManager.appContext ?: continue
+                                if (com.example.util.MessageHistoryClearBarrier.shouldSuppress(
+                                        appContext, database, matchId, authoritativeTimestamp
                                     )
-                                    chatMessageDao.insertMessage(incomingMsg)
+                                ) {
+                                    android.util.Log.d("VibeSyncClearChat", "Suppressed a legacy Firestore row at or before the local clear cutoff.")
+                                    continue
                                 }
 
-                                // E2E Cloud Ephemeral Delivery Policy (VibeSync / VibeSync E2EE Protocol Standard):
-                                // Once message is delivered and persisted locally into mobile Room DB,
-                                // IMMEDIATELY purge the message copy from Cloud Firestore server!
+                                val existing = chatMessageDao.getMessageById(msgId)
+                                if (existing != null) continue
+                                val incomingMsg = ChatMessageEntity(
+                                    messageId = msgId,
+                                    matchId = matchId,
+                                    senderId = senderId,
+                                    text = text,
+                                    mediaType = mediaType,
+                                    mediaUrl = mediaUrl,
+                                    voiceDurationSeconds = voiceDurationSeconds,
+                                    timestamp = timestamp,
+                                    serverCreatedAt = authoritativeTimestamp ?: 0L,
+                                    isEncrypted = true
+                                )
+                                val persisted = com.example.util.ConversationClearCoordinator.withConversationLock(matchId) {
+                                    if (com.example.util.MessageHistoryClearBarrier.shouldSuppress(
+                                            appContext, database, matchId, authoritativeTimestamp
+                                        )
+                                    ) {
+                                        false
+                                    } else {
+                                        database.withTransaction {
+                                            if (database.conversationClearDao().isConversationClearInProgress(matchId) ||
+                                                chatMessageDao.getMessageById(msgId) != null
+                                            ) {
+                                                false
+                                            } else {
+                                                chatMessageDao.insertMessage(incomingMsg)
+                                                val existingMatch = matchDao.getMatchByIdSync(matchId)
+                                                    ?: matchDao.getMatchByProfileId(senderId)
+                                                val incomingUnread = com.example.util.ConversationUnreadStatePolicy.isUnreadIncoming(
+                                                    isIncoming = true,
+                                                    isRead = incomingMsg.isRead,
+                                                    deliveryState = incomingMsg.deliveryState,
+                                                    isControlMessage = com.example.util.ConversationUnreadStatePolicy.isControlMessage(
+                                                        incomingMsg.mediaType, incomingMsg.text
+                                                    ),
+                                                    isDeleted = incomingMsg.isDeleted,
+                                                    isDeletedForMe = incomingMsg.isDeletedForMe,
+                                                    isDeletedForEveryone = incomingMsg.isDeletedForEveryone
+                                                )
+                                                if (existingMatch == null) {
+                                                    matchDao.insertMatch(
+                                                        MatchEntity(
+                                                            matchId = matchId,
+                                                            profileId = senderId,
+                                                            matchedAt = timestamp,
+                                                            lastMessage = text.ifBlank {
+                                                                if (mediaType == "VOICE") "Voice message" else "Photo"
+                                                            },
+                                                            lastMessageTime = timestamp,
+                                                            hasUnread = incomingUnread
+                                                        )
+                                                    )
+                                                } else if (timestamp >= existingMatch.lastMessageTime) {
+                                                    matchDao.updateLastMessagePreservingUnread(
+                                                        matchId = existingMatch.matchId,
+                                                        text = text.ifBlank {
+                                                            if (mediaType == "VOICE") "Voice message" else "Photo"
+                                                        },
+                                                        timestamp = timestamp
+                                                    )
+                                                }
+                                                if (incomingUnread) {
+                                                    matchDao.setHasUnread(existingMatch?.matchId ?: matchId, true)
+                                                }
+                                                true
+                                            }
+                                        }
+                                    }
+                                }
+                                if (!persisted) continue
+
+                                // Preserve the previous listener's ephemeral cleanup only after
+                                // this row committed locally. A barrier-rejected row is never deleted remotely.
                                 try {
                                     firestore.collection("chats")
                                         .document(matchId)
                                         .collection("messages")
                                         .document(docChange.document.id)
                                         .delete()
-                                    android.util.Log.d("SocialConnectRepository", "🧹 E2E Delivered Message '${docChange.document.id}' purged from cloud server (Mobile DB local retention only).")
-                                } catch (e: Exception) {
-                                    android.util.Log.w("SocialConnectRepository", "Cloud message ephemeral purge notice: ${e.message}")
+                                } catch (failure: Exception) {
+                                    android.util.Log.w("SocialConnectRepository", "Legacy Firestore cleanup failed: ${failure.javaClass.simpleName}")
                                 }
 
-                                // Ensure partner profile exists locally
                                 var partner = profileDao.getProfileByIdSync(senderId)
                                 if (partner == null) {
                                     pullSingleProfileFromFirestore(senderId)
                                     partner = profileDao.getProfileByIdSync(senderId)
                                 }
-
-                                val existingMatch = matchDao.getMatchByIdSync(matchId) ?: matchDao.getMatchByProfileId(senderId)
-                                if (existingMatch == null) {
-                                    val newMatch = MatchEntity(
-                                        matchId = matchId,
-                                        profileId = senderId,
-                                        matchedAt = timestamp,
-                                        lastMessage = text.ifBlank { if (mediaType == "VOICE") "Voice message" else "Photo" },
-                                        lastMessageTime = timestamp,
-                                        hasUnread = true
-                                    )
-                                    matchDao.insertMatch(newMatch)
-                                } else {
-                                    matchDao.updateLastMessage(
-                                        matchId = existingMatch.matchId,
-                                        text = text.ifBlank { if (mediaType == "VOICE") "Voice message" else "Photo" },
-                                        timestamp = timestamp,
-                                        hasUnread = true
-                                    )
-                                }
-
-                                AppNotificationManager.appContext?.let { ctx ->
-                                    AppNotificationManager.showMessageNotification(
-                                        context = ctx,
-                                        senderId = senderId,
-                                        senderName = partner?.name ?: "VibeSync Match",
-                                        messageText = text.ifBlank { if (mediaType == "VOICE") "Voice message" else "Photo" },
-                                        senderPhotoUrl = partner?.avatarEmoji ?: "✨",
-                                        mediaType = mediaType
-                                    )
-                                }
+                                AppNotificationManager.showMessageNotification(
+                                    context = appContext,
+                                    senderId = senderId,
+                                    senderName = partner?.name ?: "VibeSync Match",
+                                    messageText = text.ifBlank {
+                                        if (mediaType == "VOICE") "Voice message" else "Photo"
+                                    },
+                                    senderPhotoUrl = partner?.avatarEmoji ?: "✨",
+                                    mediaType = mediaType,
+                                    conversationId = matchId,
+                                    messageId = msgId,
+                                    messageTimestamp = timestamp
+                                )
                             }
                         }
                     }
@@ -2309,7 +2355,8 @@ class SocialConnectRepository(
         bio: String = "",
         interests: String = "",
         maritalStatus: String = "Single (Never Married)",
-        isOpenForDating: Boolean = true
+        isOpenForDating: Boolean = true,
+        isDiscoverable: Boolean = true
     ) {
         val current = preferencesDao.getPreferencesSync() ?: UserPreferencesEntity()
         val joinedPhotos = photos.joinToString("|||")
@@ -2371,6 +2418,7 @@ class SocialConnectRepository(
                     "relationshipGoal" to updatedPrefs.userRelationshipGoal,
                     "maritalStatus" to updatedPrefs.userMaritalStatus,
                     "isOpenForDating" to updatedPrefs.isOpenForDating,
+                    "isDiscoverable" to isDiscoverable,
                     "avatarEmoji" to if (updatedPrefs.avatarUrl.isNotBlank()) "" else "✨",
                     "avatarUrl" to com.example.util.ProfileAvatarStorageManager.serverAvatarReference(userId, updatedPrefs.avatarUrl),
                     "isRealFaceVerified" to updatedPrefs.isFaceVerified,
@@ -2415,7 +2463,8 @@ class SocialConnectRepository(
                     phoneNumber = updatedPrefs.verifiedMobileNumber,
                     email = updatedPrefs.googleEmail,
                     isDeleted = false,
-                    accountStatus = "ACTIVE"
+                    accountStatus = "ACTIVE",
+                    isDiscoverable = isDiscoverable
                 )
                 profileDao.insertProfile(ownProf)
                 try {
@@ -3146,60 +3195,133 @@ class SocialConnectRepository(
     suspend fun insertReceivedChatMessage(
         message: ChatMessageEntity,
         senderPhone: String = "",
-        receiverPhone: String = ""
-    ) {
-        if (database.expiredChatMessageDao().isExpiredMessage(message.messageId)) return
-        val existingMessage = chatMessageDao.getMessageById(message.messageId)
-        // A replay of the original INSERT must never resurrect plaintext after a shared delete event.
-        if (existingMessage?.isDeleted == true || existingMessage?.isDeletedForEveryone == true) return
-        val safeText = com.example.util.MessageLocalRetentionPolicy.displayText(
-            message.text, existingMessage?.text
-        )
-        val canRenderText = com.example.util.MessageLocalRetentionPolicy.isRenderableText(safeText)
-        val persistedMessage = message.copy(
-            text = safeText,
-            deliveryState = if (canRenderText) message.deliveryState else "PENDING_DECRYPTION",
-            deliveryAckPending = message.deliveryAckPending && canRenderText
-        )
+        receiverPhone: String = "",
+        authoritativeTimestampMs: Long? = message.serverCreatedAt.takeIf { it > 0L }
+    ): Boolean {
+        if (database.expiredChatMessageDao().isExpiredMessage(message.messageId)) return false
+        val localMatchId = message.matchId.trim()
+        if (localMatchId.isBlank()) return false
+        val appContext = context ?: AppNotificationManager.appContext ?: return false
 
-        if (existingMessage == null ||
-            !com.example.util.MessageLocalRetentionPolicy.isRenderableText(existingMessage.text)
-        ) {
-            // Commit the primary chat row and the legacy projection atomically. remoteMessageId
-            // ensures retried deliveries replace the same projection instead of adding duplicates.
-            database.withTransaction {
-                chatMessageDao.upsertMessage(persistedMessage)
-                messageDao.insertMessage(
-                    persistedMessage.toLocalMessage().copy(remoteMessageId = persistedMessage.messageId)
+        return com.example.util.ConversationClearCoordinator.withConversationLock(localMatchId) {
+            if (com.example.util.MessageHistoryClearBarrier.shouldSuppress(
+                    appContext, database, localMatchId, authoritativeTimestampMs
                 )
-            }
+            ) return@withConversationLock false
 
-            val match = matchDao.getMatchByIdSync(persistedMessage.matchId)
-            if (match == null) {
-                val profId = senderPhone.ifBlank { persistedMessage.senderId }
-                val newMatch = MatchEntity(
-                    matchId = persistedMessage.matchId,
-                    profileId = profId,
-                    matchedAt = persistedMessage.timestamp,
-                    lastMessage = persistedMessage.text.ifBlank {
-                        if (persistedMessage.mediaType == "VOICE") "Voice message" else "Photo"
-                    },
-                    lastMessageTime = persistedMessage.timestamp,
-                    hasUnread = !persistedMessage.isRead
-                )
-                matchDao.insertMatch(newMatch)
-            } else {
-                matchDao.updateLastMessage(
-                    matchId = persistedMessage.matchId,
-                    text = persistedMessage.text.ifBlank {
-                        if (persistedMessage.mediaType == "VOICE") "Voice message" else "Photo"
-                    },
-                    timestamp = persistedMessage.timestamp,
-                    hasUnread = !persistedMessage.isRead
-                )
+            val existingMessage = chatMessageDao.getMessageById(message.messageId)
+            // A replay of an original INSERT cannot undo an established deletion tombstone.
+            if (existingMessage?.isDeleted == true || existingMessage?.isDeletedForEveryone == true) {
+                return@withConversationLock false
             }
+            val safeText = com.example.util.MessageLocalRetentionPolicy.displayText(message.text, existingMessage?.text)
+            val canRenderText = com.example.util.MessageLocalRetentionPolicy.isRenderableText(safeText)
+            // Room's durable per-message READ state wins over a stale replayed server snapshot.
+            val alreadyRead = com.example.util.ConversationUnreadStatePolicy.mergedIsRead(
+                remoteIsRead = message.isRead,
+                remoteDeliveryState = message.deliveryState,
+                localIsRead = existingMessage?.isRead == true,
+                localDeliveryState = existingMessage?.deliveryState.orEmpty()
+            )
+            val alreadyDelivered = message.isDelivered ||
+                message.deliveryState.equals("DELIVERED", ignoreCase = true) ||
+                message.deliveryState.equals("READ", ignoreCase = true) ||
+                existingMessage?.isDelivered == true ||
+                existingMessage?.deliveryState.equals("DELIVERED", ignoreCase = true) ||
+                existingMessage?.deliveryState.equals("READ", ignoreCase = true) ||
+                alreadyRead
+            val persistedMessage = message.copy(
+                text = safeText,
+                isRead = alreadyRead,
+                isDelivered = alreadyDelivered,
+                serverCreatedAt = authoritativeTimestampMs ?: 0L,
+                deliveryState = when {
+                    !canRenderText -> "PENDING_DECRYPTION"
+                    alreadyRead -> "READ"
+                    alreadyDelivered -> "DELIVERED"
+                    else -> message.deliveryState
+                },
+                deliveryAckPending = message.deliveryAckPending && canRenderText && !alreadyRead && !alreadyDelivered
+            )
+
+            if (existingMessage == null ||
+                !com.example.util.MessageLocalRetentionPolicy.isRenderableText(existingMessage.text)
+            ) {
+                var committedMessage = persistedMessage
+                val committed = database.withTransaction {
+                    // Recheck the durable guard at the final persistence boundary. The shared
+                    // mutex serializes sync paths, but visible READ ACKs use their own Room
+                    // transaction; always merge against the newest row while this transaction holds.
+                    if (database.conversationClearDao().isConversationClearInProgress(localMatchId)) {
+                        return@withTransaction false
+                    }
+                    val latestRoomMessage = chatMessageDao.getMessageById(message.messageId)
+                    committedMessage = com.example.util.MessageDeltaSyncManager
+                        .mergeLatestLocalReadState(persistedMessage, latestRoomMessage)
+                        .copy(
+                            serverCreatedAt = maxOf(
+                                authoritativeTimestampMs ?: 0L,
+                                latestRoomMessage?.serverCreatedAt ?: 0L
+                            )
+                        )
+                    chatMessageDao.upsertMessage(committedMessage)
+                    messageDao.insertMessage(
+                        committedMessage.toLocalMessage().copy(remoteMessageId = committedMessage.messageId)
+                    )
+                    val match = matchDao.getMatchByIdSync(committedMessage.matchId)
+                    val preview = committedMessage.text.ifBlank {
+                        if (committedMessage.mediaType == "VOICE") "Voice message" else "Photo"
+                    }
+                    if (match == null) {
+                        val peer = senderPhone.ifBlank { committedMessage.senderId }
+                        matchDao.insertMatch(
+                            MatchEntity(
+                                matchId = committedMessage.matchId,
+                                profileId = peer,
+                                matchedAt = committedMessage.timestamp,
+                                lastMessage = preview,
+                                lastMessageTime = committedMessage.timestamp,
+                                hasUnread = com.example.util.ConversationUnreadStatePolicy.isUnreadIncoming(
+                                    isIncoming = true,
+                                    isRead = committedMessage.isRead,
+                                    deliveryState = committedMessage.deliveryState,
+                                    isControlMessage = com.example.util.ConversationUnreadStatePolicy.isControlMessage(
+                                        committedMessage.mediaType, committedMessage.text
+                                    ),
+                                    isDeleted = committedMessage.isDeleted,
+                                    isDeletedForMe = committedMessage.isDeletedForMe,
+                                    isDeletedForEveryone = committedMessage.isDeletedForEveryone
+                                )
+                            )
+                        )
+                    } else if (committedMessage.timestamp >= match.lastMessageTime) {
+                        matchDao.updateLastMessagePreservingUnread(
+                            committedMessage.matchId, preview, committedMessage.timestamp
+                        )
+                    }
+                    if (com.example.util.ConversationUnreadStatePolicy.isUnreadIncoming(
+                            isIncoming = true,
+                            isRead = committedMessage.isRead,
+                            deliveryState = committedMessage.deliveryState,
+                            isControlMessage = com.example.util.ConversationUnreadStatePolicy.isControlMessage(
+                                committedMessage.mediaType, committedMessage.text
+                            ),
+                            isDeleted = committedMessage.isDeleted,
+                            isDeletedForMe = committedMessage.isDeletedForMe,
+                            isDeletedForEveryone = committedMessage.isDeletedForEveryone
+                        )
+                    ) {
+                        matchDao.setHasUnread(committedMessage.matchId, true)
+                    }
+                    true
+                }
+                if (!committed) return@withConversationLock false
+            }
+            // Duplicates already represented by a valid local row are still eligible for an idempotent ACK.
+            true
         }
     }
+
 
     suspend fun sendMessage(
         matchId: String,
@@ -3316,8 +3438,6 @@ class SocialConnectRepository(
             deliveryState = "PENDING",
             outboxOwnerProfileId = com.example.util.VibeSyncSessionManager.getProfileId().orEmpty().trim()
         )
-        chatMessageDao.insertMessage(userMsg)
-        messageDao.insertMessage(userMsg.toLocalMessage().copy(remoteMessageId = userMsg.messageId))
         // Encrypted protocol controls are durable outbox rows, not visible chat activity/previews.
         val isProtocolControl = mediaType.uppercase() in setOf(
             "PROFILE_KEY_EXCHANGE",
@@ -3326,13 +3446,25 @@ class SocialConnectRepository(
             com.example.util.ChatMessageEventCodec.MEDIA_TYPE_EDIT,
             com.example.util.ChatMessageEventCodec.MEDIA_TYPE_DISAPPEARING_TIMER
         )
-        if (!isProtocolControl) {
-            matchDao.updateLastMessage(
-                matchId = matchId,
-                text = text.ifBlank { if (mediaType == "VOICE") "Voice message" else "Photo" },
-                timestamp = userMsg.timestamp,
-                hasUnread = false
-            )
+        val acceptedIntoOutbox = database.withTransaction {
+            if (!database.conversationClearDao().isConversationSendAllowed(matchId)) {
+                false
+            } else {
+                chatMessageDao.insertMessage(userMsg)
+                messageDao.insertMessage(userMsg.toLocalMessage().copy(remoteMessageId = userMsg.messageId))
+                if (!isProtocolControl) {
+                    matchDao.updateLastMessagePreservingUnread(
+                        matchId = matchId,
+                        text = text.ifBlank { if (mediaType == "VOICE") "Voice message" else "Photo" },
+                        timestamp = userMsg.timestamp
+                    )
+                }
+                true
+            }
+        }
+        if (!acceptedIntoOutbox) {
+            android.util.Log.i("VibeSyncClearChat", "Rejected an outgoing message because this conversation is being cleared.")
+            return
         }
 
         // Eager-send after the durable local Room write. WorkManager is enqueued only when the
@@ -3409,7 +3541,7 @@ class SocialConnectRepository(
         messageDao.insertMessage(updated.toLocalMessage().copy(remoteMessageId = updated.messageId))
         val conversation = matchDao.getMatchByIdSync(msg.matchId) ?: return false
         if (conversation.lastMessageTime <= msg.timestamp || conversation.lastMessage == msg.text) {
-            matchDao.updateLastMessage(msg.matchId, newText, now, false)
+            matchDao.updateLastMessagePreservingUnread(msg.matchId, newText, now)
         }
         val peer = profileDao.getProfileByIdSync(conversation.profileId)
         sendMessage(
@@ -3454,11 +3586,10 @@ class SocialConnectRepository(
             reactionsJson = "{}"
         ))
         if (match.lastMessageTime <= msg.timestamp || match.lastMessage == msg.text) {
-            matchDao.updateLastMessage(
+            matchDao.updateLastMessagePreservingUnread(
                 msg.matchId,
                 "This message was deleted",
-                msg.timestamp,
-                false
+                msg.timestamp
             )
         }
         val recipient = profileDao.getProfileByIdSync(match.profileId)
@@ -5668,6 +5799,12 @@ class SocialConnectRepository(
                                 remote.senderId.equals(myProfileId, ignoreCase = true) ||
                                 remote.senderId == myPhone ||
                                 (myDigits.length >= 7 && digits.length >= 7 && digits.endsWith(myDigits.takeLast(10)))
+                            val appContext = context ?: AppNotificationManager.appContext ?: continue
+                            val authoritativeCreatedAt = remote.serverCreatedAt.takeIf { it > 0L }
+                            if (com.example.util.MessageHistoryClearBarrier.shouldSuppress(
+                                    appContext, database, m.matchId, authoritativeCreatedAt
+                                )
+                            ) continue
                             val existing = chatMessageDao.getMessageById(remote.messageId)
                             val safeText = com.example.util.MessageLocalRetentionPolicy.displayText(
                                 remote.text, existing?.text
@@ -5676,27 +5813,95 @@ class SocialConnectRepository(
                             if (existing == null ||
                                 !com.example.util.MessageLocalRetentionPolicy.isRenderableText(existing.text)
                             ) {
+                                val localAlreadyRead = existing?.isRead == true ||
+                                    existing?.deliveryState.equals("READ", ignoreCase = true)
+                                val incomingIsRead = com.example.util.ConversationUnreadStatePolicy.mergedIsRead(
+                                    remoteIsRead = isMyOwn && remote.isRead,
+                                    remoteDeliveryState = if (isMyOwn) remote.deliveryState else "",
+                                    localIsRead = localAlreadyRead,
+                                    localDeliveryState = if (isMyOwn) existing?.deliveryState.orEmpty() else ""
+                                )
+                                val incomingIsDelivered = canRenderText && (
+                                    isMyOwn || remote.isDelivered || incomingIsRead ||
+                                        existing?.isDelivered == true ||
+                                        existing?.deliveryState.equals("DELIVERED", ignoreCase = true)
+                                )
                                 val incoming = remote.copy(
                                     matchId = m.matchId,
                                     senderId = if (isMyOwn) "USER" else peerProfileId,
                                     text = safeText,
-                                    isDelivered = canRenderText && (isMyOwn || remote.isDelivered),
-                                    isRead = isMyOwn && remote.isRead,
-                                    deliveryAckPending = !isMyOwn && canRenderText && !remote.isDelivered,
+                                    isDelivered = incomingIsDelivered,
+                                    isRead = incomingIsRead,
+                                    deliveryAckPending = !isMyOwn && canRenderText && !incomingIsDelivered,
                                     deliveryState = if (!canRenderText) "PENDING_DECRYPTION"
-                                        else if (isMyOwn && remote.isRead) "READ"
-                                        else if (remote.isDelivered) "DELIVERED"
+                                        else if (incomingIsRead) "READ"
+                                        else if (incomingIsDelivered) "DELIVERED"
                                         else if (isMyOwn) "SENT_TO_SERVER" else "ACK_PENDING"
                                 )
-                                database.withTransaction {
-                                    chatMessageDao.upsertMessage(incoming)
-                                    messageDao.insertMessage(
-                                        incoming.toLocalMessage().copy(remoteMessageId = incoming.messageId)
-                                    )
+                                var committedIncoming = incoming
+                                val persisted = com.example.util.ConversationClearCoordinator.withConversationLock(m.matchId) {
+                                    if (com.example.util.MessageHistoryClearBarrier.shouldSuppress(
+                                            appContext, database, m.matchId, authoritativeCreatedAt
+                                        )
+                                    ) {
+                                        false
+                                    } else {
+                                        database.withTransaction {
+                                            if (database.conversationClearDao().isConversationClearInProgress(m.matchId)) {
+                                                false
+                                            } else {
+                                                // A visible READ ACK or local edit may have committed after
+                                                // the remote row was fetched. Merge against the latest Room
+                                                // row instead of replacing it with that stale snapshot.
+                                                val latestRoomMessage = chatMessageDao.getMessageById(remote.messageId)
+                                                committedIncoming = com.example.util.MessageDeltaSyncManager
+                                                    .mergeLatestLocalReadState(incoming, latestRoomMessage)
+                                                    .copy(
+                                                        serverCreatedAt = maxOf(
+                                                            authoritativeCreatedAt ?: 0L,
+                                                            latestRoomMessage?.serverCreatedAt ?: 0L
+                                                        )
+                                                    )
+                                                chatMessageDao.upsertMessage(committedIncoming)
+                                                messageDao.insertMessage(
+                                                    committedIncoming.toLocalMessage().copy(
+                                                        remoteMessageId = committedIncoming.messageId
+                                                    )
+                                                )
+
+                                                if (canRenderText) {
+                                                    val latestMatch = matchDao.getMatchByIdSync(m.matchId) ?: m
+                                                    if (remote.timestamp >= latestMatch.lastMessageTime &&
+                                                        committedIncoming.text.isNotBlank()
+                                                    ) {
+                                                        matchDao.updateLastMessagePreservingUnread(
+                                                            m.matchId, committedIncoming.text, remote.timestamp
+                                                        )
+                                                    }
+                                                    // Set the marker only from the state that was actually
+                                                    // committed. A stale pre-transaction snapshot must not
+                                                    // re-enable Unread after a concurrent READ ACK.
+                                                    if (!isMyOwn && com.example.util.ConversationUnreadStatePolicy.isUnreadIncoming(
+                                                            isIncoming = true,
+                                                            isRead = committedIncoming.isRead,
+                                                            deliveryState = committedIncoming.deliveryState,
+                                                            isControlMessage = com.example.util.ConversationUnreadStatePolicy.isControlMessage(
+                                                                committedIncoming.mediaType, committedIncoming.text
+                                                            ),
+                                                            isDeleted = committedIncoming.isDeleted,
+                                                            isDeletedForMe = committedIncoming.isDeletedForMe,
+                                                            isDeletedForEveryone = committedIncoming.isDeletedForEveryone
+                                                        )
+                                                    ) {
+                                                        matchDao.setHasUnread(m.matchId, true)
+                                                    }
+                                                }
+                                                true
+                                            }
+                                        }
+                                    }
                                 }
-                                if (canRenderText) {
-                                    matchDao.updateLastMessage(m.matchId, safeText, remote.timestamp, !isMyOwn)
-                                }
+                                if (!persisted) continue
                             }
                             // Never ACK unreadable ciphertext. Its tombstone is retained until a
                             // future authorized decrypt succeeds; repeated sweeps are idempotent.
@@ -5712,8 +5917,25 @@ class SocialConnectRepository(
 
                     if (canonicalMatchId.isNotBlank()) {
                         val states = com.example.util.SupabaseClientManager.fetchMessageDeliveryStatesForMatch(canonicalMatchId)
-                        states.filter { it.senderId.equals(myProfileId, ignoreCase = true) && it.isDelivered }
-                            .forEach { chatMessageDao.markMessageAsDelivered(it.messageId) }
+                        states.forEach { receipt ->
+                            val local = chatMessageDao.getMessageById(receipt.messageId) ?: return@forEach
+                            if (local.senderId != "USER" ||
+                                (!local.outboxOwnerProfileId.isBlank() &&
+                                    !local.outboxOwnerProfileId.equals(myProfileId, ignoreCase = true))
+                            ) return@forEach
+                            when (receipt.deliveryState) {
+                                "READ" -> database.conversationClearDao().markReceiptRead(
+                                    receipt.messageId, receipt.timestamp.takeIf { it > 0L } ?: System.currentTimeMillis()
+                                )
+                                "DELIVERED" -> database.conversationClearDao().markReceiptDelivered(
+                                    receipt.messageId, receipt.timestamp.takeIf { it > 0L } ?: System.currentTimeMillis()
+                                )
+                                "FAILED" -> database.conversationClearDao().markReceiptFailed(receipt.messageId)
+                                "SENT_TO_SERVER" -> chatMessageDao.markOutboxSentToServerIfPending(
+                                    receipt.messageId, receipt.timestamp.takeIf { it > 0L } ?: System.currentTimeMillis()
+                                )
+                            }
+                        }
                     }
                 }
             }

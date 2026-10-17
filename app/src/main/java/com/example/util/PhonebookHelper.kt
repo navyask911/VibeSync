@@ -57,6 +57,10 @@ object PhonebookHelper {
      * Reads contacts from Android device ContactsContract if permission is granted.
      */
     fun fetchDeviceContacts(context: Context): List<PhoneContact> {
+        if (androidx.core.content.ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.READ_CONTACTS
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) return emptyList()
         val contacts = mutableListOf<PhoneContact>()
         try {
             val cursor = context.contentResolver.query(

@@ -2,6 +2,7 @@ package com.example.util
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -36,6 +37,7 @@ import com.example.service.MuteConversationReceiver
 import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
@@ -68,6 +70,13 @@ data class AppAlertPayload(
  * - Firebase Cloud Messaging (FCM) integration
  * - In-app animated floating banner broadcaster
  */
+internal sealed class IncomingNotificationDispatchResult {
+    object Posted : IncomingNotificationDispatchResult()
+    data class Suppressed(val reason: String) : IncomingNotificationDispatchResult()
+    data class PresentedInApp(val reason: String) : IncomingNotificationDispatchResult()
+    data class RetryableFailure(val reason: String) : IncomingNotificationDispatchResult()
+}
+
 object AppNotificationManager {
 
     private const val TAG = "AppNotificationManager"
@@ -111,7 +120,7 @@ object AppNotificationManager {
 
     // App Presence & Active Conversation State Tracking
     @Volatile
-    var isAppInForeground: Boolean = true
+    var isAppInForeground: Boolean = false
 
     @Volatile
     var activeChatPartnerId: String? = null
@@ -187,6 +196,47 @@ object AppNotificationManager {
 
     // Message History for VibeSync-style MessagingStyle conversation threads
     private val conversationHistory = ConcurrentHashMap<String, MutableList<NotificationCompat.MessagingStyle.Message>>()
+    /** Prevents concurrent FCM/WorkManager runs from posting the same message simultaneously. */
+    private val notificationPostInFlightMessageIds = ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * Serialize attempts for one message ID. A second, awaited WorkManager attempt must not be
+     * terminally suppressed just because a legacy fire-and-forget caller started first. Wait for
+     * that attempt to finish, then re-check durable dedupe state; return false only so the worker
+     * can retry if the first attempt never releases its reservation.
+     */
+    internal suspend fun reserveNotificationPost(
+        messageId: String,
+        workRequestId: String,
+        maxWaitMillis: Long = INCOMING_NOTIFICATION_IN_FLIGHT_WAIT_MS
+    ): Boolean {
+        val safeMessageId = messageId.trim()
+        if (safeMessageId.isBlank()) return true
+        if (notificationPostInFlightMessageIds.add(safeMessageId)) return true
+
+        val safeWorkRequestId = workRequestId.trim().ifBlank { "<none>" }
+        var waitedMillis = 0L
+        while (waitedMillis < maxWaitMillis) {
+            val pause = minOf(100L, maxWaitMillis - waitedMillis).coerceAtLeast(1L)
+            delay(pause)
+            waitedMillis += pause
+            if (!notificationPostInFlightMessageIds.contains(safeMessageId) &&
+                notificationPostInFlightMessageIds.add(safeMessageId)
+            ) {
+                Log.i(TAG, "Awaited prior notification attempt before retrying: message_id=$safeMessageId, waited_ms=$waitedMillis, work_request_id=$safeWorkRequestId.")
+                return true
+            }
+        }
+        Log.w(TAG, "Concurrent notification attempt did not finish before timeout; returning retryable result: message_id=$safeMessageId, waited_ms=$waitedMillis, work_request_id=$safeWorkRequestId.")
+        return false
+    }
+
+    internal fun releaseNotificationPost(messageId: String) {
+        val safeMessageId = messageId.trim()
+        if (safeMessageId.isNotBlank()) notificationPostInFlightMessageIds.remove(safeMessageId)
+    }
+    private const val INCOMING_NOTIFICATION_DEDUPE_WINDOW_MS = 7L * 24L * 60L * 60L * 1000L
+    private const val INCOMING_NOTIFICATION_IN_FLIGHT_WAIT_MS = 5_000L
     private val seenMessageIds = ConcurrentHashMap<String, MutableSet<String>>()
     /** Stable IDs aligned with the capped MessagingStyle list, allowing duplicate FCM wakeups to refresh text. */
     private val conversationMessageIds = ConcurrentHashMap<String, MutableList<String>>()
@@ -388,8 +438,9 @@ object AppNotificationManager {
                 .setDefaults(NotificationCompat.DEFAULT_ALL)
                 .build()
 
-            NotificationManagerCompat.from(context).notify(99001, notification)
-            Log.d(TAG, "Dispatched OTP push notification for $mobileNumber: $otpCode")
+            if (postNotificationIfAllowed(context, 99001, notification)) {
+                Log.d(TAG, "Dispatched OTP notification for the active session.")
+            }
         } catch (e: Exception) {
             Log.w(TAG, "OTP notification dispatch notice: ${e.message}")
         }
@@ -545,86 +596,99 @@ object AppNotificationManager {
         channelId: String = CHANNEL_ID_CHAT_MESSAGES,
         conversationId: String = defaultConversationId(senderId),
         messageId: String = "",
-        messageTimestamp: Long = System.currentTimeMillis()
+        messageTimestamp: Long = System.currentTimeMillis(),
+        persistedIncomingMessage: Boolean = false,
+        messageDecrypted: Boolean = false,
+        clearHistoryBarrierPassed: Boolean = false,
+        controlMessage: Boolean = false,
+        messageAlreadyRead: Boolean = false
     ) {
-        if (!hasNotificationPermission(context)) return
-        val appContext = context.applicationContext
-        val requestedThreadId = conversationId.trim().ifBlank { defaultConversationId(senderId) }
-        if (ChatThreadPreferences.isMuted(appContext, senderId) ||
-            ChatThreadPreferences.isMuted(appContext, requestedThreadId)
-        ) {
-            Log.d(TAG, "Notification suppressed by legacy local mute for conversation=$requestedThreadId.")
-            return
-        }
-        if (isUserActiveInChatWith(senderId) || isUserActiveInChatWith(requestedThreadId)) {
-            Log.d(TAG, "Notification suppressed because conversation=$requestedThreadId is currently open.")
-            return
-        }
-
-        val displayBody = displayTextForNotification(messageText, mediaType)
-        val now = System.currentTimeMillis()
-        val senderTitle = senderName.ifBlank { "VibeSync contact" }
-
         CoroutineScope(Dispatchers.IO).launch {
+            when (val result = showMessageNotificationAndAwait(
+                context = context,
+                senderId = senderId,
+                senderName = senderName,
+                messageText = messageText,
+                senderPhotoUrl = senderPhotoUrl,
+                mediaType = mediaType,
+                channelId = channelId,
+                conversationId = conversationId,
+                messageId = messageId,
+                messageTimestamp = messageTimestamp,
+                persistedIncomingMessage = persistedIncomingMessage,
+                messageDecrypted = messageDecrypted,
+                clearHistoryBarrierPassed = clearHistoryBarrierPassed,
+                controlMessage = controlMessage,
+                messageAlreadyRead = messageAlreadyRead
+            )) {
+                IncomingNotificationDispatchResult.Posted -> Unit
+                is IncomingNotificationDispatchResult.Suppressed ->
+                    Log.i(TAG, "Notification dispatch suppressed: reason=${result.reason}, message_id=${messageId.ifBlank { "<none>" }}.")
+                is IncomingNotificationDispatchResult.PresentedInApp -> Unit
+                is IncomingNotificationDispatchResult.RetryableFailure ->
+                    Log.w(TAG, "Notification dispatch failed: reason=${result.reason}, message_id=${messageId.ifBlank { "<none>" }}.")
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    internal suspend fun showMessageNotificationAndAwait(
+        context: Context,
+        senderId: String,
+        senderName: String,
+        messageText: String,
+        senderPhotoUrl: String = "",
+        mediaType: String = "TEXT",
+        channelId: String = CHANNEL_ID_CHAT_MESSAGES,
+        conversationId: String = defaultConversationId(senderId),
+        messageId: String = "",
+        messageTimestamp: Long = System.currentTimeMillis(),
+        persistedIncomingMessage: Boolean = false,
+        messageDecrypted: Boolean = false,
+        clearHistoryBarrierPassed: Boolean = false,
+        controlMessage: Boolean = false,
+        messageAlreadyRead: Boolean = false,
+        workRequestId: String = ""
+    ): IncomingNotificationDispatchResult = withContext(Dispatchers.IO) {
+        val appContext = context.applicationContext
+        val safeMessageId = messageId.trim()
+        val reservedMessageId = safeMessageId.takeIf { it.isNotBlank() }
+        val safeWorkRequestId = workRequestId.trim().ifBlank { "<none>" }
+        val ownsPostReservation = reservedMessageId?.let {
+            reserveNotificationPost(it, safeWorkRequestId)
+        } ?: true
+        if (!ownsPostReservation) {
+            return@withContext IncomingNotificationDispatchResult.RetryableFailure("duplicate_in_flight_timeout")
+        }
+
             try {
                 val database = DatingDatabase.getDatabase(appContext)
-                // Normalize legacy sender-based IDs to the durable local matchId before hashing the
-                // notification ID. New targeted FCM sync already supplies match.matchId here.
+                val requestedThreadId = conversationId.trim().ifBlank { defaultConversationId(senderId) }
                 val localMatch = database.matchDao().getMatchByIdSync(requestedThreadId)
                     ?: database.matchDao().getMatchByProfileId(senderId)
                 val threadId = localMatch?.matchId?.takeIf { it.isNotBlank() } ?: requestedThreadId
                 val notificationId = notificationIdForConversation(threadId)
-                if (ChatThreadPreferences.isMuted(appContext, threadId)) return@launch
-                val mutedUntil = (database.conversationNotificationPreferencesDao().getMutedUntil(threadId)
-                    ?: database.conversationNotificationPreferencesDao().getMutedUntil(requestedThreadId)
-                    ?: 0L)
-                if (mutedUntil > now) {
-                    Log.d(TAG, "Notification suppressed by 8-hour conversation mute; conversation=$threadId.")
-                    return@launch
-                }
+                val now = System.currentTimeMillis()
+                val mutedUntil = (
+                    database.conversationNotificationPreferencesDao().getMutedUntil(threadId)
+                        ?: database.conversationNotificationPreferencesDao().getMutedUntil(requestedThreadId)
+                        ?: 0L
+                    )
                 if (mutedUntil != 0L && mutedUntil <= now) {
                     database.conversationNotificationPreferencesDao().delete(threadId)
                 }
-
-                val senderBitmap = senderPhotoUrl.takeIf { it.isNotBlank() }?.let { resolveNotificationAvatar(appContext, it) }
-                val senderIcon = senderBitmap?.let { IconCompat.createWithBitmap(it) } ?: initialsIcon(senderTitle)
-                val senderPerson = Person.Builder()
-                    .setName(senderTitle)
-                    .setKey(senderId.ifBlank { threadId })
-                    .setIcon(senderIcon)
-                    .build()
-                val userPerson = Person.Builder().setName("You").setKey("current_user").build()
-
-                hydrateConversationHistory(
-                    context = appContext,
-                    conversationId = threadId,
-                    senderPerson = senderPerson,
-                    userPerson = userPerson
+                val conversationMuted = ChatThreadPreferences.isMuted(appContext, senderId) ||
+                    ChatThreadPreferences.isMuted(appContext, requestedThreadId) ||
+                    ChatThreadPreferences.isMuted(appContext, threadId) || mutedUntil > now
+                val activeChat = isUserActiveInChatWith(senderId) || isUserActiveInChatWith(threadId)
+                val dedupePrefs = appContext.getSharedPreferences(
+                    "vibesync_inbox_notification_dedupe",
+                    Context.MODE_PRIVATE
                 )
-                appendThreadMessage(
-                    conversationId = threadId,
-                    messageId = messageId,
-                    message = NotificationCompat.MessagingStyle.Message(displayBody, messageTimestamp, senderPerson)
-                )
-
-                conversationSummaries[threadId] = ConversationSummary(
-                    conversationId = threadId,
-                    title = senderTitle,
-                    snippet = displayBody.take(180),
-                    updatedAt = messageTimestamp
-                )
-                _inAppAlertEvents.tryEmit(
-                    AppAlertPayload(
-                        type = "MESSAGE",
-                        title = senderTitle,
-                        body = displayBody,
-                        senderOrMatchId = senderId,
-                        senderName = senderTitle,
-                        photoUrl = senderPhotoUrl,
-                        timestamp = messageTimestamp
-                    )
-                )
-
+                val dedupeKey = reservedMessageId?.let(::incomingNotificationDedupeKey)
+                val alreadyNotified = dedupeKey != null &&
+                    dedupePrefs.getLong(dedupeKey, 0L) > now - INCOMING_NOTIFICATION_DEDUPE_WINDOW_MS
+                val senderTitle = senderName.ifBlank { "VibeSync contact" }
                 val configuredThreadSound = ChatThreadPreferences.soundUri(appContext, senderId)
                     .ifBlank { ChatThreadPreferences.soundUri(appContext, threadId) }
                 val effectiveChannelId = messageChannelForThread(
@@ -633,6 +697,126 @@ object AppNotificationManager {
                     senderName = senderTitle,
                     soundUri = configuredThreadSound,
                     fallbackChannelId = channelId
+                )
+                val channelBlockReason = notificationChannelBlockReason(appContext, effectiveChannelId)
+                val appNotificationsEnabled = NotificationManagerCompat.from(appContext).areNotificationsEnabled()
+
+                if (reservedMessageId != null) {
+                    val candidate = IncomingMessageNotificationPolicy.Candidate(
+                        messageId = reservedMessageId,
+                        isIncoming = !senderId.equals("USER", ignoreCase = true),
+                        isPersisted = persistedIncomingMessage,
+                        decryptionSucceeded = messageDecrypted,
+                        clearHistoryBarrierPassed = clearHistoryBarrierPassed,
+                        isControlMessage = controlMessage,
+                        isAlreadyRead = messageAlreadyRead,
+                        conversationMuted = conversationMuted,
+                        activeChat = activeChat,
+                        appInForeground = isAppInForeground,
+                        postNotificationsGranted = hasRuntimePostNotificationPermission(appContext),
+                        appNotificationsEnabled = appNotificationsEnabled,
+                        channelEnabled = channelBlockReason == null,
+                        alreadyNotified = alreadyNotified
+                    )
+                    val blocked = IncomingMessageNotificationPolicy.blockedReason(candidate)
+                    if (blocked != null) {
+                        val reason = when (blocked) {
+                            IncomingMessageNotificationPolicy.BlockReason.POST_NOTIFICATIONS_DENIED ->
+                                "POST_NOTIFICATIONS permission denied"
+                            IncomingMessageNotificationPolicy.BlockReason.APP_NOTIFICATIONS_DISABLED ->
+                                "app notifications disabled in Android settings"
+                            IncomingMessageNotificationPolicy.BlockReason.CHANNEL_DISABLED ->
+                                channelBlockReason ?: "notification channel disabled"
+                            IncomingMessageNotificationPolicy.BlockReason.APP_FOREGROUND ->
+                                "app foreground policy"
+                            else -> blocked.name.lowercase()
+                        }
+                        val canUseInAppFallback = isAppInForeground && !activeChat &&
+                            blocked in setOf(
+                                IncomingMessageNotificationPolicy.BlockReason.POST_NOTIFICATIONS_DENIED,
+                                IncomingMessageNotificationPolicy.BlockReason.APP_NOTIFICATIONS_DISABLED,
+                                IncomingMessageNotificationPolicy.BlockReason.CHANNEL_DISABLED
+                            )
+                        // A MutableSharedFlow with replay=0 drops values when nobody is collecting.
+                        val hasInAppAlertConsumer = _inAppAlertEvents.subscriptionCount.value > 0
+                        if (canUseInAppFallback) {
+                            val fallbackBody = displayTextForNotification(messageText, mediaType)
+                            val shown = hasInAppAlertConsumer && _inAppAlertEvents.tryEmit(
+                                AppAlertPayload(
+                                    type = "MESSAGE",
+                                    title = senderTitle,
+                                    body = fallbackBody,
+                                    senderOrMatchId = senderId,
+                                    senderName = senderTitle,
+                                    photoUrl = senderPhotoUrl,
+                                    timestamp = messageTimestamp
+                                )
+                            )
+                            if (shown) {
+                                if (dedupeKey != null && !dedupePrefs.edit()
+                                        .putLong(dedupeKey, System.currentTimeMillis()).commit()
+                                ) {
+                                    Log.w(TAG, "In-app notification fallback displayed but dedupe persistence failed: message_id=$safeMessageId, work_request_id=$safeWorkRequestId.")
+                                }
+                                Log.i(TAG, "Notification presented in-app because system notifications are unavailable: message_id=$safeMessageId, reason=$reason, conversation_id=$threadId, work_request_id=$safeWorkRequestId.")
+                                return@withContext IncomingNotificationDispatchResult.PresentedInApp(reason)
+                            }
+                        }
+                        if (isAppInForeground && !activeChat &&
+                            blocked in setOf(
+                                IncomingMessageNotificationPolicy.BlockReason.POST_NOTIFICATIONS_DENIED,
+                                IncomingMessageNotificationPolicy.BlockReason.APP_NOTIFICATIONS_DISABLED,
+                                IncomingMessageNotificationPolicy.BlockReason.CHANNEL_DISABLED
+                            ) && !hasInAppAlertConsumer
+                        ) {
+                            Log.w(TAG, "Notification dispatch will retry: reason=in_app_alert_consumer_unavailable, message_id=$safeMessageId, conversation_id=$threadId, work_request_id=$safeWorkRequestId.")
+                            return@withContext IncomingNotificationDispatchResult.RetryableFailure("in_app_alert_consumer_unavailable")
+                        }
+                        Log.i(TAG, "Incoming notification suppressed: reason=$reason message_id=${safeMessageId}, conversation_id=${threadId}, work_request_id=$safeWorkRequestId.")
+                        return@withContext IncomingNotificationDispatchResult.Suppressed(reason)
+                    }
+                } else {
+                    if (conversationMuted) {
+                        Log.i(TAG, "Notification suppressed: reason=conversation_muted conversation_id=${threadId}, message_id=$safeMessageId, work_request_id=$safeWorkRequestId.")
+                        return@withContext IncomingNotificationDispatchResult.Suppressed("conversation_muted")
+                    }
+                    if (activeChat) {
+                        Log.i(TAG, "Notification suppressed: reason=active_chat conversation_id=${threadId}, message_id=$safeMessageId, work_request_id=$safeWorkRequestId.")
+                        return@withContext IncomingNotificationDispatchResult.Suppressed("active_chat")
+                    }
+                    val displayBlock = notificationDisplayBlockReason(appContext, effectiveChannelId)
+                    if (displayBlock != null) {
+                        Log.i(TAG, "Notification suppressed: reason=$displayBlock channel_id=$effectiveChannelId, message_id=$safeMessageId, work_request_id=$safeWorkRequestId.")
+                        return@withContext IncomingNotificationDispatchResult.Suppressed(displayBlock)
+                    }
+                }
+
+                val displayBody = displayTextForNotification(messageText, mediaType)
+                val senderBitmap = senderPhotoUrl.takeIf { it.isNotBlank() }
+                    ?.let { resolveNotificationAvatar(appContext, it) }
+                val senderIcon = senderBitmap?.let { IconCompat.createWithBitmap(it) } ?: initialsIcon(senderTitle)
+                val senderPerson = Person.Builder()
+                    .setName(senderTitle)
+                    .setKey(senderId.ifBlank { threadId })
+                    .setIcon(senderIcon)
+                    .build()
+                val userPerson = Person.Builder().setName("You").setKey("current_user").build()
+                hydrateConversationHistory(
+                    context = appContext,
+                    conversationId = threadId,
+                    senderPerson = senderPerson,
+                    userPerson = userPerson
+                )
+                appendThreadMessage(
+                    conversationId = threadId,
+                    messageId = safeMessageId,
+                    message = NotificationCompat.MessagingStyle.Message(displayBody, messageTimestamp, senderPerson)
+                )
+                conversationSummaries[threadId] = ConversationSummary(
+                    conversationId = threadId,
+                    title = senderTitle,
+                    snippet = displayBody.take(180),
+                    updatedAt = messageTimestamp
                 )
                 val notification = buildConversationNotification(
                     context = appContext,
@@ -646,18 +830,39 @@ object AppNotificationManager {
                     channelId = effectiveChannelId,
                     latestText = displayBody
                 )
-                try {
-                    NotificationManagerCompat.from(appContext).notify(notificationId, notification)
-                    postChatGroupSummary(appContext)
-                    AlertSoundAndVibrationManager.triggerChatAlert(appContext)
-                } catch (securityException: SecurityException) {
-                    Log.w(TAG, "Notification permission missing: ${securityException.message}")
+                if (postNotificationIfAllowed(appContext, notificationId, notification, safeMessageId, safeWorkRequestId)) {
+                    if (dedupeKey != null) {
+                        if (!dedupePrefs.edit().putLong(dedupeKey, System.currentTimeMillis()).commit()) {
+                            Log.w(TAG, "Notification accepted but dedupe persistence failed: message_id=$safeMessageId, work_request_id=$safeWorkRequestId.")
+                        }
+                    }
+                    Log.i(TAG, "Incoming notification post accepted: message_id=${safeMessageId.ifBlank { "<none>" }}, conversation_id=${threadId}, channel_id=${effectiveChannelId}, work_request_id=$safeWorkRequestId.")
+                    runCatching { postChatGroupSummary(appContext) }
+                        .onFailure { Log.w(TAG, "Chat group summary update failed after message post: work_request_id=$safeWorkRequestId.") }
+                    runCatching { AlertSoundAndVibrationManager.triggerChatAlert(appContext) }
+                        .onFailure { Log.w(TAG, "Chat alert sound failed after message post: work_request_id=$safeWorkRequestId.") }
+                    return@withContext IncomingNotificationDispatchResult.Posted
+                } else {
+                    val blockReason = notificationDisplayBlockReason(appContext, effectiveChannelId)
+                    if (blockReason != null) {
+                        Log.i(TAG, "Incoming notification suppressed at post time: reason=$blockReason, message_id=$safeMessageId, work_request_id=$safeWorkRequestId.")
+                        return@withContext IncomingNotificationDispatchResult.Suppressed(blockReason)
+                    }
+                    Log.w(TAG, "Incoming notification post failed transiently: message_id=$safeMessageId, conversation_id=$threadId, work_request_id=$safeWorkRequestId.")
+                    return@withContext IncomingNotificationDispatchResult.RetryableFailure("notify_rejected")
                 }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
             } catch (failure: Throwable) {
-                Log.w(TAG, "Unable to build grouped notification for conversation=$requestedThreadId.", failure)
+                Log.w(TAG, "Unable to build notification: message_id=${safeMessageId.ifBlank { "<none>" }}, work_request_id=$safeWorkRequestId, reason=${failure.javaClass.simpleName}.")
+                return@withContext IncomingNotificationDispatchResult.RetryableFailure(failure.javaClass.simpleName)
+            } finally {
+                if (ownsPostReservation) reservedMessageId?.let(::releaseNotificationPost)
             }
         }
-    }
+
+    private fun incomingNotificationDedupeKey(messageId: String): String =
+        "message_" + java.util.UUID.nameUUIDFromBytes(messageId.toByteArray(Charsets.UTF_8)).toString()
 
     private fun defaultConversationId(senderId: String): String {
         val clean = senderId.trim()
@@ -901,6 +1106,7 @@ object AppNotificationManager {
     }
 
     private suspend fun postChatGroupSummary(context: Context) {
+        if (!hasNotificationPermission(context)) return
         val database = runCatching { DatingDatabase.getDatabase(context.applicationContext) }.getOrNull()
         if (database != null) {
             runCatching {
@@ -963,7 +1169,7 @@ object AppNotificationManager {
             .setContentIntent(summaryIntent)
             .build()
         try {
-            manager.notify(CHAT_GROUP_SUMMARY_NOTIFICATION_ID, summaryNotification)
+            postNotificationIfAllowed(context, CHAT_GROUP_SUMMARY_NOTIFICATION_ID, summaryNotification)
         } catch (securityException: SecurityException) {
             Log.w(TAG, "Unable to post grouped notification summary: ${securityException.message}")
         }
@@ -1057,7 +1263,7 @@ object AppNotificationManager {
 
             val notificationManager = NotificationManagerCompat.from(context)
             try {
-                notificationManager.notify(notificationId, notificationBuilder.build())
+                postNotificationIfAllowed(context, notificationId, notificationBuilder.build())
             } catch (e: SecurityException) {
                 Log.w(TAG, "Notification permission missing: ${e.message}")
             }
@@ -1134,7 +1340,7 @@ object AppNotificationManager {
 
             val notificationManager = NotificationManagerCompat.from(context)
             try {
-                notificationManager.notify(notificationId, notificationBuilder.build())
+                postNotificationIfAllowed(context, notificationId, notificationBuilder.build())
             } catch (e: SecurityException) {
                 Log.w(TAG, "Notification permission missing: ${e.message}")
             }
@@ -1211,7 +1417,7 @@ object AppNotificationManager {
 
             val notificationManager = NotificationManagerCompat.from(context)
             try {
-                notificationManager.notify(notificationId, notificationBuilder.build())
+                postNotificationIfAllowed(context, notificationId, notificationBuilder.build())
             } catch (e: SecurityException) {
                 Log.w(TAG, "Notification permission missing: ${e.message}")
             }
@@ -1288,7 +1494,7 @@ object AppNotificationManager {
 
             val notificationManager = NotificationManagerCompat.from(context)
             try {
-                notificationManager.notify(notificationId, notificationBuilder.build())
+                postNotificationIfAllowed(context, notificationId, notificationBuilder.build())
             } catch (e: SecurityException) {
                 Log.w(TAG, "Notification permission missing: ${e.message}")
             }
@@ -1349,7 +1555,7 @@ object AppNotificationManager {
                     channelId = channelId,
                     latestText = "You: $replyText"
                 )
-                NotificationManagerCompat.from(appContext).notify(notificationId, notification)
+                postNotificationIfAllowed(appContext, notificationId, notification)
                 postChatGroupSummary(appContext)
             } catch (failure: Throwable) {
                 Log.w(TAG, "Unable to refresh notification after inline reply.", failure)
@@ -1377,6 +1583,99 @@ object AppNotificationManager {
         }
     }
 
+    /**
+     * Cancel a single conversation's notification and clear only its notification history.
+     * Cancellation is independent of POST_NOTIFICATIONS permission and is safe to retry.
+     */
+    fun cancelConversationNotification(context: Context, conversationId: String): Boolean {
+        val safeId = conversationId.trim()
+        if (safeId.isBlank()) return false
+        return try {
+            NotificationManagerCompat.from(context.applicationContext)
+                .cancel(notificationIdForConversation(safeId))
+            clearConversationHistory(safeId)
+            CoroutineScope(Dispatchers.IO).launch {
+                runCatching { postChatGroupSummary(context.applicationContext) }
+                    .onFailure { Log.w(TAG, "Could not refresh chat notification summary after Clear Chat.") }
+            }
+            true
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Could not cancel the conversation notification.", failure)
+            false
+        }
+    }
+
+    private fun hasRuntimePostNotificationPermission(context: Context): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(
+                context.applicationContext,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+
+    private fun notificationDisplayBlockReason(context: Context, channelId: String): String? {
+        if (!hasRuntimePostNotificationPermission(context)) {
+            return "POST_NOTIFICATIONS permission denied"
+        }
+        if (!NotificationManagerCompat.from(context.applicationContext).areNotificationsEnabled()) {
+            return "app notifications disabled in Android settings"
+        }
+        return notificationChannelBlockReason(context.applicationContext, channelId)
+    }
+
+    private fun notificationChannelBlockReason(context: Context, channelId: String): String? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || channelId.isBlank()) return null
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            ?: return "Android notification service unavailable"
+        var channel = manager.getNotificationChannel(channelId)
+        if (channel == null) {
+            initChannels(context.applicationContext)
+            channel = manager.getNotificationChannel(channelId)
+        }
+        if (channel == null) return "notification channel missing"
+        if (channel.importance == NotificationManager.IMPORTANCE_NONE) {
+            return "notification channel disabled in Android settings"
+        }
+        return null
+    }
+
+    internal fun postNotificationIfAllowed(
+        context: Context,
+        notificationId: Int,
+        notification: Notification,
+        diagnosticMessageId: String = "",
+        diagnosticWorkRequestId: String = ""
+    ): Boolean {
+        val channelId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) notification.channelId.orEmpty() else ""
+        val blockReason = notificationDisplayBlockReason(context.applicationContext, channelId)
+        if (blockReason != null) {
+            Log.i(
+                TAG,
+                "Android notification post blocked: message_id=${diagnosticMessageId.ifBlank { "<none>" }}, " +
+                    "reason=$blockReason, channel_id=${channelId.ifBlank { "<pre-O>" }}, work_request_id=${diagnosticWorkRequestId.ifBlank { "<none>" }}."
+            )
+            return false
+        }
+        return try {
+            NotificationManagerCompat.from(context.applicationContext).notify(notificationId, notification)
+            if (diagnosticMessageId.isNotBlank()) {
+                Log.i(TAG, "Android notification post accepted by notify(): message_id=$diagnosticMessageId, channel_id=$channelId, work_request_id=${diagnosticWorkRequestId.ifBlank { "<none>" }}.")
+            }
+            true
+        } catch (_: SecurityException) {
+            Log.w(
+                TAG,
+                "Android rejected notification post: message_id=${diagnosticMessageId.ifBlank { "<none>" }}, reason=SecurityException, work_request_id=${diagnosticWorkRequestId.ifBlank { "<none>" }}."
+            )
+            false
+        } catch (failure: Throwable) {
+            Log.w(
+                TAG,
+                "Android notification post failed: message_id=${diagnosticMessageId.ifBlank { "<none>" }}, reason=${failure.javaClass.simpleName}, work_request_id=${diagnosticWorkRequestId.ifBlank { "<none>" }}."
+            )
+            false
+        }
+    }
+
     fun clearConversationHistory(senderId: String) {
         conversationHistory.remove(senderId)
         seenMessageIds.remove(senderId)
@@ -1387,16 +1686,9 @@ object AppNotificationManager {
     /**
      * Checks whether POST_NOTIFICATIONS permission is granted (Android 13+).
      */
-    fun hasNotificationPermission(context: Context): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED
-        } else {
-            NotificationManagerCompat.from(context).areNotificationsEnabled()
-        }
-    }
+    fun hasNotificationPermission(context: Context): Boolean =
+        hasRuntimePostNotificationPermission(context) &&
+            NotificationManagerCompat.from(context.applicationContext).areNotificationsEnabled()
 
     /** Prefer VibeSync's in-memory Tink decrypt pipeline for encrypted profile avatar references. */
     private suspend fun resolveNotificationAvatar(context: Context, reference: String): Bitmap? {
@@ -1484,7 +1776,7 @@ object AppNotificationManager {
             updatedAt = messageTimestamp
         )
         try {
-            NotificationManagerCompat.from(appContext).notify(notificationId, notification)
+            postNotificationIfAllowed(appContext, notificationId, notification)
             CoroutineScope(Dispatchers.IO).launch { runCatching { postChatGroupSummary(appContext) } }
         } catch (failure: SecurityException) {
             Log.w(TAG, "Group notification permission was revoked.", failure)

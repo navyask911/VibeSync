@@ -34,6 +34,9 @@ class VibeSyncApplication : Application(), ImageLoaderFactory {
         safeInit("message context") {
             com.example.util.MessageHandler.appContext = applicationContext
         }
+        // Recover a durable Clear Chat barrier before startup outbox recovery. Each worker checks
+        // Room independently, so ordering is defense in depth rather than the safety mechanism.
+        com.example.service.ConversationClearRecoveryScheduler.enqueue(applicationContext)
         // Recover outbox state on startup. A session-change callback below re-runs the sweep
         // after Truecaller session restore/login finishes asynchronously.
         com.example.service.PendingMessageSyncScheduler.enqueueAllPending(applicationContext)

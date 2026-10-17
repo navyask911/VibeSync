@@ -14,6 +14,21 @@ object ChatReadReceiptPolicy {
         return readReceiptsEnabled && !isOutgoing && !isRead && status != "READ"
     }
 
+    /** Receipt writes are allowed only for a resumed chat and a row in the actual viewport. */
+    fun shouldAcknowledgeVisibleMessage(
+        screenResumed: Boolean,
+        messageVisible: Boolean,
+        readReceiptsEnabled: Boolean,
+        isOutgoing: Boolean,
+        isRead: Boolean,
+        deliveryState: String?,
+        networkAvailable: Boolean = true
+    ): Boolean =
+        networkAvailable &&
+            screenResumed &&
+            messageVisible &&
+            shouldSendReadReceipt(readReceiptsEnabled, isOutgoing, isRead, deliveryState)
+
     /** Delay after a failed attempt number (1-based). */
     fun retryDelayMillis(failedAttempt: Int): Long = when (failedAttempt) {
         1 -> 500L

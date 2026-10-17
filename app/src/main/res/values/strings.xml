@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">VIBESYNC</string>
+    <string name="chat_notification_channel_id">vibesync_messages_channel</string>
 </resources>

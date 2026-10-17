@@ -367,6 +367,89 @@ async function dispatchStoredGroupEnvelope(
   }
 }
 
+
+/**
+ * Receipt rows are durable and contain no content. Deliver only IDs and the bounded status to
+ * the sender's devices so a backgrounded app can update its local Room copy after Realtime pauses.
+ */
+async function dispatchStoredReceipt(
+  adminClient: ReturnType<typeof createClient>,
+  sa: ServiceAccount,
+  messageId: string,
+  matchId: string,
+  status: string,
+  targetDeviceTokenId = "",
+): Promise<Response> {
+  const safeStatus = status.toUpperCase();
+  if (!messageId || !matchId || !["DELIVERED", "READ", "FAILED"].includes(safeStatus)) {
+    return json({ error: "invalid_receipt_payload" }, 400);
+  }
+
+  const { data: receipt, error: receiptError } = await adminClient
+    .from("chat_message_receipts")
+    .select("message_id,match_id,status")
+    .eq("message_id", messageId)
+    .eq("match_id", matchId)
+    .eq("status", safeStatus)
+    .maybeSingle();
+  if (receiptError) return json({ error: "receipt_lookup_failed" }, 500);
+  if (!receipt) return json({ ok: true, message_id: messageId, skipped: "receipt_not_persisted" });
+
+  const { data: participants, error: participantError } = await adminClient
+    .from("chat_message_receipt_participants")
+    .select("sender_id,match_id")
+    .eq("message_id", messageId)
+    .maybeSingle();
+  if (participantError) return json({ error: "receipt_participant_lookup_failed" }, 500);
+  if (!participants || String(participants.match_id) !== matchId || !String(participants.sender_id ?? "")) {
+    return json({ error: "receipt_participant_mapping_not_found" }, 404);
+  }
+
+  let tokenQuery = adminClient
+    .from("device_tokens")
+    .select("id,fcm_token")
+    .eq("profile_id", String(participants.sender_id));
+  if (targetDeviceTokenId) tokenQuery = tokenQuery.eq("id", targetDeviceTokenId);
+  const { data: tokens, error: tokenError } = await tokenQuery;
+  if (tokenError) return json({ error: "receipt_token_lookup_failed" }, 500);
+  if (!tokens?.length) return json({ ok: true, message_id: messageId, delivered_to_devices: 0 });
+
+  let sent = 0;
+  const staleTokenIds: string[] = [];
+  let transientFailure = false;
+  for (const row of tokens) {
+    try {
+      await sendFcm(sa, String(row.fcm_token), {
+        type: "receipt_update",
+        message_id: messageId,
+        match_id: matchId,
+        status: safeStatus,
+      });
+      sent++;
+    } catch (error) {
+      const detail = String((error as Error)?.message ?? error);
+      if (/registration-token-not-registered|invalid-registration-token|UNREGISTERED/i.test(detail)) {
+        staleTokenIds.push(String(row.id));
+      } else {
+        transientFailure = true;
+      }
+    }
+  }
+
+  if (staleTokenIds.length) {
+    const { error } = await adminClient.from("device_tokens").delete().in("id", staleTokenIds);
+    if (error) console.error("Could not clean invalid receipt FCM tokens:", error.message);
+  }
+  if (sent === 0 && transientFailure) return json({ error: "receipt_fcm_dispatch_failed" }, 502);
+  return json({
+    ok: true,
+    message_id: messageId,
+    status: safeStatus,
+    delivered_to_devices: sent,
+    stale_tokens_removed: staleTokenIds.length,
+  });
+}
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
   if (!supabaseUrl || !serviceRoleKey) return json({ error: "server_configuration_incomplete" }, 503);
@@ -418,6 +501,13 @@ Deno.serve(async (req) => {
         return json({ error: "group_id_message_id_recipient_and_sender_required" }, 400);
       }
       return await dispatchStoredGroupEnvelope(adminClient, sa, groupId, messageId, recipientProfileId, senderProfileId);
+    }
+    if (table === "chat_message_receipts") {
+      const messageId = String(record.message_id ?? "").trim();
+      const matchId = String(record.match_id ?? "").trim();
+      const status = String(record.status ?? "").trim().toUpperCase();
+      const targetDeviceTokenId = String(record.target_device_token_id ?? "").trim();
+      return await dispatchStoredReceipt(adminClient, sa, messageId, matchId, status, targetDeviceTokenId);
     }
     if (table !== "chat_messages") return json({ error: "unsupported_row_change_table" }, 400);
 

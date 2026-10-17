@@ -66,6 +66,13 @@ class OnboardingStatePolicyTest {
     }
 
     @Test
+    fun numericPhoneLikeValueCannotCountAsARecoveredProfileName() {
+        assertFalse(OnboardingStatePolicy.isMeaningfulProfileName("9876543210"))
+        assertFalse(OnboardingStatePolicy.isMeaningfulProfileName("+91 98765 43210"))
+        assertTrue(OnboardingStatePolicy.isMeaningfulProfileName("Suresh Kumar"))
+    }
+
+    @Test
     fun secureMarkerAndRecoveredProfileRepairMissingRoomFlag() {
         assertTrue(
             OnboardingStatePolicy.shouldTreatAsCompleted(
@@ -75,13 +82,23 @@ class OnboardingStatePolicyTest {
                 secureSessionMarker = true
             )
         )
-        assertTrue(
+        assertFalse(
             OnboardingStatePolicy.shouldTreatAsCompleted(
                 storedCompleted = false,
                 storedPhone = "",
                 verifiedPhone = "+91 97430 40335",
                 secureSessionMarker = false,
                 recoveredProfileName = "Suresh Kumar"
+            )
+        )
+        assertTrue(
+            OnboardingStatePolicy.shouldTreatAsCompleted(
+                storedCompleted = false,
+                storedPhone = "",
+                verifiedPhone = "+91 97430 40335",
+                secureSessionMarker = false,
+                recoveredProfileName = "Suresh Kumar",
+                recoveredProfileHasRegistrationDetails = true
             )
         )
         assertFalse(
