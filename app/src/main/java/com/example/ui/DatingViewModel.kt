@@ -1388,20 +1388,23 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
                 // If record signals a deletion, immediately remove from local Room DB
                 if (isDeleted && msgId.isNotBlank()) {
+                    val deletedMatchId = database.chatMessageDao().getMessageById(msgId)?.matchId
                     database.withTransaction {
                         database.chatMessageDao().deleteMessageById(msgId)
                         database.messageDao().deleteRemoteMessage(msgId)
+                        if (!deletedMatchId.isNullOrBlank()) {
+                            val remaining = database.chatMessageDao().getMessagesForMatchSync(deletedMatchId)
+                            val last = remaining.lastOrNull()
+                            database.matchDao().updateLastMessagePreservingUnread(
+                                matchId = deletedMatchId,
+                                text = last?.text ?: "No messages yet",
+                                timestamp = last?.timestamp ?: 0L
+                            )
+                        }
                     }
-                    val activeMatchId = _activeChat.value?.first?.matchId
-                    if (activeMatchId != null) {
-                        val remaining = database.chatMessageDao().getMessagesForMatchSync(activeMatchId)
-                        val last = remaining.lastOrNull()
-                        database.matchDao().updateLastMessage(
-                            matchId = activeMatchId,
-                            text = last?.text ?: "No messages yet",
-                            timestamp = last?.timestamp ?: System.currentTimeMillis(),
-                            hasUnread = false
-                        )
+                    if (!deletedMatchId.isNullOrBlank()) {
+                        runCatching { reconcileConversationUnread(deletedMatchId) }
+                            .onFailure { android.util.Log.w("VibeSyncUnread", "Unread reconciliation after deletion failed: ${it.javaClass.simpleName}.") }
                     }
                     return@launch
                 }
@@ -1861,20 +1864,23 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
                 // If record signals a deletion, immediately remove from local Room DB
                 if (isDeleted && msgId.isNotBlank()) {
+                    val deletedMatchId = database.chatMessageDao().getMessageById(msgId)?.matchId
                     database.withTransaction {
                         database.chatMessageDao().deleteMessageById(msgId)
                         database.messageDao().deleteRemoteMessage(msgId)
+                        if (!deletedMatchId.isNullOrBlank()) {
+                            val remaining = database.chatMessageDao().getMessagesForMatchSync(deletedMatchId)
+                            val last = remaining.lastOrNull()
+                            database.matchDao().updateLastMessagePreservingUnread(
+                                matchId = deletedMatchId,
+                                text = last?.text ?: "No messages yet",
+                                timestamp = last?.timestamp ?: 0L
+                            )
+                        }
                     }
-                    val activeMatchId = _activeChat.value?.first?.matchId
-                    if (activeMatchId != null) {
-                        val remaining = database.chatMessageDao().getMessagesForMatchSync(activeMatchId)
-                        val last = remaining.lastOrNull()
-                        database.matchDao().updateLastMessage(
-                            matchId = activeMatchId,
-                            text = last?.text ?: "No messages yet",
-                            timestamp = last?.timestamp ?: System.currentTimeMillis(),
-                            hasUnread = false
-                        )
+                    if (!deletedMatchId.isNullOrBlank()) {
+                        runCatching { reconcileConversationUnread(deletedMatchId) }
+                            .onFailure { android.util.Log.w("VibeSyncUnread", "Unread reconciliation after deletion failed: ${it.javaClass.simpleName}.") }
                     }
                     return@launch
                 }
