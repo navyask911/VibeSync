@@ -59,7 +59,8 @@ object ReturningAccountRecoveryPolicy {
         localProfiles: List<ProfileEntity>,
         localCacheAvailable: Boolean = true,
         canonicalSelfLookup: suspend () -> ProfileLookupResult,
-        legacyProfileLookup: suspend (String) -> ProfileLookupResult
+        legacyProfileLookup: suspend (String) -> ProfileLookupResult,
+        legacyPhoneIndexLookup: suspend () -> ProfileLookupResult = { ProfileLookupResult.NotFound }
     ): Decision {
         val canonicalId = profileId.trim()
         if (persistedCompletionMarker || roomCompletionMarkerMatchesPhone) {
@@ -181,6 +182,34 @@ object ReturningAccountRecoveryPolicy {
                 ProfileLookupResult.NotFound -> Unit
                 is ProfileLookupResult.Failed -> if (failureReason == null) failureReason = result.reason
             }
+        }
+
+        // The public view deliberately hides some valid profiles. The E.164 index RPC excludes
+        // the canonical caller, so a result can only be treated as legacy evidence when its ID is
+        // a deterministic phone-derived alias. A row from that index proves identity, not arbitrary
+        // completion by a user-entered name; its returned ID must match the verified phone transform.
+        when (val indexResult = legacyPhoneIndexLookup()) {
+            is ProfileLookupResult.Found -> {
+                val candidate = indexResult.profile
+                val legacyIdentityMatched =
+                    OnboardingStatePolicy.isLegacyPhoneProfileId(candidate.id, verifiedPhone) &&
+                        OnboardingStatePolicy.sameVerifiedPhone(candidate.phoneNumber, verifiedPhone) &&
+                        OnboardingStatePolicy.isMeaningfulProfileName(candidate.name)
+                if (legacyIdentityMatched) {
+                    return Decision(
+                        route = Route.HOME,
+                        recoveredProfile = candidate,
+                        reason = "verified_e164_index_legacy_identity",
+                        hasRegistrationDetails = false,
+                        legacyPhoneProfileIdentityMatched = true
+                    )
+                }
+                if (failureReason == null) {
+                    failureReason = ProfileLookupResult.FailureReason.INVALID_RESPONSE
+                }
+            }
+            ProfileLookupResult.NotFound -> Unit
+            is ProfileLookupResult.Failed -> if (failureReason == null) failureReason = indexResult.reason
         }
 
         if (failureReason != null) {

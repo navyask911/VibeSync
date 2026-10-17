@@ -43,7 +43,8 @@ class ReturningAccountRecoveryPolicyTest {
         localProfiles: List<ProfileEntity> = emptyList(),
         localCacheAvailable: Boolean = true,
         selfLookup: suspend () -> ProfileLookupResult,
-        legacyLookup: suspend (String) -> ProfileLookupResult
+        legacyLookup: suspend (String) -> ProfileLookupResult,
+        phoneIndexLookup: suspend () -> ProfileLookupResult = { ProfileLookupResult.NotFound }
     ) = ReturningAccountRecoveryPolicy.recover(
         profileId = canonicalId,
         verifiedPhone = phone,
@@ -52,7 +53,8 @@ class ReturningAccountRecoveryPolicyTest {
         localProfiles = localProfiles,
         localCacheAvailable = localCacheAvailable,
         canonicalSelfLookup = selfLookup,
-        legacyProfileLookup = legacyLookup
+        legacyProfileLookup = legacyLookup,
+        legacyPhoneIndexLookup = phoneIndexLookup
     )
 
     @Test
@@ -88,6 +90,31 @@ class ReturningAccountRecoveryPolicyTest {
         )
         assertEquals(ReturningAccountRecoveryPolicy.Route.HOME, result.route)
         assertTrue(result.legacyPhoneProfileIdentityMatched)
+        assertEquals(legacyId, result.recoveredProfile?.id)
+    }
+
+    @Test
+    fun legacyPhoneIndexRecoversHiddenProfileWithoutRequiringPublicViewVisibility() = runBlocking {
+        val legacyId = "9876543210"
+        val result = recover(
+            selfLookup = { ProfileLookupResult.Found(minimalCanonical()) },
+            legacyLookup = { ProfileLookupResult.NotFound },
+            phoneIndexLookup = {
+                ProfileLookupResult.Found(
+                    profile(
+                        id = legacyId,
+                        name = "Returning Legacy Member",
+                        bio = "",
+                        city = "Online",
+                        occupation = "Member",
+                        phoneNumber = phone
+                    )
+                )
+            }
+        )
+        assertEquals(ReturningAccountRecoveryPolicy.Route.HOME, result.route)
+        assertTrue(result.legacyPhoneProfileIdentityMatched)
+        assertFalse(result.hasRegistrationDetails)
         assertEquals(legacyId, result.recoveredProfile?.id)
     }
 

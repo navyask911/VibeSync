@@ -1368,6 +1368,100 @@ object SupabaseClientManager {
     }
 
     /**
+     * Legacy-only phone-index recovery. The authenticated self-profile query always runs first.
+     * This RPC deliberately excludes the canonical caller; a returned row is accepted only when
+     * its profile ID is a deterministic legacy alias of the verified phone.
+     */
+    suspend fun lookupLegacyProfileByE164Phone(phone: String): ProfileLookupResult =
+        withContext(Dispatchers.IO) {
+            val normalized = PhonebookHelper.normalizeToE164(phone)
+            if (!normalized.matches(Regex("^\\+[1-9][0-9]{7,14}$"))) {
+                return@withContext ProfileLookupResult.Failed(
+                    ProfileLookupResult.FailureReason.INVALID_RESPONSE
+                )
+            }
+            if (VibeSyncSessionManager.getAccessToken().isNullOrBlank() ||
+                VibeSyncSessionManager.getToken().isNullOrBlank() ||
+                VibeSyncSessionManager.getProfileId().isNullOrBlank()
+            ) {
+                return@withContext ProfileLookupResult.Failed(
+                    ProfileLookupResult.FailureReason.AUTHORIZATION
+                )
+            }
+            try {
+                val phones = JSONArray().put(normalized)
+                val request = buildRequest(
+                    endpoint = "rpc/match_contacts_by_phone_numbers",
+                    method = "POST",
+                    bodyJson = JSONObject().put("phone_numbers", phones).toString()
+                )
+                httpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        val reason = when (response.code) {
+                            401, 403 -> ProfileLookupResult.FailureReason.AUTHORIZATION
+                            408, 425, 429 -> ProfileLookupResult.FailureReason.BACKEND
+                            in 500..599 -> ProfileLookupResult.FailureReason.BACKEND
+                            else -> ProfileLookupResult.FailureReason.BACKEND
+                        }
+                        Log.w(TAG, "Legacy E.164 identity lookup failed: HTTP ${response.code}.")
+                        return@use ProfileLookupResult.Failed(reason)
+                    }
+                    val rows = runCatching {
+                        JSONArray(response.body?.string().orEmpty())
+                    }.getOrElse {
+                        return@use ProfileLookupResult.Failed(
+                            ProfileLookupResult.FailureReason.INVALID_RESPONSE
+                        )
+                    }
+                    if (rows.length() == 0) {
+                        Log.i(TAG, "Legacy E.164 identity lookup outcome=not_found.")
+                        return@use ProfileLookupResult.NotFound
+                    }
+                    for (index in 0 until rows.length()) {
+                        val row = rows.optJSONObject(index) ?: continue
+                        val legacyId = row.optSafeString("id", "").trim()
+                        val returnedPhone = PhonebookHelper.normalizeToE164(
+                            row.optSafeString("phone_e164", "")
+                        )
+                        if (legacyId.isBlank() || returnedPhone != normalized) continue
+                        val rawName = row.optSafeString("name", "VibeSync Member")
+                        val decodedName = runCatching {
+                            HackFreeSecurityShield.decrypt(rawName)
+                        }.getOrDefault(rawName)
+                        val safeName = ContactResolver.sanitizeName(decodedName, "VibeSync Member")
+                        val avatar = row.optSafeString("profile_photo_url", "").ifBlank { "" }
+                        Log.i(TAG, "Legacy E.164 identity lookup found a phone-index row; profile details will be verified separately.")
+                        return@use ProfileLookupResult.Found(
+                            ProfileEntity(
+                                id = legacyId,
+                                name = safeName,
+                                age = 24,
+                                phoneNumber = returnedPhone,
+                                avatarUrl = avatar,
+                                avatarEmoji = row.optSafeString("avatar_emoji", "✨")
+                            )
+                        )
+                    }
+                    ProfileLookupResult.NotFound
+                }
+            } catch (e: java.net.SocketTimeoutException) {
+                Log.w(TAG, "Legacy E.164 identity lookup timed out.")
+                ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.TIMEOUT)
+            } catch (e: java.net.UnknownHostException) {
+                Log.w(TAG, "Legacy E.164 identity lookup network unavailable.")
+                ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.NETWORK)
+            } catch (e: java.io.IOException) {
+                Log.w(TAG, "Legacy E.164 identity lookup network error: ${e.javaClass.simpleName}.")
+                ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.NETWORK)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Log.w(TAG, "Legacy E.164 identity lookup failed: ${e.javaClass.simpleName}.")
+                ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.BACKEND)
+            }
+        }
+
+    /**
      * Fetches one public profile by its opaque VibeSync profile ID.
      * No phone number is queried or returned through this endpoint.
      */
