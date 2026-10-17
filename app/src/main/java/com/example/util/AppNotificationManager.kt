@@ -696,12 +696,10 @@ object AppNotificationManager {
                                 IncomingMessageNotificationPolicy.BlockReason.APP_NOTIFICATIONS_DISABLED,
                                 IncomingMessageNotificationPolicy.BlockReason.CHANNEL_DISABLED
                             )
+                        // A MutableSharedFlow with replay=0 drops values when nobody is collecting.
+                        val hasInAppAlertConsumer = _inAppAlertEvents.subscriptionCount.value > 0
                         if (canUseInAppFallback) {
                             val fallbackBody = displayTextForNotification(messageText, mediaType)
-                            // A MutableSharedFlow with replay=0 drops values when nobody is
-                            // collecting. Do not report a visible fallback unless a UI collector
-                            // is attached; the worker can retry during a foreground cold start.
-                            val hasInAppAlertConsumer = _inAppAlertEvents.subscriptionCount.value > 0
                             val shown = hasInAppAlertConsumer && _inAppAlertEvents.tryEmit(
                                 AppAlertPayload(
                                     type = "MESSAGE",
