@@ -35,7 +35,8 @@ object MessageDeltaSyncManager {
         myPhone: String,
         partnerPhone: String,
         targetMessageId: String? = null,
-        notifyTargetMessage: Boolean = false
+        notifyTargetMessage: Boolean = false,
+        workRequestId: String = ""
     ): MessageDeltaSyncResult = withContext(Dispatchers.IO) {
         val localMatchId = match.matchId.trim()
         if (localMatchId.isBlank()) {
@@ -46,7 +47,7 @@ object MessageDeltaSyncManager {
         // barrier immediately and old fetched rows are rejected before each Room write.
         syncConversationUnlocked(
             context, database, match, myProfileId, myPhone, partnerPhone,
-            targetMessageId, notifyTargetMessage
+            targetMessageId, notifyTargetMessage, workRequestId
         )
     }
 
@@ -58,8 +59,10 @@ object MessageDeltaSyncManager {
         myPhone: String,
         partnerPhone: String,
         targetMessageId: String? = null,
-        notifyTargetMessage: Boolean = false
+        notifyTargetMessage: Boolean = false,
+        workRequestId: String = ""
     ): MessageDeltaSyncResult = withContext(Dispatchers.IO) {
+        val safeWorkRequestId = workRequestId.trim().ifBlank { "<none>" }
         val ownerId = myProfileId.trim()
         val peerId = match.profileId.trim()
         val remoteMatchId = SupabaseClientManager.canonicalChatMatchId(ownerId, peerId)
@@ -74,6 +77,7 @@ object MessageDeltaSyncManager {
         } else {
             MessageSyncCursor()
         }
+        Log.i(TAG, "Inbox delta fetch started: message_id=${targetMessageId.orEmpty().ifBlank { "<none>" }}, match_id=${match.matchId}, remote_match_id=$remoteMatchId, work_request_id=$safeWorkRequestId.")
         val batch = SupabaseClientManager.fetchMessageDeltaForMatch(
             matchId = remoteMatchId,
             currentUserPhone = myPhone,
@@ -103,6 +107,11 @@ object MessageDeltaSyncManager {
         var complete = batch?.complete == true
         var synced = 0
         var ackFailures = 0
+        Log.i(
+            TAG,
+            "Inbox delta fetch result: message_id=${targetMessageId.orEmpty().ifBlank { "<none>" }}, match_id=${match.matchId}, " +
+                "work_request_id=$safeWorkRequestId, batch_present=${batch != null}, row_count=${batch?.records?.size ?: 0}, complete=${batch?.complete == true}."
+        )
 
         if (batch != null) {
             val dao = database.chatMessageDao()
@@ -250,7 +259,7 @@ object MessageDeltaSyncManager {
                     )
                     if (!applied) {
                         complete = false
-                        Log.w(TAG, "Message control event deferred because its target is not in this local conversation.")
+                        Log.w(TAG, "Message control event deferred: message_id=${remote.messageId}, work_request_id=$safeWorkRequestId, reason=control_target_missing.")
                         continue
                     }
                     val acked = remote.isDelivered || remote.isRead ||
@@ -277,7 +286,7 @@ object MessageDeltaSyncManager {
                     )
                     if (exchange == null) {
                         complete = false
-                        Log.w(TAG, "Rejected profile-key exchange in delta sync for message ${remote.messageId}.")
+                        Log.w(TAG, "Rejected profile-key exchange in delta sync: message_id=${remote.messageId}, work_request_id=$safeWorkRequestId.")
                         continue
                     }
                     if (exchange.dateOfBirth.isNotBlank()) {
@@ -396,8 +405,8 @@ object MessageDeltaSyncManager {
                 synced++
                 Log.i(
                     TAG,
-                    "Inbox Room persistence outcome: message_id=${remote.messageId}, persisted=true, " +
-                        "decrypted=${canRenderPlaintext}, clear_barrier=passed."
+                    "Inbox Room persistence outcome: message_id=${remote.messageId}, match_id=${match.matchId}, " +
+                        "work_request_id=$safeWorkRequestId, persisted=true, decrypted=${canRenderPlaintext}, clear_barrier=passed."
                 )
 
                 if (!suppressForClearedHistory && canRenderPlaintext &&
@@ -435,7 +444,7 @@ object MessageDeltaSyncManager {
                     if (!mediaCached) {
                         ackFailures++
                         complete = false
-                        Log.w(TAG, "Delivery ACK deferred until encrypted attachment bytes are cached locally.")
+                        Log.w(TAG, "Delivery ACK deferred until encrypted attachment bytes are cached locally: message_id=${remote.messageId}, work_request_id=$safeWorkRequestId.")
                     } else {
                         val acked = SupabaseBackendManager.markMessageDelivered(
                             remote.messageId,
@@ -446,14 +455,14 @@ object MessageDeltaSyncManager {
                             dao.markMessageAsDelivered(remote.messageId)
                         } else {
                             ackFailures++
-                            Log.w(TAG, "Delivery ACK left in Room outbox for message_id=${remote.messageId}.")
+                            Log.w(TAG, "Delivery ACK left in Room outbox: message_id=${remote.messageId}, work_request_id=$safeWorkRequestId.")
                         }
                     }
                 } else if (!canRenderPlaintext) {
                     // Retain ciphertext for recovery; NACK changes sender state but never purges it.
                     if (!SupabaseBackendManager.markMessageDecryptionFailed(remote.messageId)) {
                         ackFailures++
-                        Log.w(TAG, "Decryption NACK will retry with the next inbox sync.")
+                        Log.w(TAG, "Decryption NACK will retry with the next inbox sync: message_id=${remote.messageId}, work_request_id=$safeWorkRequestId.")
                     }
                 }
 
