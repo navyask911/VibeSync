@@ -383,7 +383,7 @@ fun RegistrationProfileScreen(
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, bottom = 4.dp)
+                modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 4.dp)
                     .testTag("contact_privacy_disclosure")
             )
             if (contactsSyncStatus.isNotBlank()) {
@@ -392,7 +392,7 @@ fun RegistrationProfileScreen(
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, bottom = 8.dp)
+                    modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 8.dp)
                         .testTag("contact_permission_status")
                 )
             }
