@@ -895,7 +895,7 @@ class SocialConnectRepository(
             isEncrypted = true
         )
         chatMessageDao.insertMessage(userMsg)
-        matchDao.updateLastMessage(match.matchId, userMsg.text, userMsg.timestamp, true)
+        matchDao.updateLastMessagePreservingUnread(match.matchId, userMsg.text, userMsg.timestamp)
     }
 
     suspend fun deleteStatusStory(storyId: String) = withContext(Dispatchers.IO) {
@@ -3429,11 +3429,10 @@ class SocialConnectRepository(
                 chatMessageDao.insertMessage(userMsg)
                 messageDao.insertMessage(userMsg.toLocalMessage().copy(remoteMessageId = userMsg.messageId))
                 if (!isProtocolControl) {
-                    matchDao.updateLastMessage(
+                    matchDao.updateLastMessagePreservingUnread(
                         matchId = matchId,
                         text = text.ifBlank { if (mediaType == "VOICE") "Voice message" else "Photo" },
-                        timestamp = userMsg.timestamp,
-                        hasUnread = false
+                        timestamp = userMsg.timestamp
                     )
                 }
                 true
@@ -3518,7 +3517,7 @@ class SocialConnectRepository(
         messageDao.insertMessage(updated.toLocalMessage().copy(remoteMessageId = updated.messageId))
         val conversation = matchDao.getMatchByIdSync(msg.matchId) ?: return false
         if (conversation.lastMessageTime <= msg.timestamp || conversation.lastMessage == msg.text) {
-            matchDao.updateLastMessage(msg.matchId, newText, now, false)
+            matchDao.updateLastMessagePreservingUnread(msg.matchId, newText, now)
         }
         val peer = profileDao.getProfileByIdSync(conversation.profileId)
         sendMessage(
@@ -3563,11 +3562,10 @@ class SocialConnectRepository(
             reactionsJson = "{}"
         ))
         if (match.lastMessageTime <= msg.timestamp || match.lastMessage == msg.text) {
-            matchDao.updateLastMessage(
+            matchDao.updateLastMessagePreservingUnread(
                 msg.matchId,
                 "This message was deleted",
-                msg.timestamp,
-                false
+                msg.timestamp
             )
         }
         val recipient = profileDao.getProfileByIdSync(match.profileId)
