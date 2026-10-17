@@ -41,4 +41,19 @@ class ChatDeliveryPresentationReadTest {
         assertEquals(ChatDeliveryPresentation.State.SENT_TO_SERVER, ChatDeliveryPresentation.effectiveState("SENT_TO_SERVER", "SENDING"))
         assertEquals(ChatDeliveryPresentation.State.SENT_TO_SERVER, ChatDeliveryPresentation.effectiveState("SENT_TO_SERVER", "FAILED"))
     }
+
+    @Test
+    fun optimisticReceiptStatusesCannotPromoteAStalePendingRoomRow() {
+        assertEquals(ChatDeliveryPresentation.State.PENDING, ChatDeliveryPresentation.effectiveState("PENDING", "SENT"))
+        assertEquals(ChatDeliveryPresentation.State.PENDING, ChatDeliveryPresentation.effectiveState("PENDING", "SENT_TO_SERVER"))
+        assertEquals(ChatDeliveryPresentation.State.PENDING, ChatDeliveryPresentation.effectiveState("PENDING", "DELIVERED"))
+        assertEquals(ChatDeliveryPresentation.State.PENDING, ChatDeliveryPresentation.effectiveState("PENDING", "READ"))
+    }
+
+    @Test
+    fun newerDurableReceiptCannotBeDowngradedByStaleOptimisticState() {
+        assertEquals(ChatDeliveryPresentation.State.DELIVERED, ChatDeliveryPresentation.effectiveState("DELIVERED", "SENT_TO_SERVER"))
+        assertEquals(ChatDeliveryPresentation.State.READ, ChatDeliveryPresentation.effectiveState("READ", "DELIVERED"))
+        assertEquals(ChatDeliveryPresentation.State.READ, ChatDeliveryPresentation.effectiveState("READ", "FAILED"))
+    }
 }

@@ -35,16 +35,24 @@ object ChatDeliveryPresentation {
     ): State {
         val persisted = normalizeState(persistedState)
         val optimistic = normalizeState(optimisticState)
-        if (isRead || persisted == State.READ || optimistic == State.READ) return State.READ
-        if (isDelivered || persisted == State.DELIVERED || optimistic == State.DELIVERED) return State.DELIVERED
-        // Server acceptance is a durable fact and outranks stale optimistic failure/sending state.
+
+        // Only durable receipt state (or durable Room flags) confirms SENT, DELIVERED, or READ.
+        // Local Compose/outbox status is not proof that the server or recipient acknowledged a message.
+        if (isRead || persisted == State.READ) return State.READ
+        if (isDelivered || persisted == State.DELIVERED) return State.DELIVERED
         if (persisted == State.SENT_TO_SERVER) return State.SENT_TO_SERVER
         if (persisted == State.FAILED) {
             val retrying = optimisticState?.trim()?.uppercase(Locale.ROOT) in setOf("SENDING", "PENDING")
             return if (retrying) State.PENDING else State.FAILED
         }
-        if (optimistic == State.PENDING) return persisted
-        return optimistic
+
+        // Optimistic state may explain that a retry is in progress, but cannot promote a stale
+        // durable PENDING row to SENT_TO_SERVER, DELIVERED, or READ.
+        return when (optimistic) {
+            State.PENDING -> persisted
+            State.FAILED -> State.FAILED
+            else -> persisted
+        }
     }
 
     fun tick(rawState: String?): Tick = when (val state = normalizeState(rawState)) {

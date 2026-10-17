@@ -300,6 +300,50 @@ class TinkDecryptRegressionTest {
     }
 
     @Test
+    fun observedHistoricalRecipientIdsRemainDecryptableAfterAppendOnlyRotation() {
+        // The IDs below appeared in physical-device diagnostics. These synthetic fixtures prove
+        // that Tink can decrypt old ciphertext when the original private key remains retained;
+        // they do NOT establish that these private keys exist on any real user's device.
+        val observedIds = listOf(1166471679L, 1964172783L, 3665388309L, 1123047892L)
+        observedIds.forEach { historicalId ->
+            val originalPrivate = fixedPrimaryId(newPrivateKeyset(), historicalId)
+            val originalPublic = TinkCryptoManager.serializePublicKeysetJson(originalPrivate)
+            val body = "historical payload for key $historicalId"
+            val payload = TinkCryptoManager.encryptForRecipientOrThrow(
+                originalPublic, body, profileA, profileB, "historical-id-$historicalId"
+            )
+            assertEquals(historicalId.toString(), TinkCryptoManager.getPublicKeyMetadata(originalPublic).keyId)
+
+            val manager = KeysetManager.withKeysetHandle(originalPrivate)
+            val previousIds = manager.keysetHandle.keysetInfo.keyInfoList.map {
+                TinkCryptoManager.unsignedTinkKeyId(it.keyId)
+            }.toSet()
+            manager.add(template)
+            val promotedId = manager.keysetHandle.keysetInfo.keyInfoList.first {
+                TinkCryptoManager.unsignedTinkKeyId(it.keyId) !in previousIds
+            }
+            manager.setPrimary(promotedId.keyId)
+            val rotated = manager.keysetHandle
+
+            val retainedIds = rotated.keysetInfo.keyInfoList
+                .filter { it.status.name == "ENABLED" }
+                .map { TinkCryptoManager.unsignedTinkKeyId(it.keyId) }
+                .toSet()
+            assertTrue("Historical key $historicalId was dropped during rotation.", retainedIds.containsAll(previousIds))
+            assertTrue(
+                "Ciphertext key $historicalId is not available in the retained keyset.",
+                TinkCryptoManager.hasRetainedRecipientKey(rotated, payload)
+            )
+            assertEquals(
+                body,
+                TinkCryptoManager.decryptWithPrivateKeysetOrThrow(
+                    rotated, payload, profileA, profileB, "historical-id-$historicalId"
+                )
+            )
+        }
+    }
+
+    @Test
     fun failureKeepsCiphertextAndRetryAfterKeyRestoreSucceeds() {
         val actualRecipient = newPrivateKeyset()
         val wrongRecipient = newPrivateKeyset()

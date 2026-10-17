@@ -47,7 +47,6 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Interests
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -138,6 +137,44 @@ fun RegistrationProfileScreen(
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
+
+    val contactPermissionPreferences = remember(context) {
+        context.getSharedPreferences(
+            com.example.util.RegistrationContactPermissionPolicy.PREFERENCES_NAME,
+            android.content.Context.MODE_PRIVATE
+        )
+    }
+    var hasContactsPermission by remember(context) {
+        mutableStateOf(
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.READ_CONTACTS
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        )
+    }
+    var contactsSyncStatus by remember(context) {
+        mutableStateOf(
+            when {
+                hasContactsPermission -> "Contacts permission is available; checking registered profiles."
+                contactPermissionPreferences.getBoolean(
+                    com.example.util.RegistrationContactPermissionPolicy.KEY_REQUESTED, false
+                ) -> com.example.util.RegistrationContactPermissionPolicy.noPermissionStatus()
+                else -> ""
+            }
+        )
+    }
+    val contactsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        contactPermissionPreferences.edit().putBoolean(
+            com.example.util.RegistrationContactPermissionPolicy.KEY_REQUESTED, true
+        ).commit()
+        hasContactsPermission = granted
+        contactsSyncStatus = if (granted) {
+            "Contacts permission granted; checking registered profiles."
+        } else {
+            com.example.util.RegistrationContactPermissionPolicy.noPermissionStatus()
+        }
+    }
 
     BackHandler {
         onBackToLogin()
@@ -335,12 +372,54 @@ fun RegistrationProfileScreen(
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
-                text = "Set up your public profile and encrypted HTTPS contact matching",
+                text = "Set up your VibeSync profile",
                 fontSize = 13.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.padding(top = 4.dp, bottom = 20.dp)
+                modifier = Modifier.padding(top = 4.dp, bottom = 6.dp)
             )
+            Text(
+                text = "Contact matching is optional. If you grant Android contacts access, VibeSync reads phone numbers on this device and securely sends normalized numbers over HTTPS to check for registered profiles. Profile discoverability is separate; declining contacts does not block profile setup or messaging.",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, bottom = 4.dp)
+                    .testTag("contact_privacy_disclosure")
+            )
+            if (contactsSyncStatus.isNotBlank()) {
+                Text(
+                    text = contactsSyncStatus,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, bottom = 8.dp)
+                        .testTag("contact_permission_status")
+                )
+            }
+            LaunchedEffect(Unit) {
+                val alreadyRequested = contactPermissionPreferences.getBoolean(
+                    com.example.util.RegistrationContactPermissionPolicy.KEY_REQUESTED, false
+                )
+                if (com.example.util.RegistrationContactPermissionPolicy.shouldRequestInitialPermission(
+                        permissionGranted = hasContactsPermission,
+                        alreadyRequested = alreadyRequested
+                    )
+                ) {
+                    // This disclosure is already part of the rendered registration screen. Persist
+                    // the one-time prompt gate before Android shows its native permission dialog.
+                    contactPermissionPreferences.edit().putBoolean(
+                        com.example.util.RegistrationContactPermissionPolicy.KEY_REQUESTED, true
+                    ).commit()
+                    contactsPermissionLauncher.launch(android.Manifest.permission.READ_CONTACTS)
+                } else if (!hasContactsPermission && alreadyRequested) {
+                    contactsSyncStatus = com.example.util.RegistrationContactPermissionPolicy.noPermissionStatus()
+                }
+            }
+            LaunchedEffect(hasContactsPermission) {
+                if (com.example.util.RegistrationContactPermissionPolicy.shouldStartContactSync(hasContactsPermission)) {
+                    onContactsPermissionGranted { result -> contactsSyncStatus = result }
+                }
+            }
 
             // 1. Profile Photo Avatar Picker
             Box(
@@ -676,35 +755,7 @@ fun RegistrationProfileScreen(
             // Preserve dating availability as a separate preference from profile discoverability.
             var isOpenForDating by remember { mutableStateOf(true) }
 
-            // Profile discoverability is enabled by default. Android address-book permission
-            // is a separate, optional feature and does not control server-side discoverability.
-            var hasContactsPermission by remember(context) {
-                mutableStateOf(
-                    androidx.core.content.ContextCompat.checkSelfPermission(
-                        context, android.Manifest.permission.READ_CONTACTS
-                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                )
-            }
-            var contactsSyncStatus by remember {
-                mutableStateOf(
-                    if (hasContactsPermission) "Contacts permission is available; checking registered matches."
-                    else "Contact matching is optional. Allow access only if you want to match your address book."
-                )
-            }
-            val contactsPermissionLauncher = rememberLauncherForActivityResult(
-                contract = ActivityResultContracts.RequestPermission()
-            ) { granted ->
-                hasContactsPermission = granted
-                if (!granted) {
-                    contactsSyncStatus = "Contacts access was denied. No contacts were read; you can retry here."
-                }
-            }
-            LaunchedEffect(hasContactsPermission) {
-                if (hasContactsPermission) {
-                    onContactsPermissionGranted { result -> contactsSyncStatus = result }
-                }
-            }
-            Row(
+duplicate legacy contact permission block            Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -722,47 +773,7 @@ fun RegistrationProfileScreen(
                     modifier = Modifier.testTag("switch_open_to_dating")
                 )
             }
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Security,
-                        contentDescription = null,
-                        tint = VibeSyncTeal,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Privacy & contact matching", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                }
-                Text(
-                    text = "Profile discoverability is enabled by default. Contacts permission is separate: if allowed, VibeSync reads phone numbers on this device and securely sends normalized numbers over HTTPS to match registered profiles. Private chats remain end-to-end encrypted.",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Button(
-                    onClick = {
-                        if (hasContactsPermission) {
-                            onContactsPermissionGranted { result -> contactsSyncStatus = result }
-                        } else {
-                            contactsPermissionLauncher.launch(android.Manifest.permission.READ_CONTACTS)
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth().testTag("btn_enable_contact_matching"),
-                    colors = ButtonDefaults.buttonColors(containerColor = VibeSyncTeal)
-                ) {
-                    Text(if (hasContactsPermission) "Refresh contact matches" else "Enable contact matching")
-                }
-                Text(
-                    text = contactsSyncStatus,
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.testTag("contact_matching_status")
-                )
-            }
-
-            // 9. Full-width registration action. Avatar upload is handled after profile creation.
+complete Contact Discovery card including manual buttons            // 9. Full-width registration action. Avatar upload is handled after profile creation.
             Button(
                 onClick = {
                     if (isFormValid) {

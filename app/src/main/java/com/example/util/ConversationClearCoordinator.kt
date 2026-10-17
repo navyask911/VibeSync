@@ -46,18 +46,15 @@ object ConversationClearCoordinator {
         if (safeId.isBlank()) return@withContext ConversationClearOutcome(false, false, detail = "missing_match_id")
         val app = context.applicationContext
         val dao = database.conversationClearDao()
-        val existingIds = runCatching { dao.listConversationMessageIds(safeId) }.getOrDefault(emptyList())
-
-        // Best-effort cancellation first reduces wasted work. The durable Room guard is written
-        // BEFORE waiting for the per-conversation mutex, so an in-flight uploader sees the barrier
-        // at its pre-upload/pre-RPC rechecks and a racing enqueue is rejected by its Room transaction.
-        runCatching { cancelConversationWork(app, database, safeId, existingIds) }
-            .onFailure { Log.w(TAG, "Initial Clear Chat worker cancellation was incomplete.") }
-
         var barrierStarted = false
         try {
-            val start = dao.beginConversationClear(safeId, System.currentTimeMillis(), deleteMedia)
-                ?: return@withContext ConversationClearOutcome(false, false, detail = "invalid_match_id")
+            // Linearize the cutoff against outbox attempts, which hold this same conversation mutex
+            // through their final pre-RPC guard and remote commit. A send already holding the mutex
+            // finishes before the clear cutoff; after the guard commits, later attempts are rejected.
+            // Do not wait for WorkManager while holding the mutex or a worker could deadlock on it.
+            val start = withConversationLock(safeId) {
+                dao.beginConversationClear(safeId, System.currentTimeMillis(), deleteMedia)
+            } ?: return@withContext ConversationClearOutcome(false, false, detail = "invalid_match_id")
             barrierStarted = true
 
             // SharedPreferences is a compatibility mirror for legacy code. SQLCipher Room is
@@ -67,12 +64,13 @@ object ConversationClearCoordinator {
             }.onFailure {
                 Log.w(TAG, "Clear Chat preference mirror failed; the encrypted Room guard remains authoritative.")
             }
-            cancelConversationWork(app, database, safeId, start.messageIds)
+
+            // The durable Room barrier now prevents queued/retrying messages from sending. Cancel
+            // work outside the mutex, then reacquire it to remove any local rows/projections safely.
+            runCatching { cancelConversationWork(app, database, safeId, start.messageIds) }
+                .onFailure { Log.w(TAG, "Clear Chat worker cancellation was incomplete.") }
 
             withConversationLock(safeId) {
-                // Wait for any sender/upload that acquired the lock before the barrier was committed.
-                // Its own guards stop it before a later send RPC; no old work can proceed afterwards.
-                cancelConversationWork(app, database, safeId, start.messageIds)
                 dao.clearConversation(safeId)
                 val failedMedia = finishOutsideTransaction(app, database, safeId)
                 val stillClearing = dao.getClearGuard(safeId)?.isClearing == true
@@ -82,7 +80,7 @@ object ConversationClearCoordinator {
                         finished = false,
                         barrierStarted = true,
                         failedMediaFiles = failedMedia,
-                        detail = if (failedMedia > 0) "media_cleanup_pending" else "cleanup_pending"
+                        detail = "cleanup_pending"
                     )
                 } else {
                     ConversationClearOutcome(true, true)
