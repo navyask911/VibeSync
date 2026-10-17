@@ -2022,7 +2022,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             database.matchDao().setHasUnread(matchId, hasUnread)
             android.util.Log.i(
                 "VibeSyncUnread",
-                "Conversation unread state reconciled: has_unread=$hasUnread, incoming_unread_messages=${messageStates.count { state -> com.example.util.ConversationUnreadStatePolicy.isUnreadIncoming(state.isIncoming, state.isRead, state.deliveryState, state.isControlMessage) }}."
+                "Conversation unread state reconciled: has_unread=$hasUnread, incoming_unread_messages=${messageStates.count { state -> com.example.util.ConversationUnreadStatePolicy.isUnreadIncoming(state.isIncoming, state.isRead, state.deliveryState, state.isControlMessage, state.isDeleted, state.isDeletedForMe, state.isDeletedForEveryone) }}."
             )
         }
     }
