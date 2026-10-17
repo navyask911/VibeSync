@@ -693,16 +693,16 @@ object AppNotificationManager {
                     }
                 } else {
                     if (conversationMuted) {
-                        Log.i(TAG, "Notification suppressed: reason=conversation muted conversation_id=${threadId}.")
+                        Log.i(TAG, "Notification suppressed: reason=conversation_muted conversation_id=${threadId}, message_id=$safeMessageId, work_request_id=$safeWorkRequestId.")
                         return@withContext IncomingNotificationDispatchResult.Suppressed("conversation_muted")
                     }
                     if (activeChat) {
-                        Log.i(TAG, "Notification suppressed: reason=active chat conversation_id=${threadId}.")
+                        Log.i(TAG, "Notification suppressed: reason=active_chat conversation_id=${threadId}, message_id=$safeMessageId, work_request_id=$safeWorkRequestId.")
                         return@withContext IncomingNotificationDispatchResult.Suppressed("active_chat")
                     }
                     val displayBlock = notificationDisplayBlockReason(appContext, effectiveChannelId)
                     if (displayBlock != null) {
-                        Log.i(TAG, "Notification suppressed: reason=$displayBlock channel_id=$effectiveChannelId.")
+                        Log.i(TAG, "Notification suppressed: reason=$displayBlock channel_id=$effectiveChannelId, message_id=$safeMessageId, work_request_id=$safeWorkRequestId.")
                         return@withContext IncomingNotificationDispatchResult.Suppressed(displayBlock)
                     }
                 }
@@ -764,7 +764,7 @@ object AppNotificationManager {
                             Log.w(TAG, "Notification accepted but dedupe persistence failed: message_id=$safeMessageId, work_request_id=$safeWorkRequestId.")
                         }
                     }
-                    Log.i(TAG, "Incoming notification post accepted: message_id=${safeMessageId.ifBlank { "<none>" }}, conversation_id=${threadId}, channel_id=${effectiveChannelId}.")
+                    Log.i(TAG, "Incoming notification post accepted: message_id=${safeMessageId.ifBlank { "<none>" }}, conversation_id=${threadId}, channel_id=${effectiveChannelId}, work_request_id=$safeWorkRequestId.")
                     runCatching { postChatGroupSummary(appContext) }
                         .onFailure { Log.w(TAG, "Chat group summary update failed after message post: work_request_id=$safeWorkRequestId.") }
                     runCatching { AlertSoundAndVibrationManager.triggerChatAlert(appContext) }
@@ -782,7 +782,7 @@ object AppNotificationManager {
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
-                Log.w(TAG, "Unable to build notification: message_id=${safeMessageId.ifBlank { "<none>" }}, work_request_id=$safeWorkRequestId, reason=${failure.javaClass.simpleName}, work_request_id=${diagnosticWorkRequestId.ifBlank { "<none>" }}.")
+                Log.w(TAG, "Unable to build notification: message_id=${safeMessageId.ifBlank { "<none>" }}, work_request_id=$safeWorkRequestId, reason=${failure.javaClass.simpleName}.")
                 return@withContext IncomingNotificationDispatchResult.RetryableFailure(failure.javaClass.simpleName)
             } finally {
                 reservedMessageId?.let(notificationPostInFlightMessageIds::remove)
@@ -1593,13 +1593,13 @@ object AppNotificationManager {
         } catch (_: SecurityException) {
             Log.w(
                 TAG,
-                "Android rejected notification post: message_id=${diagnosticMessageId.ifBlank { "<none>" }}, reason=SecurityException."
+                "Android rejected notification post: message_id=${diagnosticMessageId.ifBlank { "<none>" }}, reason=SecurityException, work_request_id=${diagnosticWorkRequestId.ifBlank { "<none>" }}."
             )
             false
         } catch (failure: Throwable) {
             Log.w(
                 TAG,
-                "Android notification post failed: message_id=${diagnosticMessageId.ifBlank { "<none>" }}, reason=${failure.javaClass.simpleName}."
+                "Android notification post failed: message_id=${diagnosticMessageId.ifBlank { "<none>" }}, reason=${failure.javaClass.simpleName}, work_request_id=${diagnosticWorkRequestId.ifBlank { "<none>" }}."
             )
             false
         }
