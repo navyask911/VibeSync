@@ -169,21 +169,25 @@ object TinkCryptoManager {
     /** Existing local public identity is continuity evidence for legacy installs predating the marker. */
     private fun hasPreviouslyPublishedLocalIdentity(context: Context): Boolean =
         runCatching {
-            val app = context.applicationContext
-            val database = com.example.data.database.DatingDatabase.getDatabase(app)
-            val profileId = VibeSyncSessionManager.getProfileId(app).orEmpty().trim()
-            val ownById = profileId.takeIf { it.isNotBlank() }?.let {
-                database.profileDao().getProfileByIdSync(it)
+            // This method is reached from a synchronous keyset bootstrap. Perform the local Room
+            // lookup on IO rather than calling suspend DAO methods outside a coroutine.
+            kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+                val app = context.applicationContext
+                val database = com.example.data.database.DatingDatabase.getDatabase(app)
+                val profileId = VibeSyncSessionManager.getProfileId(app).orEmpty().trim()
+                val ownById = profileId.takeIf { it.isNotBlank() }?.let {
+                    database.profileDao().getProfileByIdSync(it)
+                }
+                val phone = database.userPreferencesDao().getPreferencesSync()
+                    ?.verifiedMobileNumber.orEmpty().trim()
+                val ownProfile = ownById ?: phone.takeIf { it.isNotBlank() }?.let { verifiedPhone ->
+                    database.profileDao().getProfileByPhone(verifiedPhone)
+                        ?: database.profileDao().getAllProfilesSync().firstOrNull { candidate ->
+                            com.example.util.PhonebookHelper.arePhonesMatching(candidate.phoneNumber, verifiedPhone)
+                        }
+                }
+                !ownProfile?.publicIdentityKey.isNullOrBlank()
             }
-            val phone = database.userPreferencesDao().getPreferencesSync()
-                ?.verifiedMobileNumber.orEmpty().trim()
-            val ownProfile = ownById ?: phone.takeIf { it.isNotBlank() }?.let { verifiedPhone ->
-                database.profileDao().getProfileByPhone(verifiedPhone)
-                    ?: database.profileDao().getAllProfilesSync().firstOrNull { candidate ->
-                        com.example.util.PhonebookHelper.arePhonesMatching(candidate.phoneNumber, verifiedPhone)
-                    }
-            }
-            !ownProfile?.publicIdentityKey.isNullOrBlank()
         }.onFailure {
             Log.w(TAG, "Could not verify local Tink identity continuity; refusing implicit key regeneration.")
         }.getOrDefault(true)
