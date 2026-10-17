@@ -63,10 +63,39 @@ object ReturningAccountRecoveryPolicy {
     ): Decision {
         val canonicalId = profileId.trim()
         if (persistedCompletionMarker || roomCompletionMarkerMatchesPhone) {
-            return Decision(
-                route = Route.HOME,
-                reason = if (persistedCompletionMarker) "encrypted_onboarding_marker" else "room_onboarding_marker"
-            )
+            // The marker is authoritative for routing; a profile read is only for UI hydration.
+            val markerReason = if (persistedCompletionMarker) "encrypted_onboarding_marker" else "room_onboarding_marker"
+            return when (val lookup = canonicalSelfLookup()) {
+                is ProfileLookupResult.Found -> if (
+                    lookup.profile.id.equals(canonicalId, ignoreCase = true)
+                ) {
+                    Decision(
+                        route = Route.HOME,
+                        recoveredProfile = lookup.profile,
+                        reason = markerReason,
+                        hasRegistrationDetails = OnboardingStatePolicy.hasRegistrationDetails(
+                            lookup.profile.bio, lookup.profile.city, lookup.profile.occupation,
+                            lookup.profile.place, lookup.profile.qualification, lookup.profile.interests
+                        )
+                    )
+                } else {
+                    Decision(
+                        route = Route.HOME,
+                        reason = markerReason,
+                        failureReason = ProfileLookupResult.FailureReason.INVALID_RESPONSE
+                    )
+                }
+                ProfileLookupResult.NotFound -> Decision(
+                    route = Route.HOME,
+                    reason = markerReason,
+                    failureReason = null
+                )
+                is ProfileLookupResult.Failed -> Decision(
+                    route = Route.HOME,
+                    reason = markerReason + "_profile_hydration_deferred",
+                    failureReason = lookup.reason
+                )
+            }
         }
 
         fun hasDetails(profile: ProfileEntity) = OnboardingStatePolicy.hasRegistrationDetails(
