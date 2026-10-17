@@ -3374,30 +3374,28 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
     private var hasPromptedInitialPermissions: Boolean = false
 
-    // Mandatory Permissions Result Handling
-    fun onPermissionsResult(allGranted: Boolean) {
+    // Feature-specific READ_CONTACTS result. Do not write this to the legacy aggregate
+    // permissionsGranted preference; Android's actual permission state is authoritative.
+    fun onPermissionsResult(contactsPermissionGranted: Boolean) {
         viewModelScope.launch {
             hasPromptedInitialPermissions = true
-            repository.updatePermissionsStatus(allGranted)
             _showMandatoryPermissionsDialog.value = false
             _toastMessage.emit(
-                if (allGranted) "Contacts permission granted."
+                if (contactsPermissionGranted) "Contacts permission granted."
                 else "Contacts access was not granted; contact matching remains off."
             )
         }
     }
 
     fun promptMandatoryPermissions() {
-        if (userPreferences.value?.permissionsGranted == true) {
-            return
-        }
+        if (hasPromptedInitialPermissions) return
         _showMandatoryPermissionsDialog.value = true
     }
 
     fun dismissMandatoryPermissionsDialog() {
         viewModelScope.launch {
-            // Dismissing an explanation does not constitute an Android permission grant.
-            repository.updatePermissionsStatus(false)
+            // Dismissing an explanation is not a grant and must not mutate permission preferences.
+            hasPromptedInitialPermissions = true
             _showMandatoryPermissionsDialog.value = false
         }
     }
