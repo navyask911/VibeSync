@@ -17,6 +17,8 @@ import java.nio.charset.StandardCharsets
 import java.security.KeyStore
 import java.security.SecureRandom
 import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -32,6 +34,7 @@ object VibeSyncSessionManager {
     private const val TAG = "VibeSyncSessionManager"
     private const val PREFS = "vibesync_session"
     private const val SESSION_KEY = "session_blob"
+    private const val ONBOARDING_MARKERS_KEY = "onboarding_markers_blob"
     private const val KEY_ALIAS = "vibesync_session_aes_v1"
     private const val FALLBACK_PREFS = "vibesync_session_fallback_key"
     private const val FALLBACK_KEY_NAME = "aes_key_v1"
@@ -55,6 +58,9 @@ object VibeSyncSessionManager {
     // Invalidates queued disk writes on logout or after a newer session is stored.
     private var mutationVersion: Long = 0L
     private val sessionChangeListeners = CopyOnWriteArraySet<(Session?) -> Unit>()
+    private val immediateSyncInFlight = AtomicBoolean(false)
+    private val lastImmediateSyncStartedAt = AtomicLong(0L)
+    private const val IMMEDIATE_SYNC_DEBOUNCE_MS = 1_250L
 
     /** Register a process-local listener for verified-session save, restore, and clear events. */
     fun addSessionChangeListener(listener: (Session?) -> Unit) {
@@ -105,25 +111,28 @@ object VibeSyncSessionManager {
         null
     }
 
-    private fun deleteKeystoreKey() {
-        try {
-            KeyStore.getInstance("AndroidKeyStore").apply {
-                load(null)
-                if (containsAlias(KEY_ALIAS)) deleteEntry(KEY_ALIAS)
-            }
-        } catch (e: Throwable) {
-            Log.w(TAG, "Could not repair Android Keystore session key: ${e.javaClass.simpleName}")
-        }
-    }
-
+    /**
+     * AndroidKeyStore keys generated with randomizedEncryptionRequired=true must generate the
+     * GCM IV themselves. Supplying a caller-created GCMParameterSpec causes
+     * InvalidAlgorithmParameterException on compliant providers. Keep the existing key intact.
+     */
     private fun encryptPrimary(value: String): String {
-        val iv = ByteArray(12).also(secureRandom::nextBytes)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, key(), GCMParameterSpec(GCM_TAG_BITS, iv))
-        return KEYSTORE_PREFIX + Base64.encodeToString(
-            iv + cipher.doFinal(value.toByteArray(StandardCharsets.UTF_8)),
-            Base64.NO_WRAP
-        )
+        cipher.init(Cipher.ENCRYPT_MODE, key())
+        val iv = cipher.iv
+        require(iv.size == 12) { "Unexpected Android Keystore GCM IV size." }
+        val plaintext = value.toByteArray(StandardCharsets.UTF_8)
+        val ciphertext = try {
+            cipher.doFinal(plaintext)
+        } finally {
+            plaintext.fill(0)
+        }
+        return try {
+            KEYSTORE_PREFIX + Base64.encodeToString(iv + ciphertext, Base64.NO_WRAP)
+        } finally {
+            iv.fill(0)
+            ciphertext.fill(0)
+        }
     }
 
     /**
@@ -229,15 +238,12 @@ object VibeSyncSessionManager {
                     val payload = encodeSession(session)
                     val encrypted = try {
                         encryptPrimary(payload)
-                    } catch (firstError: Throwable) {
-                        Log.w(TAG, "Primary encryption failed; attempting Keystore repair: ${firstError.javaClass.simpleName}")
-                        deleteKeystoreKey()
-                        try {
-                            encryptPrimary(payload)
-                        } catch (repairError: Throwable) {
-                            Log.w(TAG, "Keystore repair failed; using app-private fallback: ${repairError.javaClass.simpleName}")
-                            encryptFallback(context, payload)
-                        }
+                    } catch (primaryError: Throwable) {
+                        // Never delete/regenerate an existing Keystore key on an encryption error:
+                        // old ciphertext may still depend on it. Keep the existing encrypted fallback
+                        // behavior and log only the exception type, not session material.
+                        Log.w(TAG, "Primary session encryption failed; using existing app-private fallback: ${primaryError.javaClass.simpleName}")
+                        encryptFallback(context, payload)
                     }
 
                     val committed = prefs(context).edit().putString(SESSION_KEY, encrypted).commit()
@@ -278,9 +284,11 @@ object VibeSyncSessionManager {
             "Valid VibeSync session is required"
         }
         // Preserve the marker only when the same verified profile signs in again.
-        val previousCompletion = getSession(context.applicationContext)
-            ?.takeIf { it.profileId.equals(profileId.trim(), ignoreCase = true) }
-            ?.hasCompletedOnboarding == true
+        val previousCompletion =
+            getSession(context.applicationContext)
+                ?.takeIf { it.profileId.equals(profileId.trim(), ignoreCase = true) }
+                ?.hasCompletedOnboarding == true ||
+                hasPersistedOnboardingMarker(context.applicationContext, profileId)
         val session = Session(
             sessionToken = sessionToken,
             profileId = profileId,
@@ -303,6 +311,58 @@ object VibeSyncSessionManager {
         persistSessionAsync(app, session, generation)
     }
 
+    /** Read the durable account-completion marker without requiring an active login session. */
+    fun hasCompletedOnboarding(context: Context, profileId: String): Boolean =
+        hasPersistedOnboardingMarker(context.applicationContext, profileId)
+
+    private fun readOnboardingMarkerIds(context: Context): Set<String> {
+        val encrypted = try {
+            prefs(context).getString(ONBOARDING_MARKERS_KEY, null)
+        } catch (_: Throwable) {
+            null
+        } ?: return emptySet()
+        val payload = decrypt(encrypted, context) ?: return emptySet()
+        return try {
+            val ids = JSONObject(payload).optJSONArray("profile_ids") ?: return emptySet()
+            buildSet {
+                for (index in 0 until ids.length()) {
+                    val id = ids.optString(index, "").trim()
+                    if (id.isNotBlank() && id.length <= 128 && id != "null") add(id)
+                }
+            }
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Onboarding marker store could not be parsed: ${failure.javaClass.simpleName}")
+            emptySet()
+        }
+    }
+
+    private fun hasPersistedOnboardingMarker(context: Context, profileId: String): Boolean {
+        val id = profileId.trim()
+        if (id.isBlank()) return false
+        return readOnboardingMarkerIds(context).any { it.equals(id, ignoreCase = true) }
+    }
+
+    private fun persistOnboardingMarker(context: Context, profileId: String, completed: Boolean): Boolean {
+        val id = profileId.trim()
+        if (id.isBlank() || id == "null") return false
+        val current = readOnboardingMarkerIds(context)
+        val next = current.filterNot { it.equals(id, ignoreCase = true) }.toMutableSet()
+        if (completed) next.add(id)
+        val payload = JSONObject().put("profile_ids", org.json.JSONArray(next.sorted())).toString()
+        return try {
+            val encrypted = try {
+                encryptPrimary(payload)
+            } catch (primaryError: Throwable) {
+                Log.w(TAG, "Onboarding marker encryption used existing app-private fallback: ${primaryError.javaClass.simpleName}")
+                encryptFallback(context, payload)
+            }
+            prefs(context).edit().putString(ONBOARDING_MARKERS_KEY, encrypted).commit()
+        } catch (failure: Throwable) {
+            Log.e(TAG, "Onboarding marker persistence failed: ${failure.javaClass.simpleName}")
+            false
+        }
+    }
+
     /**
      * Persist onboarding completion inside the encrypted session blob. The marker is bound to
      * the authenticated profile ID and survives Room re-emission or process recreation.
@@ -313,8 +373,12 @@ object VibeSyncSessionManager {
         completed: Boolean = true
     ): Boolean {
         val app = context.applicationContext
-        val current = getSession(app) ?: return false
-        if (!current.profileId.equals(profileId.trim(), ignoreCase = true)) return false
+        val id = profileId.trim()
+        if (id.isBlank()) return false
+        val current = getSession(app)
+        if (current != null && !current.profileId.equals(id, ignoreCase = true)) return false
+        if (!persistOnboardingMarker(app, id, completed)) return false
+        if (current == null) return true
 
         val updated = current.copy(hasCompletedOnboarding = completed)
         val generation: Long
@@ -410,7 +474,8 @@ object VibeSyncSessionManager {
                 accessToken = json.optString("access_jwt", "").ifBlank {
                     json.optString("access_token", "")
                 },
-                hasCompletedOnboarding = json.optBoolean("has_completed_onboarding", false)
+                hasCompletedOnboarding = json.optBoolean("has_completed_onboarding", false) ||
+                    hasPersistedOnboardingMarker(context, json.optString("profile_id", ""))
             )
         } catch (e: Throwable) {
             Log.w(TAG, "Corrupt VibeSync session discarded: ${e.message}")
@@ -490,8 +555,24 @@ object VibeSyncSessionManager {
             Log.d(TAG, "Skipping immediate message sync: no valid VibeSync session.")
             return
         }
+        if (!immediateSyncInFlight.compareAndSet(false, true)) {
+            Log.d(TAG, "Skipping immediate message sync: an inbox sweep is already in flight.")
+            return
+        }
+        val now = android.os.SystemClock.elapsedRealtime()
+        val previous = lastImmediateSyncStartedAt.get()
+        if (previous > 0L && now - previous < IMMEDIATE_SYNC_DEBOUNCE_MS) {
+            immediateSyncInFlight.set(false)
+            Log.d(TAG, "Skipping immediate message sync: recent inbox sweep already covers this wake-up burst.")
+            return
+        }
+        lastImmediateSyncStartedAt.set(now)
         syncScope.launch {
-            syncMessagesNow(context.applicationContext)
+            try {
+                syncMessagesNow(context.applicationContext)
+            } finally {
+                immediateSyncInFlight.set(false)
+            }
         }
     }
 
@@ -665,7 +746,10 @@ object VibeSyncSessionManager {
                 .post("{}".toRequestBody(bodyType))
                 .build()
             SupabaseClientManager.httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) clear(context)
+                if (response.isSuccessful) {
+                    getProfileId(context)?.let { persistOnboardingMarker(context, it, completed = false) }
+                    clear(context)
+                }
                 response.isSuccessful
             }
         }
