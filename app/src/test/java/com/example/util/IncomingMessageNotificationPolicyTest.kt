@@ -38,13 +38,12 @@ class IncomingMessageNotificationPolicyTest {
             IncomingMessageNotificationPolicy.blockedReason(eligibleCandidate().copy(isAlreadyRead = true)))
     }
 
-    @Test fun muteActiveChatAndAndroidSettingsAreRespected() {
+    @Test fun activeChatAndAndroidSettingsAreRespectedButOtherForegroundScreensStillAlert() {
         assertEquals(IncomingMessageNotificationPolicy.BlockReason.CONVERSATION_MUTED,
             IncomingMessageNotificationPolicy.blockedReason(eligibleCandidate().copy(conversationMuted = true)))
         assertEquals(IncomingMessageNotificationPolicy.BlockReason.ACTIVE_CHAT,
             IncomingMessageNotificationPolicy.blockedReason(eligibleCandidate().copy(activeChat = true)))
-        assertEquals(IncomingMessageNotificationPolicy.BlockReason.APP_FOREGROUND,
-            IncomingMessageNotificationPolicy.blockedReason(eligibleCandidate().copy(appInForeground = true)))
+        assertNull(IncomingMessageNotificationPolicy.blockedReason(eligibleCandidate().copy(appInForeground = true)))
         assertEquals(IncomingMessageNotificationPolicy.BlockReason.POST_NOTIFICATIONS_DENIED,
             IncomingMessageNotificationPolicy.blockedReason(eligibleCandidate().copy(postNotificationsGranted = false)))
         assertEquals(IncomingMessageNotificationPolicy.BlockReason.APP_NOTIFICATIONS_DISABLED,
