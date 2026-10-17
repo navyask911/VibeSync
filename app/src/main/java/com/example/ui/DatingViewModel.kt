@@ -2596,7 +2596,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 bio = bio,
                 interests = interests,
                 maritalStatus = maritalStatus,
-                isOpenForDating = isOpenForDating
+                isOpenForDating = isOpenForDating,
+                isDiscoverable = true
             )
 
             // Room persists isProfileCompleted; mirror it into the encrypted session so startup
