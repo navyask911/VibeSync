@@ -124,13 +124,18 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     .map { data[it]?.trim().orEmpty() }
                     .firstOrNull { it.isNotBlank() }
                     .orEmpty()
+                Log.i(
+                    TAG,
+                    "FCM direct-chat wake-up parsed: type=$type, message_id=${messageId.ifBlank { "<none>" }}, " +
+                        "match_id=${matchId.ifBlank { "<none>" }}, work_request_id=<not_enqueued_yet>."
+                )
 
                 // Canonical server pushes require both identifiers. A malformed canonical wake-up
                 // is ignored rather than causing an unbounded inbox scan.
                 if (type.equals("new_message", ignoreCase = true) &&
                     (messageId.isBlank() || matchId.isBlank())
                 ) {
-                    Log.w(TAG, "Ignored metadata-only message wake-up with missing identifiers.")
+                    Log.w(TAG, "Ignored metadata-only message wake-up: reason=missing_required_identifiers, type=$type, message_id=${messageId.ifBlank { "<none>" }}, match_id=${matchId.ifBlank { "<none>" }}.")
                     return
                 }
                 com.example.service.PendingMessageSyncScheduler.enqueueInboxSyncNow(
