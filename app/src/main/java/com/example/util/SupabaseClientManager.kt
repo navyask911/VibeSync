@@ -1442,7 +1442,10 @@ object SupabaseClientManager {
                             )
                         )
                     }
-                    ProfileLookupResult.NotFound
+                    // Empty is handled above as a confirmed miss. A non-empty payload that has
+                    // no verifiable E.164 row is malformed/stale and must never imply "new user".
+                    Log.w(TAG, "Legacy E.164 identity lookup returned no verifiable row.")
+                    ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.INVALID_RESPONSE)
                 }
             } catch (e: java.net.SocketTimeoutException) {
                 Log.w(TAG, "Legacy E.164 identity lookup timed out.")

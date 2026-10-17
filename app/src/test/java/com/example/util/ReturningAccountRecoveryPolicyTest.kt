@@ -140,6 +140,28 @@ class ReturningAccountRecoveryPolicyTest {
     }
 
     @Test
+    fun unverifiedE164IndexRowRoutesToRetryRatherThanRegistration() = runBlocking {
+        val result = recover(
+            selfLookup = { ProfileLookupResult.Found(minimalCanonical()) },
+            legacyLookup = { ProfileLookupResult.NotFound },
+            phoneIndexLookup = {
+                ProfileLookupResult.Found(
+                    profile(
+                        id = "not-a-phone-derived-id",
+                        name = "Unverified Row",
+                        bio = "",
+                        city = "Online",
+                        occupation = "Member",
+                        phoneNumber = phone
+                    )
+                )
+            }
+        )
+        assertEquals(ReturningAccountRecoveryPolicy.Route.RETRY_RECOVERY, result.route)
+        assertEquals(ProfileLookupResult.FailureReason.INVALID_RESPONSE, result.failureReason)
+    }
+
+    @Test
     fun persistedRoomMarkerForVerifiedPhoneRestoresHome() = runBlocking {
         val result = recover(
             roomMarker = true,
