@@ -2011,7 +2011,10 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 deliveryState = message.deliveryState,
                 isControlMessage = com.example.util.ConversationUnreadStatePolicy.isControlMessage(
                     message.mediaType, message.text
-                )
+                ),
+                isDeleted = message.isDeleted,
+                isDeletedForMe = message.isDeletedForMe,
+                isDeletedForEveryone = message.isDeletedForEveryone
             )
         }
         val hasUnread = com.example.util.ConversationUnreadStatePolicy.hasUnreadIncoming(messageStates)
