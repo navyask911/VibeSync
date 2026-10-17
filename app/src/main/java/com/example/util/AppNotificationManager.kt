@@ -1597,7 +1597,7 @@ object AppNotificationManager {
         return null
     }
 
-    private fun postNotificationIfAllowed(
+    internal fun postNotificationIfAllowed(
         context: Context,
         notificationId: Int,
         notification: Notification,

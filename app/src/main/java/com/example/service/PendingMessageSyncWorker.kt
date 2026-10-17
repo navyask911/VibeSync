@@ -857,39 +857,65 @@ object PendingMessageSyncScheduler {
         senderId: String? = null
     ) {
         try {
-            val cleanMessageId = messageId.orEmpty().trim()
-            val cleanMatchId = remoteMatchId.orEmpty().trim()
-            val input = workDataOf(
-                PendingMessageInboxSyncWorker.KEY_REMOTE_MATCH_ID to cleanMatchId,
-                PendingMessageInboxSyncWorker.KEY_REMOTE_MESSAGE_ID to cleanMessageId,
-                PendingMessageInboxSyncWorker.KEY_REMOTE_SENDER_ID to senderId.orEmpty()
-            )
-            val request = OneTimeWorkRequestBuilder<PendingMessageInboxSyncWorker>()
-                .setInputData(input)
-                .setConstraints(
-                    Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
-                )
-                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30L, TimeUnit.SECONDS)
-                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-                .addTag("VibeSyncInbox")
-                .apply {
-                    if (cleanMatchId.isNotBlank()) addTag(INBOX_MATCH_TAG_PREFIX + tagToken(cleanMatchId))
-                }
-                .build()
-            val uniqueName = if (cleanMessageId.isNotBlank()) {
-                "vibesync-chat-inbox-message-$cleanMessageId"
-            } else {
-                "vibesync-chat-inbox-resume"
-            }
+            val spec = buildInboxSyncWorkRequest(remoteMatchId, messageId, senderId)
             WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
-                uniqueName,
+                spec.uniqueWorkName,
                 ExistingWorkPolicy.APPEND_OR_REPLACE,
-                request
+                spec.request
             )
-            Log.i(TAG, "Inbox work enqueued: message_id=${cleanMessageId.ifBlank { "<none>" }}, match_id=${cleanMatchId.ifBlank { "<none>" }}, work_request_id=${request.id}, targeted=${cleanMessageId.isNotBlank()}, unique_name=$uniqueName.")
+            Log.i(TAG, "Inbox work enqueued: message_id=${spec.messageId.ifBlank { "<none>" }}, match_id=${spec.matchId.ifBlank { "<none>" }}, work_request_id=${spec.request.id}, targeted=${spec.messageId.isNotBlank()}, unique_name=${spec.uniqueWorkName}.")
         } catch (t: Throwable) {
             Log.e(TAG, "Could not schedule immediate inbox delta; periodic sync remains available.", t)
         }
+    }
+
+    /**
+     * Keep FCM message identity in durable WorkManager input independently for every message.
+     * Exposed internally so the scheduling contract can be regression-tested without a live manager.
+     */
+    internal data class InboxSyncWorkRequestSpec(
+        val messageId: String,
+        val matchId: String,
+        val uniqueWorkName: String,
+        val request: androidx.work.OneTimeWorkRequest
+    )
+
+    internal fun buildInboxSyncWorkRequest(
+        remoteMatchId: String?,
+        messageId: String?,
+        senderId: String?
+    ): InboxSyncWorkRequestSpec {
+        val cleanMessageId = messageId.orEmpty().trim()
+        val cleanMatchId = remoteMatchId.orEmpty().trim()
+        val cleanSenderId = senderId.orEmpty().trim()
+        val input = workDataOf(
+            PendingMessageInboxSyncWorker.KEY_REMOTE_MATCH_ID to cleanMatchId,
+            PendingMessageInboxSyncWorker.KEY_REMOTE_MESSAGE_ID to cleanMessageId,
+            PendingMessageInboxSyncWorker.KEY_REMOTE_SENDER_ID to cleanSenderId
+        )
+        val request = OneTimeWorkRequestBuilder<PendingMessageInboxSyncWorker>()
+            .setInputData(input)
+            .setConstraints(
+                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+            )
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30L, TimeUnit.SECONDS)
+            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+            .addTag("VibeSyncInbox")
+            .apply {
+                if (cleanMatchId.isNotBlank()) addTag(INBOX_MATCH_TAG_PREFIX + tagToken(cleanMatchId))
+            }
+            .build()
+        val uniqueWorkName = if (cleanMessageId.isNotBlank()) {
+            "vibesync-chat-inbox-message-$cleanMessageId"
+        } else {
+            "vibesync-chat-inbox-resume"
+        }
+        return InboxSyncWorkRequestSpec(
+            messageId = cleanMessageId,
+            matchId = cleanMatchId,
+            uniqueWorkName = uniqueWorkName,
+            request = request
+        )
     }
 
     /** Periodic inbox pull is the no-FCM fallback; Android may defer its execution under Doze. */
