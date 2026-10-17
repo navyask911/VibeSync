@@ -698,7 +698,11 @@ object AppNotificationManager {
                             )
                         if (canUseInAppFallback) {
                             val fallbackBody = displayTextForNotification(messageText, mediaType)
-                            val shown = _inAppAlertEvents.tryEmit(
+                            // A MutableSharedFlow with replay=0 drops values when nobody is
+                            // collecting. Do not report a visible fallback unless a UI collector
+                            // is attached; the worker can retry during a foreground cold start.
+                            val hasInAppAlertConsumer = _inAppAlertEvents.subscriptionCount.value > 0
+                            val shown = hasInAppAlertConsumer && _inAppAlertEvents.tryEmit(
                                 AppAlertPayload(
                                     type = "MESSAGE",
                                     title = senderTitle,
@@ -718,6 +722,16 @@ object AppNotificationManager {
                                 Log.i(TAG, "Notification presented in-app because system notifications are unavailable: message_id=$safeMessageId, reason=$reason, conversation_id=$threadId, work_request_id=$safeWorkRequestId.")
                                 return@withContext IncomingNotificationDispatchResult.PresentedInApp(reason)
                             }
+                        }
+                        if (isAppInForeground && !activeChat &&
+                            blocked in setOf(
+                                IncomingMessageNotificationPolicy.BlockReason.POST_NOTIFICATIONS_DENIED,
+                                IncomingMessageNotificationPolicy.BlockReason.APP_NOTIFICATIONS_DISABLED,
+                                IncomingMessageNotificationPolicy.BlockReason.CHANNEL_DISABLED
+                            ) && !hasInAppAlertConsumer
+                        ) {
+                            Log.w(TAG, "Notification dispatch will retry: reason=in_app_alert_consumer_unavailable, message_id=$safeMessageId, conversation_id=$threadId, work_request_id=$safeWorkRequestId.")
+                            return@withContext IncomingNotificationDispatchResult.RetryableFailure("in_app_alert_consumer_unavailable")
                         }
                         Log.i(TAG, "Incoming notification suppressed: reason=$reason message_id=${safeMessageId}, conversation_id=${threadId}, work_request_id=$safeWorkRequestId.")
                         return@withContext IncomingNotificationDispatchResult.Suppressed(reason)
