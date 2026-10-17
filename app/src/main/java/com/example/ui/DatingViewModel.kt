@@ -2913,6 +2913,13 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     } ?: com.example.util.ProfileLookupResult.Failed(
                         com.example.util.ProfileLookupResult.FailureReason.TIMEOUT
                     )
+                },
+                legacyPhoneIndexLookup = {
+                    kotlinx.coroutines.withTimeoutOrNull(3_000L) {
+                        SupabaseClientManager.lookupLegacyProfileByE164Phone(verifiedPhone)
+                    } ?: com.example.util.ProfileLookupResult.Failed(
+                        com.example.util.ProfileLookupResult.FailureReason.TIMEOUT
+                    )
                 }
             )
         } ?: com.example.util.ReturningAccountRecoveryPolicy.Decision(
