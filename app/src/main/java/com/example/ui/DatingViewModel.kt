@@ -1364,6 +1364,12 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 android.util.Log.w("VibeSyncChat", "Opening-chat delta sync failed: ${e.message}")
             }
             try {
+                // Reflect only the durable per-message read states; opening a chat never bulk-marks messages read.
+                reconcileConversationUnread(match.matchId)
+            } catch (e: Exception) {
+                android.util.Log.w("VibeSyncUnread", "Conversation unread reconciliation failed after open: ${e.javaClass.simpleName}")
+            }
+            try {
                 queueProfileKeyExchangeIfAuthorized(match, resolvedProfile)
             } catch (e: Exception) {
                 android.util.Log.w("ProfileKeyExchange", "Could not enqueue profile-key exchange: ${e.javaClass.simpleName}")
@@ -1986,6 +1992,38 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         _showFaceVerification.value = true
     }
 
+    private suspend fun reconcileConversationUnread(matchId: String) {
+        val safeMatchId = matchId.trim()
+        if (safeMatchId.isBlank()) return
+        database.withTransaction {
+            reconcileConversationUnreadInTransaction(safeMatchId)
+        }
+    }
+
+    private suspend fun reconcileConversationUnreadInTransaction(matchId: String) {
+        val match = database.matchDao().getMatchByIdSync(matchId) ?: return
+        val currentProfileId = VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
+        val messageStates = database.chatMessageDao().getMessagesForMatchSync(matchId).map { message ->
+            com.example.util.ConversationUnreadStatePolicy.MessageState(
+                isIncoming = !message.senderId.equals("USER", ignoreCase = true) &&
+                    !com.example.util.MessageDecryptionPolicy.isOwnOutgoingMessage(message.senderId, currentProfileId),
+                isRead = message.isRead,
+                deliveryState = message.deliveryState,
+                isControlMessage = com.example.util.ConversationUnreadStatePolicy.isControlMessage(
+                    message.mediaType, message.text
+                )
+            )
+        }
+        val hasUnread = com.example.util.ConversationUnreadStatePolicy.hasUnreadIncoming(messageStates)
+        if (match.hasUnread != hasUnread) {
+            database.matchDao().setHasUnread(matchId, hasUnread)
+            android.util.Log.i(
+                "VibeSyncUnread",
+                "Conversation unread state reconciled: has_unread=$hasUnread, incoming_unread_messages=${messageStates.count { state -> com.example.util.ConversationUnreadStatePolicy.isUnreadIncoming(state.isIncoming, state.isRead, state.deliveryState, state.isControlMessage) }}."
+            )
+        }
+    }
+
     fun markMessageReadWhenVisible(messageId: String) {
         val id = messageId.trim()
         if (id.isBlank() || !readReceiptRequestsInFlight.add(id)) return
@@ -2022,11 +2060,15 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     android.util.Log.w("VibeSyncReadReceipt", "READ receipt still pending after bounded retries for visible message.")
                     return@launch
                 }
-                database.chatMessageDao().markMessageAsReadWithExpiry(
-                    messageId = id,
-                    readAt = System.currentTimeMillis(),
-                    timerSeconds = active.first.disappearingTimerSeconds
-                )
+                database.withTransaction {
+                    database.chatMessageDao().markMessageAsReadWithExpiry(
+                        messageId = id,
+                        readAt = System.currentTimeMillis(),
+                        timerSeconds = active.first.disappearingTimerSeconds
+                    )
+                    // Keep the conversation marker synchronized atomically with the visible message's READ state.
+                    reconcileConversationUnreadInTransaction(active.first.matchId)
+                }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
