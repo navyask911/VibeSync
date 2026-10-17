@@ -57,15 +57,23 @@ class ReturningAccountRecoveryPolicyTest {
 
     @Test
     fun returningUserAfterLogoutWithClearedRoomPreferencesUsesPersistedMarker() = runBlocking {
-        var remoteLookupCalled = false
+        var canonicalHydrationAttempted = false
+        var legacyLookupCalled = false
         val result = recover(
             marker = true,
-            selfLookup = { remoteLookupCalled = true; ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.NETWORK) },
-            legacyLookup = { remoteLookupCalled = true; ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.NETWORK) }
+            selfLookup = {
+                canonicalHydrationAttempted = true
+                ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.NETWORK)
+            },
+            legacyLookup = {
+                legacyLookupCalled = true
+                ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.NETWORK)
+            }
         )
         assertEquals(ReturningAccountRecoveryPolicy.Route.HOME, result.route)
-        assertEquals("encrypted_onboarding_marker", result.reason)
-        assertFalse(remoteLookupCalled)
+        assertEquals("encrypted_onboarding_marker_profile_hydration_deferred", result.reason)
+        assertTrue(canonicalHydrationAttempted)
+        assertFalse(legacyLookupCalled)
     }
 
     @Test
@@ -108,8 +116,8 @@ class ReturningAccountRecoveryPolicyTest {
     fun persistedRoomMarkerForVerifiedPhoneRestoresHome() = runBlocking {
         val result = recover(
             roomMarker = true,
-            selfLookup = { error("No network lookup needed when Room marker matches verified identity") },
-            legacyLookup = { error("No network lookup needed when Room marker matches verified identity") }
+            selfLookup = { ProfileLookupResult.NotFound },
+            legacyLookup = { error("Legacy lookup must not run when a verified Room completion marker matches") }
         )
         assertEquals(ReturningAccountRecoveryPolicy.Route.HOME, result.route)
         assertEquals("room_onboarding_marker", result.reason)
