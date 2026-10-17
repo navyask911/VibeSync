@@ -3203,11 +3203,32 @@ class SocialConnectRepository(
             }
             val safeText = com.example.util.MessageLocalRetentionPolicy.displayText(message.text, existingMessage?.text)
             val canRenderText = com.example.util.MessageLocalRetentionPolicy.isRenderableText(safeText)
+            // Room's durable per-message READ state wins over a stale replayed server snapshot.
+            val alreadyRead = com.example.util.ConversationUnreadStatePolicy.mergedIsRead(
+                remoteIsRead = message.isRead,
+                remoteDeliveryState = message.deliveryState,
+                localIsRead = existingMessage?.isRead == true,
+                localDeliveryState = existingMessage?.deliveryState.orEmpty()
+            )
+            val alreadyDelivered = message.isDelivered ||
+                message.deliveryState.equals("DELIVERED", ignoreCase = true) ||
+                message.deliveryState.equals("READ", ignoreCase = true) ||
+                existingMessage?.isDelivered == true ||
+                existingMessage?.deliveryState.equals("DELIVERED", ignoreCase = true) ||
+                existingMessage?.deliveryState.equals("READ", ignoreCase = true) ||
+                alreadyRead
             val persistedMessage = message.copy(
                 text = safeText,
+                isRead = alreadyRead,
+                isDelivered = alreadyDelivered,
                 serverCreatedAt = authoritativeTimestampMs ?: 0L,
-                deliveryState = if (canRenderText) message.deliveryState else "PENDING_DECRYPTION",
-                deliveryAckPending = message.deliveryAckPending && canRenderText
+                deliveryState = when {
+                    !canRenderText -> "PENDING_DECRYPTION"
+                    alreadyRead -> "READ"
+                    alreadyDelivered -> "DELIVERED"
+                    else -> message.deliveryState
+                },
+                deliveryAckPending = message.deliveryAckPending && canRenderText && !alreadyRead && !alreadyDelivered
             )
 
             if (existingMessage == null ||
@@ -3236,13 +3257,31 @@ class SocialConnectRepository(
                                 matchedAt = persistedMessage.timestamp,
                                 lastMessage = preview,
                                 lastMessageTime = persistedMessage.timestamp,
-                                hasUnread = !persistedMessage.isRead
+                                hasUnread = com.example.util.ConversationUnreadStatePolicy.isUnreadIncoming(
+                                    isIncoming = true,
+                                    isRead = persistedMessage.isRead,
+                                    deliveryState = persistedMessage.deliveryState,
+                                    isControlMessage = com.example.util.ConversationUnreadStatePolicy.isControlMessage(
+                                        persistedMessage.mediaType, persistedMessage.text
+                                    )
+                                )
                             )
                         )
                     } else if (persistedMessage.timestamp >= match.lastMessageTime) {
-                        matchDao.updateLastMessage(
-                            persistedMessage.matchId, preview, persistedMessage.timestamp, !persistedMessage.isRead
+                        matchDao.updateLastMessagePreservingUnread(
+                            persistedMessage.matchId, preview, persistedMessage.timestamp
                         )
+                    }
+                    if (com.example.util.ConversationUnreadStatePolicy.isUnreadIncoming(
+                            isIncoming = true,
+                            isRead = persistedMessage.isRead,
+                            deliveryState = persistedMessage.deliveryState,
+                            isControlMessage = com.example.util.ConversationUnreadStatePolicy.isControlMessage(
+                                persistedMessage.mediaType, persistedMessage.text
+                            )
+                        )
+                    ) {
+                        matchDao.setHasUnread(persistedMessage.matchId, true)
                     }
                     true
                 }
