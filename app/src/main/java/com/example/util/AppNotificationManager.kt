@@ -72,6 +72,7 @@ data class AppAlertPayload(
 internal sealed class IncomingNotificationDispatchResult {
     object Posted : IncomingNotificationDispatchResult()
     data class Suppressed(val reason: String) : IncomingNotificationDispatchResult()
+    data class PresentedInApp(val reason: String) : IncomingNotificationDispatchResult()
     data class RetryableFailure(val reason: String) : IncomingNotificationDispatchResult()
 }
 
@@ -584,6 +585,7 @@ object AppNotificationManager {
                 IncomingNotificationDispatchResult.Posted -> Unit
                 is IncomingNotificationDispatchResult.Suppressed ->
                     Log.i(TAG, "Notification dispatch suppressed: reason=${result.reason}, message_id=${messageId.ifBlank { "<none>" }}.")
+                is IncomingNotificationDispatchResult.PresentedInApp -> Unit
                 is IncomingNotificationDispatchResult.RetryableFailure ->
                     Log.w(TAG, "Notification dispatch failed: reason=${result.reason}, message_id=${messageId.ifBlank { "<none>" }}.")
             }
@@ -688,6 +690,30 @@ object AppNotificationManager {
                                 "app foreground policy"
                             else -> blocked.name.lowercase()
                         }
+                        val canUseInAppFallback = isAppInForeground && !activeChat &&
+                            blocked in setOf(
+                                IncomingMessageNotificationPolicy.BlockReason.POST_NOTIFICATIONS_DENIED,
+                                IncomingMessageNotificationPolicy.BlockReason.APP_NOTIFICATIONS_DISABLED,
+                                IncomingMessageNotificationPolicy.BlockReason.CHANNEL_DISABLED
+                            )
+                        if (canUseInAppFallback) {
+                            val fallbackBody = displayTextForNotification(messageText, mediaType)
+                            val shown = _inAppAlertEvents.tryEmit(
+                                AppAlertPayload(
+                                    type = "MESSAGE",
+                                    title = senderTitle,
+                                    body = fallbackBody,
+                                    senderOrMatchId = senderId,
+                                    senderName = senderTitle,
+                                    photoUrl = senderPhotoUrl,
+                                    timestamp = messageTimestamp
+                                )
+                            )
+                            if (shown) {
+                                Log.i(TAG, "Notification presented in-app because system notifications are unavailable: message_id=$safeMessageId, reason=$reason, conversation_id=$threadId, work_request_id=$safeWorkRequestId.")
+                                return@withContext IncomingNotificationDispatchResult.PresentedInApp(reason)
+                            }
+                        }
                         Log.i(TAG, "Incoming notification suppressed: reason=$reason message_id=${safeMessageId}, conversation_id=${threadId}, work_request_id=$safeWorkRequestId.")
                         return@withContext IncomingNotificationDispatchResult.Suppressed(reason)
                     }
@@ -734,18 +760,6 @@ object AppNotificationManager {
                     snippet = displayBody.take(180),
                     updatedAt = messageTimestamp
                 )
-                _inAppAlertEvents.tryEmit(
-                    AppAlertPayload(
-                        type = "MESSAGE",
-                        title = senderTitle,
-                        body = displayBody,
-                        senderOrMatchId = senderId,
-                        senderName = senderTitle,
-                        photoUrl = senderPhotoUrl,
-                        timestamp = messageTimestamp
-                    )
-                )
-
                 val notification = buildConversationNotification(
                     context = appContext,
                     conversationId = threadId,
