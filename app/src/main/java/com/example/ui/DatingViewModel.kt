@@ -314,8 +314,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             } catch (e: Exception) {
                 android.util.Log.e(
                     "AuthSessionManager",
-                    "Session bootstrap issue (local credentials preserved): ${e.message}",
-                    e
+                    "Session bootstrap issue (local credentials preserved): ${e.javaClass.simpleName}."
                 )
                 // A Room timeout or temporary AndroidKeyStore error is not proof of revocation.
                 // Never sanitize the database or wipe session credentials on a startup exception.

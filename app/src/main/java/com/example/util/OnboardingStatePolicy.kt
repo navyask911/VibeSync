@@ -43,7 +43,7 @@ object OnboardingStatePolicy {
 
     fun isMeaningfulProfileName(name: String): Boolean {
         val normalized = name.trim().lowercase()
-        if (normalized.length < 2) return false
+        if (normalized.length < 2 || normalized.none(Char::isLetter)) return false
         if (normalized in setOf(
                 "user",
                 "registered member",

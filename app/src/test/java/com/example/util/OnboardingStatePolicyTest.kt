@@ -66,6 +66,13 @@ class OnboardingStatePolicyTest {
     }
 
     @Test
+    fun numericPhoneLikeValueCannotCountAsARecoveredProfileName() {
+        assertFalse(OnboardingStatePolicy.isMeaningfulProfileName("9876543210"))
+        assertFalse(OnboardingStatePolicy.isMeaningfulProfileName("+91 98765 43210"))
+        assertTrue(OnboardingStatePolicy.isMeaningfulProfileName("Suresh Kumar"))
+    }
+
+    @Test
     fun secureMarkerAndRecoveredProfileRepairMissingRoomFlag() {
         assertTrue(
             OnboardingStatePolicy.shouldTreatAsCompleted(

@@ -478,7 +478,7 @@ object VibeSyncSessionManager {
                     hasPersistedOnboardingMarker(context, json.optString("profile_id", ""))
             )
         } catch (e: Throwable) {
-            Log.w(TAG, "Corrupt VibeSync session discarded: ${e.message}")
+            Log.w(TAG, "Stored session payload could not be parsed: ${e.javaClass.simpleName}.")
             null
         }
         cachedSession = session?.takeIf(::isValid)
