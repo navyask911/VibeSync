@@ -190,6 +190,15 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     private val _authState = MutableStateFlow<AuthState>(AuthState.INITIALIZING)
     val authState: StateFlow<AuthState> = _authState.asStateFlow()
 
+    private val _returningAccountRecoveryRoute =
+        MutableStateFlow<com.example.util.ReturningAccountRecoveryPolicy.Route?>(null)
+    val returningAccountRecoveryRoute:
+        StateFlow<com.example.util.ReturningAccountRecoveryPolicy.Route?> =
+        _returningAccountRecoveryRoute.asStateFlow()
+
+    private val _accountRecoveryError = MutableStateFlow<String?>(null)
+    val accountRecoveryError: StateFlow<String?> = _accountRecoveryError.asStateFlow()
+
     val isSessionChecking: StateFlow<Boolean> = _authState
         .map { it == AuthState.INITIALIZING }
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
@@ -273,107 +282,28 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
                 if (restoredSession != null) {
                     val activeSession = restoredSession
-                    val now = System.currentTimeMillis()
                     val restoredPhone = activeSession.phoneNumber.ifBlank {
                         prefs?.verifiedMobileNumber.orEmpty()
                     }
                     val storedPrefs = prefs ?: runCatching {
                         database.userPreferencesDao().getPreferencesSync()
                     }.getOrNull()
-                    val sameAccountCompletion = storedPrefs?.let {
-                        it.isProfileCompleted && OnboardingStatePolicy.sameVerifiedPhone(
-                            it.verifiedMobileNumber,
-                            restoredPhone
-                        )
-                    } == true
-
-                    // Search local rows first. If a valid session/Room marker proves completion,
-                    // normal startup does not wait on remote calls; old installs without either
-                    // marker recover their profile from Supabase before routing to Registration.
-                    val locallyRecoveredProfile = findLocalCompletedProfile(
-                        activeSession.profileId,
-                        restoredPhone
+                    _returningAccountRecoveryRoute.value = null
+                    _accountRecoveryError.value = null
+                    restoreAccountProfileState(
+                        session = activeSession,
+                        phone = restoredPhone,
+                        basePrefs = storedPrefs ?: UserPreferencesEntity(),
+                        avatarUrl = storedPrefs?.avatarUrl.orEmpty(),
+                        suggestedName = storedPrefs?.userName.orEmpty(),
+                        useExistingLoginTimestamp = true
                     )
-                    val recoveredProfile = locallyRecoveredProfile ?: if (
-                        !activeSession.hasCompletedOnboarding && !sameAccountCompletion
-                    ) {
-                        kotlinx.coroutines.withTimeoutOrNull(6_000L) {
-                            findExistingCompletedProfile(activeSession.profileId, restoredPhone)
-                        }
-                    } else {
-                        null
-                    }
-                    val profileComplete = OnboardingStatePolicy.shouldTreatAsCompleted(
-                        storedCompleted = storedPrefs?.isProfileCompleted == true,
-                        storedPhone = storedPrefs?.verifiedMobileNumber.orEmpty(),
-                        verifiedPhone = restoredPhone,
-                        secureSessionMarker = activeSession.hasCompletedOnboarding,
-                        recoveredProfileName = recoveredProfile?.name
-                    )
-
-                    if (recoveredProfile != null) {
-                        runCatching {
-                            database.profileDao().insertProfile(
-                                recoveredProfile.copy(phoneNumber = restoredPhone)
-                            )
-                        }.onFailure { failure ->
-                            android.util.Log.w(
-                                "AuthSessionManager",
-                                "Recovered profile Room cache notice: " + failure.javaClass.simpleName
-                            )
-                        }
-                    }
-
-                    val basePrefs = storedPrefs ?: UserPreferencesEntity()
-                    val hydrated = basePrefs.copy(
-                        userName = recoveredProfile?.name?.ifBlank { basePrefs.userName } ?: basePrefs.userName,
-                        userAge = recoveredProfile?.age?.takeIf { it > 0 } ?: basePrefs.userAge,
-                        userOccupation = recoveredProfile?.occupation?.ifBlank { basePrefs.userOccupation }
-                            ?: basePrefs.userOccupation,
-                        userCity = recoveredProfile?.city?.ifBlank { basePrefs.userCity } ?: basePrefs.userCity,
-                        userBio = recoveredProfile?.bio?.ifBlank { basePrefs.userBio } ?: basePrefs.userBio,
-                        userGender = recoveredProfile?.gender?.ifBlank { basePrefs.userGender } ?: basePrefs.userGender,
-                        userCountry = recoveredProfile?.country?.ifBlank { basePrefs.userCountry } ?: basePrefs.userCountry,
-                        userCountryFlag = recoveredProfile?.countryFlag?.ifBlank { basePrefs.userCountryFlag }
-                            ?: basePrefs.userCountryFlag,
-                        userPlace = recoveredProfile?.place?.ifBlank { basePrefs.userPlace } ?: basePrefs.userPlace,
-                        userQualification = recoveredProfile?.qualification?.ifBlank { basePrefs.userQualification }
-                            ?: basePrefs.userQualification,
-                        avatarUrl = recoveredProfile?.avatarUrl?.ifBlank { basePrefs.avatarUrl } ?: basePrefs.avatarUrl,
-                        profilePhotos = recoveredProfile?.getPhotoList()?.joinToString("|||")
-                            ?.ifBlank { basePrefs.profilePhotos } ?: basePrefs.profilePhotos,
-                        isProfileCompleted = profileComplete,
-                        isLoggedIn = true,
-                        verifiedMobileNumber = restoredPhone.ifBlank { basePrefs.verifiedMobileNumber },
-                        isMobileVerified = true,
-                        loginTimestamp = if (basePrefs.loginTimestamp > 0L) basePrefs.loginTimestamp else now
-                    )
-                    repository.updatePreferences(hydrated)
-                    if (profileComplete) {
-                        VibeSyncSessionManager.markOnboardingCompleted(
-                            app,
-                            activeSession.profileId,
-                            completed = true
-                        )
-                    }
-
                     _activeMobile.value = restoredPhone
-                    // A valid encrypted session routes to Home as soon as completion is known.
                     _isMpinUnlocked.value = true
                     _authState.value = AuthState.AUTHENTICATED
-                    if (profileComplete && recoveredProfile == null) {
-                        viewModelScope.launch(Dispatchers.IO) {
-                            runCatching {
-                                findExistingCompletedProfile(activeSession.profileId, restoredPhone)
-                            }.getOrNull()?.let { remoteProfile ->
-                                hydrateRecoveredProfile(remoteProfile, restoredPhone, activeSession.profileId)
-                            }
-                        }
-                    }
                     android.util.Log.i(
                         "AuthSessionManager",
-                        "Restored valid encrypted VibeSync session (onboardingCompleted=" +
-                            profileComplete + ", accessJwtPresent=true)."
+                        "Restored verified session (profileTag=${safeProfileTag(activeSession.profileId)})."
                     )
                 } else {
                     // No complete, unexpired session is available. Leave saved credentials and
@@ -395,8 +325,13 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 if (fallbackSession != null) {
                     _activeMobile.value = fallbackSession.phoneNumber
                     _isMpinUnlocked.value = true
+                    _returningAccountRecoveryRoute.value =
+                        com.example.util.ReturningAccountRecoveryPolicy.Route.RETRY_RECOVERY
+                    _accountRecoveryError.value =
+                        "VibeSync could not verify your saved profile yet. Check your connection and retry."
                     _authState.value = AuthState.AUTHENTICATED
                 } else {
+                    _returningAccountRecoveryRoute.value = null
                     _authState.value = AuthState.UNAUTHENTICATED
                 }
             }
@@ -2932,93 +2867,212 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private suspend fun findLocalCompletedProfile(
-        profileId: String,
-        verifiedPhone: String
-    ): ProfileEntity? {
-        val phoneDigits = verifiedPhone.filter(Char::isDigit)
-        return runCatching {
-            database.profileDao().getAllProfilesSync()
-                .filter { candidate ->
-                    candidate.id.equals(profileId, ignoreCase = true) ||
-                        (phoneDigits.length >= 10 && candidate.id.filter(Char::isDigit) == phoneDigits) ||
-                        OnboardingStatePolicy.sameVerifiedPhone(candidate.phoneNumber, verifiedPhone)
-                }
-                .filter { OnboardingStatePolicy.isMeaningfulProfileName(it.name) }
-                .maxByOrNull { candidate ->
-                    (if (candidate.id.equals(profileId, ignoreCase = true)) 4 else 0) +
-                        (if (candidate.bio.isNotBlank()) 2 else 0) +
-                        (if (candidate.occupation.isNotBlank()) 1 else 0) +
-                        (if (candidate.avatarUrl.isNotBlank()) 1 else 0)
-                }
-        }.getOrNull()
-    }
+    private fun safeProfileTag(profileId: String): String =
+        Integer.toHexString(profileId.trim().lowercase().hashCode())
 
     /**
-     * Recover an existing registration by authenticated profile ID or legacy phone-derived ID.
-     * The contact-match RPC intentionally excludes the caller, so it is not a self-profile lookup.
+     * Shared recovery orchestration for cold start and fresh Truecaller login. A missing row is
+     * different from an unavailable/unauthorized lookup; only conclusive empty lookups allow
+     * registration. The marker is profile-ID-bound and encrypted independently of the login blob.
      */
-    private suspend fun findExistingCompletedProfile(
-        profileId: String,
-        verifiedPhone: String
-    ): ProfileEntity? {
-        findLocalCompletedProfile(profileId, verifiedPhone)?.let { return it }
+    private suspend fun restoreAccountProfileState(
+        session: VibeSyncSessionManager.Session,
+        phone: String,
+        basePrefs: UserPreferencesEntity,
+        avatarUrl: String = "",
+        suggestedName: String = "",
+        useExistingLoginTimestamp: Boolean = false
+    ): com.example.util.ReturningAccountRecoveryPolicy.Decision {
+        val context = getApplication<Application>()
+        val verifiedPhone = phone.trim()
+        val roomMarkerMatchesPhone = basePrefs.isProfileCompleted &&
+            OnboardingStatePolicy.sameVerifiedPhone(basePrefs.verifiedMobileNumber, verifiedPhone)
+        val encryptedMarker = session.hasCompletedOnboarding ||
+            VibeSyncSessionManager.hasCompletedOnboarding(context, session.profileId)
+        val localRowsResult = runCatching { database.profileDao().getAllProfilesSync() }
+        val localProfiles = localRowsResult.getOrDefault(emptyList())
 
-        val phoneDigits = verifiedPhone.filter(Char::isDigit)
-        val idsToTry = listOf(profileId.trim(), phoneDigits)
-            .filter { it.isNotBlank() && it != "null" }
-            .distinct()
-        for (candidateId in idsToTry) {
-            val fetched = runCatching {
-                kotlinx.coroutines.withTimeoutOrNull(2_500L) {
-                    SupabaseClientManager.fetchProfileById(candidateId)
+        val decision = kotlinx.coroutines.withTimeoutOrNull(17_000L) {
+            com.example.util.ReturningAccountRecoveryPolicy.recover(
+                profileId = session.profileId,
+                verifiedPhone = verifiedPhone,
+                persistedCompletionMarker = encryptedMarker,
+                roomCompletionMarkerMatchesPhone = roomMarkerMatchesPhone,
+                localProfiles = localProfiles,
+                localCacheAvailable = localRowsResult.isSuccess,
+                canonicalSelfLookup = {
+                    kotlinx.coroutines.withTimeoutOrNull(6_000L) {
+                        SupabaseClientManager.lookupAuthenticatedSelfProfileById(session.profileId)
+                    } ?: com.example.util.ProfileLookupResult.Failed(
+                        com.example.util.ProfileLookupResult.FailureReason.TIMEOUT
+                    )
+                },
+                legacyProfileLookup = { legacyId ->
+                    kotlinx.coroutines.withTimeoutOrNull(1_500L) {
+                        SupabaseClientManager.lookupPublicLegacyProfileById(legacyId)
+                    } ?: com.example.util.ProfileLookupResult.Failed(
+                        com.example.util.ProfileLookupResult.FailureReason.TIMEOUT
+                    )
                 }
-            }.getOrNull()
-            if (fetched != null && OnboardingStatePolicy.isMeaningfulProfileName(fetched.name)) {
-                return fetched.copy(phoneNumber = verifiedPhone)
+            )
+        } ?: com.example.util.ReturningAccountRecoveryPolicy.Decision(
+            route = com.example.util.ReturningAccountRecoveryPolicy.Route.RETRY_RECOVERY,
+            reason = "profile_recovery_overall_timeout",
+            failureReason = com.example.util.ProfileLookupResult.FailureReason.TIMEOUT
+        )
+
+        val recovered = decision.recoveredProfile
+        val meaningfulRecoveredName = recovered?.name?.takeIf(OnboardingStatePolicy::isMeaningfulProfileName)
+        val policyCompletion = OnboardingStatePolicy.shouldTreatAsCompleted(
+            storedCompleted = roomMarkerMatchesPhone,
+            storedPhone = basePrefs.verifiedMobileNumber,
+            verifiedPhone = verifiedPhone,
+            secureSessionMarker = encryptedMarker,
+            recoveredProfileName = recovered?.name,
+            recoveredProfileHasRegistrationDetails = decision.hasRegistrationDetails,
+            legacyPhoneProfileIdentityMatched = decision.legacyPhoneProfileIdentityMatched
+        )
+        val profileComplete = decision.route == com.example.util.ReturningAccountRecoveryPolicy.Route.HOME &&
+            policyCompletion
+        val finalRoute = when {
+            decision.route == com.example.util.ReturningAccountRecoveryPolicy.Route.HOME && profileComplete ->
+                com.example.util.ReturningAccountRecoveryPolicy.Route.HOME
+            decision.route == com.example.util.ReturningAccountRecoveryPolicy.Route.REGISTRATION && !profileComplete ->
+                com.example.util.ReturningAccountRecoveryPolicy.Route.REGISTRATION
+            else -> com.example.util.ReturningAccountRecoveryPolicy.Route.RETRY_RECOVERY
+        }
+
+        var cachedRecovered = recovered
+        if (profileComplete && recovered != null) {
+            val canonical = recovered.copy(
+                id = session.profileId,
+                phoneNumber = verifiedPhone,
+                name = meaningfulRecoveredName ?: suggestedName.takeIf(String::isNotBlank) ?: basePrefs.userName,
+                avatarUrl = recovered.avatarUrl.ifBlank { avatarUrl.trim() }
+            )
+            try {
+                // If a verified phone-derived legacy row existed locally, migrate it to the active
+                // canonical identity in one Room transaction rather than leaving two self rows.
+                database.withTransaction {
+                    if (!recovered.id.equals(session.profileId, ignoreCase = true)) {
+                        database.profileDao().deleteProfile(recovered.id)
+                    }
+                    database.profileDao().insertProfile(canonical)
+                }
+                cachedRecovered = canonical
+            } catch (failure: Throwable) {
+                android.util.Log.w(
+                    "AuthSessionRecovery",
+                    "Recovered profile cache update deferred: ${failure.javaClass.simpleName}."
+                )
             }
         }
-        return null
+
+        val hydrateRegistrationFields = profileComplete && decision.hasRegistrationDetails
+        val hydrated = basePrefs.copy(
+            userName = if (hydrateRegistrationFields) meaningfulRecoveredName ?: basePrefs.userName
+                else suggestedName.takeIf(String::isNotBlank) ?: basePrefs.userName,
+            userAge = if (hydrateRegistrationFields) cachedRecovered?.age?.takeIf { it in 18..120 } ?: basePrefs.userAge
+                else basePrefs.userAge,
+            userOccupation = if (hydrateRegistrationFields) cachedRecovered?.occupation?.takeIf {
+                it.isNotBlank() && !it.equals("Member", true)
+            } ?: basePrefs.userOccupation else basePrefs.userOccupation,
+            userCity = if (hydrateRegistrationFields) cachedRecovered?.city?.takeIf {
+                it.isNotBlank() && !it.equals("Online", true)
+            } ?: basePrefs.userCity else basePrefs.userCity,
+            userBio = if (hydrateRegistrationFields) cachedRecovered?.bio?.takeIf {
+                it.isNotBlank() && !it.startsWith("Hey there! Secure with VibeSync", true)
+            } ?: basePrefs.userBio else basePrefs.userBio,
+            userGender = if (hydrateRegistrationFields) cachedRecovered?.gender?.takeIf {
+                it.isNotBlank() && !it.equals("Not specified", true)
+            } ?: basePrefs.userGender else basePrefs.userGender,
+            userCountry = if (hydrateRegistrationFields) cachedRecovered?.country?.takeIf(String::isNotBlank)
+                ?: basePrefs.userCountry else basePrefs.userCountry,
+            userCountryFlag = if (hydrateRegistrationFields) cachedRecovered?.countryFlag?.takeIf(String::isNotBlank)
+                ?: basePrefs.userCountryFlag else basePrefs.userCountryFlag,
+            userPlace = if (hydrateRegistrationFields) cachedRecovered?.place?.takeIf(String::isNotBlank)
+                ?: basePrefs.userPlace else basePrefs.userPlace,
+            userQualification = if (hydrateRegistrationFields) cachedRecovered?.qualification?.takeIf {
+                it.isNotBlank() && !it.equals("Verified", true)
+            } ?: basePrefs.userQualification else basePrefs.userQualification,
+            avatarUrl = cachedRecovered?.avatarUrl?.ifBlank { avatarUrl.trim() }?.ifBlank { basePrefs.avatarUrl }
+                ?: avatarUrl.trim().ifBlank { basePrefs.avatarUrl },
+            profilePhotos = if (hydrateRegistrationFields) cachedRecovered?.getPhotoList()?.joinToString("|||")
+                ?.ifBlank { basePrefs.profilePhotos } ?: basePrefs.profilePhotos else basePrefs.profilePhotos,
+            isProfileCompleted = profileComplete,
+            isLoggedIn = true,
+            verifiedMobileNumber = verifiedPhone.ifBlank { basePrefs.verifiedMobileNumber },
+            isMobileVerified = true,
+            loginTimestamp = if (useExistingLoginTimestamp && basePrefs.loginTimestamp > 0L) {
+                basePrefs.loginTimestamp
+            } else {
+                System.currentTimeMillis()
+            }
+        )
+        repository.updatePreferences(hydrated)
+
+        if (profileComplete) {
+            VibeSyncSessionManager.markOnboardingCompleted(context, session.profileId, completed = true)
+        }
+        _returningAccountRecoveryRoute.value = finalRoute
+        _accountRecoveryError.value = when (finalRoute) {
+            com.example.util.ReturningAccountRecoveryPolicy.Route.RETRY_RECOVERY ->
+                "We verified your number, but could not confirm your saved profile yet. Your account was not replaced. Check your connection and retry."
+            else -> null
+        }
+
+        val profileNameMeaningful = recovered?.name?.let(OnboardingStatePolicy::isMeaningfulProfileName) == true
+        android.util.Log.i(
+            "AuthSessionRecovery",
+            "profile_tag=${safeProfileTag(session.profileId)} " +
+                "encrypted_marker=$encryptedMarker room_marker_matches_phone=$roomMarkerMatchesPhone " +
+                "canonical_profile_found=${recovered?.id?.equals(session.profileId, true) == true} " +
+                "legacy_phone_identity_matched=${decision.legacyPhoneProfileIdentityMatched} " +
+                "recovered_name_meaningful=$profileNameMeaningful registration_fields=${decision.hasRegistrationDetails} " +
+                "completion_policy=$policyCompletion final_completion=$profileComplete " +
+                "route=$finalRoute reason=${decision.reason} lookup_failure=${decision.failureReason ?: "none"}."
+        )
+        return decision.copy(route = finalRoute, recoveredProfile = cachedRecovered)
     }
 
-    /** Hydrate profile details in the background after a trusted completion marker routes Home. */
-    private suspend fun hydrateRecoveredProfile(
-        profile: ProfileEntity,
-        verifiedPhone: String,
-        expectedProfileId: String
-    ) {
+    fun retryReturningAccountRecovery() {
         val context = getApplication<Application>()
-        val activeSession = VibeSyncSessionManager.getSession(context) ?: return
-        if (!activeSession.profileId.equals(expectedProfileId, ignoreCase = true)) return
-        if (!OnboardingStatePolicy.isMeaningfulProfileName(profile.name)) return
-        runCatching {
-            database.profileDao().insertProfile(profile.copy(phoneNumber = verifiedPhone))
-            val current = repository.userPreferences.first() ?: UserPreferencesEntity()
-            val updated = current.copy(
-                userName = profile.name,
-                userAge = profile.age.takeIf { it > 0 } ?: current.userAge,
-                userOccupation = profile.occupation.ifBlank { current.userOccupation },
-                userCity = profile.city.ifBlank { current.userCity },
-                userBio = profile.bio.ifBlank { current.userBio },
-                userGender = profile.gender.ifBlank { current.userGender },
-                userCountry = profile.country.ifBlank { current.userCountry },
-                userCountryFlag = profile.countryFlag.ifBlank { current.userCountryFlag },
-                userPlace = profile.place.ifBlank { current.userPlace },
-                userQualification = profile.qualification.ifBlank { current.userQualification },
-                avatarUrl = profile.avatarUrl.ifBlank { current.avatarUrl },
-                profilePhotos = profile.getPhotoList().joinToString("|||").ifBlank { current.profilePhotos },
-                isProfileCompleted = true,
-                isLoggedIn = true,
-                verifiedMobileNumber = verifiedPhone,
-                isMobileVerified = true
-            )
-            repository.updatePreferences(updated)
-            VibeSyncSessionManager.markOnboardingCompleted(context, expectedProfileId, completed = true)
-        }.onFailure { failure ->
-            android.util.Log.w(
-                "AuthSessionManager",
-                "Background profile hydration notice: " + failure.javaClass.simpleName
-            )
+        val session = VibeSyncSessionManager.getSession(context)
+        if (session == null) {
+            _returningAccountRecoveryRoute.value = null
+            _authState.value = AuthState.UNAUTHENTICATED
+            return
+        }
+        _returningAccountRecoveryRoute.value = null
+        _accountRecoveryError.value = null
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val current = repository.userPreferences.first()
+                    ?: database.userPreferencesDao().getPreferencesSync()
+                    ?: UserPreferencesEntity()
+                val phone = session.phoneNumber.ifBlank { current.verifiedMobileNumber }
+                restoreAccountProfileState(
+                    session = session,
+                    phone = phone,
+                    basePrefs = current,
+                    avatarUrl = current.avatarUrl,
+                    suggestedName = current.userName,
+                    useExistingLoginTimestamp = true
+                )
+                _activeMobile.value = phone
+                _isMpinUnlocked.value = true
+                _authState.value = AuthState.AUTHENTICATED
+            } catch (failure: Throwable) {
+                android.util.Log.w(
+                    "AuthSessionRecovery",
+                    "Manual profile recovery retry failed: ${failure.javaClass.simpleName}."
+                )
+                _accountRecoveryError.value =
+                    "Profile recovery is still unavailable. Check your connection and retry."
+                _returningAccountRecoveryRoute.value =
+                    com.example.util.ReturningAccountRecoveryPolicy.Route.RETRY_RECOVERY
+                _authState.value = AuthState.AUTHENTICATED
+            }
         }
     }
 
