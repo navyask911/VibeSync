@@ -1,88 +1,152 @@
 package com.example.util
 
+import com.example.data.model.ProfileEntity
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ReturningAccountRecoveryPolicyTest {
+    private val phone = "+91 98765 43210"
+    private val canonicalId = "a1b2c3d4e5f60708"
+
+    private fun profile(
+        id: String = canonicalId,
+        name: String = "Returning Member",
+        bio: String = "Enjoys hiking and local coffee",
+        city: String = "Bengaluru",
+        occupation: String = "Engineer",
+        phoneNumber: String = ""
+    ) = ProfileEntity(
+        id = id,
+        name = name,
+        age = 32,
+        bio = bio,
+        city = city,
+        occupation = occupation,
+        phoneNumber = phoneNumber
+    )
+
+    private fun minimalCanonical() = profile(
+        id = canonicalId,
+        name = "Truecaller Name",
+        bio = "Hey there! Secure with VibeSync E2EE.",
+        city = "Online",
+        occupation = "Member"
+    )
+
+    private suspend fun recover(
+        marker: Boolean = false,
+        roomMarker: Boolean = false,
+        localProfiles: List<ProfileEntity> = emptyList(),
+        localCacheAvailable: Boolean = true,
+        selfLookup: suspend () -> ProfileLookupResult,
+        legacyLookup: suspend (String) -> ProfileLookupResult
+    ) = ReturningAccountRecoveryPolicy.recover(
+        profileId = canonicalId,
+        verifiedPhone = phone,
+        persistedCompletionMarker = marker,
+        roomCompletionMarkerMatchesPhone = roomMarker,
+        localProfiles = localProfiles,
+        localCacheAvailable = localCacheAvailable,
+        canonicalSelfLookup = selfLookup,
+        legacyProfileLookup = legacyLookup
+    )
+
     @Test
-    fun returningUserWithClearedLocalPreferencesCanRecoverFromBackendProfileEvidence() {
-        assertTrue(
-            OnboardingStatePolicy.shouldTreatAsCompleted(
-                storedCompleted = false,
-                storedPhone = "",
-                verifiedPhone = "+91 98765 43210",
-                secureSessionMarker = false,
-                recoveredProfileName = "Returning Member",
-                recoveredProfileHasRegistrationDetails = OnboardingStatePolicy.hasRegistrationDetails(
-                    bio = "Enjoys hiking and local coffee",
-                    city = "Bengaluru",
-                    occupation = "Engineer",
-                    place = "",
-                    qualification = ""
-                )
-            )
+    fun returningUserAfterLogoutWithClearedRoomPreferencesUsesPersistedMarker() = runBlocking {
+        var remoteLookupCalled = false
+        val result = recover(
+            marker = true,
+            selfLookup = { remoteLookupCalled = true; ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.NETWORK) },
+            legacyLookup = { remoteLookupCalled = true; ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.NETWORK) }
         )
-        assertEquals(
-            ReturningAccountRecoveryPolicy.Route.HOME,
-            ReturningAccountRecoveryPolicy.route(
-                ReturningAccountRecoveryPolicy.LookupOutcome.COMPLETED_PROFILE_FOUND,
-                persistedCompletionMarker = false
-            )
-        )
+        assertEquals(ReturningAccountRecoveryPolicy.Route.HOME, result.route)
+        assertEquals("encrypted_onboarding_marker", result.reason)
+        assertFalse(remoteLookupCalled)
     }
 
     @Test
-    fun canonicalProfileCanDifferFromLegacyPhoneIdWithoutConfusingTheIdentities() {
-        val phone = "+91 98765 43210"
-        val candidates = OnboardingStatePolicy.legacyPhoneProfileIdCandidates(phone)
-
-        assertTrue(candidates.contains("9876543210"))
-        assertTrue(candidates.contains("919876543210"))
-        assertTrue(OnboardingStatePolicy.isLegacyPhoneProfileId("9876543210", phone))
-        assertFalse(OnboardingStatePolicy.isLegacyPhoneProfileId("a1b2c3d4e5f60708", phone))
-        assertEquals(
-            ReturningAccountRecoveryPolicy.Route.HOME,
-            ReturningAccountRecoveryPolicy.route(
-                ReturningAccountRecoveryPolicy.LookupOutcome.COMPLETED_PROFILE_FOUND,
-                persistedCompletionMarker = false
-            )
+    fun legacyPhoneIdDifferentFromCanonicalIdRecoversOnlyWhenPhoneIdAndDetailsMatch() = runBlocking {
+        val legacyId = "9876543210"
+        val result = recover(
+            selfLookup = { ProfileLookupResult.Found(minimalCanonical()) },
+            legacyLookup = { candidate ->
+                if (candidate == legacyId) ProfileLookupResult.Found(profile(id = legacyId))
+                else ProfileLookupResult.NotFound
+            }
         )
+        assertEquals(ReturningAccountRecoveryPolicy.Route.HOME, result.route)
+        assertTrue(result.legacyPhoneProfileIdentityMatched)
+        assertEquals(legacyId, result.recoveredProfile?.id)
     }
 
     @Test
-    fun genuinelyNewUserWithConclusiveEmptyLookupsCanRegister() {
-        assertFalse(
-            OnboardingStatePolicy.hasRegistrationDetails(
-                bio = "",
-                city = "Online",
-                occupation = "Member",
-                place = "",
-                qualification = "Verified"
-            )
+    fun newUserWithMinimalCanonicalProfileAndConclusiveEmptyLegacyLookupsRoutesToRegistration() = runBlocking {
+        val result = recover(
+            selfLookup = { ProfileLookupResult.Found(minimalCanonical()) },
+            legacyLookup = { ProfileLookupResult.NotFound }
         )
-        assertFalse(
-            OnboardingStatePolicy.shouldTreatAsCompleted(
-                storedCompleted = false,
-                storedPhone = "",
-                verifiedPhone = "+91 98765 43210",
-                secureSessionMarker = false,
-                recoveredProfileName = "VibeSync Member",
-                recoveredProfileHasRegistrationDetails = false
-            )
-        )
-        assertEquals(
-            ReturningAccountRecoveryPolicy.Route.REGISTRATION,
-            ReturningAccountRecoveryPolicy.route(
-                ReturningAccountRecoveryPolicy.LookupOutcome.NO_COMPLETED_PROFILE,
-                persistedCompletionMarker = false
-            )
-        )
+        assertEquals(ReturningAccountRecoveryPolicy.Route.REGISTRATION, result.route)
+        assertFalse(result.hasRegistrationDetails)
+        assertNull(result.failureReason)
     }
 
     @Test
-    fun temporaryLookupFailureRoutesToRetryInsteadOfRegistration() {
+    fun temporaryProfileLookupFailureNeverRoutesToRegistration() = runBlocking {
+        val result = recover(
+            selfLookup = { ProfileLookupResult.Failed(ProfileLookupResult.FailureReason.TIMEOUT) },
+            legacyLookup = { ProfileLookupResult.NotFound }
+        )
+        assertEquals(ReturningAccountRecoveryPolicy.Route.RETRY_RECOVERY, result.route)
+        assertEquals(ProfileLookupResult.FailureReason.TIMEOUT, result.failureReason)
+    }
+
+    @Test
+    fun persistedRoomMarkerForVerifiedPhoneRestoresHome() = runBlocking {
+        val result = recover(
+            roomMarker = true,
+            selfLookup = { error("No network lookup needed when Room marker matches verified identity") },
+            legacyLookup = { error("No network lookup needed when Room marker matches verified identity") }
+        )
+        assertEquals(ReturningAccountRecoveryPolicy.Route.HOME, result.route)
+        assertEquals("room_onboarding_marker", result.reason)
+    }
+
+    @Test
+    fun processRestartWithLocalCanonicalProfileRestoresWithoutDuplicatingIdentity() = runBlocking {
+        val local = profile(id = canonicalId, phoneNumber = phone)
+        val result = recover(
+            localProfiles = listOf(local),
+            selfLookup = { error("Local completed profile should recover first") },
+            legacyLookup = { error("Local completed profile should recover first") }
+        )
+        assertEquals(ReturningAccountRecoveryPolicy.Route.HOME, result.route)
+        assertEquals(canonicalId, result.recoveredProfile?.id)
+        assertEquals(1, listOfNotNull(result.recoveredProfile).distinctBy { it.id }.size)
+    }
+
+    @Test
+    fun nameAndDobAloneDoNotCountAsCompletedRegistration() = runBlocking {
+        val nameOnly = profile(
+            id = canonicalId,
+            name = "Same Name",
+            bio = "Hey there! Secure with VibeSync E2EE.",
+            city = "Online",
+            occupation = "Member"
+        )
+        val result = recover(
+            localProfiles = listOf(nameOnly),
+            selfLookup = { ProfileLookupResult.Found(minimalCanonical()) },
+            legacyLookup = { ProfileLookupResult.NotFound }
+        )
+        assertEquals(ReturningAccountRecoveryPolicy.Route.REGISTRATION, result.route)
+    }
+
+    @Test
+    fun routeHelperNeverTurnsLookupFailureIntoNewAccount() {
         assertEquals(
             ReturningAccountRecoveryPolicy.Route.RETRY_RECOVERY,
             ReturningAccountRecoveryPolicy.route(
@@ -90,52 +154,11 @@ class ReturningAccountRecoveryPolicyTest {
                 persistedCompletionMarker = false
             )
         )
-    }
-
-    @Test
-    fun persistedOnboardingMarkerRestoresTheSameAccountAfterProcessRecreation() {
-        assertTrue(
-            OnboardingStatePolicy.shouldTreatAsCompleted(
-                storedCompleted = false,
-                storedPhone = "",
-                verifiedPhone = "+91 98765 43210",
-                secureSessionMarker = true
-            )
-        )
         assertEquals(
             ReturningAccountRecoveryPolicy.Route.HOME,
             ReturningAccountRecoveryPolicy.route(
                 ReturningAccountRecoveryPolicy.LookupOutcome.TEMPORARY_FAILURE,
                 persistedCompletionMarker = true
-            )
-        )
-    }
-
-    @Test
-    fun finalRoutingUsesRecoveredCompletionStateRatherThanReenteredNameOrDob() {
-        val nameAndDobOnly = OnboardingStatePolicy.shouldTreatAsCompleted(
-            storedCompleted = false,
-            storedPhone = "",
-            verifiedPhone = "+91 98765 43210",
-            secureSessionMarker = false,
-            recoveredProfileName = "Same Name",
-            recoveredProfileHasRegistrationDetails = false
-        )
-        assertFalse(nameAndDobOnly)
-
-        assertEquals(
-            ReturningAccountRecoveryPolicy.Route.REGISTRATION,
-            ReturningAccountRecoveryPolicy.route(
-                if (nameAndDobOnly) ReturningAccountRecoveryPolicy.LookupOutcome.COMPLETED_PROFILE_FOUND
-                else ReturningAccountRecoveryPolicy.LookupOutcome.NO_COMPLETED_PROFILE,
-                persistedCompletionMarker = false
-            )
-        )
-        assertEquals(
-            ReturningAccountRecoveryPolicy.Route.HOME,
-            ReturningAccountRecoveryPolicy.route(
-                ReturningAccountRecoveryPolicy.LookupOutcome.COMPLETED_PROFILE_FOUND,
-                persistedCompletionMarker = false
             )
         )
     }
