@@ -559,17 +559,30 @@ class PendingMessageInboxSyncWorker(
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
-            val database = DatingDatabase.getDatabase(applicationContext)
-            val chatDao = database.chatMessageDao()
-            val session = VibeSyncSessionManager.getSession(applicationContext)
-                ?: return@withContext Result.retry()
-            val myProfileId = session.profileId.trim()
-            if (myProfileId.isBlank()) return@withContext Result.retry()
-
-            val allMatches = database.matchDao().getAllMatchesSync()
+            val workRequestId = id.toString()
             val requestedMatchId = inputData.getString(KEY_REMOTE_MATCH_ID).orEmpty().trim()
             val targetMessageId = inputData.getString(KEY_REMOTE_MESSAGE_ID).orEmpty().trim()
             val targetSenderId = inputData.getString(KEY_REMOTE_SENDER_ID).orEmpty().trim()
+            Log.i(
+                TAG,
+                "Inbox worker started: message_id=${targetMessageId.ifBlank { "<none>" }}, " +
+                    "match_id=${requestedMatchId.ifBlank { "<none>" }}, work_request_id=$workRequestId, " +
+                    "run_attempt=$runAttemptCount."
+            )
+            val database = DatingDatabase.getDatabase(applicationContext)
+            val chatDao = database.chatMessageDao()
+            val session = VibeSyncSessionManager.getSession(applicationContext)
+            if (session == null) {
+                Log.w(TAG, "Inbox worker deferred: reason=session_unavailable, message_id=${targetMessageId.ifBlank { "<none>" }}, work_request_id=$workRequestId.")
+                return@withContext Result.retry()
+            }
+            val myProfileId = session.profileId.trim()
+            if (myProfileId.isBlank()) {
+                Log.w(TAG, "Inbox worker deferred: reason=profile_id_missing, message_id=${targetMessageId.ifBlank { "<none>" }}, work_request_id=$workRequestId.")
+                return@withContext Result.retry()
+            }
+
+            val allMatches = database.matchDao().getAllMatchesSync()
             val matched = if (requestedMatchId.isBlank()) allMatches else allMatches.filter { match ->
                 match.matchId.equals(requestedMatchId, ignoreCase = true) ||
                     SupabaseClientManager.canonicalChatMatchId(myProfileId, match.profileId)
@@ -614,10 +627,10 @@ class PendingMessageInboxSyncWorker(
                 val target = chatDao.getMessageById(targetMessageId)
                 if (target == null) {
                     if (checkedConversations > 0 && !hadIncompleteConversation && ackFailures == 0) {
-                        Log.i(TAG, "Notification suppressed: no user-visible persisted row after completed sync; message_id=${targetMessageId}.")
+                        Log.i(TAG, "Notification suppressed: reason=target_row_not_found_after_complete_sync, message_id=$targetMessageId, work_request_id=$workRequestId.")
                         return@withContext Result.success()
                     }
-                    Log.w(TAG, "Targeted message not yet available in Room; notification deferred: message_id=${targetMessageId}.")
+                    Log.w(TAG, "Notification deferred: reason=target_row_not_persisted, message_id=$targetMessageId, work_request_id=$workRequestId, run_attempt=$runAttemptCount.")
                     return@withContext Result.retry()
                 }
 
@@ -630,7 +643,7 @@ class PendingMessageInboxSyncWorker(
                     !target.text.startsWith(TinkCryptoManager.TINK_PREFIX) &&
                     (renderableText || renderableMedia)
                 if (!messageDecrypted) {
-                    Log.i(TAG, "Notification deferred: message_id=${target.messageId}, persisted=true, decrypted=false, decrypt_state=${target.decryptState}.")
+                    Log.w(TAG, "Notification deferred: reason=decryption_not_ready, message_id=${target.messageId}, persisted=true, decrypted=false, decrypt_state=${target.decryptState}, work_request_id=$workRequestId, run_attempt=$runAttemptCount.")
                     return@withContext Result.retry()
                 }
 
@@ -646,6 +659,15 @@ class PendingMessageInboxSyncWorker(
                     "DISAPPEARING_TIMER"
                 ) || decodedControl || com.example.util.ProfileKeyManager.isExchangePayload(target.text)
 
+                val activeChat = com.example.util.AppNotificationManager.isUserActiveInChatWith(target.senderId) ||
+                    com.example.util.AppNotificationManager.isUserActiveInChatWith(target.matchId)
+                Log.i(
+                    TAG,
+                    "Notification decision inputs: message_id=${target.messageId}, work_request_id=$workRequestId, " +
+                        "persisted=true, decrypted=true, clear_barrier_passed=$clearBarrierPassed, " +
+                        "already_read=${target.isRead || target.deliveryState.equals("READ", ignoreCase = true)}, " +
+                        "control_message=$isControlMessage, active_chat=$activeChat, app_foreground=${com.example.util.AppNotificationManager.isAppInForeground}."
+                )
                 val candidate = com.example.util.IncomingMessageNotificationPolicy.Candidate(
                     messageId = target.messageId,
                     isIncoming = !target.senderId.equals("USER", ignoreCase = true),
@@ -654,13 +676,14 @@ class PendingMessageInboxSyncWorker(
                     clearHistoryBarrierPassed = clearBarrierPassed,
                     isControlMessage = isControlMessage,
                     isAlreadyRead = target.isRead || target.deliveryState.equals("READ", ignoreCase = true),
+                    activeChat = activeChat,
                     appInForeground = com.example.util.AppNotificationManager.isAppInForeground
                 )
                 val eligibilityReason = com.example.util.IncomingMessageNotificationPolicy.blockedReason(candidate)
                 if (eligibilityReason != null) {
                     Log.i(TAG,
-                        "Incoming notification ineligible: message_id=${target.messageId}, reason=${eligibilityReason.name.lowercase()}, " +
-                            "persisted=true, decrypted=true, clear_barrier_passed=$clearBarrierPassed.")
+                        "Incoming notification suppressed: message_id=${target.messageId}, reason=${eligibilityReason.name.lowercase()}, " +
+                            "persisted=true, decrypted=true, clear_barrier_passed=$clearBarrierPassed, work_request_id=$workRequestId.")
                 } else {
                     val sender = runCatching { database.profileDao().getProfileByIdSync(target.senderId) }.getOrNull()
                     val targetMatch = allMatches.firstOrNull { item ->
@@ -680,7 +703,7 @@ class PendingMessageInboxSyncWorker(
                         else -> "New message"
                     }
                     Log.i(TAG, "Incoming notification eligible: message_id=${target.messageId}, persisted=true, decrypted=true, clear_barrier_passed=true.")
-                    com.example.util.AppNotificationManager.showMessageNotification(
+                    val dispatchResult = com.example.util.AppNotificationManager.showMessageNotificationAndAwait(
                         context = applicationContext,
                         senderId = target.senderId,
                         senderName = senderName,
@@ -695,16 +718,29 @@ class PendingMessageInboxSyncWorker(
                         messageDecrypted = true,
                         clearHistoryBarrierPassed = clearBarrierPassed,
                         controlMessage = isControlMessage,
-                        messageAlreadyRead = target.isRead || target.deliveryState.equals("READ", ignoreCase = true)
+                        messageAlreadyRead = target.isRead || target.deliveryState.equals("READ", ignoreCase = true),
+                        workRequestId = workRequestId
                     )
+                    when (dispatchResult) {
+                        com.example.util.IncomingNotificationDispatchResult.Posted -> {
+                            Log.i(TAG, "Inbox notification result=POSTED: message_id=${target.messageId}, work_request_id=$workRequestId.")
+                        }
+                        is com.example.util.IncomingNotificationDispatchResult.Suppressed -> {
+                            Log.i(TAG, "Inbox notification result=SUPPRESSED: message_id=${target.messageId}, reason=${dispatchResult.reason}, work_request_id=$workRequestId.")
+                        }
+                        is com.example.util.IncomingNotificationDispatchResult.RetryableFailure -> {
+                            Log.w(TAG, "Inbox notification result=RETRY: message_id=${target.messageId}, reason=${dispatchResult.reason}, work_request_id=$workRequestId, run_attempt=$runAttemptCount.")
+                            return@withContext Result.retry()
+                        }
+                    }
                 }
             }
-            Log.i(TAG, "Inbox delta finished: conversations=$checkedConversations rows=$syncedMessages ackFailures=$ackFailures incomplete=$hadIncompleteConversation.")
+            Log.i(TAG, "Inbox delta finished: message_id=${targetMessageId.ifBlank { "<none>" }}, match_id=${requestedMatchId.ifBlank { "<none>" }}, work_request_id=$workRequestId, conversations=$checkedConversations rows=$syncedMessages ackFailures=$ackFailures incomplete=$hadIncompleteConversation.")
             if (hadIncompleteConversation || ackFailures > 0) Result.retry() else Result.success()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (t: Throwable) {
-            Log.e(TAG, "Inbox delta failed; WorkManager will retry: ${t.message}", t)
+            Log.e(TAG, "Inbox delta failed; WorkManager will retry: message_id=${inputData.getString(KEY_REMOTE_MESSAGE_ID).orEmpty().ifBlank { "<none>" }}, work_request_id=${id}, reason=${t.javaClass.simpleName}.", t)
             Result.retry()
         }
     }
@@ -847,7 +883,7 @@ object PendingMessageSyncScheduler {
                 ExistingWorkPolicy.APPEND_OR_REPLACE,
                 request
             )
-            Log.i(TAG, "Scheduled inbox delta (targeted=${cleanMessageId.isNotBlank()}).")
+            Log.i(TAG, "Inbox work enqueued: message_id=${cleanMessageId.ifBlank { "<none>" }}, match_id=${cleanMatchId.ifBlank { "<none>" }}, work_request_id=${request.id}, targeted=${cleanMessageId.isNotBlank()}, unique_name=$uniqueName.")
         } catch (t: Throwable) {
             Log.e(TAG, "Could not schedule immediate inbox delta; periodic sync remains available.", t)
         }
