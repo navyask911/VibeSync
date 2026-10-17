@@ -23,6 +23,27 @@ SELECT
   is_deleted,
   updated_at,
   public_identity_key,
+  -- Preserve the existing view's privacy-aware approximate coordinates. Never expose raw
+  -- coordinates for a profile whose location_visibility is not EVERYONE.
+  CASE
+    WHEN location_visibility = 'EVERYONE'
+      AND latitude BETWEEN -90 AND 90
+      AND longitude BETWEEN -180 AND 180
+      AND NOT (latitude = 0 AND longitude = 0)
+    THEN round(latitude::numeric, 3)::double precision
+    ELSE NULL
+  END AS latitude,
+  CASE
+    WHEN location_visibility = 'EVERYONE'
+      AND latitude BETWEEN -90 AND 90
+      AND longitude BETWEEN -180 AND 180
+      AND NOT (latitude = 0 AND longitude = 0)
+    THEN round(longitude::numeric, 3)::double precision
+    ELSE NULL
+  END AS longitude,
+  -- Keep the directory metadata the Android client already selects.
+  subscription_status,
+  badge_purchased,
   is_discoverable
 FROM public.profiles
 WHERE coalesce(is_deleted, false) = false
