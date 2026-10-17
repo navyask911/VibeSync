@@ -5789,16 +5789,29 @@ class SocialConnectRepository(
                             if (existing == null ||
                                 !com.example.util.MessageLocalRetentionPolicy.isRenderableText(existing.text)
                             ) {
+                                val localAlreadyRead = existing?.isRead == true ||
+                                    existing?.deliveryState.equals("READ", ignoreCase = true)
+                                val incomingIsRead = com.example.util.ConversationUnreadStatePolicy.mergedIsRead(
+                                    remoteIsRead = isMyOwn && remote.isRead,
+                                    remoteDeliveryState = if (isMyOwn) remote.deliveryState else "",
+                                    localIsRead = localAlreadyRead,
+                                    localDeliveryState = if (isMyOwn) existing?.deliveryState.orEmpty() else ""
+                                )
+                                val incomingIsDelivered = canRenderText && (
+                                    isMyOwn || remote.isDelivered || incomingIsRead ||
+                                        existing?.isDelivered == true ||
+                                        existing?.deliveryState.equals("DELIVERED", ignoreCase = true)
+                                )
                                 val incoming = remote.copy(
                                     matchId = m.matchId,
                                     senderId = if (isMyOwn) "USER" else peerProfileId,
                                     text = safeText,
-                                    isDelivered = canRenderText && (isMyOwn || remote.isDelivered),
-                                    isRead = isMyOwn && remote.isRead,
-                                    deliveryAckPending = !isMyOwn && canRenderText && !remote.isDelivered,
+                                    isDelivered = incomingIsDelivered,
+                                    isRead = incomingIsRead,
+                                    deliveryAckPending = !isMyOwn && canRenderText && !incomingIsDelivered,
                                     deliveryState = if (!canRenderText) "PENDING_DECRYPTION"
-                                        else if (isMyOwn && remote.isRead) "READ"
-                                        else if (remote.isDelivered) "DELIVERED"
+                                        else if (incomingIsRead) "READ"
+                                        else if (incomingIsDelivered) "DELIVERED"
                                         else if (isMyOwn) "SENT_TO_SERVER" else "ACK_PENDING"
                                 )
                                 val persisted = com.example.util.ConversationClearCoordinator.withConversationLock(m.matchId) {
@@ -5820,7 +5833,25 @@ class SocialConnectRepository(
                                             }
                                         }
                                         if (committed && canRenderText) {
-                                            matchDao.updateLastMessage(m.matchId, safeText, remote.timestamp, !isMyOwn)
+                                            if (remote.timestamp >= m.lastMessageTime && safeText.isNotBlank()) {
+                                                matchDao.updateLastMessagePreservingUnread(
+                                                    m.matchId, safeText, remote.timestamp
+                                                )
+                                            }
+                                            if (!isMyOwn && com.example.util.ConversationUnreadStatePolicy.isUnreadIncoming(
+                                                    isIncoming = true,
+                                                    isRead = incoming.isRead,
+                                                    deliveryState = incoming.deliveryState,
+                                                    isControlMessage = com.example.util.ConversationUnreadStatePolicy.isControlMessage(
+                                                        incoming.mediaType, incoming.text
+                                                    ),
+                                                    isDeleted = incoming.isDeleted,
+                                                    isDeletedForMe = incoming.isDeletedForMe,
+                                                    isDeletedForEveryone = incoming.isDeletedForEveryone
+                                                )
+                                            ) {
+                                                matchDao.setHasUnread(m.matchId, true)
+                                            }
                                         }
                                         committed
                                     }
