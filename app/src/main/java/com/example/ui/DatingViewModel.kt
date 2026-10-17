@@ -424,6 +424,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     @Volatile private var activeRealtimeRemoteMatchId: String? = null
     private var realtimeStartJob: kotlinx.coroutines.Job? = null
     private var realtimeStatusSyncJob: kotlinx.coroutines.Job? = null
+    private var realtimeReceiptReconcileJob: kotlinx.coroutines.Job? = null
     private var typingStopJob: kotlinx.coroutines.Job? = null
     private var typingBroadcastActive = false
     private val _isPartnerTyping = MutableStateFlow(false)
@@ -433,6 +434,8 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
     /** Called only by ChatDetailScreen while its 1-on-1 route is resumed. */
     fun startChatRealtime(match: MatchEntity, profile: ProfileEntity) {
         realtimeStartJob?.cancel()
+        realtimeReceiptReconcileJob?.cancel()
+        realtimeReceiptReconcileJob = null
         realtimeStartJob = viewModelScope.launch(Dispatchers.IO) {
             val ownProfileId = com.example.util.VibeSyncSessionManager.getProfileId(getApplication()).orEmpty().trim()
             val phoneIdentity = com.example.util.ChatRecipientIdentityResolver.phoneIdentityCandidate(
@@ -502,6 +505,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             suspend fun reconcileDurableReceipts() {
                 runCatching {
                     val receipts = com.example.util.SupabaseClientManager.fetchMessageDeliveryStatesForMatch(remoteMatchId)
+                    var changedRows = 0
                     for (receipt in receipts) {
                         val local = database.chatMessageDao().getMessageById(receipt.messageId) ?: continue
                         if (!local.senderId.equals("USER", ignoreCase = true)) continue
@@ -509,16 +513,32 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                             !local.outboxOwnerProfileId.equals(ownProfileId, ignoreCase = true)
                         ) continue
                         val receiptAt = receipt.timestamp.takeIf { it > 0L } ?: System.currentTimeMillis()
-                        when (receipt.deliveryState) {
-                            "READ" -> database.conversationClearDao().markReceiptRead(receipt.messageId, receiptAt)
-                            "DELIVERED" -> database.conversationClearDao().markReceiptDelivered(receipt.messageId, receiptAt)
-                            "FAILED" -> database.conversationClearDao().markReceiptFailed(receipt.messageId, receiptAt)
-                            "SENT_TO_SERVER" -> database.chatMessageDao()
-                                .markOutboxSentToServerIfPending(receipt.messageId, receiptAt)
+                        when (receipt.deliveryState.uppercase()) {
+                            "READ" -> if (!local.isRead || !local.isDelivered) {
+                                database.conversationClearDao().markReceiptRead(receipt.messageId, receiptAt)
+                                changedRows++
+                            }
+                            "DELIVERED" -> if (!local.isDelivered && !local.isRead) {
+                                database.conversationClearDao().markReceiptDelivered(receipt.messageId, receiptAt)
+                                changedRows++
+                            }
+                            "FAILED" -> if (local.deliveryState !in setOf("DELIVERED", "READ", "FAILED")) {
+                                database.conversationClearDao().markReceiptFailed(receipt.messageId, receiptAt)
+                                changedRows++
+                            }
+                            "SENT_TO_SERVER" -> if (local.deliveryState == "PENDING") {
+                                database.chatMessageDao().markOutboxSentToServerIfPending(receipt.messageId, receiptAt)
+                                changedRows++
+                            }
                         }
                     }
+                    if (changedRows > 0) {
+                        android.util.Log.i("VibeSyncReadReceipt",
+                            "Active-chat receipt reconciliation applied $changedRows state change(s): conversation_id=$remoteMatchId.")
+                    }
                 }.onFailure {
-                    android.util.Log.w("VibeSyncReadReceipt", "Durable receipt reconciliation will retry on the next chat resume or reconnect.")
+                    android.util.Log.w("VibeSyncReadReceipt",
+                        "Active-chat receipt reconciliation failed; retrying while the chat remains resumed.")
                 }
             }
 
@@ -565,12 +585,25 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             // Catch up immediately too; the subscribed-state collector covers reconnects.
             reconcileDurableReceipts()
             syncChatMessagesSinceWatermark(resolvedMatch, resolvedProfile)
+
+            // Realtime is primary. This metadata-only fallback is scoped to this resumed chat,
+            // and catches receipt events missed during connectivity/OEM background transitions.
+            realtimeReceiptReconcileJob?.cancel()
+            realtimeReceiptReconcileJob = viewModelScope.launch(Dispatchers.IO) {
+                while (activeRealtimeRemoteMatchId == remoteMatchId) {
+                    kotlinx.coroutines.delay(5_000L)
+                    if (activeRealtimeRemoteMatchId != remoteMatchId) break
+                    reconcileDurableReceipts()
+                }
+            }
         }
     }
 
     fun stopChatRealtime() {
         realtimeStartJob?.cancel()
         realtimeStartJob = null
+        realtimeReceiptReconcileJob?.cancel()
+        realtimeReceiptReconcileJob = null
         activeRealtimeRemoteMatchId = null
         realtimeStatusSyncJob?.cancel()
         realtimeStatusSyncJob = null

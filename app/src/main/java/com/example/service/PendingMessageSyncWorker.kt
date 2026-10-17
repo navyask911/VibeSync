@@ -612,50 +612,90 @@ class PendingMessageInboxSyncWorker(
 
             if (targetMessageId.isNotBlank()) {
                 val target = chatDao.getMessageById(targetMessageId)
-                val targetIsPlaintext = target != null &&
-                    !target.text.startsWith(TinkCryptoManager.TINK_PREFIX) &&
-                    (target.text.isNotBlank() || target.mediaUrl.isNotBlank() ||
-                        target.mediaType.uppercase() in setOf("IMAGE", "PHOTO", "AI_IMAGE", "VIDEO", "VOICE", "AUDIO", "DOCUMENT", "LOCATION"))
-                if (!targetIsPlaintext) {
-                    Log.w(TAG, "Targeted FCM message is not yet decrypted and persisted; retrying its wakeup.")
+                if (target == null) {
+                    if (checkedConversations > 0 && !hadIncompleteConversation && ackFailures == 0) {
+                        Log.i(TAG, "Notification suppressed: no user-visible persisted row after completed sync; message_id=${targetMessageId}.")
+                        return@withContext Result.success()
+                    }
+                    Log.w(TAG, "Targeted message not yet available in Room; notification deferred: message_id=${targetMessageId}.")
                     return@withContext Result.retry()
                 }
-                if (target.senderId.isNotBlank() &&
-                    !target.senderId.equals("USER", ignoreCase = true) &&
-                    !com.example.util.AppNotificationManager.isAppInForeground
-                ) {
-                    val prefs = applicationContext.getSharedPreferences("vibesync_inbox_notification_dedupe", Context.MODE_PRIVATE)
-                    val key = "message_" + java.util.UUID.nameUUIDFromBytes(target.messageId.toByteArray(Charsets.UTF_8)).toString()
-                    val now = System.currentTimeMillis()
-                    if (prefs.getLong(key, 0L) <= now - 7L * 24L * 60L * 60L * 1000L) {
-                        val sender = runCatching { database.profileDao().getProfileByIdSync(target.senderId) }.getOrNull()
-                        val targetMatch = allMatches.firstOrNull { item ->
-                            item.matchId.equals(target.matchId, ignoreCase = true) ||
-                                SupabaseClientManager.canonicalChatMatchId(myProfileId, item.profileId)
-                                    .equals(target.matchId, ignoreCase = true)
-                        }
-                        val senderName = sender?.name?.trim()?.takeIf {
-                            it.isNotBlank() && !it.equals("VibeSync User", true) && !it.equals("VibeSync Contact", true)
-                        } ?: targetMatch?.localContactName?.trim()?.takeIf(String::isNotBlank) ?: "VibeSync Contact"
-                        val body = target.text.trim().takeIf { it.isNotBlank() } ?: when (target.mediaType.uppercase()) {
-                            "IMAGE", "PHOTO", "AI_IMAGE" -> "Photo"
-                            "VIDEO" -> "Video"
-                            "VOICE", "AUDIO" -> "Voice message"
-                            "DOCUMENT" -> "Attachment"
-                            "LOCATION" -> "Location"
-                            else -> "New message"
-                        }
-                        com.example.util.AppNotificationManager.showMessageNotification(
-                            context = applicationContext,
-                            senderId = target.senderId,
-                            senderName = senderName,
-                            messageText = body,
-                            senderPhotoUrl = sender?.avatarUrl.orEmpty().ifBlank { targetMatch?.localPhotoUri.orEmpty() },
-                            mediaType = target.mediaType,
-                            channelId = com.example.util.AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES
-                        )
-                        prefs.edit().putLong(key, now).apply()
+
+                val mediaType = target.mediaType.trim().uppercase()
+                val renderableText = com.example.util.MessageLocalRetentionPolicy.isRenderableText(target.text)
+                val renderableMedia = mediaType in setOf(
+                    "IMAGE", "PHOTO", "AI_IMAGE", "VIDEO", "VOICE", "AUDIO", "DOCUMENT", "LOCATION", "LIVE_LOCATION"
+                ) && target.mediaUrl.isNotBlank()
+                val messageDecrypted = target.decryptState == com.example.util.MessageLocalRetentionPolicy.DECRYPT_STATE_OK &&
+                    !target.text.startsWith(TinkCryptoManager.TINK_PREFIX) &&
+                    (renderableText || renderableMedia)
+                if (!messageDecrypted) {
+                    Log.i(TAG, "Notification deferred: message_id=${target.messageId}, persisted=true, decrypted=false, decrypt_state=${target.decryptState}.")
+                    return@withContext Result.retry()
+                }
+
+                val clearBarrierPassed = !com.example.util.MessageHistoryClearBarrier.shouldSuppress(
+                    applicationContext, database, target.matchId, target.serverCreatedAt.takeIf { it > 0L }
+                )
+                val decodedControl = runCatching {
+                    com.example.util.ChatMessageEventCodec.decode(target.text, target.mediaType).eventType != null
+                }.getOrDefault(false)
+                val isControlMessage = mediaType in setOf(
+                    "DIAGNOSTIC", "SYSTEM", "CONTROL", "KEY_EXCHANGE", "PROFILE_KEY",
+                    "PROFILE_KEY_EXCHANGE", "RECEIPT", "REACTION", "MESSAGE_DELETE", "MESSAGE_EDIT",
+                    "DISAPPEARING_TIMER"
+                ) || decodedControl || com.example.util.ProfileKeyManager.isExchangePayload(target.text)
+
+                val candidate = com.example.util.IncomingMessageNotificationPolicy.Candidate(
+                    messageId = target.messageId,
+                    isIncoming = !target.senderId.equals("USER", ignoreCase = true),
+                    isPersisted = true,
+                    decryptionSucceeded = true,
+                    clearHistoryBarrierPassed = clearBarrierPassed,
+                    isControlMessage = isControlMessage,
+                    isAlreadyRead = target.isRead || target.deliveryState.equals("READ", ignoreCase = true)
+                )
+                val eligibilityReason = com.example.util.IncomingMessageNotificationPolicy.blockedReason(candidate)
+                if (eligibilityReason != null) {
+                    Log.i(TAG,
+                        "Incoming notification ineligible: message_id=${target.messageId}, reason=${eligibilityReason.name.lowercase()}, " +
+                            "persisted=true, decrypted=true, clear_barrier_passed=$clearBarrierPassed.")
+                } else {
+                    val sender = runCatching { database.profileDao().getProfileByIdSync(target.senderId) }.getOrNull()
+                    val targetMatch = allMatches.firstOrNull { item ->
+                        item.matchId.equals(target.matchId, ignoreCase = true) ||
+                            SupabaseClientManager.canonicalChatMatchId(myProfileId, item.profileId)
+                                .equals(target.matchId, ignoreCase = true)
                     }
+                    val senderName = sender?.name?.trim()?.takeIf {
+                        it.isNotBlank() && !it.equals("VibeSync User", true) && !it.equals("VibeSync Contact", true)
+                    } ?: targetMatch?.localContactName?.trim()?.takeIf(String::isNotBlank) ?: "VibeSync Contact"
+                    val body = target.text.trim().takeIf { renderableText } ?: when (mediaType) {
+                        "IMAGE", "PHOTO", "AI_IMAGE" -> "Photo"
+                        "VIDEO" -> "Video"
+                        "VOICE", "AUDIO" -> "Voice message"
+                        "DOCUMENT" -> "Attachment"
+                        "LOCATION", "LIVE_LOCATION" -> "Location"
+                        else -> "New message"
+                    }
+                    Log.i(TAG, "Incoming notification eligible: message_id=${target.messageId}, persisted=true, decrypted=true, clear_barrier_passed=true.")
+                    com.example.util.AppNotificationManager.showMessageNotification(
+                        context = applicationContext,
+                        senderId = target.senderId,
+                        senderName = senderName,
+                        messageText = body,
+                        senderPhotoUrl = sender?.avatarUrl.orEmpty().ifBlank { targetMatch?.localPhotoUri.orEmpty() },
+                        mediaType = target.mediaType,
+                        channelId = com.example.util.AppNotificationManager.CHANNEL_ID_CHAT_MESSAGES,
+                        conversationId = target.matchId,
+                        messageId = target.messageId,
+                        messageTimestamp = target.timestamp,
+                        persistedIncomingMessage = true,
+                        messageDecrypted = true,
+                        clearHistoryBarrierPassed = clearBarrierPassed,
+                        controlMessage = isControlMessage,
+                        messageAlreadyRead = target.isRead || target.deliveryState.equals("READ", ignoreCase = true)
+                    )
                 }
             }
             Log.i(TAG, "Inbox delta finished: conversations=$checkedConversations rows=$syncedMessages ackFailures=$ackFailures incomplete=$hadIncompleteConversation.")

@@ -139,7 +139,7 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     messageId = messageId.takeIf { it.isNotBlank() },
                     senderId = senderId.takeIf { it.isNotBlank() }
                 )
-                Log.i(TAG, "Direct-chat push wake-up queued for authenticated inbox sync.")
+                Log.i(TAG, "Direct-chat push type=$type queued for authenticated inbox sync: message_id=${messageId.ifBlank { "<missing>" }}, match_id=${matchId.ifBlank { "<missing>" }}.")
                 return
             }
 

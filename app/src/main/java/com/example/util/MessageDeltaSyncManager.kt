@@ -381,6 +381,11 @@ object MessageDeltaSyncManager {
                     continue
                 }
                 synced++
+                Log.i(
+                    TAG,
+                    "Inbox Room persistence outcome: message_id=${remote.messageId}, persisted=true, " +
+                        "decrypted=${canRenderPlaintext}, clear_barrier=passed."
+                )
 
                 if (!suppressForClearedHistory && canRenderPlaintext && remote.timestamp >= match.lastMessageTime && local.text.isNotBlank()) {
                     matchDao.updateLastMessage(
