@@ -36,10 +36,10 @@ internal object IncomingMessageNotificationPolicy {
         candidate.isAlreadyRead -> BlockReason.ALREADY_READ
         candidate.conversationMuted -> BlockReason.CONVERSATION_MUTED
         candidate.activeChat -> BlockReason.ACTIVE_CHAT
+        candidate.alreadyNotified -> BlockReason.ALREADY_NOTIFIED
         !candidate.postNotificationsGranted -> BlockReason.POST_NOTIFICATIONS_DENIED
         !candidate.appNotificationsEnabled -> BlockReason.APP_NOTIFICATIONS_DISABLED
         !candidate.channelEnabled -> BlockReason.CHANNEL_DISABLED
-        candidate.alreadyNotified -> BlockReason.ALREADY_NOTIFIED
         else -> null
     }
 
