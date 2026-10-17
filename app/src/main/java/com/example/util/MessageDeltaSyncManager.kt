@@ -405,7 +405,10 @@ object MessageDeltaSyncManager {
                         isIncoming = true,
                         isRead = local.isRead,
                         deliveryState = local.deliveryState,
-                        isControlMessage = ConversationUnreadStatePolicy.isControlMessage(local.mediaType, local.text)
+                        isControlMessage = ConversationUnreadStatePolicy.isControlMessage(local.mediaType, local.text),
+                        isDeleted = local.isDeleted,
+                        isDeletedForMe = local.isDeletedForMe,
+                        isDeletedForEveryone = local.isDeletedForEveryone
                     )
                 ) {
                     // A genuinely unseen incoming message sets the flag, irrespective of ordering.
