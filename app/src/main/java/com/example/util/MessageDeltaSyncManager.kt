@@ -129,6 +129,19 @@ object MessageDeltaSyncManager {
                 )
                 val isFromMe = MessageDecryptionPolicy.isOwnOutgoingMessage(remote.senderId, ownerId)
                 val existing = dao.getMessageById(remote.messageId)
+                val existingRead = ConversationUnreadStatePolicy.mergedIsRead(
+                    remoteIsRead = remote.isRead,
+                    remoteDeliveryState = remote.deliveryState,
+                    localIsRead = existing?.isRead == true,
+                    localDeliveryState = existing?.deliveryState.orEmpty()
+                )
+                val existingDelivered = remote.isDelivered ||
+                    remote.deliveryState.equals("DELIVERED", ignoreCase = true) ||
+                    remote.deliveryState.equals("READ", ignoreCase = true) ||
+                    existing?.isDelivered == true ||
+                    existing?.deliveryState.equals("DELIVERED", ignoreCase = true) ||
+                    existing?.deliveryState.equals("READ", ignoreCase = true) ||
+                    existingRead
                 if (suppressForClearedHistory) {
                     // Apply the barrier to incoming and outgoing history alike. Never ACK or display
                     // an old record after Clear Chat; undelivered server ciphertext is left for TTL.
@@ -302,8 +315,8 @@ object MessageDeltaSyncManager {
                     existingPlaintext = existingPlaintext,
                     failureState = failureState
                 )
-                val needsAck = canRenderPlaintext &&
-                    ((!remote.isDelivered && !remote.isRead) || suppressForClearedHistory)
+                val needsAck = canRenderPlaintext && !existingRead &&
+                    ((!existingDelivered && !existingRead) || suppressForClearedHistory)
                 val local = remote.copy(
                     matchId = match.matchId,
                     senderId = remote.senderId,
@@ -311,12 +324,12 @@ object MessageDeltaSyncManager {
                     encryptedPayload = storedIncoming.encryptedPayload,
                     decryptState = storedIncoming.decryptState,
                     mediaUrl = decodedPayload?.mediaUrl ?: remote.mediaUrl,
-                    isDelivered = remote.isDelivered,
-                    isRead = remote.isRead,
+                    isDelivered = existingDelivered,
+                    isRead = existingRead,
                     isEncrypted = true,
                     deliveryState = when {
-                        remote.isRead -> "READ"
-                        remote.isDelivered -> "DELIVERED"
+                        existingRead -> "READ"
+                        existingDelivered -> "DELIVERED"
                         needsAck -> "ACK_PENDING"
                         !canRenderPlaintext -> "PENDING_DECRYPTION"
                         else -> "DELIVERED"
@@ -387,12 +400,25 @@ object MessageDeltaSyncManager {
                         "decrypted=${canRenderPlaintext}, clear_barrier=passed."
                 )
 
-                if (!suppressForClearedHistory && canRenderPlaintext && remote.timestamp >= match.lastMessageTime && local.text.isNotBlank()) {
-                    matchDao.updateLastMessage(
+                if (!suppressForClearedHistory && canRenderPlaintext &&
+                    ConversationUnreadStatePolicy.isUnreadIncoming(
+                        isIncoming = true,
+                        isRead = local.isRead,
+                        deliveryState = local.deliveryState,
+                        isControlMessage = ConversationUnreadStatePolicy.isControlMessage(local.mediaType, local.text)
+                    )
+                ) {
+                    // A genuinely unseen incoming message sets the flag, irrespective of ordering.
+                    // A replay of an already-read message never clears or re-enables the flag.
+                    matchDao.setHasUnread(match.matchId, true)
+                }
+                if (!suppressForClearedHistory && canRenderPlaintext &&
+                    remote.timestamp >= match.lastMessageTime && local.text.isNotBlank()
+                ) {
+                    matchDao.updateLastMessagePreservingUnread(
                         matchId = match.matchId,
                         text = local.text,
-                        timestamp = remote.timestamp,
-                        hasUnread = !remote.isRead
+                        timestamp = remote.timestamp
                     )
                 }
 
