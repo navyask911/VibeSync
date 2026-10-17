@@ -2977,8 +2977,11 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
 
         val hydrateRegistrationFields = profileComplete && decision.hasRegistrationDetails
         val hydrated = basePrefs.copy(
-            userName = if (hydrateRegistrationFields) meaningfulRecoveredName ?: basePrefs.userName
-                else suggestedName.takeIf(String::isNotBlank) ?: basePrefs.userName,
+            userName = if (hydrateRegistrationFields || decision.legacyPhoneProfileIdentityMatched) {
+                meaningfulRecoveredName ?: basePrefs.userName
+            } else {
+                suggestedName.takeIf(String::isNotBlank) ?: basePrefs.userName
+            },
             userAge = if (hydrateRegistrationFields) cachedRecovered?.age?.takeIf { it in 18..120 } ?: basePrefs.userAge
                 else basePrefs.userAge,
             userOccupation = if (hydrateRegistrationFields) cachedRecovered?.occupation?.takeIf {
@@ -3142,10 +3145,6 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             avatarUrl = avatarUrl,
             suggestedName = suggestedName
         )
-        val updated = repository.userPreferences.first() ?: basePrefs.copy(
-            isProfileCompleted = recoveryDecision.route ==
-                com.example.util.ReturningAccountRecoveryPolicy.Route.HOME
-        )
         // The VibeSync session now exists, so register the current FCM token immediately.
         try {
             FirebaseMessaging.getInstance().token
@@ -3166,14 +3165,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             android.util.Log.w("FcmRegistration", "FCM token registration hook notice: ${e.message}")
         }
 
-        repository.updatePreferences(updated)
-        if (updated.isProfileCompleted) {
-            VibeSyncSessionManager.markOnboardingCompleted(
-                getApplication(),
-                profileId,
-                completed = true
-            )
-        }
+        // Recovery has already persisted the single resolved preference snapshot.
         _activeMobile.value = cleanPhone
         _isMpinUnlocked.value = true
         _showFaceVerification.value = false
