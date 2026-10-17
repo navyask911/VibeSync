@@ -3247,60 +3247,71 @@ class SocialConnectRepository(
             if (existingMessage == null ||
                 !com.example.util.MessageLocalRetentionPolicy.isRenderableText(existingMessage.text)
             ) {
+                var committedMessage = persistedMessage
                 val committed = database.withTransaction {
                     // Recheck the durable guard at the final persistence boundary. The shared
-                    // mutex serializes application paths; the Room guard also blocks stale workers.
+                    // mutex serializes sync paths, but visible READ ACKs use their own Room
+                    // transaction; always merge against the newest row while this transaction holds.
                     if (database.conversationClearDao().isConversationClearInProgress(localMatchId)) {
                         return@withTransaction false
                     }
-                    chatMessageDao.upsertMessage(persistedMessage)
+                    val latestRoomMessage = chatMessageDao.getMessageById(message.messageId)
+                    committedMessage = com.example.util.MessageDeltaSyncManager
+                        .mergeLatestLocalReadState(persistedMessage, latestRoomMessage)
+                        .copy(
+                            serverCreatedAt = maxOf(
+                                authoritativeTimestampMs ?: 0L,
+                                latestRoomMessage?.serverCreatedAt ?: 0L
+                            )
+                        )
+                    chatMessageDao.upsertMessage(committedMessage)
                     messageDao.insertMessage(
-                        persistedMessage.toLocalMessage().copy(remoteMessageId = persistedMessage.messageId)
+                        committedMessage.toLocalMessage().copy(remoteMessageId = committedMessage.messageId)
                     )
-                    val match = matchDao.getMatchByIdSync(persistedMessage.matchId)
-                    val preview = persistedMessage.text.ifBlank {
-                        if (persistedMessage.mediaType == "VOICE") "Voice message" else "Photo"
+                    val match = matchDao.getMatchByIdSync(committedMessage.matchId)
+                    val preview = committedMessage.text.ifBlank {
+                        if (committedMessage.mediaType == "VOICE") "Voice message" else "Photo"
                     }
                     if (match == null) {
-                        val peer = senderPhone.ifBlank { persistedMessage.senderId }
+                        val peer = senderPhone.ifBlank { committedMessage.senderId }
                         matchDao.insertMatch(
                             MatchEntity(
-                                matchId = persistedMessage.matchId,
+                                matchId = committedMessage.matchId,
                                 profileId = peer,
-                                matchedAt = persistedMessage.timestamp,
+                                matchedAt = committedMessage.timestamp,
                                 lastMessage = preview,
-                                lastMessageTime = persistedMessage.timestamp,
+                                lastMessageTime = committedMessage.timestamp,
                                 hasUnread = com.example.util.ConversationUnreadStatePolicy.isUnreadIncoming(
                                     isIncoming = true,
-                                    isRead = persistedMessage.isRead,
-                                    deliveryState = persistedMessage.deliveryState,
+                                    isRead = committedMessage.isRead,
+                                    deliveryState = committedMessage.deliveryState,
                                     isControlMessage = com.example.util.ConversationUnreadStatePolicy.isControlMessage(
-                                        persistedMessage.mediaType, persistedMessage.text
+                                        committedMessage.mediaType, committedMessage.text
                                     ),
-                                    isDeleted = persistedMessage.isDeleted,
-                                    isDeletedForMe = persistedMessage.isDeletedForMe,
-                                    isDeletedForEveryone = persistedMessage.isDeletedForEveryone
+                                    isDeleted = committedMessage.isDeleted,
+                                    isDeletedForMe = committedMessage.isDeletedForMe,
+                                    isDeletedForEveryone = committedMessage.isDeletedForEveryone
                                 )
                             )
                         )
-                    } else if (persistedMessage.timestamp >= match.lastMessageTime) {
+                    } else if (committedMessage.timestamp >= match.lastMessageTime) {
                         matchDao.updateLastMessagePreservingUnread(
-                            persistedMessage.matchId, preview, persistedMessage.timestamp
+                            committedMessage.matchId, preview, committedMessage.timestamp
                         )
                     }
                     if (com.example.util.ConversationUnreadStatePolicy.isUnreadIncoming(
                             isIncoming = true,
-                            isRead = persistedMessage.isRead,
-                            deliveryState = persistedMessage.deliveryState,
+                            isRead = committedMessage.isRead,
+                            deliveryState = committedMessage.deliveryState,
                             isControlMessage = com.example.util.ConversationUnreadStatePolicy.isControlMessage(
-                                persistedMessage.mediaType, persistedMessage.text
+                                committedMessage.mediaType, committedMessage.text
                             ),
-                            isDeleted = persistedMessage.isDeleted,
-                            isDeletedForMe = persistedMessage.isDeletedForMe,
-                            isDeletedForEveryone = persistedMessage.isDeletedForEveryone
+                            isDeleted = committedMessage.isDeleted,
+                            isDeletedForMe = committedMessage.isDeletedForMe,
+                            isDeletedForEveryone = committedMessage.isDeletedForEveryone
                         )
                     ) {
-                        matchDao.setHasUnread(persistedMessage.matchId, true)
+                        matchDao.setHasUnread(committedMessage.matchId, true)
                     }
                     true
                 }
