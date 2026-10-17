@@ -755,7 +755,7 @@ fun RegistrationProfileScreen(
             // Preserve dating availability as a separate preference from profile discoverability.
             var isOpenForDating by remember { mutableStateOf(true) }
 
-duplicate legacy contact permission block            Row(
+            Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -773,7 +773,7 @@ duplicate legacy contact permission block            Row(
                     modifier = Modifier.testTag("switch_open_to_dating")
                 )
             }
-complete Contact Discovery card including manual buttons            // 9. Full-width registration action. Avatar upload is handled after profile creation.
+            // 9. Full-width registration action. Avatar upload is handled after profile creation.
             Button(
                 onClick = {
                     if (isFormValid) {
