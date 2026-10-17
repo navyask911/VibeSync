@@ -3118,87 +3118,26 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             android.util.Log.w("AuthSessionManager", "Login continues, but outbox sends will wait until the device key is published.")
         }
 
-        // Existing registrations can be keyed by the gateway profile ID or by the verified
-        // phone's legacy profile ID. Check both; the contact-match RPC deliberately omits self.
-        val phoneDigits = cleanPhone.filter { it.isDigit() }
-        val profileById = SupabaseClientManager.fetchProfileById(profileId)
-        val profileByPhoneId = if (
-            !OnboardingStatePolicy.isMeaningfulProfileName(profileById?.name.orEmpty()) &&
-            phoneDigits.length >= 10 &&
-            !phoneDigits.equals(profileId, ignoreCase = true)
-        ) {
-            SupabaseClientManager.fetchProfileById(phoneDigits)
-        } else null
-        val profileByVerifiedPhone = if (cleanPhone.isNotBlank()) {
-            try {
-                SupabaseClientManager.fetchProfilesByE164Phones(listOf(cleanPhone)).firstOrNull()
-            } catch (e: Exception) {
-                android.util.Log.w("AuthSessionManager", "Verified-phone profile lookup notice: " + e.message)
-                null
-            }
-        } else null
-        val localProfileByPhone = try {
-            database.profileDao().getAllProfilesSync().firstOrNull { candidate ->
-                candidate.id.equals(profileId, ignoreCase = true) ||
-                    (phoneDigits.length >= 10 && candidate.id.filter(Char::isDigit) == phoneDigits) ||
-                    OnboardingStatePolicy.sameVerifiedPhone(candidate.phoneNumber, cleanPhone)
-            }
-        } catch (_: Exception) {
-            null
-        }
-        fun completeness(profile: ProfileEntity): Int =
-            (if (profile.name.isNotBlank() && !profile.name.equals("VibeSync User", true)) 4 else 0) +
-                (if (profile.bio.isNotBlank()) 2 else 0) +
-                (if (profile.occupation.isNotBlank()) 1 else 0) +
-                (if (profile.avatarUrl.isNotBlank()) 2 else 0) +
-                (if (profile.getPhotoList().isNotEmpty()) 1 else 0) +
-                (if (profile.id == profileId) 3 else 0)
-        val existingProfile = listOfNotNull(
-            profileById,
-            profileByPhoneId,
-            profileByVerifiedPhone,
-            localProfileByPhone
-        ).filter { OnboardingStatePolicy.isMeaningfulProfileName(it.name) }
-            .maxByOrNull { completeness(it) }
-        if (existingProfile != null) {
-            try {
-                database.profileDao().insertProfile(
-                    existingProfile.copy(
-                        phoneNumber = cleanPhone,
-                        avatarUrl = existingProfile.avatarUrl.ifBlank { avatarUrl.trim() }
-                    )
-                )
-            } catch (e: Exception) {
-                android.util.Log.w("AuthSessionManager", "Could not restore verified profile to Room: ${e.message}")
-            }
-        }
-
-        val restoredAvatar = existingProfile?.avatarUrl?.ifBlank { avatarUrl.trim() }
-            ?: avatarUrl.trim().ifBlank { current.avatarUrl }
-        val updated = current.copy(
-            userName = existingProfile?.name?.ifBlank { suggestedName } ?: suggestedName.ifBlank { current.userName },
-            userAge = existingProfile?.age ?: current.userAge,
-            userOccupation = existingProfile?.occupation?.ifBlank { current.userOccupation } ?: current.userOccupation,
-            userCity = existingProfile?.city?.ifBlank { current.userCity } ?: current.userCity,
-            userBio = existingProfile?.bio?.ifBlank { current.userBio } ?: current.userBio,
-            userGender = existingProfile?.gender?.ifBlank { current.userGender } ?: current.userGender,
-            userCountry = existingProfile?.country?.ifBlank { current.userCountry } ?: current.userCountry,
-            userCountryFlag = existingProfile?.countryFlag?.ifBlank { current.userCountryFlag } ?: current.userCountryFlag,
-            userPlace = existingProfile?.place?.ifBlank { current.userPlace } ?: current.userPlace,
-            userQualification = existingProfile?.qualification?.ifBlank { current.userQualification } ?: current.userQualification,
-            avatarUrl = restoredAvatar,
-            profilePhotos = existingProfile?.getPhotoList()?.joinToString("|||")?.ifBlank { current.profilePhotos } ?: current.profilePhotos,
-            isProfileCompleted = OnboardingStatePolicy.shouldTreatAsCompleted(
-                storedCompleted = current.isProfileCompleted,
-                storedPhone = current.verifiedMobileNumber,
-                verifiedPhone = cleanPhone,
-                secureSessionMarker = VibeSyncSessionManager.getSession(getApplication())?.hasCompletedOnboarding == true,
-                recoveredProfileName = existingProfile?.name
-            ),
+        val activeSession = VibeSyncSessionManager.getSession(getApplication())
+            ?: throw IllegalStateException("Verified VibeSync session is unavailable after Truecaller authentication.")
+        val basePrefs = current.copy(
+            userName = current.userName.ifBlank { suggestedName },
+            avatarUrl = current.avatarUrl.ifBlank { avatarUrl.trim() },
             isLoggedIn = true,
             verifiedMobileNumber = cleanPhone,
             isMobileVerified = true,
             loginTimestamp = System.currentTimeMillis()
+        )
+        val recoveryDecision = restoreAccountProfileState(
+            session = activeSession,
+            phone = cleanPhone,
+            basePrefs = basePrefs,
+            avatarUrl = avatarUrl,
+            suggestedName = suggestedName
+        )
+        val updated = repository.userPreferences.first() ?: basePrefs.copy(
+            isProfileCompleted = recoveryDecision.route ==
+                com.example.util.ReturningAccountRecoveryPolicy.Route.HOME
         )
         // The VibeSync session now exists, so register the current FCM token immediately.
         try {
@@ -3252,6 +3191,10 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             _truecallerError.value = "Truecaller verification response was incomplete. Please retry with Truecaller."
             return
         }
+        // Hide the login form during verification/recovery so registration never flashes early.
+        _returningAccountRecoveryRoute.value = null
+        _accountRecoveryError.value = null
+        _authState.value = AuthState.INITIALIZING
         viewModelScope.launch(Dispatchers.IO) {
             val result = com.example.util.TruecallerAuthGateway.verify(profile)
             result.onSuccess { identity ->
@@ -3276,20 +3219,26 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 } catch (e: Exception) {
                     android.util.Log.e(
                         "TruecallerAuthFlow",
-                        "Truecaller verification succeeded but local session finalization failed: ${e.message}",
-                        e
+                        "Truecaller verification succeeded but local session finalization failed: ${e.javaClass.simpleName}."
                     )
+                    _returningAccountRecoveryRoute.value = null
+                    _authState.value = AuthState.UNAUTHENTICATED
                     _truecallerError.value =
                         "Truecaller verified this account, but VibeSync could not save the secure local session. Check device storage and retry."
                 }
             }.onFailure { error ->
                 val detail = error.message?.trim().orEmpty()
-                android.util.Log.w("TruecallerAuthFlow", "Truecaller verification gateway failed: ${detail}", error)
-                // Keep HTTP status and connectivity/DNS diagnostics visible instead of replacing
-                // actionable gateway errors with the generic Truecaller banner.
+                // Errors may include backend diagnostics. Never copy authorization material or phone
+                // numbers to logs; the user-facing message is clipped and the session stays intact.
+                android.util.Log.w(
+                    "TruecallerAuthFlow",
+                    "Truecaller verification failed: ${error.javaClass.simpleName}."
+                )
                 _truecallerError.value = detail.take(500).ifBlank {
                     "Truecaller verification could not be completed. Check your connection and retry."
                 }
+                _returningAccountRecoveryRoute.value = null
+                _authState.value = AuthState.UNAUTHENTICATED
             }
         }
     }
