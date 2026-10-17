@@ -1746,6 +1746,17 @@ class SocialConnectRepository(
                                                 chatMessageDao.insertMessage(incomingMsg)
                                                 val existingMatch = matchDao.getMatchByIdSync(matchId)
                                                     ?: matchDao.getMatchByProfileId(senderId)
+                                                val incomingUnread = com.example.util.ConversationUnreadStatePolicy.isUnreadIncoming(
+                                                    isIncoming = true,
+                                                    isRead = incomingMsg.isRead,
+                                                    deliveryState = incomingMsg.deliveryState,
+                                                    isControlMessage = com.example.util.ConversationUnreadStatePolicy.isControlMessage(
+                                                        incomingMsg.mediaType, incomingMsg.text
+                                                    ),
+                                                    isDeleted = incomingMsg.isDeleted,
+                                                    isDeletedForMe = incomingMsg.isDeletedForMe,
+                                                    isDeletedForEveryone = incomingMsg.isDeletedForEveryone
+                                                )
                                                 if (existingMatch == null) {
                                                     matchDao.insertMatch(
                                                         MatchEntity(
@@ -1756,18 +1767,20 @@ class SocialConnectRepository(
                                                                 if (mediaType == "VOICE") "Voice message" else "Photo"
                                                             },
                                                             lastMessageTime = timestamp,
-                                                            hasUnread = true
+                                                            hasUnread = incomingUnread
                                                         )
                                                     )
                                                 } else if (timestamp >= existingMatch.lastMessageTime) {
-                                                    matchDao.updateLastMessage(
+                                                    matchDao.updateLastMessagePreservingUnread(
                                                         matchId = existingMatch.matchId,
                                                         text = text.ifBlank {
                                                             if (mediaType == "VOICE") "Voice message" else "Photo"
                                                         },
-                                                        timestamp = timestamp,
-                                                        hasUnread = true
+                                                        timestamp = timestamp
                                                     )
+                                                }
+                                                if (incomingUnread) {
+                                                    matchDao.setHasUnread(existingMatch?.matchId ?: matchId, true)
                                                 }
                                                 true
                                             }
