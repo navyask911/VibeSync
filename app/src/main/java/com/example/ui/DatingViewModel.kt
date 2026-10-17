@@ -2964,21 +2964,18 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
         var cachedRecovered = recovered
         if (profileComplete && recovered != null) {
             val canonical = recovered.copy(
-                id = session.profileId,
-                phoneNumber = verifiedPhone,
-                name = meaningfulRecoveredName ?: suggestedName.takeIf(String::isNotBlank) ?: basePrefs.userName,
-                avatarUrl = recovered.avatarUrl.ifBlank { avatarUrl.trim() }
+                name = meaningfulRecoveredName ?: suggestedName.takeIf(String::isNotBlank) ?: basePrefs.userName
             )
             try {
-                // If a verified phone-derived legacy row existed locally, migrate it to the active
-                // canonical identity in one Room transaction rather than leaving two self rows.
-                database.withTransaction {
-                    if (!recovered.id.equals(session.profileId, ignoreCase = true)) {
-                        database.profileDao().deleteProfile(recovered.id)
-                    }
-                    database.profileDao().insertProfile(canonical)
-                }
-                cachedRecovered = canonical
+                // This Room transaction is shared with the persistence integration test: legacy
+                // and canonical self rows collapse to one canonical primary key, repeatably.
+                cachedRecovered = com.example.util.ReturningAccountProfilePersistence.persistCanonicalProfile(
+                    database = database,
+                    recoveredProfile = canonical,
+                    canonicalProfileId = session.profileId,
+                    verifiedPhone = verifiedPhone,
+                    avatarFallbackUrl = avatarUrl
+                )
             } catch (failure: Throwable) {
                 android.util.Log.w(
                     "AuthSessionRecovery",
