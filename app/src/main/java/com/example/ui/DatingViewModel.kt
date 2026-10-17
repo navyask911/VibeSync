@@ -318,7 +318,9 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 )
                 // A Room timeout or temporary AndroidKeyStore error is not proof of revocation.
                 // Never sanitize the database or wipe session credentials on a startup exception.
-                val fallbackSession = restoredSession ?: runCatching {
+                // Re-read the live session: a confirmed backend 401 may have invalidated and
+                // cleared the cached credentials while profile recovery was running.
+                val fallbackSession = runCatching {
                     com.example.util.VibeSyncSessionManager.getSession(getApplication())
                 }.getOrNull()
                 if (fallbackSession != null) {
@@ -2926,6 +2928,17 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             reason = "profile_recovery_overall_timeout",
             failureReason = com.example.util.ProfileLookupResult.FailureReason.TIMEOUT
         )
+
+        val liveSession = VibeSyncSessionManager.getSession(context)
+        if (liveSession == null ||
+            !liveSession.profileId.equals(session.profileId, ignoreCase = true)
+        ) {
+            android.util.Log.w(
+                "AuthSessionRecovery",
+                "Recovery stopped because the verified session is no longer active."
+            )
+            throw IllegalStateException("Verified session is no longer active.")
+        }
 
         val recovered = decision.recoveredProfile
         val meaningfulRecoveredName = recovered?.name?.takeIf(OnboardingStatePolicy::isMeaningfulProfileName)
