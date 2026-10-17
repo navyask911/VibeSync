@@ -3538,11 +3538,25 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                 "user_${prefs?.id ?: 1}"
             }
 
-            // 1. Wipe local database user data and reset session
+            // Preserve completed onboarding by canonical profile identity before Room logout clears
+            // its marker. Existing releases stored this evidence only inside the encrypted session.
+            val app = getApplication<Application>()
+            val activeSession = VibeSyncSessionManager.getSession(app)
+            if (prefs?.isProfileCompleted == true && activeSession != null &&
+                OnboardingStatePolicy.sameVerifiedPhone(
+                    prefs.verifiedMobileNumber, activeSession.phoneNumber
+                )
+            ) {
+                VibeSyncSessionManager.markOnboardingCompleted(
+                    app, activeSession.profileId, completed = true
+                )
+            }
+
+            // 1. Clear account-scoped local activity but preserve the encrypted account-completion marker.
             try {
                 repository.logout()
             } catch (e: Exception) {
-                android.util.Log.w("DatingViewModel", "Repository logout exception: ${e.message}")
+                android.util.Log.w("DatingViewModel", "Repository logout exception: ${e.javaClass.simpleName}.")
             }
 
             // 2. Clear the local Truecaller-verified session

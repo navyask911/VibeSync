@@ -494,8 +494,14 @@ object VibeSyncSessionManager {
     }
 
     @Synchronized
-    fun clear(context: Context) {
+    fun clear(context: Context, preserveOnboardingMarker: Boolean = true) {
         val app = context.applicationContext
+        // On older installs the completion marker may exist only inside the encrypted session blob.
+        // Copy it to the independent encrypted marker store before deleting that blob on logout.
+        val activeBeforeClear = getSession(app)
+        if (preserveOnboardingMarker && activeBeforeClear?.hasCompletedOnboarding == true) {
+            persistOnboardingMarker(app, activeBeforeClear.profileId, completed = true)
+        }
         mutationVersion += 1L
         cachedSession = null
         appContext = app
@@ -748,7 +754,7 @@ object VibeSyncSessionManager {
             SupabaseClientManager.httpClient.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
                     getProfileId(context)?.let { persistOnboardingMarker(context, it, completed = false) }
-                    clear(context)
+                    clear(context, preserveOnboardingMarker = false)
                 }
                 response.isSuccessful
             }
