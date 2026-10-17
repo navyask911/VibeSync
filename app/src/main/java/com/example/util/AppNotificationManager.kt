@@ -37,6 +37,7 @@ import com.example.service.MuteConversationReceiver
 import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
@@ -197,7 +198,45 @@ object AppNotificationManager {
     private val conversationHistory = ConcurrentHashMap<String, MutableList<NotificationCompat.MessagingStyle.Message>>()
     /** Prevents concurrent FCM/WorkManager runs from posting the same message simultaneously. */
     private val notificationPostInFlightMessageIds = ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * Serialize attempts for one message ID. A second, awaited WorkManager attempt must not be
+     * terminally suppressed just because a legacy fire-and-forget caller started first. Wait for
+     * that attempt to finish, then re-check durable dedupe state; return false only so the worker
+     * can retry if the first attempt never releases its reservation.
+     */
+    internal suspend fun reserveNotificationPost(
+        messageId: String,
+        workRequestId: String,
+        maxWaitMillis: Long = INCOMING_NOTIFICATION_IN_FLIGHT_WAIT_MS
+    ): Boolean {
+        val safeMessageId = messageId.trim()
+        if (safeMessageId.isBlank()) return true
+        if (notificationPostInFlightMessageIds.add(safeMessageId)) return true
+
+        val safeWorkRequestId = workRequestId.trim().ifBlank { "<none>" }
+        var waitedMillis = 0L
+        while (waitedMillis < maxWaitMillis) {
+            val pause = minOf(100L, maxWaitMillis - waitedMillis).coerceAtLeast(1L)
+            delay(pause)
+            waitedMillis += pause
+            if (!notificationPostInFlightMessageIds.contains(safeMessageId) &&
+                notificationPostInFlightMessageIds.add(safeMessageId)
+            ) {
+                Log.i(TAG, "Awaited prior notification attempt before retrying: message_id=$safeMessageId, waited_ms=$waitedMillis, work_request_id=$safeWorkRequestId.")
+                return true
+            }
+        }
+        Log.w(TAG, "Concurrent notification attempt did not finish before timeout; returning retryable result: message_id=$safeMessageId, waited_ms=$waitedMillis, work_request_id=$safeWorkRequestId.")
+        return false
+    }
+
+    internal fun releaseNotificationPost(messageId: String) {
+        val safeMessageId = messageId.trim()
+        if (safeMessageId.isNotBlank()) notificationPostInFlightMessageIds.remove(safeMessageId)
+    }
     private const val INCOMING_NOTIFICATION_DEDUPE_WINDOW_MS = 7L * 24L * 60L * 60L * 1000L
+    private const val INCOMING_NOTIFICATION_IN_FLIGHT_WAIT_MS = 5_000L
     private val seenMessageIds = ConcurrentHashMap<String, MutableSet<String>>()
     /** Stable IDs aligned with the capped MessagingStyle list, allowing duplicate FCM wakeups to refresh text. */
     private val conversationMessageIds = ConcurrentHashMap<String, MutableList<String>>()
@@ -615,9 +654,11 @@ object AppNotificationManager {
         val safeMessageId = messageId.trim()
         val reservedMessageId = safeMessageId.takeIf { it.isNotBlank() }
         val safeWorkRequestId = workRequestId.trim().ifBlank { "<none>" }
-        if (reservedMessageId != null && !notificationPostInFlightMessageIds.add(reservedMessageId)) {
-            Log.i(TAG, "Incoming notification suppressed: reason=duplicate_in_flight message_id=${safeMessageId}, work_request_id=$safeWorkRequestId.")
-            return@withContext IncomingNotificationDispatchResult.Suppressed("duplicate_in_flight")
+        val ownsPostReservation = reservedMessageId?.let {
+            reserveNotificationPost(it, safeWorkRequestId)
+        } ?: true
+        if (!ownsPostReservation) {
+            return@withContext IncomingNotificationDispatchResult.RetryableFailure("duplicate_in_flight_timeout")
         }
 
             try {
@@ -816,7 +857,7 @@ object AppNotificationManager {
                 Log.w(TAG, "Unable to build notification: message_id=${safeMessageId.ifBlank { "<none>" }}, work_request_id=$safeWorkRequestId, reason=${failure.javaClass.simpleName}.")
                 return@withContext IncomingNotificationDispatchResult.RetryableFailure(failure.javaClass.simpleName)
             } finally {
-                reservedMessageId?.let(notificationPostInFlightMessageIds::remove)
+                if (ownsPostReservation) reservedMessageId?.let(::releaseNotificationPost)
             }
         }
 
