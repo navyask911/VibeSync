@@ -6,8 +6,13 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.database.DatingDatabase
 import com.example.data.model.MatchEntity
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -50,9 +55,20 @@ class ConversationUnreadStateRoomTest {
 
         assertTrue(database.matchDao().getAllMatches().first().single().hasUnread)
 
+        // Observe the initial unread state before waiting for Room's next invalidation emission.
+        val initialEmission = CompletableDeferred<Unit>()
+        val clearedState = async {
+            database.matchDao().getAllMatches()
+                .onEach { matches ->
+                    if (matches.singleOrNull()?.hasUnread == true) initialEmission.complete(Unit)
+                }
+                .drop(1)
+                .first { matches -> matches.singleOrNull()?.hasUnread == false }
+        }
+        withTimeout(2_000L) { initialEmission.await() }
         database.matchDao().setHasUnread(match.matchId, false)
 
-        val observed = database.matchDao().getAllMatches().first().single()
+        val observed = withTimeout(2_000L) { clearedState.await() }.single()
         assertFalse(observed.hasUnread)
         assertEquals(match.matchId, observed.matchId)
         assertNotNull(database.matchDao().getMatchByIdSync(match.matchId))
