@@ -601,6 +601,11 @@ class PendingMessageInboxSyncWorker(
                 if (peerProfileId.isBlank() || peerProfileId.equals(myProfileId, ignoreCase = true)) continue
                 val canonicalMatchId = SupabaseClientManager.canonicalChatMatchId(myProfileId, peerProfileId)
                 if (canonicalMatchId.isBlank()) continue
+                Log.i(
+                    TAG,
+                    "Inbox conversation selected: requested_match_id=${requestedMatchId.ifBlank { "<none>" }}, " +
+                        "match_id=${match.matchId}, work_request_id=$workRequestId."
+                )
                 val isTargetConversation = requestedMatchId.isBlank() ||
                     requestedMatchId.equals(match.matchId, ignoreCase = true) ||
                     requestedMatchId.equals(canonicalMatchId, ignoreCase = true)
@@ -616,7 +621,8 @@ class PendingMessageInboxSyncWorker(
                     partnerPhone = profile?.phoneNumber.orEmpty().ifBlank { peerProfileId },
                     targetMessageId = targetMessageId.takeIf { it.isNotBlank() && isTargetConversation },
                     // Notify from the durable Room target below. Realtime can purge the remote row first.
-                    notifyTargetMessage = false
+                    notifyTargetMessage = false,
+                    workRequestId = workRequestId
                 )
                 if (!result.complete) hadIncompleteConversation = true
                 syncedMessages += result.syncedCount
@@ -625,6 +631,11 @@ class PendingMessageInboxSyncWorker(
 
             if (targetMessageId.isNotBlank()) {
                 val target = chatDao.getMessageById(targetMessageId)
+                Log.i(
+                    TAG,
+                    "Room target lookup: message_id=$targetMessageId, found=${target != null}, " +
+                        "match_id=${target?.matchId ?: requestedMatchId.ifBlank { "<none>" }}, work_request_id=$workRequestId."
+                )
                 if (target == null) {
                     if (checkedConversations > 0 && !hadIncompleteConversation && ackFailures == 0) {
                         Log.i(TAG, "Notification suppressed: reason=target_row_not_found_after_complete_sync, message_id=$targetMessageId, work_request_id=$workRequestId.")
@@ -702,7 +713,11 @@ class PendingMessageInboxSyncWorker(
                         "LOCATION", "LIVE_LOCATION" -> "Location"
                         else -> "New message"
                     }
-                    Log.i(TAG, "Incoming notification eligible: message_id=${target.messageId}, persisted=true, decrypted=true, clear_barrier_passed=true.")
+                    Log.i(
+                        TAG,
+                        "Notification manager invoked: message_id=${target.messageId}, match_id=${target.matchId}, " +
+                            "persisted=true, decrypted=true, clear_barrier_passed=true, work_request_id=$workRequestId."
+                    )
                     val dispatchResult = com.example.util.AppNotificationManager.showMessageNotificationAndAwait(
                         context = applicationContext,
                         senderId = target.senderId,
