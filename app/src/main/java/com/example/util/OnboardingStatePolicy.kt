@@ -34,11 +34,22 @@ object OnboardingStatePolicy {
         val storedDigits = storedPhone.filter(Char::isDigit)
         val verifiedDigits = verifiedPhone.filter(Char::isDigit)
         if (storedDigits.isBlank() || verifiedDigits.isBlank()) return false
+
+        // Exact E.164 digits are equivalent regardless of formatting or a leading '+'.
         if (storedDigits == verifiedDigits) return true
-        // Permit country-code/formatting variants only when the full national number matches.
-        return storedDigits.length >= 10 &&
-            verifiedDigits.length >= 10 &&
-            storedDigits.takeLast(10) == verifiedDigits.takeLast(10)
+
+        // Only retain national-number aliases for a known Indian (+91) verified identity.
+        // Comparing arbitrary last-ten-digit suffixes lets +1 and +91 accounts collide.
+        val verifiedRaw = verifiedPhone.trim()
+        val isKnownIndianE164 =
+            verifiedRaw.startsWith("+91") && verifiedDigits.length == 12 ||
+                !verifiedRaw.startsWith("+") && verifiedDigits.startsWith("91") && verifiedDigits.length == 12
+        if (!isKnownIndianE164) return false
+
+        val national = verifiedDigits.takeLast(10)
+        return storedDigits == national ||
+            storedDigits == "0$national" ||
+            storedDigits == "91$national"
     }
 
     fun isMeaningfulProfileName(name: String): Boolean {
@@ -93,17 +104,25 @@ object OnboardingStatePolicy {
 
     /** Phone-derived IDs used by older VibeSync releases; values stay in memory and are never logged. */
     fun legacyPhoneProfileIdCandidates(phone: String): Set<String> {
-        val digits = phone.filter(Char::isDigit)
+        val raw = phone.trim()
+        val digits = raw.filter(Char::isDigit)
         if (digits.length < 10) return emptySet()
-        val national = digits.takeLast(10)
-        return listOf(
-            digits,
-            national,
-            "0$national",
-            "91$national",
-            "+$digits",
-            "+91$national"
-        ).map(String::trim).filter(String::isNotBlank).toSet()
+
+        // Always check the exact international representation. Add short/national aliases only
+        // when the verified identity is explicitly Indian; never probe a foreign account's suffix
+        // against Indian legacy IDs.
+        val candidates = linkedSetOf(digits, "+$digits")
+        val isKnownIndianE164 =
+            raw.startsWith("+91") && digits.length == 12 ||
+                !raw.startsWith("+") && digits.startsWith("91") && digits.length == 12
+        if (isKnownIndianE164) {
+            val national = digits.takeLast(10)
+            candidates += national
+            candidates += "0$national"
+            candidates += "91$national"
+            candidates += "+91$national"
+        }
+        return candidates
     }
 
     fun isLegacyPhoneProfileId(profileId: String, verifiedPhone: String): Boolean =

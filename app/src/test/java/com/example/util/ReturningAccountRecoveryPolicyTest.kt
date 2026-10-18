@@ -203,6 +203,29 @@ class ReturningAccountRecoveryPolicyTest {
     }
 
     @Test
+    fun internationalPhoneCannotRecoverAnIndianLegacyProfileByMatchingItsLastTenDigits() = runBlocking {
+        val foreignPhone = "+1 212 555 0123"
+        val indianLegacyProfile = profile(
+            id = "2125550123",
+            name = "Indian Legacy User",
+            phoneNumber = "+91 212 555 0123"
+        )
+        val result = ReturningAccountRecoveryPolicy.recover(
+            profileId = canonicalId,
+            verifiedPhone = foreignPhone,
+            persistedCompletionMarker = false,
+            roomCompletionMarkerMatchesPhone = false,
+            localProfiles = listOf(indianLegacyProfile),
+            canonicalSelfLookup = { ProfileLookupResult.NotFound },
+            legacyProfileLookup = { ProfileLookupResult.NotFound },
+            legacyPhoneIndexLookup = { ProfileLookupResult.Found(indianLegacyProfile) }
+        )
+        assertEquals(ReturningAccountRecoveryPolicy.Route.RETRY_RECOVERY, result.route)
+        assertEquals(ProfileLookupResult.FailureReason.INVALID_RESPONSE, result.failureReason)
+        assertFalse(result.legacyPhoneProfileIdentityMatched)
+    }
+
+    @Test
     fun routeHelperNeverTurnsLookupFailureIntoNewAccount() {
         assertEquals(
             ReturningAccountRecoveryPolicy.Route.RETRY_RECOVERY,

@@ -66,6 +66,30 @@ class OnboardingStatePolicyTest {
     }
 
     @Test
+    fun phoneIdentityDoesNotCollideAcrossCountryCodesWithSameLastTenDigits() {
+        assertFalse(
+            OnboardingStatePolicy.sameVerifiedPhone(
+                storedPhone = "+91 212 555 0123",
+                verifiedPhone = "+1 212 555 0123"
+            )
+        )
+        assertTrue(
+            OnboardingStatePolicy.sameVerifiedPhone(
+                storedPhone = "2125550123",
+                verifiedPhone = "+91 212 555 0123"
+            )
+        )
+    }
+
+    @Test
+    fun foreignPhoneDoesNotGenerateIndianLegacyAliases() {
+        val candidates = OnboardingStatePolicy.legacyPhoneProfileIdCandidates("+1 212 555 0123")
+        assertTrue(candidates.contains("12125550123"))
+        assertFalse(candidates.contains("2125550123"))
+        assertFalse(candidates.contains("+912125550123"))
+    }
+
+    @Test
     fun numericPhoneLikeValueCannotCountAsARecoveredProfileName() {
         assertFalse(OnboardingStatePolicy.isMeaningfulProfileName("9876543210"))
         assertFalse(OnboardingStatePolicy.isMeaningfulProfileName("+91 98765 43210"))
