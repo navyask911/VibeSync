@@ -147,6 +147,77 @@ class TinkDecryptRegressionTest {
     }
 
     @Test
+    fun invalidCiphertextBytesAreRejectedByHybridDecrypt() {
+        val recipientPrivate = newPrivateKeyset()
+        val invalidCiphertext = Base64.encodeToString(
+            "not a valid HPKE ciphertext".toByteArray(Charsets.UTF_8),
+            Base64.NO_WRAP
+        )
+        val failure = runCatching {
+            TinkCryptoManager.decryptWithPrivateKeysetOrThrow(
+                recipientPrivate, TinkCryptoManager.TINK_PREFIX + invalidCiphertext,
+                profileA, profileB, "invalid-ciphertext"
+            )
+        }.exceptionOrNull()
+        assertTrue("Invalid ciphertext must not be accepted", failure is GeneralSecurityException)
+    }
+
+    @Test
+    fun incorrectRecipientPrivateKeyIsRejected() {
+        val expectedRecipient = newPrivateKeyset()
+        val unrelatedRecipient = newPrivateKeyset()
+        val payload = TinkCryptoManager.encryptForRecipientOrThrow(
+            TinkCryptoManager.serializePublicKeysetJson(expectedRecipient),
+            "only the intended recipient can read this",
+            profileA, profileB, "wrong-recipient-key"
+        )
+        val failure = runCatching {
+            TinkCryptoManager.decryptWithPrivateKeysetOrThrow(
+                unrelatedRecipient, payload, profileA, profileB, "wrong-recipient-key"
+            )
+        }.exceptionOrNull()
+        assertTrue("A different private key must fail authentication", failure is GeneralSecurityException)
+    }
+
+    @Test
+    fun modifiedCiphertextAuthenticationTagIsRejected() {
+        val recipientPrivate = newPrivateKeyset()
+        val original = TinkCryptoManager.encryptForRecipientOrThrow(
+            TinkCryptoManager.serializePublicKeysetJson(recipientPrivate),
+            "authenticated payload", profileA, profileB, "tampered-tag"
+        )
+        val suffix = original.removePrefix(TinkCryptoManager.TINK_PREFIX).removePrefix("V2:")
+        val envelope = JSONObject(String(Base64.decode(suffix, Base64.NO_WRAP), Charsets.UTF_8))
+        val cipherBytes = Base64.decode(envelope.getString("ciphertext"), Base64.NO_WRAP)
+        cipherBytes[cipherBytes.lastIndex] = (cipherBytes.last().toInt() xor 0x01).toByte()
+        envelope.put("ciphertext", Base64.encodeToString(cipherBytes, Base64.NO_WRAP))
+        val tampered = TinkCryptoManager.TINK_PREFIX + "V2:" + Base64.encodeToString(
+            envelope.toString().toByteArray(Charsets.UTF_8), Base64.NO_WRAP
+        )
+        val failure = runCatching {
+            TinkCryptoManager.decryptWithPrivateKeysetOrThrow(
+                recipientPrivate, tampered, profileA, profileB, "tampered-tag"
+            )
+        }.exceptionOrNull()
+        assertTrue("Tampering with authenticated ciphertext must fail", failure is GeneralSecurityException)
+    }
+
+    @Test
+    fun malformedVersionTwoEnvelopeIsRejected() {
+        val recipientPrivate = newPrivateKeyset()
+        val malformedJson = """{"version":2,"recipient_key_id":"1","ciphertext":""}"""
+        val payload = TinkCryptoManager.TINK_PREFIX + "V2:" + Base64.encodeToString(
+            malformedJson.toByteArray(Charsets.UTF_8), Base64.NO_WRAP
+        )
+        val failure = runCatching {
+            TinkCryptoManager.decryptWithPrivateKeysetOrThrow(
+                recipientPrivate, payload, profileA, profileB, "malformed-envelope"
+            )
+        }.exceptionOrNull()
+        assertTrue("An empty ciphertext envelope must be rejected", failure is IllegalArgumentException)
+    }
+
+    @Test
     fun legacyRawBase64EnvelopeStillDecrypts() {
         val recipientPrivate = newPrivateKeyset()
         val publicHandle = CleartextKeysetHandle.read(
@@ -165,6 +236,40 @@ class TinkDecryptRegressionTest {
             body,
             TinkCryptoManager.decryptWithPrivateKeysetOrThrow(recipientPrivate, oldWireFormat, sender, recipient)
         )
+    }
+
+    @Test
+    fun missingHistoricalRecipientKeyIsDetectedWithoutRegeneratingAnExistingIdentity() {
+        val intendedRecipient = newPrivateKeyset()
+        val unrelatedRecipient = newPrivateKeyset()
+        val ciphertext = TinkCryptoManager.encryptForRecipientOrThrow(
+            TinkCryptoManager.serializePublicKeysetJson(intendedRecipient),
+            "historical-key payload",
+            profileA, profileB, "historical-key-preflight"
+        )
+
+        assertTrue(TinkCryptoManager.hasRetainedRecipientKey(intendedRecipient, ciphertext))
+        assertFalse(TinkCryptoManager.hasRetainedRecipientKey(unrelatedRecipient, ciphertext))
+        assertTrue(TinkCryptoManager.shouldRefuseIdentityRegeneration(
+            hasPersistedKeyset = false,
+            provisionedMarker = false,
+            previouslyPublishedIdentity = true
+        ))
+        assertTrue(TinkCryptoManager.shouldRefuseIdentityRegeneration(
+            hasPersistedKeyset = false,
+            provisionedMarker = true,
+            previouslyPublishedIdentity = false
+        ))
+        assertFalse(TinkCryptoManager.shouldRefuseIdentityRegeneration(
+            hasPersistedKeyset = false,
+            provisionedMarker = false,
+            previouslyPublishedIdentity = false
+        ))
+        assertFalse(TinkCryptoManager.shouldRefuseIdentityRegeneration(
+            hasPersistedKeyset = true,
+            provisionedMarker = true,
+            previouslyPublishedIdentity = true
+        ))
     }
 
     @Test
@@ -192,6 +297,50 @@ class TinkDecryptRegressionTest {
             "retained-key body",
             TinkCryptoManager.decryptWithPrivateKeysetOrThrow(rotated, oldCiphertext, profileA, profileB)
         )
+    }
+
+    @Test
+    fun observedHistoricalRecipientIdsRemainDecryptableAfterAppendOnlyRotation() {
+        // The IDs below appeared in physical-device diagnostics. These synthetic fixtures prove
+        // that Tink can decrypt old ciphertext when the original private key remains retained;
+        // they do NOT establish that these private keys exist on any real user's device.
+        val observedIds = listOf(1166471679L, 1964172783L, 3665388309L, 1123047892L)
+        observedIds.forEach { historicalId ->
+            val originalPrivate = fixedPrimaryId(newPrivateKeyset(), historicalId)
+            val originalPublic = TinkCryptoManager.serializePublicKeysetJson(originalPrivate)
+            val body = "historical payload for key $historicalId"
+            val payload = TinkCryptoManager.encryptForRecipientOrThrow(
+                originalPublic, body, profileA, profileB, "historical-id-$historicalId"
+            )
+            assertEquals(historicalId.toString(), TinkCryptoManager.getPublicKeyMetadata(originalPublic).keyId)
+
+            val manager = KeysetManager.withKeysetHandle(originalPrivate)
+            val previousIds = manager.keysetHandle.keysetInfo.keyInfoList.map {
+                TinkCryptoManager.unsignedTinkKeyId(it.keyId)
+            }.toSet()
+            manager.add(template)
+            val promotedId = manager.keysetHandle.keysetInfo.keyInfoList.first {
+                TinkCryptoManager.unsignedTinkKeyId(it.keyId) !in previousIds
+            }
+            manager.setPrimary(promotedId.keyId)
+            val rotated = manager.keysetHandle
+
+            val retainedIds = rotated.keysetInfo.keyInfoList
+                .filter { it.status.name == "ENABLED" }
+                .map { TinkCryptoManager.unsignedTinkKeyId(it.keyId) }
+                .toSet()
+            assertTrue("Historical key $historicalId was dropped during rotation.", retainedIds.containsAll(previousIds))
+            assertTrue(
+                "Ciphertext key $historicalId is not available in the retained keyset.",
+                TinkCryptoManager.hasRetainedRecipientKey(rotated, payload)
+            )
+            assertEquals(
+                body,
+                TinkCryptoManager.decryptWithPrivateKeysetOrThrow(
+                    rotated, payload, profileA, profileB, "historical-id-$historicalId"
+                )
+            )
+        }
     }
 
     @Test

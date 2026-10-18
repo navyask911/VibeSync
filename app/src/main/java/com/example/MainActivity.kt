@@ -1,8 +1,10 @@
 package com.example
 
 import android.content.Intent
+import android.provider.Settings
 import android.content.SharedPreferences
 import android.os.Bundle
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import android.view.WindowManager
@@ -48,6 +50,7 @@ import com.example.util.VibeSyncSessionManager
 
 class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
   private lateinit var truecallerActivityResultLauncher: ActivityResultLauncher<Intent>
+  private var restoreChatRouteAfterProcessDeath = false
   private var privacyPreferences: SharedPreferences? = null
   private val isAppLocked = mutableStateOf(false)
   private val appLockMessage = mutableStateOf<String?>(null)
@@ -78,6 +81,10 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    val restoredProcessMarker = savedInstanceState?.getString(KEY_PROCESS_INSTANCE_ID)
+    restoreChatRouteAfterProcessDeath =
+      !restoredProcessMarker.isNullOrBlank() && restoredProcessMarker != AppProcessIdentity.id
+
 
     privacyPreferences = getSharedPreferences(BiometricAuthManager.PREFS_NAME, MODE_PRIVATE)
     privacyPreferences?.registerOnSharedPreferenceChangeListener(privacyPreferencesListener)
@@ -173,7 +180,7 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
               message = appLockMessage.value,
               onUnlock = { requestAppUnlock(fromUser = true) }
             )
-            databaseReady -> DatingAppRoot()
+            databaseReady -> DatingAppRoot(restoreChatRouteAfterProcessDeath = restoreChatRouteAfterProcessDeath)
             else -> DatabaseRecoveryScreen(
               message = databaseFailure ?: "Secure local storage needs recovery.",
               onRetry = { retryCount += 1 }
@@ -182,6 +189,11 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
         }
       }
     }
+  }
+
+  override fun onSaveInstanceState(outState: Bundle) {
+    outState.putString(KEY_PROCESS_INSTANCE_ID, AppProcessIdentity.id)
+    super.onSaveInstanceState(outState)
   }
 
   override fun onNewIntent(intent: Intent) {
@@ -209,6 +221,14 @@ class MainActivity : FragmentActivity(), PaymentResultWithDataListener {
     }
     safeInit("foreground notification state") {
       AppNotificationManager.setAppForegroundState(true)
+    }
+    safeInit("authenticated FCM token refresh") {
+      if (VibeSyncSessionManager.getSession(applicationContext) != null) {
+        // Token registration and silent/background message handling never depend on notification display permission.
+        com.example.service.AppFirebaseMessagingService.refreshAndRegisterToken(applicationContext)
+        // Do not interrupt resume with OEM-specific settings advice. FCM token refresh and
+        // silent/data-message processing are independent of notification display permission.
+      }
     }
   }
 
@@ -383,4 +403,10 @@ private fun DatabaseRecoveryScreen(
       }
     }
   }
+}
+
+private const val KEY_PROCESS_INSTANCE_ID = "vibesync_process_instance_id"
+
+private object AppProcessIdentity {
+  val id: String = java.util.UUID.randomUUID().toString()
 }

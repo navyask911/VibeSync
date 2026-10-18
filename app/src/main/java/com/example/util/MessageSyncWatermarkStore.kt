@@ -27,6 +27,9 @@ object MessageSyncWatermarkStore {
 
     private fun timestampKey(localMatchId: String): String = stableKey(localMatchId)
 
+    /** Stable Room key exposed to the explicit Clear Chat DAO, not to remote payloads. */
+    internal fun databaseKey(localMatchId: String): String = timestampKey(localMatchId)
+
     suspend fun read(context: Context, localMatchId: String): Long = withContext(Dispatchers.IO) {
         removeLegacyPlaintextStore(context)
         DatingDatabase.getDatabase(context.applicationContext)

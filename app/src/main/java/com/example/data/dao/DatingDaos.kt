@@ -153,6 +153,13 @@ interface MatchDao {
     @Query("UPDATE matches SET lastMessage = :text, lastMessageTime = :timestamp, hasUnread = :hasUnread WHERE matchId = :matchId")
     suspend fun updateLastMessage(matchId: String, text: String, timestamp: Long, hasUnread: Boolean)
 
+    /** Update a preview without replacing the conversation's independently-derived unread state. */
+    @Query("UPDATE matches SET lastMessage = :text, lastMessageTime = :timestamp WHERE matchId = :matchId")
+    suspend fun updateLastMessagePreservingUnread(matchId: String, text: String, timestamp: Long)
+
+    @Query("UPDATE matches SET hasUnread = :hasUnread WHERE matchId = :matchId")
+    suspend fun setHasUnread(matchId: String, hasUnread: Boolean)
+
     @Query("UPDATE matches SET hasUnread = 0 WHERE matchId = :matchId")
     suspend fun markAsRead(matchId: String)
 
@@ -214,10 +221,10 @@ interface ChatMessageDao {
     @Query("UPDATE chat_messages SET isDelivered = 1, deliveryAckPending = 0, deliveredAt = CASE WHEN deliveredAt = 0 THEN :deliveredAt ELSE deliveredAt END, deliveryState = CASE WHEN deliveryState = 'READ' THEN 'READ' ELSE 'DELIVERED' END WHERE messageId = :messageId")
     suspend fun markMessageAsDelivered(messageId: String, deliveredAt: Long = System.currentTimeMillis())
 
-    @Query("UPDATE chat_messages SET deliveryState = 'FAILED', lastSyncError = 'Recipient could not decrypt this message', lastSyncAttemptAt = :failedAt WHERE messageId = :messageId AND senderId = 'USER'")
+    @Query("UPDATE chat_messages SET deliveryAckPending = 0, deliveryState = 'FAILED', lastSyncError = 'Recipient could not decrypt this message', lastSyncAttemptAt = :failedAt WHERE messageId = :messageId AND senderId = 'USER' AND deliveryState NOT IN ('DELIVERED', 'READ')")
     suspend fun markMessageDeliveryFailed(messageId: String, failedAt: Long = System.currentTimeMillis())
 
-    @Query("UPDATE chat_messages SET deliveryState = 'PENDING', isDelivered = 0, isRead = 0, deliveredAt = 0, readAt = 0, lastSyncError = '', lastSyncAttemptAt = 0 WHERE messageId = :messageId AND senderId = 'USER'")
+    @Query("UPDATE chat_messages SET deliveryState = 'PENDING', isDelivered = 0, isRead = 0, deliveredAt = 0, readAt = 0, lastSyncError = '', lastSyncAttemptAt = 0 WHERE messageId = :messageId AND senderId = 'USER' AND deliveryState = 'FAILED'")
     suspend fun resetFailedMessageForRetry(messageId: String)
 
     @Query("SELECT * FROM chat_messages WHERE matchId = :matchId AND senderId != 'USER' AND deliveryAckPending = 1 ORDER BY timestamp ASC")

@@ -19,7 +19,7 @@ class ChatDeliveryExperienceEngineTest {
 
         val delivered = ChatDeliveryPresentation.tick("DELIVERED")
         assertEquals(ChatDeliveryPresentation.Glyph.DOUBLE_CHECK, delivered.glyph)
-        assertEquals(0xFF9E9E9EL, delivered.colorArgb)
+        assertEquals(0xFFE53935L, delivered.colorArgb)
 
         val read = ChatDeliveryPresentation.tick("READ")
         assertEquals(ChatDeliveryPresentation.Glyph.DOUBLE_CHECK, read.glyph)

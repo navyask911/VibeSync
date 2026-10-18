@@ -13,4 +13,7 @@ interface MessageSyncWatermarkDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(watermark: MessageSyncWatermarkEntity)
+
+    @Query("DELETE FROM message_sync_watermarks WHERE localMatchId = :localMatchId")
+    suspend fun delete(localMatchId: String): Int
 }

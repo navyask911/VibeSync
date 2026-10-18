@@ -377,7 +377,7 @@ object SupabaseBackendManager {
                             val record = data.optJSONObject("record") ?: data.optJSONObject("new") ?: JSONObject()
                             if (data.optString("schema") == "public" &&
                                 data.optString("table") == "chat_message_receipts" &&
-                                changeType == "INSERT"
+                                changeType in setOf("INSERT", "UPDATE")
                             ) {
                                 val messageId = record.optString("message_id").trim()
                                 val matchId = record.optString("match_id").trim()
@@ -606,6 +606,13 @@ object SupabaseBackendManager {
                         })
                         put(JSONObject().apply {
                             put("event", "INSERT")
+                            put("schema", "public")
+                            put("table", "chat_message_receipts")
+                            val activeMatch = realtimeRequestedMatchId?.trim().orEmpty()
+                            if (activeMatch.isNotBlank()) put("filter", "match_id=eq.$activeMatch")
+                        })
+                        put(JSONObject().apply {
+                            put("event", "UPDATE")
                             put("schema", "public")
                             put("table", "chat_message_receipts")
                             val activeMatch = realtimeRequestedMatchId?.trim().orEmpty()

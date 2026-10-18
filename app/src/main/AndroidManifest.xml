@@ -127,7 +127,10 @@
             android:value="true" />
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
-            android:value="vibesync_messages_channel" />
+            android:value="@string/chat_notification_channel_id" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_chat" />
 
         <service
             android:name=".service.AppFirebaseMessagingService"

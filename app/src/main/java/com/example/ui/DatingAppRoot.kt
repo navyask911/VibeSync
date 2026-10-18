@@ -94,7 +94,6 @@ import com.example.ui.components.FriendsListDialog
 import com.example.ui.components.FriendshipRequestDialog
 import com.example.ui.components.GoogleCloudBackupSetupDialog
 import com.example.ui.components.InviteToVibeSyncDialog
-import com.example.ui.components.MandatoryPermissionsDialog
 import com.example.ui.components.MatchCelebrationDialog
 import com.example.ui.components.MpinSetupDialog
 import com.example.ui.components.NetworkSyncStatusBanner
@@ -158,10 +157,46 @@ enum class DatingTab(val title: String) {
     PROFILE("Profile")
 }
 
+@Composable
+private fun ReturningAccountRecoveryRetryScreen(
+    errorMessage: String?,
+    onRetry: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(28.dp),
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "Your VibeSync account is verified",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = errorMessage
+                    ?: "We are checking your saved profile. Your account will not be treated as new until recovery is confirmed.",
+                modifier = Modifier.padding(top = 12.dp, bottom = 20.dp),
+                style = MaterialTheme.typography.bodyLarge
+            )
+            androidx.compose.material3.Button(
+                onClick = onRetry,
+                modifier = Modifier.testTag("returning_account_recovery_retry")
+            ) {
+                Text("Retry account recovery")
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DatingAppRoot(
-    viewModel: DatingViewModel = viewModel()
+    viewModel: DatingViewModel = viewModel(),
+    restoreChatRouteAfterProcessDeath: Boolean = false
 ) {
     val pagerState = rememberPagerState(initialPage = 0, pageCount = { 4 })
     val coroutineScope = rememberCoroutineScope()
@@ -175,6 +210,8 @@ fun DatingAppRoot(
     val isSessionChecking by viewModel.isSessionChecking.collectAsStateWithLifecycle()
     val authState by viewModel.authState.collectAsStateWithLifecycle()
     val truecallerError by viewModel.truecallerError.collectAsStateWithLifecycle()
+    val returningAccountRecoveryRoute by viewModel.returningAccountRecoveryRoute.collectAsStateWithLifecycle()
+    val accountRecoveryError by viewModel.accountRecoveryError.collectAsStateWithLifecycle()
 
     val activeMatchDialog by viewModel.activeMatchDialog.collectAsStateWithLifecycle()
     val activeChat by viewModel.activeChat.collectAsStateWithLifecycle()
@@ -185,6 +222,14 @@ fun DatingAppRoot(
 
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     val syncContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val rootContext = LocalContext.current
+
+    LaunchedEffect(isLoggedIn, authState) {
+        if (isLoggedIn && authState == AuthState.AUTHENTICATED) {
+            // FCM token lifecycle is independent of the optional visible-notification permission.
+            com.example.service.AppFirebaseMessagingService.refreshAndRegisterToken(rootContext)
+        }
+    }
 
     LaunchedEffect(activeChat?.first?.matchId) {
         activeChat?.first?.matchId?.let { matchId ->
@@ -192,20 +237,52 @@ fun DatingAppRoot(
                 .onFailure { android.util.Log.w("VibeSyncNavigation", "Could not persist chat route.") }
         }
     }
-    LaunchedEffect(isLoggedIn, isSessionChecking, authState, matches, allProfiles) {
+    LaunchedEffect(restoreChatRouteAfterProcessDeath, isLoggedIn, isSessionChecking, authState, matches, allProfiles) {
         if (isSessionChecking || authState == AuthState.INITIALIZING) return@LaunchedEffect
         if (!isLoggedIn || authState != AuthState.AUTHENTICATED) {
             runCatching { com.example.util.LastActiveRouteStore.clear(syncContext) }
             return@LaunchedEffect
         }
-        val savedMatchId = runCatching {
+        if (!restoreChatRouteAfterProcessDeath) return@LaunchedEffect
+
+        val routeResult = runCatching {
             com.example.util.LastActiveRouteStore.readRoute(syncContext)
-                ?.let(com.example.util.LastActiveRoutePolicy::parseChatMatchId)
-        }.getOrNull() ?: return@LaunchedEffect
-        val savedMatch = matches.firstOrNull { it.matchId.equals(savedMatchId, ignoreCase = true) }
-            ?: return@LaunchedEffect
+        }
+        if (routeResult.isFailure) {
+            runCatching { com.example.util.LastActiveRouteStore.clear(syncContext) }
+            return@LaunchedEffect
+        }
+        val storedRoute = routeResult.getOrNull() ?: return@LaunchedEffect
+        val savedMatchId = com.example.util.LastActiveRoutePolicy.parseChatMatchId(storedRoute)
+        if (savedMatchId.isNullOrBlank()) {
+            runCatching { com.example.util.LastActiveRouteStore.clear(syncContext) }
+            return@LaunchedEffect
+        }
+
+        // Validate against Room directly: the Compose StateFlow may still have its initial empty
+        // value immediately after process recreation even when this conversation exists on-device.
+        val savedMatch = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                com.example.data.database.DatingDatabase.getDatabase(syncContext)
+                    .matchDao().getMatchByIdSync(savedMatchId)
+            }.getOrNull()
+        }
+        if (savedMatch == null || !savedMatch.matchId.equals(savedMatchId, ignoreCase = true)) {
+            runCatching { com.example.util.LastActiveRouteStore.clear(syncContext) }
+            return@LaunchedEffect
+        }
         val savedProfile = allProfiles.firstOrNull { it.id.equals(savedMatch.profileId, ignoreCase = true) }
-            ?: viewModel.getProfile(savedMatch.profileId) ?: return@LaunchedEffect
+            ?: viewModel.getProfile(savedMatch.profileId)
+            ?: kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    com.example.data.database.DatingDatabase.getDatabase(syncContext)
+                        .profileDao().getProfileByIdSync(savedMatch.profileId)
+                }.getOrNull()
+            }
+        if (savedProfile == null || !savedProfile.id.equals(savedMatch.profileId, ignoreCase = true)) {
+            runCatching { com.example.util.LastActiveRouteStore.clear(syncContext) }
+            return@LaunchedEffect
+        }
         if (viewModel.activeChat.value == null) viewModel.openChat(savedMatch, savedProfile)
     }
 
@@ -255,7 +332,6 @@ fun DatingAppRoot(
     // Zero Profile Duplication & Recovery States
     val duplicateProfileDetected by viewModel.duplicateProfileDetected.collectAsStateWithLifecycle()
     val showAccountRecoveryDialog by viewModel.showAccountRecoveryDialog.collectAsStateWithLifecycle()
-    val showMandatoryPermissionsDialog by viewModel.showMandatoryPermissionsDialog.collectAsStateWithLifecycle()
     val showPostRegistrationBackupDialog by viewModel.showPostRegistrationBackupDialog.collectAsStateWithLifecycle()
     val detectedDriveBackup by viewModel.detectedDriveBackup.collectAsStateWithLifecycle()
     val showRestorePromptDialog by viewModel.showRestorePromptDialog.collectAsStateWithLifecycle()
@@ -299,46 +375,90 @@ fun DatingAppRoot(
         }
     }
 
-    val systemPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        contract = androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        val allGranted = results.values.all { it }
-        viewModel.onPermissionsResult(allGranted)
-        if (results[android.Manifest.permission.READ_CONTACTS] == true) {
-            com.example.util.ContactResolver.reload(context)
-            viewModel.loadPhonebookContacts()
-        }
-    }
+    // Contacts are requested only from the registration privacy disclosure. Each other
+    // protected feature requests its own permission when the user invokes that feature.
 
     // Initialize ContactResolver on startup
     LaunchedEffect(Unit) {
         com.example.util.ContactResolver.init(context)
     }
 
+    // Android 13+ notification permission is a separate, optional onboarding step. Token
+    // registration and silent/data-only message processing do not depend on this display permission.
+    val notificationPermissionPrefs = remember(context) {
+        context.getSharedPreferences("vibesync_notification_permission_prompt", android.content.Context.MODE_PRIVATE)
+    }
+    var showNotificationPermissionExplanation by remember { mutableStateOf(false) }
+    val notificationPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        notificationPermissionPrefs.edit().putBoolean("requested", true).commit()
+        if (granted) {
+            runCatching { com.example.util.AppNotificationManager.initChannels(context.applicationContext) }
+        } else {
+            coroutineScope.launch {
+                snackbarHostState.showSnackbar(
+                    "Notifications are off. VibeSync can still receive messages; enable notifications in system Settings when convenient."
+                )
+            }
+        }
+    }
+
+    LaunchedEffect(preferences?.isLoggedIn, preferences?.isProfileCompleted) {
+        val apiLevel = android.os.Build.VERSION.SDK_INT
+        val notificationGranted = if (apiLevel >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.POST_NOTIFICATIONS
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        } else true
+        if (com.example.util.NotificationPermissionPolicy.shouldPrompt(
+                apiLevel = apiLevel,
+                isLoggedIn = preferences?.isLoggedIn == true,
+                isProfileCompleted = preferences?.isProfileCompleted == true,
+                permissionGranted = notificationGranted,
+                alreadyRequested = notificationPermissionPrefs.getBoolean("requested", false)
+            )
+        ) {
+            showNotificationPermissionExplanation = true
+        }
+    }
+
+    if (showNotificationPermissionExplanation) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = {
+                notificationPermissionPrefs.edit().putBoolean("requested", true).commit()
+                showNotificationPermissionExplanation = false
+            },
+            title = { androidx.compose.material3.Text("Enable notifications?") },
+            text = {
+                androidx.compose.material3.Text(
+                    "Allow notifications to see incoming message alerts when VibeSync is in the background. " +
+                        "You can keep using VibeSync and receiving messages if you decline."
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    notificationPermissionPrefs.edit().putBoolean("requested", true).commit()
+                    showNotificationPermissionExplanation = false
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                        notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }) { androidx.compose.material3.Text("Continue") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    notificationPermissionPrefs.edit().putBoolean("requested", true).commit()
+                    showNotificationPermissionExplanation = false
+                }) { androidx.compose.material3.Text("Not now") }
+            }
+        )
+    }
+
     // Listen for toast/snackbar events
     LaunchedEffect(Unit) {
         viewModel.toastMessage.collect { msg ->
             snackbarHostState.showSnackbar(msg)
-        }
-    }
-
-    // Auto-prompt mandatory permissions only after login and profile creation are completed
-    LaunchedEffect(preferences?.isLoggedIn, preferences?.isProfileCompleted, preferences?.permissionsGranted) {
-        if (preferences?.isLoggedIn == true && preferences?.isProfileCompleted == true && preferences?.permissionsGranted != true) {
-            val permissionsToRequest = mutableListOf(
-                android.Manifest.permission.ACCESS_FINE_LOCATION,
-                android.Manifest.permission.ACCESS_COARSE_LOCATION,
-                android.Manifest.permission.CAMERA,
-                android.Manifest.permission.READ_CONTACTS
-            )
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                permissionsToRequest.add(android.Manifest.permission.POST_NOTIFICATIONS)
-            }
-            try {
-                systemPermissionLauncher.launch(permissionsToRequest.toTypedArray())
-            } catch (e: Exception) {
-                viewModel.onPermissionsResult(true)
-            }
         }
     }
 
@@ -425,7 +545,6 @@ fun DatingAppRoot(
             pendingRequestToReview != null ||
             outgoingFriendRequestNotification != null ||
             showFriendsListDialog ||
-            showMandatoryPermissionsDialog ||
             showPostRegistrationBackupDialog ||
             showMpinSetupPrompt ||
             showPhonebookScreen ||
@@ -501,9 +620,6 @@ fun DatingAppRoot(
         viewModel.dismissPostRegistrationBackupDialog()
     }
 
-    BackHandler(enabled = showMandatoryPermissionsDialog) {
-        viewModel.dismissMandatoryPermissionsDialog()
-    }
 
     BackHandler(enabled = showFriendsListDialog) {
         viewModel.closeFriendsList()
@@ -552,15 +668,32 @@ fun DatingAppRoot(
             truecallerError = truecallerError,
             onTruecallerRetry = { viewModel.clearTruecallerError() }
         )
-    } else if (authState == AuthState.AUTHENTICATED && preferences == null) {
-        // Wait for Room profile state after session restoration; never flash registration on a null emission.
+    } else if (
+        authState == AuthState.AUTHENTICATED &&
+        returningAccountRecoveryRoute == com.example.util.ReturningAccountRecoveryPolicy.Route.RETRY_RECOVERY
+    ) {
+        ReturningAccountRecoveryRetryScreen(
+            errorMessage = accountRecoveryError,
+            onRetry = { viewModel.retryReturningAccountRecovery() }
+        )
+    } else if (
+        authState == AuthState.AUTHENTICATED &&
+        (preferences == null || returningAccountRecoveryRoute == null)
+    ) {
+        // Keep the splash visible until typed profile recovery has a conclusive routing decision.
         VibeSyncSplashScreen()
-    } else if (!isProfileCompleted) {
+    } else if (
+        returningAccountRecoveryRoute == com.example.util.ReturningAccountRecoveryPolicy.Route.REGISTRATION &&
+        !isProfileCompleted
+    ) {
         RegistrationProfileScreen(
             initialName = preferences?.userName ?: "",
             initialOccupation = preferences?.userOccupation ?: "",
             initialAvatarUrl = preferences?.avatarUrl ?: "",
             onBackToLogin = { viewModel.logout() },
+            onContactsPermissionGranted = { reportResult ->
+                viewModel.loadPhonebookContacts(forceRefresh = false, forceNetwork = true, onResult = reportResult)
+            },
             onCompleteRegistration = { name, age, dob, gender, interestedIn, goal, country, countryFlag, place, qualification, occupation, bio, interests, maritalStatus, isOpenForDating, address, city, coords, avatar, photos, pendingAvatar ->
                 val (parsedLat, parsedLon) = try {
                     val parts = coords.split(",")
@@ -596,6 +729,9 @@ fun DatingAppRoot(
                 )
             }
         )
+    } else if (!isProfileCompleted) {
+        // A completed recovery decision must be explicit before registration can appear.
+        VibeSyncSplashScreen()
     } else if (isMpinSet && !isMpinUnlocked) {
         MpinScreen(
             isMpinSet = isMpinSet,
@@ -784,7 +920,55 @@ fun DatingAppRoot(
                 onStartCall = { isVideo ->
                     viewModel.startCall(profile, isVideo)
                 },
-                onBack = { viewModel.closeChat() },
+                onBack = {
+                    viewModel.closeChat()
+                    coroutineScope.launch {
+                        runCatching { com.example.util.LastActiveRouteStore.clear(syncContext) }
+                    }
+                },
+                onClearChat = { alsoDeleteMedia, onFinished ->
+                    coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        val database = com.example.data.database.DatingDatabase.getDatabase(context)
+                        val outcome = runCatching {
+                            com.example.util.ConversationClearCoordinator.clear(
+                                context = context,
+                                database = database,
+                                matchId = match.matchId,
+                                deleteMedia = alsoDeleteMedia
+                            )
+                        }.getOrElse { failure ->
+                            android.util.Log.e("VibeSyncClearChat", "Clear Chat operation failed", failure)
+                            com.example.util.ConversationClearOutcome(
+                                finished = false,
+                                barrierStarted = false,
+                                detail = failure.javaClass.simpleName
+                            )
+                        }
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            val message = when {
+                                outcome.finished && outcome.failedMediaFiles > 0 ->
+                                    "Chat history cleared on this phone; some media files could not be removed."
+                                outcome.finished -> "Chat history cleared on this phone."
+                                outcome.barrierStarted && outcome.failedMediaFiles > 0 ->
+                                    "Chat history is cleared. Media cleanup is pending; sending remains paused."
+                                outcome.barrierStarted ->
+                                    "Chat history is cleared locally. Cleanup is pending; sending remains paused."
+                                else -> "Could not clear this chat. Try again."
+                            }
+                            Toast.makeText(
+                                context,
+                                message,
+                                if (outcome.finished) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
+                            ).show()
+                            // Keep the composer blocked while a durable clear barrier remains active.
+                            onFinished(
+                                outcome.finished,
+                                outcome.failedMediaFiles,
+                                outcome.barrierStarted && !outcome.finished
+                            )
+                        }
+                    }
+                },
                 onViewProfile = { viewModel.openProfileDetail(profile) },
                 onStartRealtime = { viewModel.startChatRealtime(match, profile) },
                 onStopRealtime = { viewModel.stopChatRealtime() },

@@ -32,6 +32,8 @@ import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Sync
@@ -1683,15 +1685,24 @@ private fun VibeSyncConversationItem(
             val isOutgoing = latestMessage?.isSentByMe == true || match.lastMessage.startsWith("You: ")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (isOutgoing && latestMessage != null) {
-                    val (tickIcon, tickTint) = when {
-                        latestMessage.isRead -> Icons.Default.DoneAll to Color(0xFF2E7D32)
-                        latestMessage.isDelivered -> Icons.Default.DoneAll to Color(0xFF8B0000)
-                        else -> Icons.Default.Check to Color(0xFFE53935)
+                    val effectiveTick = com.example.util.ChatDeliveryPresentation.tick(
+                        com.example.util.ChatDeliveryPresentation.effectiveState(
+                            persistedState = latestMessage.deliveryState,
+                            optimisticState = null,
+                            isDelivered = latestMessage.isDelivered,
+                            isRead = latestMessage.isRead
+                        ).name
+                    )
+                    val tickIcon = when (effectiveTick.glyph) {
+                        com.example.util.ChatDeliveryPresentation.Glyph.CLOCK -> Icons.Default.Schedule
+                        com.example.util.ChatDeliveryPresentation.Glyph.SINGLE_CHECK -> Icons.Default.Check
+                        com.example.util.ChatDeliveryPresentation.Glyph.DOUBLE_CHECK -> Icons.Default.DoneAll
+                        com.example.util.ChatDeliveryPresentation.Glyph.EXCLAMATION -> Icons.Default.ErrorOutline
                     }
                     Icon(
                         imageVector = tickIcon,
-                        contentDescription = if (latestMessage.isRead) "Read" else if (latestMessage.isDelivered) "Delivered" else "Sent",
-                        tint = tickTint,
+                        contentDescription = effectiveTick.contentDescription,
+                        tint = Color(effectiveTick.colorArgb),
                         modifier = Modifier.size(15.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))

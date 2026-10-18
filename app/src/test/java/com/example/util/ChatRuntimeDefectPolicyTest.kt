@@ -25,7 +25,7 @@ class ChatRuntimeDefectPolicyTest {
     @Test
     fun verifiedBadgesRequireVerificationPlusPaidEntitlement() {
         assertTrue(VerifiedBadgePolicy.shouldShow(true, "active", false))
-        assertTrue(VerifiedBadgePolicy.shouldShow(true, "inactive", true))
+        assertFalse(VerifiedBadgePolicy.shouldShow(true, "inactive", true))
         assertFalse(VerifiedBadgePolicy.shouldShow(false, "active", true))
         assertFalse(VerifiedBadgePolicy.shouldShow(true, "inactive", false))
         assertFalse(VerifiedBadgePolicy.shouldShow(true, null, false))

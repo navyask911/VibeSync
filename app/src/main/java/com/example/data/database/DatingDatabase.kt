@@ -7,6 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.dao.ChatMessageDao
+import com.example.data.dao.ConversationClearDao
 import com.example.data.dao.ExpiredChatMessageDao
 import com.example.data.dao.FriendshipRequestDao
 import com.example.data.dao.MatchDao
@@ -58,6 +59,8 @@ import com.example.data.model.LocalBusinessAnalyticsEntity
 import com.example.data.model.LocalBusinessAnalyticsEventEntity
 import com.example.data.model.ApiCredentialRequestEntity
 import com.example.data.model.ConversationNotificationPreferenceEntity
+import com.example.data.model.ConversationClearGuardEntity
+import com.example.data.model.ConversationClearCleanupItemEntity
 import com.example.data.dao.ConversationNotificationPreferencesDao
 
 @Database(
@@ -88,9 +91,11 @@ import com.example.data.dao.ConversationNotificationPreferencesDao
         LocalBusinessAnalyticsEntity::class,
         LocalBusinessAnalyticsEventEntity::class,
         ApiCredentialRequestEntity::class,
-        ConversationNotificationPreferenceEntity::class
+        ConversationNotificationPreferenceEntity::class,
+        ConversationClearGuardEntity::class,
+        ConversationClearCleanupItemEntity::class
     ],
-    version = 64,
+    version = 66,
     exportSchema = false
 )
 abstract class DatingDatabase : RoomDatabase() {
@@ -101,6 +106,7 @@ abstract class DatingDatabase : RoomDatabase() {
     abstract fun swipeDao(): SwipeDao
     abstract fun matchDao(): MatchDao
     abstract fun chatMessageDao(): ChatMessageDao
+    abstract fun conversationClearDao(): ConversationClearDao
     abstract fun expiredChatMessageDao(): ExpiredChatMessageDao
     abstract fun messageDao(): MessageDao
     abstract fun messageSyncWatermarkDao(): MessageSyncWatermarkDao
@@ -520,6 +526,35 @@ abstract class DatingDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_64_65 = object : Migration(64, 65) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `conversation_clear_guards` (
+                        `matchId` TEXT NOT NULL,
+                        `clearedAtMs` INTEGER NOT NULL DEFAULT 0,
+                        `isClearing` INTEGER NOT NULL DEFAULT 0,
+                        `deleteMedia` INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(`matchId`)
+                    )
+                """.trimIndent())
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `conversation_clear_cleanup_items` (
+                        `matchId` TEXT NOT NULL,
+                        `messageId` TEXT NOT NULL,
+                        PRIMARY KEY(`matchId`, `messageId`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_conversation_clear_cleanup_items_matchId` ON `conversation_clear_cleanup_items` (`matchId`)")
+            }
+        }
+
+        private val MIGRATION_65_66 = object : Migration(65, 66) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Additive: preserve local profiles, messages, and encrypted identity material.
+                addColumnIfMissing(db, "profiles", "isDiscoverable", "INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
         fun getDatabase(context: Context): DatingDatabase {
             val appContext = context.applicationContext
             return INSTANCE ?: synchronized(this) {
@@ -578,7 +613,9 @@ abstract class DatingDatabase : RoomDatabase() {
                                 MIGRATION_60_61,
                                 MIGRATION_61_62,
                                 MIGRATION_62_63,
-                                MIGRATION_63_64
+                                MIGRATION_63_64,
+                                MIGRATION_64_65,
+                                MIGRATION_65_66
                             )
                             // Fail closed instead of recreating a database that contains local history.
                             .build()

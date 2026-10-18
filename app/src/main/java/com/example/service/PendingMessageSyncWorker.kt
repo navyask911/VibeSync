@@ -17,6 +17,7 @@ import androidx.work.workDataOf
 import com.example.data.database.DatingDatabase
 import com.example.data.repository.SocialConnectRepository
 import com.example.util.SupabaseBackendManager
+import com.example.util.ConversationClearCoordinator
 import com.example.util.SupabaseClientManager
 import com.example.util.TinkCryptoManager
 import com.example.util.VibeSyncSessionManager
@@ -55,6 +56,28 @@ internal object PendingMessageOutboxSender {
     private const val TAG = "VibeSyncOutbox"
 
     suspend fun attempt(context: Context, messageId: String): PendingOutboxAttempt =
+        withContext(Dispatchers.IO) {
+            val safeId = messageId.trim()
+            if (safeId.isBlank()) return@withContext PendingOutboxAttempt.Rejected("Missing message_id.")
+            val database = DatingDatabase.getDatabase(context.applicationContext)
+            val first = database.chatMessageDao().getMessageById(safeId)
+                ?: return@withContext PendingOutboxAttempt.NoOp("local Room row no longer exists")
+            val conversationId = first.matchId.trim()
+            if (conversationId.isBlank()) return@withContext PendingOutboxAttempt.Rejected("Pending message has no conversation ID.")
+            ConversationClearCoordinator.withConversationLock(conversationId) {
+                val latest = database.chatMessageDao().getMessageById(safeId)
+                    ?: return@withConversationLock PendingOutboxAttempt.NoOp("local Room row no longer exists")
+                if (!latest.matchId.equals(conversationId, ignoreCase = false) ||
+                    database.conversationClearDao().isConversationClearInProgress(conversationId) ||
+                    !database.conversationClearDao().isConversationSendAllowed(conversationId)
+                ) {
+                    return@withConversationLock PendingOutboxAttempt.NoOp("conversation clear barrier is active")
+                }
+                attemptUnlocked(context, safeId)
+            }
+        }
+
+    private suspend fun attemptUnlocked(context: Context, messageId: String): PendingOutboxAttempt =
         withContext(Dispatchers.IO) {
             val safeMessageId = messageId.trim()
             Log.i(TAG, "Outbox attempt entered: message_id=$safeMessageId.")
@@ -229,6 +252,9 @@ internal object PendingMessageOutboxSender {
                 }
 
                 var voicePayloadForEncryption: String? = null
+                if (db.conversationClearDao().isConversationClearInProgress(message.matchId)) {
+                    return@withContext PendingOutboxAttempt.NoOp("conversation clear barrier is active before voice preparation")
+                }
                 if (message.mediaType.equals("VOICE", ignoreCase = true) ||
                     message.mediaType.equals("AUDIO", ignoreCase = true)
                 ) {
@@ -275,6 +301,9 @@ internal object PendingMessageOutboxSender {
                 }
 
                 var attachmentPayloadForEncryption: String? = null
+                if (db.conversationClearDao().isConversationClearInProgress(message.matchId)) {
+                    return@withContext PendingOutboxAttempt.NoOp("conversation clear barrier is active before attachment preparation")
+                }
                 if (com.example.util.ChatAttachmentCryptoManager.isSupportedMediaType(message.mediaType)) {
                     val hasLocalReference = com.example.util.ChatAttachmentCryptoManager.isLocalReference(message.mediaUrl)
                     if (!hasLocalReference) {
@@ -392,6 +421,11 @@ internal object PendingMessageOutboxSender {
                         "ciphertext_chars=${ciphertext.length}, media_url_present=${message.mediaUrl.isNotBlank()}, " +
                         "voice_duration_seconds=${message.voiceDurationSeconds}."
                 )
+                if (db.conversationClearDao().isConversationClearInProgress(message.matchId) ||
+                    !db.conversationClearDao().isConversationSendAllowed(message.matchId)
+                ) {
+                    return@withContext PendingOutboxAttempt.NoOp("conversation clear barrier is active before send RPC")
+                }
                 val committed = SupabaseClientManager.upsertChatMessage(
                     msg = remoteMessage,
                     senderIdentity = senderProfileId,
@@ -525,17 +559,30 @@ class PendingMessageInboxSyncWorker(
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
-            val database = DatingDatabase.getDatabase(applicationContext)
-            val chatDao = database.chatMessageDao()
-            val session = VibeSyncSessionManager.getSession(applicationContext)
-                ?: return@withContext Result.retry()
-            val myProfileId = session.profileId.trim()
-            if (myProfileId.isBlank()) return@withContext Result.retry()
-
-            val allMatches = database.matchDao().getAllMatchesSync()
+            val workRequestId = id.toString()
             val requestedMatchId = inputData.getString(KEY_REMOTE_MATCH_ID).orEmpty().trim()
             val targetMessageId = inputData.getString(KEY_REMOTE_MESSAGE_ID).orEmpty().trim()
             val targetSenderId = inputData.getString(KEY_REMOTE_SENDER_ID).orEmpty().trim()
+            Log.i(
+                TAG,
+                "Inbox worker started: message_id=${targetMessageId.ifBlank { "<none>" }}, " +
+                    "match_id=${requestedMatchId.ifBlank { "<none>" }}, work_request_id=$workRequestId, " +
+                    "run_attempt=$runAttemptCount."
+            )
+            val database = DatingDatabase.getDatabase(applicationContext)
+            val chatDao = database.chatMessageDao()
+            val session = VibeSyncSessionManager.getSession(applicationContext)
+            if (session == null) {
+                Log.w(TAG, "Inbox worker deferred: reason=session_unavailable, message_id=${targetMessageId.ifBlank { "<none>" }}, work_request_id=$workRequestId.")
+                return@withContext Result.retry()
+            }
+            val myProfileId = session.profileId.trim()
+            if (myProfileId.isBlank()) {
+                Log.w(TAG, "Inbox worker deferred: reason=profile_id_missing, message_id=${targetMessageId.ifBlank { "<none>" }}, work_request_id=$workRequestId.")
+                return@withContext Result.retry()
+            }
+
+            val allMatches = database.matchDao().getAllMatchesSync()
             val matched = if (requestedMatchId.isBlank()) allMatches else allMatches.filter { match ->
                 match.matchId.equals(requestedMatchId, ignoreCase = true) ||
                     SupabaseClientManager.canonicalChatMatchId(myProfileId, match.profileId)
@@ -578,58 +625,125 @@ class PendingMessageInboxSyncWorker(
 
             if (targetMessageId.isNotBlank()) {
                 val target = chatDao.getMessageById(targetMessageId)
-                val targetIsPlaintext = target != null &&
-                    !target.text.startsWith(TinkCryptoManager.TINK_PREFIX) &&
-                    (target.text.isNotBlank() || target.mediaUrl.isNotBlank() ||
-                        target.mediaType.uppercase() in setOf("IMAGE", "PHOTO", "AI_IMAGE", "VIDEO", "VOICE", "AUDIO", "DOCUMENT", "LOCATION"))
-                if (!targetIsPlaintext) {
-                    Log.w(TAG, "Targeted FCM message is not yet decrypted and persisted; retrying its wakeup.")
+                if (target == null) {
+                    if (checkedConversations > 0 && !hadIncompleteConversation && ackFailures == 0) {
+                        Log.i(TAG, "Notification suppressed: reason=target_row_not_found_after_complete_sync, message_id=$targetMessageId, work_request_id=$workRequestId.")
+                        return@withContext Result.success()
+                    }
+                    Log.w(TAG, "Notification deferred: reason=target_row_not_persisted, message_id=$targetMessageId, work_request_id=$workRequestId, run_attempt=$runAttemptCount.")
                     return@withContext Result.retry()
                 }
-                if (target.senderId.isNotBlank() &&
-                    !target.senderId.equals("USER", ignoreCase = true) &&
-                    !com.example.util.AppNotificationManager.isAppInForeground
-                ) {
-                    val prefs = applicationContext.getSharedPreferences("vibesync_inbox_notification_dedupe", Context.MODE_PRIVATE)
-                    val key = "message_" + java.util.UUID.nameUUIDFromBytes(target.messageId.toByteArray(Charsets.UTF_8)).toString()
-                    val now = System.currentTimeMillis()
-                    if (prefs.getLong(key, 0L) <= now - 7L * 24L * 60L * 60L * 1000L) {
-                        val sender = runCatching { database.profileDao().getProfileByIdSync(target.senderId) }.getOrNull()
-                        val targetMatch = allMatches.firstOrNull { item ->
-                            item.matchId.equals(target.matchId, ignoreCase = true) ||
-                                SupabaseClientManager.canonicalChatMatchId(myProfileId, item.profileId)
-                                    .equals(target.matchId, ignoreCase = true)
+
+                val mediaType = target.mediaType.trim().uppercase()
+                val renderableText = com.example.util.MessageLocalRetentionPolicy.isRenderableText(target.text)
+                val renderableMedia = mediaType in setOf(
+                    "IMAGE", "PHOTO", "AI_IMAGE", "VIDEO", "VOICE", "AUDIO", "DOCUMENT", "LOCATION", "LIVE_LOCATION"
+                ) && target.mediaUrl.isNotBlank()
+                val messageDecrypted = target.decryptState == com.example.util.MessageLocalRetentionPolicy.DECRYPT_STATE_OK &&
+                    !target.text.startsWith(TinkCryptoManager.TINK_PREFIX) &&
+                    (renderableText || renderableMedia)
+                if (!messageDecrypted) {
+                    Log.w(TAG, "Notification deferred: reason=decryption_not_ready, message_id=${target.messageId}, persisted=true, decrypted=false, decrypt_state=${target.decryptState}, work_request_id=$workRequestId, run_attempt=$runAttemptCount.")
+                    return@withContext Result.retry()
+                }
+
+                val clearBarrierPassed = !com.example.util.MessageHistoryClearBarrier.shouldSuppress(
+                    applicationContext, database, target.matchId, target.serverCreatedAt.takeIf { it > 0L }
+                )
+                val decodedControl = runCatching {
+                    com.example.util.ChatMessageEventCodec.decode(target.text, target.mediaType).eventType != null
+                }.getOrDefault(false)
+                val isControlMessage = mediaType in setOf(
+                    "DIAGNOSTIC", "SYSTEM", "CONTROL", "KEY_EXCHANGE", "PROFILE_KEY",
+                    "PROFILE_KEY_EXCHANGE", "RECEIPT", "REACTION", "MESSAGE_DELETE", "MESSAGE_EDIT",
+                    "DISAPPEARING_TIMER"
+                ) || decodedControl || com.example.util.ProfileKeyManager.isExchangePayload(target.text)
+
+                val activeChat = com.example.util.AppNotificationManager.isUserActiveInChatWith(target.senderId) ||
+                    com.example.util.AppNotificationManager.isUserActiveInChatWith(target.matchId)
+                Log.i(
+                    TAG,
+                    "Notification decision inputs: message_id=${target.messageId}, work_request_id=$workRequestId, " +
+                        "persisted=true, decrypted=true, clear_barrier_passed=$clearBarrierPassed, " +
+                        "already_read=${target.isRead || target.deliveryState.equals("READ", ignoreCase = true)}, " +
+                        "control_message=$isControlMessage, active_chat=$activeChat, app_foreground=${com.example.util.AppNotificationManager.isAppInForeground}."
+                )
+                val candidate = com.example.util.IncomingMessageNotificationPolicy.Candidate(
+                    messageId = target.messageId,
+                    isIncoming = !target.senderId.equals("USER", ignoreCase = true),
+                    isPersisted = true,
+                    decryptionSucceeded = true,
+                    clearHistoryBarrierPassed = clearBarrierPassed,
+                    isControlMessage = isControlMessage,
+                    isAlreadyRead = target.isRead || target.deliveryState.equals("READ", ignoreCase = true),
+                    activeChat = activeChat,
+                    appInForeground = com.example.util.AppNotificationManager.isAppInForeground
+                )
+                val eligibilityReason = com.example.util.IncomingMessageNotificationPolicy.blockedReason(candidate)
+                if (eligibilityReason != null) {
+                    Log.i(TAG,
+                        "Incoming notification suppressed: message_id=${target.messageId}, reason=${eligibilityReason.name.lowercase()}, " +
+                            "persisted=true, decrypted=true, clear_barrier_passed=$clearBarrierPassed, work_request_id=$workRequestId.")
+                } else {
+                    val sender = runCatching { database.profileDao().getProfileByIdSync(target.senderId) }.getOrNull()
+                    val targetMatch = allMatches.firstOrNull { item ->
+                        item.matchId.equals(target.matchId, ignoreCase = true) ||
+                            SupabaseClientManager.canonicalChatMatchId(myProfileId, item.profileId)
+                                .equals(target.matchId, ignoreCase = true)
+                    }
+                    val senderName = sender?.name?.trim()?.takeIf {
+                        it.isNotBlank() && !it.equals("VibeSync User", true) && !it.equals("VibeSync Contact", true)
+                    } ?: targetMatch?.localContactName?.trim()?.takeIf(String::isNotBlank) ?: "VibeSync Contact"
+                    val body = target.text.trim().takeIf { renderableText } ?: when (mediaType) {
+                        "IMAGE", "PHOTO", "AI_IMAGE" -> "Photo"
+                        "VIDEO" -> "Video"
+                        "VOICE", "AUDIO" -> "Voice message"
+                        "DOCUMENT" -> "Attachment"
+                        "LOCATION", "LIVE_LOCATION" -> "Location"
+                        else -> "New message"
+                    }
+                    Log.i(TAG, "Incoming notification eligible: message_id=${target.messageId}, persisted=true, decrypted=true, clear_barrier_passed=true.")
+                    val dispatchResult = com.example.util.AppNotificationManager.showMessageNotificationAndAwait(
+                        context = applicationContext,
+                        senderId = target.senderId,
+                        senderName = senderName,
+                        messageText = body,
+                        senderPhotoUrl = sender?.avatarUrl.orEmpty().ifBlank { targetMatch?.localPhotoUri.orEmpty() },
+                        mediaType = target.mediaType,
+                        channelId = com.example.util.AppNotificationManager.CHANNEL_ID_CHAT_MESSAGES,
+                        conversationId = target.matchId,
+                        messageId = target.messageId,
+                        messageTimestamp = target.timestamp,
+                        persistedIncomingMessage = true,
+                        messageDecrypted = true,
+                        clearHistoryBarrierPassed = clearBarrierPassed,
+                        controlMessage = isControlMessage,
+                        messageAlreadyRead = target.isRead || target.deliveryState.equals("READ", ignoreCase = true),
+                        workRequestId = workRequestId
+                    )
+                    when (dispatchResult) {
+                        com.example.util.IncomingNotificationDispatchResult.Posted -> {
+                            Log.i(TAG, "Inbox notification result=POSTED: message_id=${target.messageId}, work_request_id=$workRequestId.")
                         }
-                        val senderName = sender?.name?.trim()?.takeIf {
-                            it.isNotBlank() && !it.equals("VibeSync User", true) && !it.equals("VibeSync Contact", true)
-                        } ?: targetMatch?.localContactName?.trim()?.takeIf(String::isNotBlank) ?: "VibeSync Contact"
-                        val body = target.text.trim().takeIf { it.isNotBlank() } ?: when (target.mediaType.uppercase()) {
-                            "IMAGE", "PHOTO", "AI_IMAGE" -> "Photo"
-                            "VIDEO" -> "Video"
-                            "VOICE", "AUDIO" -> "Voice message"
-                            "DOCUMENT" -> "Attachment"
-                            "LOCATION" -> "Location"
-                            else -> "New message"
+                        is com.example.util.IncomingNotificationDispatchResult.Suppressed -> {
+                            Log.i(TAG, "Inbox notification result=SUPPRESSED: message_id=${target.messageId}, reason=${dispatchResult.reason}, work_request_id=$workRequestId.")
                         }
-                        com.example.util.AppNotificationManager.showMessageNotification(
-                            context = applicationContext,
-                            senderId = target.senderId,
-                            senderName = senderName,
-                            messageText = body,
-                            senderPhotoUrl = sender?.avatarUrl.orEmpty().ifBlank { targetMatch?.localPhotoUri.orEmpty() },
-                            mediaType = target.mediaType,
-                            channelId = com.example.util.AppNotificationManager.CHANNEL_ID_VIBESYNC_MESSAGES
-                        )
-                        prefs.edit().putLong(key, now).apply()
+                        is com.example.util.IncomingNotificationDispatchResult.PresentedInApp -> {
+                            Log.i(TAG, "Inbox notification result=PRESENTED_IN_APP: message_id=${target.messageId}, reason=${dispatchResult.reason}, work_request_id=$workRequestId.")
+                        }
+                        is com.example.util.IncomingNotificationDispatchResult.RetryableFailure -> {
+                            Log.w(TAG, "Inbox notification result=RETRY: message_id=${target.messageId}, reason=${dispatchResult.reason}, work_request_id=$workRequestId, run_attempt=$runAttemptCount.")
+                            return@withContext Result.retry()
+                        }
                     }
                 }
             }
-            Log.i(TAG, "Inbox delta finished: conversations=$checkedConversations rows=$syncedMessages ackFailures=$ackFailures incomplete=$hadIncompleteConversation.")
+            Log.i(TAG, "Inbox delta finished: message_id=${targetMessageId.ifBlank { "<none>" }}, match_id=${requestedMatchId.ifBlank { "<none>" }}, work_request_id=$workRequestId, conversations=$checkedConversations rows=$syncedMessages ackFailures=$ackFailures incomplete=$hadIncompleteConversation.")
             if (hadIncompleteConversation || ackFailures > 0) Result.retry() else Result.success()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (t: Throwable) {
-            Log.e(TAG, "Inbox delta failed; WorkManager will retry: ${t.message}", t)
+            Log.e(TAG, "Inbox delta failed; WorkManager will retry: message_id=${inputData.getString(KEY_REMOTE_MESSAGE_ID).orEmpty().ifBlank { "<none>" }}, work_request_id=${id}, reason=${t.javaClass.simpleName}.", t)
             Result.retry()
         }
     }
@@ -654,6 +768,32 @@ object PendingMessageSyncScheduler {
     /** Bypass a key-related retry backoff as soon as the recipient's public key is available. */
     fun enqueueNow(context: Context, messageId: String) =
         enqueueInternal(context, messageId, replaceExisting = true)
+
+    /** Cancel queued sends and match-targeted inbox pulls; the Room guard remains authoritative. */
+    fun cancelConversationWork(
+        context: Context,
+        localMatchId: String,
+        remoteMatchIds: Collection<String>,
+        messageIds: Collection<String>
+    ) {
+        runCatching {
+            val work = WorkManager.getInstance(context.applicationContext)
+            messageIds.map(String::trim).filter(String::isNotBlank).distinct().forEach { id ->
+                work.cancelUniqueWork(UNIQUE_PREFIX + id)
+                work.cancelUniqueWork("vibesync-chat-inbox-message-" + id)
+            }
+            (remoteMatchIds + localMatchId).map(::tagToken).filter(String::isNotBlank).distinct().forEach { token ->
+                work.cancelAllWorkByTag(INBOX_MATCH_TAG_PREFIX + token)
+            }
+        }.onFailure {
+            Log.w(TAG, "Clear Chat could not cancel every work request; the durable Room barrier remains active.")
+        }
+    }
+
+    private fun tagToken(value: String): String =
+        value.filter { it.isLetterOrDigit() || it == '_' || it == '-' }.take(180)
+
+    private const val INBOX_MATCH_TAG_PREFIX = "vibesync-chat-inbox-match-"
 
     private fun enqueueInternal(context: Context, messageId: String, replaceExisting: Boolean) {
         val safeId = messageId.trim()
@@ -717,36 +857,65 @@ object PendingMessageSyncScheduler {
         senderId: String? = null
     ) {
         try {
-            val cleanMessageId = messageId.orEmpty().trim()
-            val cleanMatchId = remoteMatchId.orEmpty().trim()
-            val input = workDataOf(
-                PendingMessageInboxSyncWorker.KEY_REMOTE_MATCH_ID to cleanMatchId,
-                PendingMessageInboxSyncWorker.KEY_REMOTE_MESSAGE_ID to cleanMessageId,
-                PendingMessageInboxSyncWorker.KEY_REMOTE_SENDER_ID to senderId.orEmpty()
-            )
-            val request = OneTimeWorkRequestBuilder<PendingMessageInboxSyncWorker>()
-                .setInputData(input)
-                .setConstraints(
-                    Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
-                )
-                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30L, TimeUnit.SECONDS)
-                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-                .addTag("VibeSyncInbox")
-                .build()
-            val uniqueName = if (cleanMessageId.isNotBlank()) {
-                "vibesync-chat-inbox-message-$cleanMessageId"
-            } else {
-                "vibesync-chat-inbox-resume"
-            }
+            val spec = buildInboxSyncWorkRequest(remoteMatchId, messageId, senderId)
             WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
-                uniqueName,
+                spec.uniqueWorkName,
                 ExistingWorkPolicy.APPEND_OR_REPLACE,
-                request
+                spec.request
             )
-            Log.i(TAG, "Scheduled inbox delta (targeted=${cleanMessageId.isNotBlank()}).")
+            Log.i(TAG, "Inbox work enqueued: message_id=${spec.messageId.ifBlank { "<none>" }}, match_id=${spec.matchId.ifBlank { "<none>" }}, work_request_id=${spec.request.id}, targeted=${spec.messageId.isNotBlank()}, unique_name=${spec.uniqueWorkName}.")
         } catch (t: Throwable) {
             Log.e(TAG, "Could not schedule immediate inbox delta; periodic sync remains available.", t)
         }
+    }
+
+    /**
+     * Keep FCM message identity in durable WorkManager input independently for every message.
+     * Exposed internally so the scheduling contract can be regression-tested without a live manager.
+     */
+    internal data class InboxSyncWorkRequestSpec(
+        val messageId: String,
+        val matchId: String,
+        val uniqueWorkName: String,
+        val request: androidx.work.OneTimeWorkRequest
+    )
+
+    internal fun buildInboxSyncWorkRequest(
+        remoteMatchId: String?,
+        messageId: String?,
+        senderId: String?
+    ): InboxSyncWorkRequestSpec {
+        val cleanMessageId = messageId.orEmpty().trim()
+        val cleanMatchId = remoteMatchId.orEmpty().trim()
+        val cleanSenderId = senderId.orEmpty().trim()
+        val input = workDataOf(
+            PendingMessageInboxSyncWorker.KEY_REMOTE_MATCH_ID to cleanMatchId,
+            PendingMessageInboxSyncWorker.KEY_REMOTE_MESSAGE_ID to cleanMessageId,
+            PendingMessageInboxSyncWorker.KEY_REMOTE_SENDER_ID to cleanSenderId
+        )
+        val request = OneTimeWorkRequestBuilder<PendingMessageInboxSyncWorker>()
+            .setInputData(input)
+            .setConstraints(
+                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+            )
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30L, TimeUnit.SECONDS)
+            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+            .addTag("VibeSyncInbox")
+            .apply {
+                if (cleanMatchId.isNotBlank()) addTag(INBOX_MATCH_TAG_PREFIX + tagToken(cleanMatchId))
+            }
+            .build()
+        val uniqueWorkName = if (cleanMessageId.isNotBlank()) {
+            "vibesync-chat-inbox-message-$cleanMessageId"
+        } else {
+            "vibesync-chat-inbox-resume"
+        }
+        return InboxSyncWorkRequestSpec(
+            messageId = cleanMessageId,
+            matchId = cleanMatchId,
+            uniqueWorkName = uniqueWorkName,
+            request = request
+        )
     }
 
     /** Periodic inbox pull is the no-FCM fallback; Android may defer its execution under Doze. */
