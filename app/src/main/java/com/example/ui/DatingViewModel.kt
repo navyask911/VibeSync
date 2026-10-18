@@ -2722,10 +2722,16 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     userId = verifiedUserId,
                     userData = userDataMap,
                     onSuccess = { docId, latencyMs ->
-                        android.util.Log.i("DatingViewModel", "🎉 Profile '$docId' successfully synced to Firestore 'users' in ${latencyMs}ms")
+                        android.util.Log.i(
+                            "DatingViewModel",
+                            "Registered profile sync confirmed (profile_tag=${safeProfileTag(docId)}, latency_ms=${latencyMs})."
+                        )
                     },
                     onFailure = { docId, error ->
-                        android.util.Log.w("DatingViewModel", "⚠️ Sync to Firestore 'users' notice for '$docId': ${error.message}")
+                        android.util.Log.w(
+                            "DatingViewModel",
+                            "Registered profile sync deferred (profile_tag=${safeProfileTag(docId)}, error_type=${error.javaClass.simpleName})."
+                        )
                     }
                 )
             }
@@ -3171,7 +3177,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
                     )
                 }
         } catch (e: Throwable) {
-            android.util.Log.w("FcmRegistration", "FCM token registration hook notice: ${e.message}")
+            android.util.Log.w("FcmRegistration", "FCM token registration hook notice: ${e.javaClass.simpleName}.")
         }
 
         // Recovery has already persisted the single resolved preference snapshot.
@@ -3185,7 +3191,7 @@ class DatingViewModel(application: Application) : AndroidViewModel(application) 
             // safety net for a ViewModel created after session restoration.
             reconnectRealtime()
         } catch (e: Exception) {
-            android.util.Log.w("AuthSessionManager", "Post-login sync notice: ${e.message}")
+            android.util.Log.w("AuthSessionManager", "Post-login sync deferred: ${e.javaClass.simpleName}.")
         }
     }
 
